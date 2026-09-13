@@ -52,9 +52,9 @@ export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured,
               <span className={`status-dot ${status}`}>{statusCopy[status]}</span>
             </div>
 
-            <label className="field-label" htmlFor="gemini-key">Paste your API Key</label>
+            <label className="field-label" htmlFor="gemini-key">Paste your API key here</label>
             <div className="key-input-row">
-              <input id="gemini-key" type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onTestConnection(); } }} placeholder="Paste your API Key" autoComplete="new-password" aria-describedby="gemini-key-note" />
+              <input id="gemini-key" type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onTestConnection(); } }} placeholder="Paste your API key here" autoComplete="new-password" aria-describedby="gemini-key-note" />
               <div className="key-actions">
                 <button type="button" className="primary-button small" onClick={onTestConnection} disabled={status === "testing"}><Icon name="sparkles" size={15} /> {status === "testing" ? "Connecting…" : "Connect Gemini"}</button>
                 <button type="button" className="ghost-button" onClick={onRemoveKey}>Remove</button>
