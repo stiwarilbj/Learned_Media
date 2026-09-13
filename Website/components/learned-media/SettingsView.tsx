@@ -52,6 +52,19 @@ export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured,
               <span className={`status-dot ${status}`}>{statusCopy[status]}</span>
             </div>
 
+            <label className="field-label" htmlFor="gemini-key">Paste your API Key</label>
+            <div className="key-input-row">
+              <input id="gemini-key" type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onTestConnection(); } }} placeholder="Paste your API Key" autoComplete="new-password" aria-describedby="gemini-key-note" />
+              <div className="key-actions">
+                <button type="button" className="primary-button small" onClick={onTestConnection} disabled={status === "testing"}><Icon name="sparkles" size={15} /> {status === "testing" ? "Connecting…" : "Connect Gemini"}</button>
+                <button type="button" className="ghost-button" onClick={onRemoveKey}>Remove</button>
+              </div>
+            </div>
+            <div className="security-note" id="gemini-key-note">
+              <Icon name="shield" size={16} />
+              <span>{serverConfigured ? "A server-side GEMINI_API_KEY is configured for this workspace. Your pasted key is never saved to localStorage." : "Your pasted key is held in memory for this session, sent only when Gemini is requested, and never saved to localStorage."}</span>
+            </div>
+
             <div className="api-key-guide">
               <div className="api-key-guide-icon"><Icon name="sparkles" size={16} /></div>
               <div className="api-key-guide-copy">
@@ -61,19 +74,6 @@ export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured,
               <a className="api-key-link" href={AI_STUDIO_KEY_URL} target="_blank" rel="noreferrer">
                 Open AI Studio <Icon name="external" size={14} />
               </a>
-            </div>
-
-            <label className="field-label" htmlFor="gemini-key">Gemini API key</label>
-            <div className="key-input-row">
-              <input id="gemini-key" type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onTestConnection(); } }} placeholder="Paste your AIza… key" autoComplete="new-password" aria-describedby="gemini-key-note" />
-              <div className="key-actions">
-                <button type="button" className="primary-button small" onClick={onTestConnection} disabled={status === "testing"}><Icon name="sparkles" size={15} /> {status === "testing" ? "Connecting…" : "Connect Gemini"}</button>
-                <button type="button" className="ghost-button" onClick={onRemoveKey}>Remove</button>
-              </div>
-            </div>
-            <div className="security-note" id="gemini-key-note">
-              <Icon name="shield" size={16} />
-              <span>{serverConfigured ? "A server-side GEMINI_API_KEY is configured for this workspace. Your pasted key is never saved to localStorage." : "Your pasted key is held in memory for this session, sent only when Gemini is requested, and never saved to localStorage."}</span>
             </div>
           </section>
 
