@@ -13,6 +13,7 @@ import { clearTopicSelections, flattenTopics, updateTopicTree } from "@/lib/topi
 import type { FactCard, FeedSettings, GeminiStatus, LearningMessage, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const STORAGE_KEY = "learned-media-demo-state";
+const THEME_MIGRATION_KEY = "learned-media-light-theme-v1";
 
 type PersistedState = {
   topics: TopicNode[];
@@ -113,7 +114,11 @@ export default function HomePage() {
         });
         if (parsed.cards) setCards(uniqueCards(parsed.cards.map((card, index) => normalizeFact(card, index))));
         if (typeof parsed.feedStarted === "boolean") setFeedStarted(parsed.feedStarted);
-        if (parsed.theme) setTheme(parsed.theme);
+        if (window.localStorage.getItem(THEME_MIGRATION_KEY) === "1" && parsed.theme) setTheme(parsed.theme);
+      }
+      if (window.localStorage.getItem(THEME_MIGRATION_KEY) !== "1") {
+        setTheme("light");
+        window.localStorage.setItem(THEME_MIGRATION_KEY, "1");
       }
     } catch {
       // A corrupt demo cache should never prevent the app from loading.
