@@ -17,6 +17,7 @@ type SetupWorkspaceProps = {
   onWeightTopic: (id: string, delta: number) => void;
   onSettingsChange: (next: Partial<FeedSettings>) => void;
   onStart: () => void;
+  onOpenSettings: () => void;
 };
 
 const modeCopy: Array<{ id: DisplayMode; label: string; icon: "list" | "lightbulb" }> = [
@@ -24,7 +25,7 @@ const modeCopy: Array<{ id: DisplayMode; label: string; icon: "list" | "lightbul
   { id: "text", label: "Text only", icon: "lightbulb" }
 ];
 
-export function SetupWorkspace({ topics, query, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onSettingsChange, onStart }: SetupWorkspaceProps) {
+export function SetupWorkspace({ topics, query, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onSettingsChange, onStart, onOpenSettings }: SetupWorkspaceProps) {
   const [topicsOpen, setTopicsOpen] = useState(true);
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
@@ -55,6 +56,12 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
           <div className="start-orbit"><Icon name="sparkles" size={24} /><span>Every card has a source</span></div>
           <button type="button" className="start-button" onClick={onStart} disabled={!hasSelection}><span>{hasSelection ? "Start learning" : "Choose a topic first"}</span><Icon name="arrow" size={21} /></button>
           <p className="panel-footnote"><Icon name={hasSelection ? "shield" : "help"} size={13} /> {hasSelection ? "Your mix stays yours." : "Select a topic to unlock your feed."}</p>
+
+          <div className="setup-key-callout">
+            <div className="setup-key-callout-icon"><Icon name="key" size={16} /></div>
+            <div><strong>Want Gemini-generated facts?</strong><span>Add your API key in Settings to personalize the next batch.</span></div>
+            <button type="button" className="text-button" onClick={onOpenSettings}>Add key <Icon name="arrow" size={14} /></button>
+          </div>
 
           <details className="setup-customize">
             <summary><span><Icon name="sliders" size={16} /> Customize your feed</span><Icon name="chevronDown" size={15} /></summary>

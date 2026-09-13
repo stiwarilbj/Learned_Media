@@ -29,4 +29,4 @@ Open [http://localhost:3000](http://localhost:3000).
 3. Use **Learn more** or ask a question on any fact card
 4. Switch between **Image + text** and **Text only** in feed customization
 
-The demo feed works without a key. Gemini summaries and questions require `GEMINI_API_KEY`.
+The demo feed works without a key. You can also paste a session key in **Settings → Gemini API key** and use the built-in [Google AI Studio key page](https://aistudio.google.com/app/apikey). Gemini summaries and questions require a key.
