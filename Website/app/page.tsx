@@ -10,15 +10,18 @@ import { SettingsView } from "@/components/learned-media/SettingsView";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { createDefaultTopics, DEFAULT_SETTINGS, DEMO_FACTS } from "@/lib/demo-data";
 import { clearTopicSelections, flattenTopics, updateTopicTree } from "@/lib/topic-tree";
-import type { FactCard, FeedSettings, GeminiStatus, LearningMessage, TopicNode, View, WikipediaSource } from "@/lib/types";
+import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
+import type { FactCard, FactCardAction, FeedSettings, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const STORAGE_KEY = "learned-media-demo-state";
 const THEME_MIGRATION_KEY = "learned-media-light-theme-v1";
+const TEN_LEVEL_DIFFICULTY_MIGRATION_KEY = "learned-media-ten-level-difficulty-v1";
 
 type PersistedState = {
   topics: TopicNode[];
   settings: FeedSettings;
   cards: FactCard[];
+  learningProfile: LearningProfile;
   feedStarted: boolean;
   theme: "light" | "dark";
 };
@@ -49,11 +52,13 @@ function slugify(value: string) {
   return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
 
-function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUrl?: string }, index: number): FactCard {
+function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUrl?: string }, index: number, legacyDifficulty = false): FactCard {
   const sourceTitle = raw.sourceTitle ?? raw.topicPath?.at(-1) ?? "Wikipedia";
   const sourceUrl = raw.sourceUrl ?? `https://en.wikipedia.org/wiki/${encodeURIComponent(sourceTitle.replace(/\s+/g, "_"))}`;
   const body = raw.body ?? "The feed found something interesting, but the explanation is still on its way.";
   const sources = uniqueSources(raw.sources?.length ? raw.sources : [{ title: sourceTitle, url: sourceUrl }]);
+  const rawDifficulty = legacyDifficulty ? migrateLegacyDifficulty(raw.difficulty ?? raw.obscurity) : raw.difficulty ?? raw.obscurity;
+  const difficulty = normalizeDifficulty(rawDifficulty, DEFAULT_DIFFICULTY);
   return {
     id: raw.id ?? `generated-${Date.now()}-${index}`,
     title: raw.title ?? "A small fact worth keeping",
@@ -62,11 +67,18 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     topicPath: raw.topicPath?.length ? raw.topicPath : ["Surprise topic"],
     sources: sources.length ? sources : [{ title: sourceTitle, url: sourceUrl }],
     image: raw.image?.url.startsWith("/") ? undefined : raw.image,
-    obscurity: raw.obscurity ?? 4,
+    difficulty,
+    obscurity: difficulty,
     accent: raw.accent ?? ["blue", "lilac", "mint", "sand", "coral"][index % 5] as FactCard["accent"],
+    feedback: raw.feedback ?? (raw.known ? "heard" : undefined),
+    known: raw.known,
     surprise: raw.surprise,
     createdAt: raw.createdAt ?? "Just now"
   };
+}
+
+function migrateLearningProfile(profile: LearningProfile): LearningProfile {
+  return Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, { ...value, targetDifficulty: migrateLegacyDifficulty(value.targetDifficulty) }])) as LearningProfile;
 }
 
 export default function HomePage() {
@@ -74,6 +86,8 @@ export default function HomePage() {
   const [topics, setTopics] = useState<TopicNode[]>(createDefaultTopics);
   const [settings, setSettings] = useState<FeedSettings>(DEFAULT_SETTINGS);
   const [cards, setCards] = useState<FactCard[]>([]);
+  const [learningProfile, setLearningProfile] = useState<LearningProfile>({});
+  const [feedHasMore, setFeedHasMore] = useState(true);
   const [feedStarted, setFeedStarted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
@@ -106,13 +120,19 @@ export default function HomePage() {
       const saved = window.localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved) as Partial<PersistedState>;
+        const migrateTenLevelDifficulty = window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1";
         if (parsed.topics) setTopics(parsed.topics);
-        if (parsed.settings) setSettings({
-          ...DEFAULT_SETTINGS,
-          ...parsed.settings,
-          displayMode: parsed.settings.displayMode === "text" ? "text" : "picture-text"
-        });
-        if (parsed.cards) setCards(uniqueCards(parsed.cards.map((card, index) => normalizeFact(card, index))));
+        if (parsed.settings) {
+          const savedSettings: FeedSettings = {
+            ...DEFAULT_SETTINGS,
+            ...parsed.settings,
+            displayMode: parsed.settings.displayMode === "text" ? "text" : "picture-text"
+          };
+          if (migrateTenLevelDifficulty) savedSettings.obscurity = migrateLegacyDifficulty(parsed.settings.obscurity);
+          setSettings(savedSettings);
+        }
+        if (parsed.cards) setCards(uniqueCards(parsed.cards.map((card, index) => normalizeFact(card, index, migrateTenLevelDifficulty))));
+        if (parsed.learningProfile) setLearningProfile(migrateTenLevelDifficulty ? migrateLearningProfile(parsed.learningProfile) : parsed.learningProfile);
         if (typeof parsed.feedStarted === "boolean") setFeedStarted(parsed.feedStarted);
         if (window.localStorage.getItem(THEME_MIGRATION_KEY) === "1" && parsed.theme) setTheme(parsed.theme);
       }
@@ -120,6 +140,7 @@ export default function HomePage() {
         setTheme("light");
         window.localStorage.setItem(THEME_MIGRATION_KEY, "1");
       }
+      if (window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1") window.localStorage.setItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY, "1");
     } catch {
       // A corrupt demo cache should never prevent the app from loading.
     }
@@ -134,9 +155,9 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const state: PersistedState = { topics, settings, cards, feedStarted, theme };
+    const state: PersistedState = { topics, settings, cards, learningProfile, feedStarted, theme };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [cards, feedStarted, hydrated, settings, theme, topics]);
+  }, [cards, feedStarted, hydrated, learningProfile, settings, theme, topics]);
 
   useEffect(() => {
     if (!toast) return;
@@ -150,6 +171,7 @@ export default function HomePage() {
   const updateSettings = useCallback((next: Partial<FeedSettings>) => setSettings((current) => ({ ...current, ...next })), []);
 
   const handleToggleTopic = useCallback((id: string) => {
+    setFeedHasMore(true);
     setTopics((current) => updateTopicTree(current, id, (node) => ({ ...node, selected: !node.selected })));
   }, []);
 
@@ -170,12 +192,17 @@ export default function HomePage() {
       return;
     }
     setTopics((current) => [...current, { id, label, selected: true, expanded: false, weight: 10, custom: true }]);
+    setFeedHasMore(true);
     setCustomTopic("");
     setToast(`${label} added to your topic tree.`);
   }, [customTopic, topics]);
 
   const startFeed = useCallback(async (rabbitHoleOverride?: string | null) => {
     if (loading) return;
+    if (!selectedTopicPaths.length) {
+      setToast("Choose at least one topic before generating more facts.");
+      return;
+    }
     generationAbortController.current?.abort();
     const controller = new AbortController();
     const requestId = requestGeneration.current;
@@ -185,25 +212,41 @@ export default function HomePage() {
     setLoading(true);
     setToast("");
     const activeRabbitHole = rabbitHoleOverride ?? rabbitHole;
+    const hasGeminiCredential = Boolean(apiKey.trim() || serverConfigured);
     try {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim() || undefined, topics: selectedTopicPaths, settings, rabbitHole: activeRabbitHole, avoid: cards.slice(-12).map((card) => card.title) }),
+        body: JSON.stringify({ apiKey: apiKey.trim() || undefined, topics: selectedTopicPaths, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: cards.slice(-12).map((card) => card.title) }),
         signal: controller.signal
       });
-      if (!response.ok) throw new Error("generation failed");
-      const payload = await response.json() as { cards?: Partial<FactCard>[]; demo?: boolean };
+      const payload = await response.json().catch(() => ({})) as { cards?: Partial<FactCard>[]; demo?: boolean; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Gemini could not generate this batch. Check the key in Settings and try again.");
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-      const generated = (payload.cards ?? []).map(normalizeFact);
+      const generated = (payload.cards ?? []).map((card, index) => normalizeFact(card, index));
+      const freshGenerated = generated.filter((card) => !cards.some((existing) => existing.id === card.id));
       setCards((current) => {
         const next = generated.length ? generated : uniqueCards(DEMO_FACTS);
         return appendUniqueCards(current, next);
       });
-      if (payload.demo) setToast("Demo feed ready. Add your Gemini key in Settings to generate your own mix.");
-    } catch {
+      if (!freshGenerated.length) {
+        setFeedHasMore(false);
+        setToast(payload.demo ? "That starter batch is used up. Add your Gemini key for more facts." : "No new facts arrived. Try again in a moment.");
+      } else {
+        setFeedHasMore(true);
+        if (payload.demo) setToast("Demo feed ready. Add your Gemini key in Settings to generate your own mix.");
+      }
+    } catch (error) {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-      setCards((current) => appendUniqueCards(current, uniqueCards(DEMO_FACTS)));
+      if (hasGeminiCredential) {
+        setFeedHasMore(true);
+        setToast(error instanceof Error ? error.message : "Gemini could not generate this batch. Check the key in Settings and try again.");
+        return;
+      }
+      const fallback = uniqueCards(DEMO_FACTS);
+      const freshFallback = fallback.filter((card) => !cards.some((existing) => existing.id === card.id));
+      setCards((current) => appendUniqueCards(current, fallback));
+      setFeedHasMore(freshFallback.length > 0);
       setToast("Using a starter batch while Gemini is not connected.");
     } finally {
       if (generationAbortController.current === controller) {
@@ -211,13 +254,14 @@ export default function HomePage() {
         setLoading(false);
       }
     }
-  }, [apiKey, cards, loading, rabbitHole, selectedTopicPaths, settings]);
+  }, [apiKey, cards, learningProfile, loading, rabbitHole, selectedTopicPaths, serverConfigured, settings]);
 
   const resetFeed = useCallback(() => {
     cancelGeneration();
     requestGeneration.current += 1;
     const blankTopics = clearTopicSelections(topics);
     setFeedStarted(false);
+    setFeedHasMore(true);
     setCards([]);
     setLoading(false);
     setRabbitHole(null);
@@ -227,10 +271,10 @@ export default function HomePage() {
     setTopics(blankTopics);
     setView("feed");
     if (hydrated) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ topics: blankTopics, settings, cards: [], feedStarted: false, theme } satisfies PersistedState));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ topics: blankTopics, settings, cards: [], learningProfile, feedStarted: false, theme } satisfies PersistedState));
     }
     setToast("Feed reset. Nothing will generate until you press Start again.");
-  }, [cancelGeneration, hydrated, settings, theme, topics]);
+  }, [cancelGeneration, hydrated, learningProfile, settings, theme, topics]);
 
   const learnMore = useCallback(async (id: string) => {
     const card = cards.find((item) => item.id === id);
@@ -280,7 +324,7 @@ export default function HomePage() {
     }
   }, [apiKey, cards, questionLoading]);
 
-  const handleCardAction = useCallback((id: string, action: "like" | "save" | "more" | "less" | "known" | "rabbit") => {
+  const handleCardAction = useCallback((id: string, action: FactCardAction) => {
     if (action === "rabbit") {
       const card = cards.find((item) => item.id === id);
       const nextTopic = card?.topicPath.at(-1) ?? "a nearby idea";
@@ -289,18 +333,30 @@ export default function HomePage() {
       void startFeed(nextTopic);
       return;
     }
+    if (action === "heard" || action === "unknown") {
+      const card = cards.find((item) => item.id === id);
+      if (!card || card.feedback === action) return;
+      const result = recordTopicFeedback(learningProfile, card.topicPath, action, normalizeDifficulty(settings.obscurity));
+      setLearningProfile(result.profile);
+      setCards((current) => current.map((item) => item.id === id ? { ...item, feedback: action, known: action === "heard" } : item));
+      const topic = card.topicPath.at(-1) ?? "this topic";
+      if (action === "heard") {
+        setToast(result.adjusted ? `Heard — ${topic} is moving to difficulty ${result.targetDifficulty}/10.` : result.targetDifficulty === 10 ? `Heard — ${topic} is already at the hardest level.` : `Heard — we’ll look for harder ${topic} facts next.`);
+      } else {
+        setToast(result.adjusted ? `Unknown streak reached ${result.threshold}; ${topic} is easing to difficulty ${result.targetDifficulty}/10.` : `Unknown noted — ${topic} will stay here until ${result.threshold} unknowns in a row.`);
+      }
+      return;
+    }
     setCards((current) => current.map((card) => {
       if (card.id !== id) return card;
       if (action === "like") return { ...card, liked: !card.liked };
       if (action === "save") return { ...card, saved: !card.saved };
-      if (action === "known") return { ...card, known: true };
       if (action === "more") return { ...card, moreLike: true, liked: true };
       return { ...card, lessLike: true };
     }));
-    if (action === "known") setToast("Got it — we’ll steer away from close repeats.");
     if (action === "more") setToast("Your mix will lean a little closer to this thread.");
     if (action === "less") setToast("We’ll keep this thread quieter for a while.");
-  }, [cards, startFeed]);
+  }, [cards, learningProfile, settings.obscurity, startFeed]);
 
   const resetAllPreferences = useCallback(() => {
     if (!window.confirm("Reset all preferences and return to the default topic mix?")) return;
@@ -309,6 +365,8 @@ export default function HomePage() {
     setTopics(createDefaultTopics());
     setSettings(DEFAULT_SETTINGS);
     setCards([]);
+    setFeedHasMore(true);
+    setLearningProfile({});
     setLearnLoading(null);
     setQuestionLoading(null);
     setLearningErrors({});
@@ -324,6 +382,8 @@ export default function HomePage() {
     cancelGeneration();
     requestGeneration.current += 1;
     setCards([]);
+    setFeedHasMore(true);
+    setLearningProfile({});
     setLearnLoading(null);
     setQuestionLoading(null);
     setLearningErrors({});
@@ -344,7 +404,14 @@ export default function HomePage() {
       const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ apiKey: apiKey.trim() || undefined }) });
       const payload = await response.json() as { status?: GeminiStatus };
       setGeminiStatus(payload.status ?? (response.ok ? "connected" : "unavailable"));
-      setToast(response.ok ? "Gemini connection verified." : "Gemini could not verify this key.");
+      const statusMessage = payload.status === "invalid"
+        ? "Gemini rejected this key. Check it in Google AI Studio and paste it again."
+        : payload.status === "rate-limited"
+          ? "Gemini is rate-limited right now. Wait a moment and try again."
+          : payload.status === "unavailable"
+            ? "Gemini models were unavailable for this key. Try again in a moment."
+            : "Gemini could not verify this key.";
+      setToast(response.ok ? "Gemini connection verified." : statusMessage);
     } catch {
       setGeminiStatus("unavailable");
       setToast("Could not reach the Gemini connection check.");
@@ -366,9 +433,9 @@ export default function HomePage() {
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={(topic) => { if (topic === "Custom topic") { setView("feed"); setToast("Add a custom topic from your learning mix."); } else { setQuery(topic); setView("feed"); } }} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={setApiKey} status={geminiStatus} serverConfigured={serverConfigured} onTestConnection={testConnection} onRemoveKey={() => { setApiKey(""); setGeminiStatus("not-configured"); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (serverConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={setApiKey} status={geminiStatus} feedback={toast} serverConfigured={serverConfigured} onTestConnection={testConnection} onRemoveKey={() => { setApiKey(""); setGeminiStatus("not-configured"); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (serverConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} />;
-    return <FeedView cards={filteredCards} settings={settings} topics={topics} customTopic={customTopic} loading={loading} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onLoadMore={() => void startFeed()} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
+    return <FeedView cards={filteredCards} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedTopicPaths.length > 0} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onLoadMore={() => void startFeed()} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
   };
 
   const searchResults = query.trim() ? allTopicResults.filter((topic) => topic.label.toLowerCase().includes(query.toLowerCase())).slice(0, 4) : [];

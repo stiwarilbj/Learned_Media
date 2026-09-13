@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import type { DisplayMode, FeedSettings, TopicNode } from "@/lib/types";
 import { flattenTopics } from "@/lib/topic-tree";
 import { Icon } from "./icons";
@@ -33,6 +34,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
   }, []);
   const selectedCount = flattenTopics(topics).filter((topic) => topic.selected).length;
   const hasSelection = selectedCount > 0;
+  const difficulty = normalizeDifficulty(settings.obscurity);
   return (
     <div className="setup-stack">
       <section className="setup-layout">
@@ -67,9 +69,9 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
           <details className="setup-customize">
             <summary><span><Icon name="sliders" size={16} /> Customize your feed</span><Icon name="chevronDown" size={15} /></summary>
             <div className="setup-customize-body">
-              <label className="control-label" htmlFor="obscurity"><span>Obscurity level</span><span>{settings.obscurity === 5 ? "Deep cuts" : settings.obscurity === 4 ? "Very obscure" : "Interesting"}</span></label>
-              <input id="obscurity" type="range" min="1" max="5" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
-              <div className="range-ends"><span>Common</span><span>Deep cut</span></div>
+              <label className="control-label" htmlFor="obscurity"><span>Fact difficulty</span><span>{difficulty}/10 · {DIFFICULTY_LABELS[difficulty]}</span></label>
+              <input id="obscurity" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
+              <div className="range-ends"><span>Approachable</span><span>Obscure</span></div>
               <span className="control-label">Display style</span>
               <div className="option-grid two">{modeCopy.map((mode) => <button type="button" key={mode.id} className={`option-card ${settings.displayMode === mode.id ? "selected" : ""}`} onClick={() => onSettingsChange({ displayMode: mode.id })}><Icon name={mode.icon} size={16} /><span>{mode.label}</span></button>)}</div>
               <span className="control-label">Description length</span>
@@ -78,7 +80,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
             </div>
           </details>
 
-          <div className="setup-preview-note"><span>Example</span><strong>Three hearts, one swimming problem</strong><small>Octopus · Biology · Wikipedia</small></div>
+          <div className="setup-preview-note"><span>Example</span><strong>A Roman object still has no agreed purpose</strong><small>Roman dodecahedra · Ancient History · Wikipedia</small></div>
         </section>
       </section>
     </div>

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import type { DisplayMode, FactCard as FactCardType } from "@/lib/types";
+import { DIFFICULTY_LABELS } from "@/lib/recommendations";
+import type { DisplayMode, FactCard as FactCardType, FactCardAction } from "@/lib/types";
 import { Icon } from "./icons";
 
 type FactCardProps = {
@@ -11,7 +12,7 @@ type FactCardProps = {
   questionLoading?: boolean;
   learnError?: string;
   questionError?: string;
-  onAction: (id: string, action: "like" | "save" | "more" | "less" | "known" | "rabbit") => void;
+  onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
   onAskQuestion: (id: string, question: string, detailed: boolean) => void;
 };
@@ -29,7 +30,7 @@ export function FactCard({ card, displayMode, learnLoading, questionLoading, lea
   }
 
   return (
-    <article className={`fact-card accent-${card.accent} ${card.known ? "known" : ""}`}>
+    <article className={`fact-card accent-${card.accent} ${card.feedback ? `feedback-${card.feedback}` : ""}`}>
       {card.surprise && <div className="surprise-banner"><Icon name="sparkles" size={14} /> Surprise topic</div>}
       {showImage && (
         <div className={`fact-image ${card.image && !imageFailed ? "has-image" : "no-image"}`}>
@@ -45,7 +46,7 @@ export function FactCard({ card, displayMode, learnLoading, questionLoading, lea
       <div className="fact-content">
         <div className="fact-meta">
           <div className="fact-breadcrumbs">{card.topicPath.map((topic) => <span key={topic}>{topic}</span>)}</div>
-          <span className="obscurity-mark" aria-label={`Obscurity ${card.obscurity} of 5`}>{"●".repeat(Math.min(card.obscurity, 5))}{"○".repeat(Math.max(0, 5 - card.obscurity))}</span>
+          <span className={`difficulty-mark difficulty-${card.difficulty}`} aria-label={`Difficulty ${card.difficulty} of 10 · ${DIFFICULTY_LABELS[card.difficulty]}`}>Difficulty {card.difficulty} · {DIFFICULTY_LABELS[card.difficulty]}</span>
         </div>
         <p className="fact-hook">{card.hook}</p>
         <h3>{card.title}</h3>
@@ -80,13 +81,14 @@ export function FactCard({ card, displayMode, learnLoading, questionLoading, lea
       </div>
       <div className="fact-actions">
         <button type="button" className="learn-more-button" onClick={() => onLearnMore(card.id)} disabled={learnLoading || Boolean(card.learnMore)}><Icon name="sparkles" size={16} /> <span>{learnLoading ? "Reading…" : card.learnMore ? "Learned" : "Learn more"}</span></button>
+        <button type="button" className={`feedback-button heard ${card.feedback === "heard" ? "selected" : ""}`} onClick={() => onAction(card.id, "heard")} aria-pressed={card.feedback === "heard"}><Icon name="check" size={15} /> <span>Heard</span></button>
+        <button type="button" className={`feedback-button unknown ${card.feedback === "unknown" ? "selected" : ""}`} onClick={() => onAction(card.id, "unknown")} aria-pressed={card.feedback === "unknown"}><Icon name="help" size={15} /> <span>Unknown</span></button>
         <button type="button" className={card.liked ? "active-like" : ""} onClick={() => onAction(card.id, "like")} aria-label={card.liked ? "Unlike fact" : "Like fact"}><Icon name="heart" size={16} fill={card.liked ? "currentColor" : "none"} /> <span>Like</span></button>
         <button type="button" className={card.saved ? "active-save" : ""} onClick={() => onAction(card.id, "save")} aria-label={card.saved ? "Unsave fact" : "Save fact"}><Icon name="bookmark" size={16} fill={card.saved ? "currentColor" : "none"} /> <span>Save</span></button>
         <details className="fact-more-menu">
           <summary aria-label="More fact actions"><Icon name="more" size={17} /></summary>
           <div className="fact-more-popover">
             <button type="button" onClick={() => onAction(card.id, "more")}><Icon name="sparkles" size={15} /> More like this</button>
-            <button type="button" onClick={() => onAction(card.id, "known")}><Icon name="check" size={15} /> I already knew this</button>
             <button type="button" onClick={() => onAction(card.id, "rabbit")}><Icon name="arrow" size={15} /> Start rabbit hole</button>
             <button type="button" onClick={() => onAction(card.id, "less")}><Icon name="minus" size={15} /> Show fewer like this</button>
           </div>

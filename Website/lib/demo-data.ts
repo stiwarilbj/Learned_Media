@@ -1,7 +1,7 @@
 import type { FactCard, FeedSettings, TopicNode } from "./types";
 
 export const DEFAULT_SETTINGS: FeedSettings = {
-  obscurity: 4,
+  obscurity: 10,
   displayMode: "picture-text",
   sentenceLength: 2,
   surpriseMe: true
@@ -12,23 +12,23 @@ export function createDefaultTopics(): TopicNode[] {
     {
       id: "history",
       label: "History",
-      selected: true,
+      selected: false,
       expanded: true,
       weight: 30,
       children: [
-        { id: "ancient-history", label: "Ancient History", selected: true, expanded: false, weight: 15 },
-        { id: "medieval-history", label: "Medieval History", selected: true, expanded: false, weight: 10 },
+        { id: "ancient-history", label: "Ancient History", selected: false, expanded: false, weight: 15 },
+        { id: "medieval-history", label: "Medieval History", selected: false, expanded: false, weight: 10 },
         { id: "modern-history", label: "Modern History", selected: false, expanded: false, weight: 5 }
       ]
     },
     {
       id: "computer-science",
       label: "Computer Science",
-      selected: true,
+      selected: false,
       expanded: true,
       weight: 25,
       children: [
-        { id: "programming", label: "Programming", selected: true, expanded: false, weight: 15 },
+        { id: "programming", label: "Programming", selected: false, expanded: false, weight: 15 },
         { id: "artificial-intelligence", label: "Artificial Intelligence", selected: false, expanded: false, weight: 5 },
         { id: "computing-history", label: "Computing History", selected: false, expanded: false, weight: 5 }
       ]
@@ -36,12 +36,12 @@ export function createDefaultTopics(): TopicNode[] {
     {
       id: "science",
       label: "Science",
-      selected: true,
+      selected: false,
       expanded: true,
       weight: 25,
       children: [
-        { id: "space", label: "Space", selected: true, expanded: false, weight: 10 },
-        { id: "biology", label: "Biology", selected: true, expanded: false, weight: 10 },
+        { id: "space", label: "Space", selected: false, expanded: false, weight: 10 },
+        { id: "biology", label: "Biology", selected: false, expanded: false, weight: 10 },
         { id: "physics", label: "Physics", selected: false, expanded: false, weight: 5 }
       ]
     },
@@ -60,16 +60,6 @@ export function createDefaultTopics(): TopicNode[] {
   ];
 }
 
-const octopusImage = {
-  url: "https://upload.wikimedia.org/wikipedia/commons/thumb/5/57/Octopus2.jpg/330px-Octopus2.jpg",
-  alt: "An octopus underwater",
-  sourceTitle: "Octopus",
-  sourceUrl: "https://en.wikipedia.org/wiki/Octopus",
-  fileUrl: "https://upload.wikimedia.org/wikipedia/commons/5/57/Octopus2.jpg",
-  filePageUrl: "https://commons.wikimedia.org/wiki/File:Octopus2.jpg",
-  credit: "Wikimedia Commons"
-} as const;
-
 function demoCard(card: Omit<FactCard, "sources"> & { source: string; additionalSources?: string[] }) {
   const { source, additionalSources = [], ...rest } = card;
   const sourceTitles = [source, ...additionalSources];
@@ -78,15 +68,14 @@ function demoCard(card: Omit<FactCard, "sources"> & { source: string; additional
 
 export const DEMO_FACTS: FactCard[] = [
   {
-    id: "octopus-hearts",
-    hook: "Three hearts, one swimming problem",
-    title: "Octopuses have three hearts, and two of them stop beating when they swim",
-    body: "Two hearts pump blood to the gills, while the third pumps it to the rest of the body. When an octopus swims, the two gill hearts stop beating, which may be why these animals prefer to crawl.",
-    topicPath: ["Science", "Biology"],
-    sources: [{ title: "Octopus", url: "https://en.wikipedia.org/wiki/Octopus" }],
-    image: octopusImage,
-    obscurity: 4,
-    accent: "mint",
+    id: "roman-dodecahedron",
+    hook: "A Roman object still has no agreed purpose",
+    title: "Roman dodecahedra are hollow twelve-sided objects with no agreed purpose",
+    body: "More than a hundred small Roman dodecahedra have been found across parts of Europe. They have twelve pentagonal faces and carefully shaped openings, but their original use remains uncertain.",
+    topicPath: ["History", "Ancient History"],
+    sources: [{ title: "Roman dodecahedron", url: "https://en.wikipedia.org/wiki/Roman_dodecahedron" }],
+    difficulty: 10,
+    accent: "sand",
     createdAt: "Today"
   },
   demoCard({
@@ -97,7 +86,7 @@ export const DEMO_FACTS: FactCard[] = [
     topicPath: ["Computer Science", "Computing History"],
     source: "Computer mouse",
     additionalSources: ["Douglas Engelbart"],
-    obscurity: 4,
+    difficulty: 9,
     accent: "lilac",
     createdAt: "Today"
   }),
@@ -108,7 +97,7 @@ export const DEMO_FACTS: FactCard[] = [
     body: "Researchers have found that seawater can trigger new mineral growth inside certain Roman concrete mixtures. Instead of only wearing the material down, the water can help reinforce it over time.",
     topicPath: ["History", "Ancient History"],
     source: "Roman concrete",
-    obscurity: 5,
+    difficulty: 9,
     accent: "sand",
     createdAt: "Yesterday"
   }),
@@ -120,7 +109,7 @@ export const DEMO_FACTS: FactCard[] = [
     topicPath: ["Science", "Space"],
     source: "Venus",
     additionalSources: ["Planetary rotation"],
-    obscurity: 3,
+    difficulty: 7,
     accent: "coral",
     createdAt: "Yesterday"
   }),
@@ -131,7 +120,7 @@ export const DEMO_FACTS: FactCard[] = [
     body: "The “Blue Banana” is a curved corridor of dense population and economic activity stretching across parts of western Europe. Its shape follows a chain of cities, industries, and transport links.",
     topicPath: ["Geography", "Cities"],
     source: "Blue Banana",
-    obscurity: 5,
+    difficulty: 8,
     accent: "blue",
     surprise: true,
     createdAt: "Yesterday"
@@ -143,7 +132,7 @@ export const DEMO_FACTS: FactCard[] = [
     body: "The McMurdo Dry Valleys are among the driest places on Earth. Katabatic winds sweep down from the ice sheet and can evaporate or blow away most of the little snow that arrives.",
     topicPath: ["Geography", "Biomes"],
     source: "McMurdo Dry Valleys",
-    obscurity: 4,
+    difficulty: 8,
     accent: "blue",
     createdAt: "2 days ago"
   }),
@@ -154,7 +143,7 @@ export const DEMO_FACTS: FactCard[] = [
     body: "Their eyes detect different kinds of light, including polarization. This gives them a visual channel that is invisible to people and may help them communicate or spot prey.",
     topicPath: ["Science", "Biology"],
     source: "Stomatopoda",
-    obscurity: 4,
+    difficulty: 9,
     accent: "mint",
     createdAt: "2 days ago"
   }),
@@ -165,7 +154,7 @@ export const DEMO_FACTS: FactCard[] = [
     body: "In occupied Norway during the Second World War, people wore paper clips as a quiet symbol of solidarity. The clip stood for holding things together without needing a spoken message.",
     topicPath: ["History", "Modern History"],
     source: "Paper clip",
-    obscurity: 4,
+    difficulty: 7,
     accent: "lilac",
     createdAt: "2 days ago"
   }),
@@ -176,7 +165,7 @@ export const DEMO_FACTS: FactCard[] = [
     body: "Its low water content, acidity, and natural hydrogen peroxide make honey hostile to many microbes. Archaeologists have found ancient honey that remained preserved in sealed containers.",
     topicPath: ["Science", "Biology"],
     source: "Honey",
-    obscurity: 3,
+    difficulty: 6,
     accent: "sand",
     createdAt: "3 days ago"
   }),
@@ -188,9 +177,143 @@ export const DEMO_FACTS: FactCard[] = [
     topicPath: ["Science", "Space"],
     source: "Fermi paradox",
     additionalSources: ["Drake equation", "Extraterrestrial life"],
-    obscurity: 4,
+    difficulty: 8,
     accent: "blue",
     createdAt: "3 days ago"
+  }),
+  demoCard({
+    id: "antikythera-mechanism",
+    hook: "A bronze machine tracked the ancient sky",
+    title: "The Antikythera mechanism modeled repeating astronomical cycles",
+    body: "The Antikythera mechanism is a heavily corroded Greek device with interlocking gears that represented lunar and solar cycles. Its precision and complexity make it one of the most surprising surviving examples of ancient mechanical technology.",
+    topicPath: ["History", "Ancient History"],
+    source: "Antikythera mechanism",
+    difficulty: 10,
+    accent: "sand",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "quipu",
+    hook: "Knotted cords could preserve records",
+    title: "Inca administrators used knotted cords to record information",
+    body: "Quipu were arrangements of cords and knots used in the Andes for accounting and administration. The position, color, and type of knot carried structured information, although the full system is still not completely understood.",
+    topicPath: ["History", "Ancient History"],
+    source: "Quipu",
+    difficulty: 9,
+    accent: "lilac",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "tyrian-purple",
+    hook: "An ancient dye came from sea snails",
+    title: "Tyrian purple was made from secretions of sea snails",
+    body: "The ancient purple dye known as Tyrian purple was produced from certain sea snails. Making a small amount required processing many mollusks, which helped make the color a luxury associated with power.",
+    topicPath: ["History", "Ancient History"],
+    source: "Tyrian purple",
+    difficulty: 8,
+    accent: "coral",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "mechanical-turk",
+    hook: "A chess machine hid a human player",
+    title: "The Mechanical Turk appeared to play chess by itself",
+    body: "The Mechanical Turk was an eighteenth-century automaton presented as a chess-playing machine. It was eventually exposed as an elaborate illusion in which a human chess player operated inside the cabinet.",
+    topicPath: ["Computer Science", "Computing History"],
+    source: "The Turk",
+    difficulty: 7,
+    accent: "lilac",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "harvard-mark-ii-bug",
+    hook: "A moth helped define a computer bug",
+    title: "A moth trapped in the Harvard Mark II was logged as a computer bug",
+    body: "In 1947, operators found a moth caught between relay contacts in the Harvard Mark II. They taped the insect into the logbook and described the debugging work, helping popularize the literal use of bug for a computer fault.",
+    topicPath: ["Computer Science", "Computing History"],
+    source: "Harvard Mark II",
+    additionalSources: ["Computer bug"],
+    difficulty: 8,
+    accent: "mint",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "oklo-reactor",
+    hook: "Earth once ran a natural nuclear reactor",
+    title: "A uranium deposit in Oklo sustained natural fission",
+    body: "About two billion years ago, conditions in parts of the Oklo uranium deposit allowed a natural nuclear fission reaction to operate. The site left behind evidence that can help scientists study how radioactive materials move through rock.",
+    topicPath: ["Science", "Physics"],
+    source: "Oklo",
+    difficulty: 10,
+    accent: "mint",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "lake-vostok",
+    hook: "A huge lake hides beneath Antarctic ice",
+    title: "Lake Vostok sits sealed beneath kilometers of Antarctic ice",
+    body: "Lake Vostok is a large subglacial lake beneath the East Antarctic Ice Sheet. Its water has been isolated under ice for an extremely long time, making it a valuable setting for studying life in dark, sealed environments.",
+    topicPath: ["Science", "Space"],
+    source: "Lake Vostok",
+    difficulty: 8,
+    accent: "blue",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "axolotl-regeneration",
+    hook: "One salamander can rebuild lost body parts",
+    title: "Axolotls can regenerate limbs and parts of major organs",
+    body: "Axolotls retain unusually strong regenerative abilities after reaching adulthood. They can regrow limbs and repair parts of organs, which has made them important subjects in developmental and regenerative biology.",
+    topicPath: ["Science", "Biology"],
+    source: "Axolotl",
+    difficulty: 6,
+    accent: "mint",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "ada-lovelace-notes",
+    hook: "The first program was written for an idea",
+    title: "Ada Lovelace described a machine that had not yet been built",
+    body: "While translating a paper about Charles Babbage’s Analytical Engine, Ada Lovelace added notes that included an algorithm for calculating Bernoulli numbers. The machine was never completed, but the notes anticipated general-purpose computer programming.",
+    topicPath: ["Computer Science", "Programming"],
+    source: "Ada Lovelace",
+    additionalSources: ["Analytical Engine"],
+    difficulty: 7,
+    accent: "coral",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "sagittarius-b2-alcohol",
+    hook: "A space cloud contains complex alcohol",
+    title: "The Sagittarius B2 molecular cloud contains large organic molecules",
+    body: "Astronomers have detected molecules including ethyl formate and methanol in Sagittarius B2, a dense cloud near the center of the Milky Way. The chemistry offers a window into how complex molecules can form between stars.",
+    topicPath: ["Science", "Space"],
+    source: "Sagittarius B2",
+    difficulty: 10,
+    accent: "blue",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "brinicle",
+    hook: "An underwater icicle can freeze the seafloor",
+    title: "Brinicles form when salty water sinks as an underwater column of ice",
+    body: "A brinicle is a hollow tube of ice that can form beneath sea ice when extremely cold, salty water drains downward. The descending brine freezes surrounding seawater and can create a delicate path across the seafloor.",
+    topicPath: ["Science", "Biology"],
+    source: "Brinicle",
+    difficulty: 9,
+    accent: "blue",
+    createdAt: "4 days ago"
+  }),
+  demoCard({
+    id: "volcanic-lightning",
+    hook: "Volcanoes can make their own lightning",
+    title: "Ash clouds can generate lightning during volcanic eruptions",
+    body: "Volcanic lightning occurs when particles in an eruption plume collide and separate electrical charges. The charged ash cloud can then produce flashes much like an ordinary thunderstorm.",
+    topicPath: ["Science", "Physics"],
+    source: "Volcanic lightning",
+    difficulty: 8,
+    accent: "coral",
+    createdAt: "4 days ago"
   })
 ];
 

@@ -16,7 +16,7 @@ create table if not exists public.user_settings (
   user_id uuid primary key references auth.users(id) on delete cascade,
   display_mode text not null default 'picture-text',
   sentence_length numeric not null default 2,
-  obscurity_level smallint not null default 4 check (obscurity_level between 1 and 5),
+  obscurity_level smallint not null default 10 check (obscurity_level between 1 and 10),
   surprise_me boolean not null default true,
   theme text not null default 'light',
   created_at timestamptz not null default now(),
@@ -65,7 +65,7 @@ create table if not exists public.knowledge_cards (
   body text not null,
   topic_path text[] not null default '{}',
   fact_fingerprint text not null,
-  obscurity_score smallint not null default 3,
+  obscurity_score smallint not null default 5 check (obscurity_score between 1 and 10),
   image_url text,
   created_at timestamptz not null default now(),
   unique(user_id, fact_fingerprint)

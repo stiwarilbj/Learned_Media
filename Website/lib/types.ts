@@ -4,6 +4,21 @@ export type DisplayMode = "picture-text" | "text";
 
 export type SentenceLength = 0.5 | 1 | 2 | 3 | 4;
 
+export type Difficulty = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+
+export type FactFeedback = "heard" | "unknown";
+
+export type FactCardAction = "like" | "save" | "more" | "less" | "heard" | "unknown" | "rabbit";
+
+export type TopicLearningProfile = {
+  heard: number;
+  unknown: number;
+  unknownStreak: number;
+  targetDifficulty: Difficulty;
+};
+
+export type LearningProfile = Record<string, TopicLearningProfile>;
+
 export type TopicNode = {
   id: string;
   label: string;
@@ -50,10 +65,13 @@ export type FactCard = {
   topicPath: string[];
   sources: WikipediaSource[];
   image?: ImageAttribution;
-  obscurity: number;
+  difficulty: Difficulty;
+  /** Legacy field kept so older saved cards can be migrated without losing their visual signal. */
+  obscurity?: Difficulty;
   accent: "blue" | "lilac" | "mint" | "sand" | "coral";
   liked?: boolean;
   saved?: boolean;
+  feedback?: FactFeedback;
   known?: boolean;
   moreLike?: boolean;
   lessLike?: boolean;

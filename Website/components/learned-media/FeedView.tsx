@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { DisplayMode, FactCard as FactCardType, FeedSettings, TopicNode } from "@/lib/types";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
+import type { DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, TopicNode } from "@/lib/types";
 import { flattenTopics } from "@/lib/topic-tree";
 import { FactCard } from "./FactCard";
 import { Icon } from "./icons";
@@ -13,12 +14,13 @@ type FeedViewProps = {
   topics: TopicNode[];
   customTopic: string;
   loading: boolean;
+  canLoadMore: boolean;
   rabbitHole: string | null;
   toast?: string;
   learnLoading: string | null;
   questionLoading: string | null;
   learningErrors: Record<string, string | undefined>;
-  onAction: (id: string, action: "like" | "save" | "more" | "less" | "known" | "rabbit") => void;
+  onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
   onAskQuestion: (id: string, question: string, detailed: boolean) => void;
   onReset: () => void;
@@ -55,8 +57,8 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
       <details className="feed-customize">
         <summary><span><Icon name="sliders" size={16} /> Customize your feed</span><Icon name="chevronDown" size={15} /></summary>
         <div className="feed-customize-body">
-          <label className="control-label" htmlFor="feed-obscurity"><span>Obscurity</span><span>{settings.obscurity}/5</span></label>
-          <input id="feed-obscurity" className="feed-range" type="range" min="1" max="5" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
+          <label className="control-label" htmlFor="feed-obscurity"><span>Fact difficulty</span><span>{settings.obscurity}/10 · {DIFFICULTY_LABELS[normalizeDifficulty(settings.obscurity)]}</span></label>
+          <input id="feed-obscurity" className="feed-range" type="range" min="1" max="10" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
           <span className="control-label">Display</span>
           <div className="feed-display-options">
             {(["picture-text", "text"] as DisplayMode[]).map((mode) => <button type="button" key={mode} className={settings.displayMode === mode ? "selected" : ""} onClick={() => onSettingsChange({ displayMode: mode })}>{mode === "picture-text" ? "Image + text" : "Text only"}</button>)}
@@ -70,15 +72,15 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
   );
 }
 
-export function FeedView({ cards, settings, topics, customTopic, loading, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic }: FeedViewProps) {
+export function FeedView({ cards, settings, topics, customTopic, loading, canLoadMore, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic }: FeedViewProps) {
   const sentinel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const element = sentinel.current;
-    if (!element || loading) return;
-    const observer = new IntersectionObserver((entries) => entries[0]?.isIntersecting && onLoadMore(), { rootMargin: "320px" });
+    if (!element || loading || !canLoadMore) return;
+    const observer = new IntersectionObserver((entries) => entries[0]?.isIntersecting && onLoadMore(), { rootMargin: "180px" });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [loading, onLoadMore]);
+  }, [canLoadMore, loading, onLoadMore]);
 
   return (
     <div className="feed-workspace">
@@ -93,9 +95,11 @@ export function FeedView({ cards, settings, topics, customTopic, loading, rabbit
           </div>
           <div className="feed-intro"><div><h1>Keep going.</h1><p>One small idea at a time. Every card has a place to look next.</p></div><span className="feed-count">{cards.length} cards in this session</span></div>
           <div className="fact-feed">
-            {cards.map((card) => <FactCard key={card.id} card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} />)}
+            {cards.map((card, index) => <Fragment key={card.id}>
+              {canLoadMore && index === Math.max(cards.length - 3, 0) && <div ref={sentinel} className="feed-sentinel"><span>Finding 10 more facts…</span></div>}
+              <FactCard card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} />
+            </Fragment>)}
             {loading && <><SkeletonCard /><SkeletonCard /></>}
-            {!loading && cards.length > 0 && <div ref={sentinel} className="feed-sentinel"><span>Finding another thing you probably haven’t heard before…</span></div>}
           </div>
         </section>
       </div>

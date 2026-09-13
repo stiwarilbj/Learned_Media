@@ -32,6 +32,13 @@ type ImageInfoResponse = {
   };
 };
 
+type SummaryResponse = {
+  title?: string;
+  thumbnail?: { source?: string };
+  originalimage?: { source?: string };
+  content_urls?: { desktop?: { page?: string } };
+};
+
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
 
 function apiUrl(params: Record<string, string>) {
@@ -99,6 +106,31 @@ async function fetchImageInfo(pageimage: string) {
   return Object.values(payload?.query?.pages ?? {})[0]?.imageinfo?.[0];
 }
 
+async function fetchSummary(title: string) {
+  const normalizedTitle = title.trim().replace(/\s+/g, "_");
+  if (!normalizedTitle) return null;
+  return getJson<SummaryResponse>(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(normalizedTitle)}`);
+}
+
+function imageFileName(imageUrl: string) {
+  try {
+    const parts = decodeURIComponent(new URL(imageUrl).pathname).split("/").filter(Boolean);
+    const thumbIndex = parts.indexOf("thumb");
+    if (thumbIndex >= 0 && parts[thumbIndex + 3]) return parts[thumbIndex + 3];
+    const lastPart = parts.at(-1);
+    return lastPart && /\.(?:jpe?g|png|gif|svg|webp)$/i.test(lastPart) ? lastPart : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function filePageUrl(imageUrl: string) {
+  const filename = imageFileName(imageUrl);
+  if (!filename) return undefined;
+  const host = imageUrl.includes("/commons/") ? "https://commons.wikimedia.org/wiki/File:" : "https://en.wikipedia.org/wiki/File:";
+  return `${host}${encodeURIComponent(filename.replace(/ /g, "_"))}`;
+}
+
 async function resolveImage(page: {
   title: string;
   fullurl: string;
@@ -107,19 +139,45 @@ async function resolveImage(page: {
   original?: { source?: string };
 }): Promise<ImageAttribution | undefined> {
   const fallbackUrl = page.thumbnail?.source ?? page.original?.source;
-  if (!fallbackUrl || !page.pageimage) {
-    return fallbackUrl ? { url: fallbackUrl, alt: page.title, sourceTitle: page.title, sourceUrl: page.fullurl } : undefined;
+  if (page.pageimage) {
+    const image = await fetchImageInfo(page.pageimage);
+    const metadata = image?.extmetadata;
+    const url = image?.thumburl ?? fallbackUrl ?? image?.url;
+    if (url) {
+      return {
+        url,
+        alt: page.title,
+        sourceTitle: page.title,
+        sourceUrl: page.fullurl,
+        fileUrl: image?.url ?? page.original?.source ?? fallbackUrl,
+        filePageUrl: image?.descriptionurl ?? `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(page.pageimage.replace(/ /g, "_"))}`,
+        credit: stripTags(metadata?.Artist?.value ?? metadata?.Credit?.value ?? metadata?.LicenseShortName?.value) ?? "Wikipedia image"
+      };
+    }
   }
-  const image = await fetchImageInfo(page.pageimage);
-  const metadata = image?.extmetadata;
+  if (fallbackUrl) {
+    return {
+      url: fallbackUrl,
+      alt: page.title,
+      sourceTitle: page.title,
+      sourceUrl: page.fullurl,
+      fileUrl: page.original?.source ?? fallbackUrl,
+      filePageUrl: filePageUrl(fallbackUrl) ?? page.fullurl,
+      credit: "Wikipedia image"
+    };
+  }
+  const summary = await fetchSummary(page.title);
+  const summaryUrl = summary?.thumbnail?.source ?? summary?.originalimage?.source;
+  if (!summary || !summaryUrl) return undefined;
+  const summaryPageUrl = summary.content_urls?.desktop?.page ?? page.fullurl;
   return {
-    url: image?.thumburl ?? fallbackUrl,
-    alt: page.title,
-    sourceTitle: page.title,
-    sourceUrl: page.fullurl,
-    fileUrl: image?.url ?? page.original?.source ?? fallbackUrl,
-    filePageUrl: image?.descriptionurl ?? `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(page.pageimage.replace(/ /g, "_"))}`,
-    credit: stripTags(metadata?.Artist?.value ?? metadata?.Credit?.value ?? metadata?.LicenseShortName?.value)
+    url: summaryUrl,
+    alt: summary.title ?? page.title,
+    sourceTitle: summary.title ?? page.title,
+    sourceUrl: summaryPageUrl,
+    fileUrl: summary.originalimage?.source ?? summaryUrl,
+    filePageUrl: filePageUrl(summary.originalimage?.source ?? summaryUrl) ?? summaryPageUrl,
+    credit: "Wikipedia image"
   };
 }
 
@@ -155,7 +213,7 @@ export async function resolveWikipediaTitle(title: string) {
 
 export async function enrichDemoCards(cards: FactCard[]) {
   return Promise.all(cards.map(async (card) => {
-    const sources = await resolveWikipediaSources(card.sources.map((source) => source.title), 3);
+    const sources = await resolveWikipediaSources([...card.sources.map((source) => source.title), card.title], 3);
     const image = sources.find((source) => source.image)?.image;
     return {
       ...card,

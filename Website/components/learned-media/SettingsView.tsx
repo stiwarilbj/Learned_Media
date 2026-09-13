@@ -7,6 +7,7 @@ type SettingsViewProps = {
   apiKey: string;
   onApiKeyChange: (value: string) => void;
   status: GeminiStatus;
+  feedback?: string;
   serverConfigured: boolean;
   onTestConnection: () => void;
   onRemoveKey: () => void;
@@ -28,7 +29,7 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, feedback, serverConfigured, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
   return (
     <section className="content-view settings-view">
       <div className="view-heading">
@@ -64,6 +65,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured,
               <Icon name="shield" size={16} />
               <span>{serverConfigured ? "A server-side GEMINI_API_KEY is configured for this workspace. Your pasted key is never saved to localStorage." : "Your pasted key is held in memory for this session, sent only when Gemini is requested, and never saved to localStorage."}</span>
             </div>
+            {feedback && <p className="settings-feedback" role="status">{feedback}</p>}
 
             <div className="api-key-guide">
               <div className="api-key-guide-icon"><Icon name="sparkles" size={16} /></div>

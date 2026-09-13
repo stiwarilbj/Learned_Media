@@ -1,6 +1,6 @@
 "use client";
 
-import type { DisplayMode, FactCard as FactCardType } from "@/lib/types";
+import type { DisplayMode, FactCard as FactCardType, FactCardAction } from "@/lib/types";
 import { FactCard } from "./FactCard";
 
 type CollectionViewProps = {
@@ -10,7 +10,7 @@ type CollectionViewProps = {
   learnLoading: string | null;
   questionLoading: string | null;
   learningErrors: Record<string, string | undefined>;
-  onAction: (id: string, action: "like" | "save" | "more" | "less" | "known" | "rabbit") => void;
+  onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
   onAskQuestion: (id: string, question: string, detailed: boolean) => void;
 };

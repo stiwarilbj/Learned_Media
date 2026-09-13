@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { generateLearningResponse } from "@/lib/gemini";
+import { describeGeminiError, generateLearningResponse } from "@/lib/gemini";
 import type { FactCard, LearningMessage } from "@/lib/types";
 
 export async function POST(request: Request) {
@@ -29,7 +29,7 @@ export async function POST(request: Request) {
       history: body.history?.slice(-6)
     });
     return NextResponse.json(result);
-  } catch {
-    return NextResponse.json({ error: "Gemini could not answer from the cited Wikipedia pages. Try again in a moment." }, { status: 502 });
+  } catch (error) {
+    return NextResponse.json({ error: describeGeminiError(error) }, { status: 502 });
   }
 }
