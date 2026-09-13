@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { DisplayMode, FeedSettings, TopicNode } from "@/lib/types";
+import { flattenTopics } from "@/lib/topic-tree";
 import { Icon } from "./icons";
 import { TopicTree } from "./TopicTree";
 
@@ -30,8 +31,8 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
   }, []);
-  const hasSelection = topics.some((topic) => topic.selected || topic.children?.some((child) => child.selected));
-  const selectedCount = topics.filter((topic) => topic.selected).length;
+  const selectedCount = flattenTopics(topics).filter((topic) => topic.selected).length;
+  const hasSelection = selectedCount > 0;
   return (
     <div className="setup-stack">
       <section className="setup-layout">

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DisplayMode, FactCard as FactCardType, FeedSettings, TopicNode } from "@/lib/types";
+import { flattenTopics } from "@/lib/topic-tree";
 import { FactCard } from "./FactCard";
 import { Icon } from "./icons";
 import { TopicTree } from "./TopicTree";
@@ -39,7 +40,7 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
   }, []);
-  const selectedCount = topics.filter((topic) => topic.selected).length;
+  const selectedCount = flattenTopics(topics).filter((topic) => topic.selected).length;
   return (
     <aside className="feed-topics-panel surface-panel">
       <details className="topics-details" open={topicsOpen} onToggle={(event) => setTopicsOpen(event.currentTarget.open)}>

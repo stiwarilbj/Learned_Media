@@ -62,6 +62,7 @@ export type FactCard = {
   learnMore?: string;
   question?: string;
   answer?: string;
+  answerDetailed?: boolean;
   answerSources?: WikipediaSource[];
   questionHistory?: LearningMessage[];
 };

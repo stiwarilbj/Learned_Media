@@ -10,7 +10,7 @@ import { SettingsView } from "@/components/learned-media/SettingsView";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { createDefaultTopics, DEFAULT_SETTINGS, DEMO_FACTS } from "@/lib/demo-data";
 import { clearTopicSelections, flattenTopics, updateTopicTree } from "@/lib/topic-tree";
-import type { FactCard, FeedSettings, GeminiStatus, LearningMessage, TopicNode, View } from "@/lib/types";
+import type { FactCard, FeedSettings, GeminiStatus, LearningMessage, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const STORAGE_KEY = "learned-media-demo-state";
 
@@ -22,6 +22,28 @@ type PersistedState = {
   theme: "light" | "dark";
 };
 
+function uniqueSources(sources: WikipediaSource[]) {
+  const seen = new Set<string>();
+  return sources.filter((source) => {
+    if (!source.title || !source.url || seen.has(source.url)) return false;
+    seen.add(source.url);
+    return true;
+  }).slice(0, 3);
+}
+
+function uniqueCards(cards: FactCard[]) {
+  const seen = new Set<string>();
+  return cards.filter((card) => {
+    if (!card.id || seen.has(card.id)) return false;
+    seen.add(card.id);
+    return true;
+  });
+}
+
+function appendUniqueCards(current: FactCard[], next: FactCard[]) {
+  return uniqueCards([...current, ...next]);
+}
+
 function slugify(value: string) {
   return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
@@ -30,13 +52,14 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
   const sourceTitle = raw.sourceTitle ?? raw.topicPath?.at(-1) ?? "Wikipedia";
   const sourceUrl = raw.sourceUrl ?? `https://en.wikipedia.org/wiki/${encodeURIComponent(sourceTitle.replace(/\s+/g, "_"))}`;
   const body = raw.body ?? "The feed found something interesting, but the explanation is still on its way.";
+  const sources = uniqueSources(raw.sources?.length ? raw.sources : [{ title: sourceTitle, url: sourceUrl }]);
   return {
     id: raw.id ?? `generated-${Date.now()}-${index}`,
     title: raw.title ?? "A small fact worth keeping",
     hook: raw.hook?.replace(/[.!?]+/g, "").trim() || body.split(/[.!?]/)[0]?.split(" ").slice(0, 10).join(" ") || "A small fact worth keeping",
     body,
     topicPath: raw.topicPath?.length ? raw.topicPath : ["Surprise topic"],
-    sources: raw.sources?.length ? raw.sources : [{ title: sourceTitle, url: sourceUrl }],
+    sources: sources.length ? sources : [{ title: sourceTitle, url: sourceUrl }],
     image: raw.image?.url.startsWith("/") ? undefined : raw.image,
     obscurity: raw.obscurity ?? 4,
     accent: raw.accent ?? ["blue", "lilac", "mint", "sand", "coral"][index % 5] as FactCard["accent"],
@@ -65,6 +88,17 @@ export default function HomePage() {
   const [learningErrors, setLearningErrors] = useState<Record<string, string | undefined>>({});
   const [hydrated, setHydrated] = useState(false);
   const requestGeneration = useRef(0);
+  const generationAbortController = useRef<AbortController | null>(null);
+
+  const cancelGeneration = useCallback(() => {
+    generationAbortController.current?.abort();
+    generationAbortController.current = null;
+    setLoading(false);
+  }, []);
+
+  useEffect(() => () => {
+    generationAbortController.current?.abort();
+  }, []);
 
   useEffect(() => {
     try {
@@ -77,7 +111,7 @@ export default function HomePage() {
           ...parsed.settings,
           displayMode: parsed.settings.displayMode === "text" ? "text" : "picture-text"
         });
-        if (parsed.cards) setCards(parsed.cards.map((card, index) => normalizeFact(card, index)));
+        if (parsed.cards) setCards(uniqueCards(parsed.cards.map((card, index) => normalizeFact(card, index))));
         if (typeof parsed.feedStarted === "boolean") setFeedStarted(parsed.feedStarted);
         if (parsed.theme) setTheme(parsed.theme);
       }
@@ -137,6 +171,10 @@ export default function HomePage() {
 
   const startFeed = useCallback(async (rabbitHoleOverride?: string | null) => {
     if (loading) return;
+    generationAbortController.current?.abort();
+    const controller = new AbortController();
+    const requestId = requestGeneration.current;
+    generationAbortController.current = controller;
     setView("feed");
     setFeedStarted(true);
     setLoading(true);
@@ -146,25 +184,32 @@ export default function HomePage() {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim() || undefined, topics: selectedTopicPaths, settings, rabbitHole: activeRabbitHole, avoid: cards.slice(-12).map((card) => card.title) })
+        body: JSON.stringify({ apiKey: apiKey.trim() || undefined, topics: selectedTopicPaths, settings, rabbitHole: activeRabbitHole, avoid: cards.slice(-12).map((card) => card.title) }),
+        signal: controller.signal
       });
       if (!response.ok) throw new Error("generation failed");
       const payload = await response.json() as { cards?: Partial<FactCard>[]; demo?: boolean };
+      if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       const generated = (payload.cards ?? []).map(normalizeFact);
       setCards((current) => {
-        const next = generated.length ? generated : DEMO_FACTS;
-        return current.length ? [...current, ...next] : next;
+        const next = generated.length ? generated : uniqueCards(DEMO_FACTS);
+        return appendUniqueCards(current, next);
       });
       if (payload.demo) setToast("Demo feed ready. Add your Gemini key in Settings to generate your own mix.");
     } catch {
-      setCards((current) => current.length ? [...current, ...DEMO_FACTS] : DEMO_FACTS);
+      if (controller.signal.aborted || requestGeneration.current !== requestId) return;
+      setCards((current) => appendUniqueCards(current, uniqueCards(DEMO_FACTS)));
       setToast("Using a starter batch while Gemini is not connected.");
     } finally {
-      setLoading(false);
+      if (generationAbortController.current === controller) {
+        generationAbortController.current = null;
+        setLoading(false);
+      }
     }
   }, [apiKey, cards, loading, rabbitHole, selectedTopicPaths, settings]);
 
   const resetFeed = useCallback(() => {
+    cancelGeneration();
     requestGeneration.current += 1;
     const blankTopics = clearTopicSelections(topics);
     setFeedStarted(false);
@@ -180,7 +225,7 @@ export default function HomePage() {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ topics: blankTopics, settings, cards: [], feedStarted: false, theme } satisfies PersistedState));
     }
     setToast("Feed reset. Nothing will generate until you press Start again.");
-  }, [hydrated, settings, theme, topics]);
+  }, [cancelGeneration, hydrated, settings, theme, topics]);
 
   const learnMore = useCallback(async (id: string) => {
     const card = cards.find((item) => item.id === id);
@@ -222,7 +267,7 @@ export default function HomePage() {
       if (!response.ok) throw new Error(payload.error ?? "Gemini could not answer this question.");
       if (requestGeneration.current !== requestId) return;
       const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: payload.answer ?? "" }];
-      setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: payload.answer, answerSources: payload.citations, questionHistory: nextHistory } : item));
+      setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: payload.answer, answerDetailed: detailed, answerSources: payload.citations, questionHistory: nextHistory } : item));
     } catch (error) {
       if (requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [id]: error instanceof Error ? error.message : "Gemini could not answer this question." }));
     } finally {
@@ -254,10 +299,11 @@ export default function HomePage() {
 
   const resetAllPreferences = useCallback(() => {
     if (!window.confirm("Reset all preferences and return to the default topic mix?")) return;
+    cancelGeneration();
+    requestGeneration.current += 1;
     setTopics(createDefaultTopics());
     setSettings(DEFAULT_SETTINGS);
     setCards([]);
-    requestGeneration.current += 1;
     setLearnLoading(null);
     setQuestionLoading(null);
     setLearningErrors({});
@@ -266,12 +312,13 @@ export default function HomePage() {
     setTheme("light");
     setView("feed");
     setToast("Preferences restored to the starting mix.");
-  }, []);
+  }, [cancelGeneration]);
 
   const deleteLearningData = useCallback(() => {
     if (!window.confirm("Delete saved facts, likes, history, and current feed from this workspace?")) return;
-    setCards([]);
+    cancelGeneration();
     requestGeneration.current += 1;
+    setCards([]);
     setLearnLoading(null);
     setQuestionLoading(null);
     setLearningErrors({});
@@ -279,7 +326,7 @@ export default function HomePage() {
     setTopics((current) => clearTopicSelections(current));
     setRabbitHole(null);
     setToast("Learning data cleared. Your topic library and Gemini key were kept.");
-  }, []);
+  }, [cancelGeneration]);
 
   const testConnection = useCallback(async () => {
     if (!apiKey.trim() && !serverConfigured) {

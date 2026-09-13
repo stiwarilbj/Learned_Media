@@ -73,7 +73,7 @@ export function FactCard({ card, displayMode, learnLoading, questionLoading, lea
             <button type="button" className={`details-toggle ${detailed ? "selected" : ""}`} onClick={() => setDetailed((value) => !value)} aria-pressed={detailed}>More Details</button>
             <button type="button" className="question-send" onClick={submitQuestion} disabled={!question.trim() || questionLoading} aria-label="Send question"><Icon name="arrow" size={16} /></button>
           </div>
-          {card.answer && <div className="learning-answer question-answer"><span className="answer-label"><Icon name="message" size={14} /> {detailed ? "Detailed answer" : "Answer"}</span><p>{card.answer}</p><div className="answer-sources">{card.answerSources?.map((source) => <a href={source.url} key={source.url} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={11} /></a>)}</div></div>}
+          {card.answer && <div className="learning-answer question-answer"><span className="answer-label"><Icon name="message" size={14} /> {card.answerDetailed ? "Detailed answer" : "Answer"}</span><p>{card.answer}</p><div className="answer-sources">{card.answerSources?.map((source) => <a href={source.url} key={source.url} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={11} /></a>)}</div></div>}
           {questionLoading && <div className="learning-loading"><span className="loading-dot" /> Gemini is reading the cited Wikipedia pages…</div>}
           {questionError && <p className="learning-error">{questionError}</p>}
         </div>
