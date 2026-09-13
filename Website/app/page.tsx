@@ -282,6 +282,11 @@ export default function HomePage() {
   }, []);
 
   const testConnection = useCallback(async () => {
+    if (!apiKey.trim() && !serverConfigured) {
+      setGeminiStatus("not-configured");
+      setToast("Paste your Gemini API key first.");
+      return;
+    }
     setGeminiStatus("testing");
     try {
       const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ apiKey: apiKey.trim() || undefined }) });
@@ -292,12 +297,7 @@ export default function HomePage() {
       setGeminiStatus("unavailable");
       setToast("Could not reach the Gemini connection check.");
     }
-  }, [apiKey]);
-
-  const saveKey = useCallback(() => {
-    setToast(apiKey.trim() ? "Gemini key ready for this session. Test the connection or start learning." : "Paste a key before saving it.");
-    if (apiKey.trim()) setGeminiStatus("connected");
-  }, [apiKey]);
+  }, [apiKey, serverConfigured]);
 
   const filteredCards = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -314,7 +314,7 @@ export default function HomePage() {
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={(topic) => { if (topic === "Custom topic") { setView("feed"); setToast("Add a custom topic from your learning mix."); } else { setQuery(topic); setView("feed"); } }} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={setApiKey} status={geminiStatus} serverConfigured={serverConfigured} onTestConnection={testConnection} onSaveKey={saveKey} onRemoveKey={() => { setApiKey(""); setGeminiStatus("not-configured"); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (serverConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={setApiKey} status={geminiStatus} serverConfigured={serverConfigured} onTestConnection={testConnection} onRemoveKey={() => { setApiKey(""); setGeminiStatus("not-configured"); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (serverConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} />;
     return <FeedView cards={filteredCards} settings={settings} topics={topics} customTopic={customTopic} loading={loading} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onLoadMore={() => void startFeed()} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
   };

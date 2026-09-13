@@ -9,7 +9,6 @@ type SettingsViewProps = {
   status: GeminiStatus;
   serverConfigured: boolean;
   onTestConnection: () => void;
-  onSaveKey: () => void;
   onRemoveKey: () => void;
   theme: "light" | "dark";
   onThemeChange: (theme: "light" | "dark") => void;
@@ -29,7 +28,7 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured, onTestConnection, onSaveKey, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
   return (
     <section className="content-view settings-view">
       <div className="view-heading">
@@ -48,7 +47,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured,
               <div className="settings-icon blue"><Icon name="key" size={19} /></div>
               <div>
                 <h2>Gemini API key</h2>
-                <p>Paste your key here to unlock fresh generated facts, Learn more, and questions.</p>
+                <p>Use Gemini for fresh facts, Learn more, and questions.</p>
               </div>
               <span className={`status-dot ${status}`}>{statusCopy[status]}</span>
             </div>
@@ -56,22 +55,21 @@ export function SettingsView({ apiKey, onApiKeyChange, status, serverConfigured,
             <div className="api-key-guide">
               <div className="api-key-guide-icon"><Icon name="sparkles" size={16} /></div>
               <div className="api-key-guide-copy">
-                <strong>Get your key from Google AI Studio</strong>
-                <p>Open the key page, create or copy a key, then paste it below.</p>
+                <strong>Need a key?</strong>
+                <p>Create or copy one in Google AI Studio, then paste it here.</p>
               </div>
               <a className="api-key-link" href={AI_STUDIO_KEY_URL} target="_blank" rel="noreferrer">
                 Open AI Studio <Icon name="external" size={14} />
               </a>
             </div>
 
-            <label className="field-label" htmlFor="gemini-key">Paste your Gemini API key</label>
+            <label className="field-label" htmlFor="gemini-key">Gemini API key</label>
             <div className="key-input-row">
-              <input id="gemini-key" type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.target.value)} placeholder="AIza…" autoComplete="new-password" aria-describedby="gemini-key-note" />
-              <button type="button" className="secondary-button" onClick={onTestConnection} disabled={status === "testing"}><Icon name="flask" size={15} /> Test connection</button>
-            </div>
-            <div className="settings-actions">
-              <button type="button" className="primary-button small" onClick={onSaveKey}>Use key for this session</button>
-              <button type="button" className="ghost-button" onClick={onRemoveKey}>Remove</button>
+              <input id="gemini-key" type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onTestConnection(); } }} placeholder="Paste your AIza… key" autoComplete="new-password" aria-describedby="gemini-key-note" />
+              <div className="key-actions">
+                <button type="button" className="primary-button small" onClick={onTestConnection} disabled={status === "testing"}><Icon name="sparkles" size={15} /> {status === "testing" ? "Connecting…" : "Connect Gemini"}</button>
+                <button type="button" className="ghost-button" onClick={onRemoveKey}>Remove</button>
+              </div>
             </div>
             <div className="security-note" id="gemini-key-note">
               <Icon name="shield" size={16} />

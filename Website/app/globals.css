@@ -325,6 +325,8 @@ a { color: inherit; }
 .setup-key-callout strong { color: var(--ink-strong); font-size: 11px; }
 .setup-key-callout span { color: var(--muted); font-size: 10px; line-height: 1.45; }
 .setup-key-callout .text-button { flex: 0 0 auto; }
+.key-actions { display: flex; gap: 8px; }
+.key-actions button { white-space: nowrap; }
 
 .mobile-nav { display: none; }
 
@@ -383,6 +385,13 @@ a { color: inherit; }
   .explore-callout { align-items: flex-start; flex-wrap: wrap; }.explore-callout > .text-button { margin-left: 48px; }
   .key-input-row { align-items: stretch; flex-direction: column; }.account-row { align-items: flex-start; flex-wrap: wrap; }.account-row .secondary-button { margin-left: 40px; }
   .settings-card, .danger-card, .settings-help { padding: 17px; }.status-dot { font-size: 9px; }.settings-card-heading p { max-width: 210px; }.api-key-guide { align-items: flex-start; grid-template-columns: auto minmax(0, 1fr); }.api-key-link { grid-column: 2; justify-self: start; }.setup-key-callout { align-items: flex-start; flex-wrap: wrap; }.setup-key-callout .text-button { margin-left: 41px; }
+}
+
+@media (max-width: 560px) {
+  .key-actions { width: 100%; }
+  .key-actions button { flex: 1; }
+  .setup-key-callout { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+  .setup-key-callout .text-button { grid-column: 2; justify-self: start; margin-left: 0; padding-left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

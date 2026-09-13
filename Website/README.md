@@ -3,20 +3,8 @@
 ## Launch
 
 ```bash
-cd Website
 npm install
 cp .env.example .env.local
-```
-
-Add your key to `.env.local`:
-
-```env
-GEMINI_API_KEY=your_key_here
-```
-
-Then run:
-
-```bash
 npm run dev
 ```
 
@@ -24,9 +12,8 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Use
 
-1. Select topics in the checklist
-2. Press **Start learning**
-3. Use **Learn more** or ask a question on any fact card
-4. Switch between **Image + text** and **Text only** in feed customization
+1. Select topics and press **Start learning**
+2. Open **Settings** to paste a Gemini key, then press **Connect Gemini** or Enter
+3. Use **Learn more** or ask questions on any fact card
 
-The demo feed works without a key. You can also paste a session key in **Settings → Gemini API key** and use the built-in [Google AI Studio key page](https://aistudio.google.com/app/apikey). Gemini summaries and questions require a key.
+The demo feed works without a key. The Settings page links directly to [Google AI Studio](https://aistudio.google.com/app/apikey).
