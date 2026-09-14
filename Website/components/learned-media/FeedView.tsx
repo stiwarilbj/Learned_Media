@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import type { DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, TopicNode } from "@/lib/types";
-import { flattenTopics } from "@/lib/topic-tree";
+import { selectedLeafCount } from "@/lib/topic-tree";
 import { FactCard } from "./FactCard";
 import { Icon } from "./icons";
 import { TopicTree } from "./TopicTree";
@@ -42,7 +42,7 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
   }, []);
-  const selectedCount = flattenTopics(topics).filter((topic) => topic.selected).length;
+  const selectedCount = selectedLeafCount(topics);
   return (
     <aside className="feed-topics-panel surface-panel">
       <details className="topics-details" open={topicsOpen} onToggle={(event) => setTopicsOpen(event.currentTarget.open)}>

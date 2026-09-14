@@ -1,4 +1,5 @@
 import type { FactCard, FeedSettings, TopicNode } from "./types";
+import { createCatalogTopics } from "./topic-catalog";
 
 export const DEFAULT_SETTINGS: FeedSettings = {
   obscurity: 10,
@@ -8,56 +9,7 @@ export const DEFAULT_SETTINGS: FeedSettings = {
 };
 
 export function createDefaultTopics(): TopicNode[] {
-  return [
-    {
-      id: "history",
-      label: "History",
-      selected: false,
-      expanded: true,
-      weight: 30,
-      children: [
-        { id: "ancient-history", label: "Ancient History", selected: false, expanded: false, weight: 15 },
-        { id: "medieval-history", label: "Medieval History", selected: false, expanded: false, weight: 10 },
-        { id: "modern-history", label: "Modern History", selected: false, expanded: false, weight: 5 }
-      ]
-    },
-    {
-      id: "computer-science",
-      label: "Computer Science",
-      selected: false,
-      expanded: true,
-      weight: 25,
-      children: [
-        { id: "programming", label: "Programming", selected: false, expanded: false, weight: 15 },
-        { id: "artificial-intelligence", label: "Artificial Intelligence", selected: false, expanded: false, weight: 5 },
-        { id: "computing-history", label: "Computing History", selected: false, expanded: false, weight: 5 }
-      ]
-    },
-    {
-      id: "science",
-      label: "Science",
-      selected: false,
-      expanded: true,
-      weight: 25,
-      children: [
-        { id: "space", label: "Space", selected: false, expanded: false, weight: 10 },
-        { id: "biology", label: "Biology", selected: false, expanded: false, weight: 10 },
-        { id: "physics", label: "Physics", selected: false, expanded: false, weight: 5 }
-      ]
-    },
-    {
-      id: "geography",
-      label: "Geography",
-      selected: false,
-      expanded: false,
-      weight: 20,
-      children: [
-        { id: "mountains", label: "Mountains", selected: false, expanded: false, weight: 7 },
-        { id: "rivers", label: "Rivers", selected: false, expanded: false, weight: 7 },
-        { id: "cities", label: "Cities", selected: false, expanded: false, weight: 6 }
-      ]
-    }
-  ];
+  return createCatalogTopics();
 }
 
 function demoCard(card: Omit<FactCard, "sources"> & { source: string; additionalSources?: string[] }) {

@@ -8,13 +8,8 @@
     sentenceLength: 2,
     surpriseMe: true
   };
-  const TOPICS = [
-    { id: "science", label: "Science", children: ["Physics", "Biology", "Chemistry", "Earth science"] },
-    { id: "history", label: "History", children: ["Ancient History", "Medieval History", "Modern History", "Archaeology"] },
-    { id: "technology", label: "Technology", children: ["Computing", "Engineering", "Inventions", "Materials"] },
-    { id: "culture", label: "Culture", children: ["Art", "Music", "Language", "Food"] },
-    { id: "nature", label: "Nature", children: ["Animals", "Plants", "Ocean", "Space"] }
-  ];
+  const TOPIC_CATALOG_VERSION = 2;
+  const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "Approachable", "Familiar", "Curious", "Uncommon", "Niche", "Obscure", "Deep cut", "Rare", "Very rare", "Deepest cut"];
   const DEMO_FACTS = [
     { id: "demo-dodecahedron", title: "Roman dodecahedra still have no agreed purpose", hook: "A Roman object with no agreed purpose", body: "Roman dodecahedra are hollow, twelve-sided objects with knobs at their corners. Archaeologists have found more than a hundred, but no surviving Roman text explains what they were used for.", topicPath: ["History", "Archaeology"], difficulty: 10, sourceTitle: "Roman dodecahedron", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Roman_dodecahedron.jpg?width=900" },
@@ -34,6 +29,7 @@
     cards: [],
     profile: {},
     query: "",
+    topicQuery: "",
     customTopic: "",
     key: "",
     geminiStatus: "not-configured",
@@ -47,22 +43,25 @@
   const pending = new Map();
   let requestID = 0;
   let generationToken = 0;
+  let topicTreeScrollTop = 0;
+  let focusedTopicId = null;
 
   function makeTopics() {
-    return TOPICS.map(function (topic) {
-      return {
-        id: topic.id,
-        label: topic.label,
-        selected: false,
-        expanded: true,
-        weight: 10,
-        children: topic.children.map(function (label) {
-          return { id: topic.id + "-" + slug(label), label: label, selected: false, expanded: false, weight: 10 };
-        })
-      };
-    });
+    return TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
   }
-  function slug(value) { return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-"); }
+  function buildTopicNode(seed, parentPath, depth, rootIndex) {
+    const label = typeof seed === "string" ? seed : seed.label;
+    const path = parentPath.concat(label);
+    const children = typeof seed === "string" ? undefined : (seed.children || []).map(function (child) { return buildTopicNode(child, path, depth + 1, rootIndex); });
+    return { id: "topic-" + path.map(slug).join("--"), label: label, selected: false, expanded: depth === 0, weight: depth === 0 ? [30, 25, 20, 25][rootIndex] || 10 : 10, children: children };
+  }
+  function slug(value) {
+    return String(value).toLowerCase().trim()
+      .replace(/c\+\+/g, "c-plus-plus")
+      .replace(/c#/g, "c-sharp")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "") || "topic";
+  }
   function esc(value) {
     return String(value == null ? "" : value).replace(/[&<>"']/g, function (character) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character];
@@ -116,6 +115,8 @@
       else if (key === "value") element.value = value;
       else if (key === "checked") element.checked = Boolean(value);
       else if (key === "ariaLabel") element.setAttribute("aria-label", value);
+      else if (key === "ariaExpanded") element.setAttribute("aria-expanded", String(Boolean(value)));
+      else if (key === "ariaPressed") element.setAttribute("aria-pressed", String(Boolean(value)));
       else if (key === "dataset") Object.keys(value).forEach(function (dataKey) { element.dataset[dataKey] = value[dataKey]; });
       else element.setAttribute(key, value);
     });
@@ -146,14 +147,100 @@
     if (message.ok) item.resolve(message.result);
     else item.reject(new Error(message.error || "The request failed."));
   };
-  function flatTopics() {
-    return state.topics.reduce(function (all, topic) { return all.concat([topic], topic.children || []); }, []);
+  function flatTopics(nodes, parentPath) {
+    const list = nodes || state.topics;
+    const prefix = parentPath || [];
+    return list.reduce(function (all, topic) {
+      const path = prefix.concat(topic.label);
+      return all.concat([Object.assign({}, topic, { path: path })], topic.children ? flatTopics(topic.children, path) : []);
+    }, []);
   }
   function findTopic(id) { return flatTopics().find(function (topic) { return topic.id === id; }); }
   function selectedTopics() {
-    return flatTopics().filter(function (topic) { return topic.selected; }).map(function (topic) { return { path: [topic.label], weight: topic.weight }; });
+    return flatTopics().filter(function (topic) { return !topic.children || !topic.children.length; }).filter(function (topic) { return topic.selected; }).map(function (topic) { return { path: topic.path, weight: topic.weight }; });
   }
-  function selectedCount() { return flatTopics().filter(function (topic) { return topic.selected; }).length; }
+  function leafStats(topic) {
+    if (!topic.children || !topic.children.length) return { selected: topic.selected ? 1 : 0, total: 1 };
+    return topic.children.reduce(function (stats, child) { const next = leafStats(child); return { selected: stats.selected + next.selected, total: stats.total + next.total }; }, { selected: 0, total: 0 });
+  }
+  function selectionState(topic) {
+    const stats = leafStats(topic);
+    return stats.selected === 0 ? "none" : stats.selected === stats.total ? "selected" : "mixed";
+  }
+  function setBranchSelected(topic, selected) {
+    return Object.assign({}, topic, { selected: selected, children: topic.children && topic.children.map(function (child) { return setBranchSelected(child, selected); }) });
+  }
+  function syncParentSelection(topic) {
+    const next = topic.children ? Object.assign({}, topic, { children: topic.children.map(syncParentSelection) }) : topic;
+    return Object.assign({}, next, { selected: selectionState(next) === "selected" });
+  }
+  function toggleTopicSelection(id) {
+    function visit(list) {
+      return list.map(function (topic) {
+        if (topic.id === id) return setBranchSelected(topic, selectionState(topic) !== "selected");
+        return topic.children ? Object.assign({}, topic, { children: visit(topic.children) }) : topic;
+      }).map(syncParentSelection);
+    }
+    state.topics = visit(state.topics);
+  }
+  function selectedSummary() {
+    const roots = state.topics.filter(function (topic) { return selectionState(topic) === "selected"; }).map(function (topic) { return topic.label; });
+    const leaves = selectedTopics().map(function (topic) { return topic.path.join(" / "); });
+    const visible = roots.length ? roots : leaves;
+    if (!visible.length) return "No topics selected";
+    return visible.slice(0, 3).join(" · ") + (visible.length > 3 ? " +" + (visible.length - 3) + " more" : "");
+  }
+  function selectedCount() { return selectedTopics().length; }
+  function weightedTopicPaths(limit) {
+    const pool = selectedTopics().map(function (topic) {
+      const pathWeight = topic.path.reduce(function (total, label, index) {
+        const parent = flatTopics().find(function (candidate) { return candidate.path.slice(0, index + 1).join("\u0000") === topic.path.slice(0, index + 1).join("\u0000"); });
+        return total * ((parent ? parent.weight : 10) / 10);
+      }, 10);
+      return { path: topic.path, weight: Math.max(1, Math.round(pathWeight)) };
+    });
+    const result = [];
+    while (pool.length && result.length < (limit || 10)) {
+      const total = pool.reduce(function (sum, item) { return sum + item.weight; }, 0);
+      let cursor = Math.random() * total;
+      let index = pool.findIndex(function (item) { cursor -= item.weight; return cursor <= 0; });
+      if (index < 0) index = pool.length - 1;
+      result.push(pool.splice(index, 1)[0]);
+    }
+    return result;
+  }
+  function updateTopicById(nodes, id, update) {
+    return nodes.map(function (topic) { return topic.id === id ? update(topic) : topic.children ? Object.assign({}, topic, { children: updateTopicById(topic.children, id, update) }) : topic; });
+  }
+  function migrateTopics(saved) {
+    if (!Array.isArray(saved) || !saved.length) return makeTopics();
+    let next = makeTopics();
+    const fresh = flatTopics(next);
+    const byPath = new Map(fresh.map(function (topic) { return [topic.path.join("\u0000").toLowerCase(), topic]; }));
+    const byLabel = new Map();
+    fresh.forEach(function (topic) { const key = topic.label.toLowerCase(); byLabel.set(key, (byLabel.get(key) || []).concat(topic)); });
+    const selectedIds = [];
+    const customs = new Map();
+    function oldFlat(nodes, parentPath) {
+      const prefix = parentPath || [];
+      return nodes.reduce(function (all, topic) {
+        const path = prefix.concat(topic.label);
+        return all.concat([Object.assign({}, topic, { path })], topic.children ? oldFlat(topic.children, path) : []);
+      }, []);
+    }
+    oldFlat(saved).forEach(function (oldTopic) {
+      const target = byPath.get(oldTopic.path.join("\u0000").toLowerCase()) || ((byLabel.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byLabel.get(oldTopic.label.toLowerCase())[0] : null);
+      if (target) {
+        next = updateTopicById(next, target.id, function (topic) { return Object.assign({}, topic, { weight: oldTopic.weight || topic.weight, expanded: oldTopic.expanded }); });
+        if (oldTopic.selected) selectedIds.push(target.id);
+      } else if (oldTopic.custom || oldTopic.selected) {
+        const key = oldTopic.label.toLowerCase();
+        if (!customs.has(key)) customs.set(key, { id: "custom-" + slug(oldTopic.label), label: oldTopic.label, selected: Boolean(oldTopic.selected), expanded: false, weight: oldTopic.weight || 10, custom: true });
+      }
+    });
+    selectedIds.forEach(function (id) { next = updateTopicById(next, id, function (topic) { return setBranchSelected(topic, true); }); });
+    return next.concat(Array.from(customs.values()));
+  }
   function difficultyLabel(value) { return DIFFICULTY_LABELS[Math.max(1, Math.min(10, Number(value) || 10))]; }
   function wikiURL(title) { return "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(title).replace(/\s+/g, "_")); }
   function showToast(message) {
@@ -164,6 +251,7 @@
   function saveState() {
     bridge("saveState", {
       state: {
+        catalogVersion: TOPIC_CATALOG_VERSION,
         topics: state.topics,
         settings: state.settings,
         cards: state.cards,
@@ -207,31 +295,44 @@
     list.appendChild(links);
     return list;
   }
-  function topicRow(topic, child) {
-    const row = node("div", { className: "topic-row" + (child ? "" : " root-row") });
-    if (child) {
-      row.style.paddingLeft = "24px";
-      row.appendChild(node("span", { className: "topic-spacer" }));
-    }
-    else row.appendChild(node("button", { className: "topic-expand", ariaLabel: "Expand " + topic.label, onClick: function () { topic.expanded = !topic.expanded; render(); } }, svg(topic.expanded ? "chevronDown" : "chevronRight", 15)));
-    row.appendChild(node("button", { className: "topic-check" + (topic.selected ? " checked" : ""), ariaLabel: "Select " + topic.label, onClick: function () { topic.selected = !topic.selected; saveState(); render(); } }, topic.selected ? svg("check", 14) : null));
-    row.appendChild(node("span", { className: "topic-name" + (topic.selected ? " selected" : ""), text: topic.label }));
-    const weight = node("div", { className: "topic-weight" });
-    weight.appendChild(node("button", { ariaLabel: "Lower weight", onClick: function () { topic.weight = Math.max(5, topic.weight - 5); saveState(); render(); } }, svg("minus", 12)));
-    weight.appendChild(node("span", { text: topic.weight }));
-    weight.appendChild(node("button", { ariaLabel: "Raise weight", onClick: function () { topic.weight = Math.min(100, topic.weight + 5); saveState(); render(); } }, svg("plus", 12)));
+  function topicMatches(topic, query) {
+    if (!query) return true;
+    const term = query.toLowerCase();
+    return topic.label.toLowerCase().includes(term) || Boolean(topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
+  }
+  function topicRow(topic, depth, query) {
+    if (query && !topicMatches(topic, query)) return null;
+    const hasChildren = Boolean(topic.children && topic.children.length);
+    const selection = selectionState(topic);
+    const searchExpanded = Boolean(query && topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
+    const childrenVisible = hasChildren && (topic.expanded || searchExpanded);
+    const branchWrap = node("div", { className: "topic-branch" });
+    const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + " selection-" + selection, dataset: { topicId: topic.id } });
+    row.style.paddingLeft = Math.min(depth, 4) * 16 + "px";
+    if (hasChildren) row.appendChild(node("button", { className: "topic-expand", ariaLabel: "Show subtopics for " + topic.label, ariaExpanded: childrenVisible, dataset: { topicId: topic.id }, onClick: function () { topic.expanded = !topic.expanded; saveState(); render(); } }, svg(childrenVisible ? "chevronDown" : "chevronRight", 15)));
+    else row.appendChild(node("span", { className: "topic-spacer" }));
+    row.appendChild(node("button", { className: "topic-check" + (selection === "selected" ? " checked" : "") + (selection === "mixed" ? " mixed" : ""), ariaLabel: (selection === "selected" ? "Deselect " : "Select ") + topic.label, ariaPressed: selection === "selected", dataset: { topicId: topic.id }, onClick: function () { toggleTopicSelection(topic.id); saveState(); render(); } }, selection === "selected" ? svg("check", 14) : selection === "mixed" ? node("span", { className: "topic-check-dash" }) : null));
+    const nameWrap = node("div", { className: "topic-name-wrap" + (selection === "none" ? " unselected" : "") });
+    nameWrap.appendChild(node("span", { className: "topic-name" + (selection === "selected" ? " selected" : ""), text: topic.label }));
+    if (hasChildren) nameWrap.appendChild(node("button", { className: "topic-subtopics-toggle", ariaExpanded: childrenVisible, dataset: { topicId: topic.id }, onClick: function () { topic.expanded = !topic.expanded; saveState(); render(); } }, childrenVisible ? "Hide subtopics" : "Show subtopics"));
+    row.appendChild(nameWrap);
+    const weight = node("div", { className: "topic-weight" + (selection === "none" ? " disabled" : "") });
+    weight.appendChild(node("button", { disabled: selection === "none", ariaLabel: "Lower " + topic.label + " weight", dataset: { topicId: topic.id }, onClick: function () { topic.weight = Math.max(5, topic.weight - 5); saveState(); render(); } }, svg("minus", 12)));
+    weight.appendChild(node("span", { className: "topic-weight-value", text: topic.weight }));
+    weight.appendChild(node("button", { disabled: selection === "none", ariaLabel: "Raise " + topic.label + " weight", dataset: { topicId: topic.id }, onClick: function () { topic.weight = Math.min(100, topic.weight + 5); saveState(); render(); } }, svg("plus", 12)));
     row.appendChild(weight);
-    return row;
+    branchWrap.appendChild(row);
+    if (childrenVisible) {
+      const children = node("div", { className: "topic-children" });
+      topic.children.forEach(function (child) { const childRow = topicRow(child, depth + 1, query); if (childRow) children.appendChild(childRow); });
+      branchWrap.appendChild(children);
+    }
+    return branchWrap;
   }
   function topicTree() {
-    const tree = node("div", { className: "topic-tree" });
-    state.topics.forEach(function (topic) {
-      tree.appendChild(topicRow(topic, false));
-      if (!topic.children || !topic.expanded) return;
-      const children = node("div", { className: "topic-children" });
-      topic.children.forEach(function (child) { children.appendChild(topicRow(child, true)); });
-      tree.appendChild(children);
-    });
+    const tree = node("div", { className: "topic-tree", role: "tree", ariaLabel: "Topic browser" });
+    const query = state.topicQuery.trim();
+    state.topics.forEach(function (topic) { const row = topicRow(topic, 0, query); if (row) tree.appendChild(row); });
     return tree;
   }
   function navigation() {
@@ -269,6 +370,8 @@
     details.appendChild(node("summary", {}, node("span", {}, svg("check", 17), setup ? " Choose your topics" : " Your topics"), node("strong", { text: selectedCount() + " selected" })));
     if (setup) details.appendChild(node("p", { className: "setup-topic-help", text: "Pick the subjects you want to see. You can change them anytime." }));
     else details.appendChild(node("div", { className: "feed-topic-copy", text: "New choices shape the next batch." }));
+    details.appendChild(node("p", { className: "topic-selection-summary", text: selectedSummary(), ariaLive: "polite" }));
+    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; render(); } })));
     details.appendChild(topicTree());
     details.appendChild(customTopicForm(setup ? "custom-topic-form" : "feed-custom-topic"));
     details.appendChild(feedCustomize(setup));
@@ -438,6 +541,10 @@
     return section;
   }
   function render() {
+    const currentTopicTree = document.querySelector(".topic-tree");
+    if (currentTopicTree) topicTreeScrollTop = currentTopicTree.scrollTop;
+    const activeElement = document.activeElement;
+    if (activeElement && activeElement.dataset && activeElement.dataset.topicId) focusedTopicId = activeElement.dataset.topicId;
     document.body.classList.add("native-shell");
     app.replaceChildren();
     app.appendChild(navigation());
@@ -447,6 +554,14 @@
     scroll.appendChild(state.view === "settings" ? settingsView() : state.view === "feed" && !state.started ? setupView() : state.view === "feed" ? feedView() : collectionView(state.view));
     main.appendChild(scroll);
     app.appendChild(main);
+    window.requestAnimationFrame(function () {
+      const nextTopicTree = document.querySelector(".topic-tree");
+      if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
+      if (focusedTopicId) {
+        const focusTarget = Array.from(document.querySelectorAll("[data-topic-id]")).find(function (element) { return element.dataset.topicId === focusedTopicId; });
+        if (focusTarget && typeof focusTarget.focus === "function") focusTarget.focus();
+      }
+    });
   }
   function statusLabel() {
     return { "not-configured": "Not configured", testing: "Testing…", connected: "Connected", invalid: "Invalid key", "rate-limited": "Rate limited", unavailable: "Gemini unavailable" }[state.geminiStatus] || "Not configured";
@@ -456,7 +571,7 @@
       const saved = await bridge("loadState", {});
       if (saved) {
         const parsed = typeof saved === "string" ? JSON.parse(saved) : saved;
-        if (parsed.topics) state.topics = parsed.topics;
+        if (parsed.topics) state.topics = migrateTopics(parsed.topics);
         if (parsed.settings) state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings);
         if (parsed.cards) state.cards = parsed.cards.map(normalizeCard);
         if (parsed.profile) state.profile = parsed.profile;
@@ -494,7 +609,8 @@
     state.profile = {};
     state.loading = false;
     state.loadingCard = null;
-    state.topics.forEach(function (topic) { topic.selected = false; (topic.children || []).forEach(function (child) { child.selected = false; }); });
+    function clear(nodes) { nodes.forEach(function (topic) { topic.selected = false; if (topic.children) clear(topic.children); }); }
+    clear(state.topics);
     saveState();
     render();
     showToast("Feed reset. Choose a topic and press Start again.");
@@ -534,7 +650,7 @@
     state.loading = true;
     render();
     try {
-      const result = await bridge("generate", { topics: selectedTopics(), settings: state.settings, avoid: state.cards.slice(-20).map(function (card) { return card.title; }) });
+      const result = await bridge("generate", { topics: weightedTopicPaths(10), settings: state.settings, avoid: state.cards.slice(-20).map(function (card) { return card.title; }) });
       if (activeToken !== generationToken) return;
       const fresh = (result.cards || []).map(normalizeCard).filter(function (card) { return !state.cards.some(function (existing) { return existing.id === card.id; }); });
       state.cards = state.cards.concat(fresh);
@@ -617,8 +733,10 @@
     if (!card || card.feedback === kind) return;
     card.feedback = kind;
     card.known = kind === "heard";
-    const topic = (card.topicPath || ["this topic"]).slice(-1)[0];
-    const profile = state.profile[topic] || { heard: 0, unknown: 0, unknownStreak: 0, targetDifficulty: state.settings.obscurity };
+    const topicPath = card.topicPath || ["this topic"];
+    const topic = topicPath.slice(-1)[0];
+    const profileKey = topicPath.map(function (part) { return String(part).toLowerCase(); }).join("::");
+    const profile = state.profile[profileKey] || { heard: 0, unknown: 0, unknownStreak: 0, targetDifficulty: state.settings.obscurity };
     if (kind === "heard") {
       profile.heard += 1;
       profile.unknownStreak = 0;
@@ -634,7 +752,7 @@
         showToast("Unknown streak reached " + threshold + "; easing " + topic + " slightly.");
       } else showToast("Unknown noted — staying near difficulty " + profile.targetDifficulty + "/10.");
     }
-    state.profile[topic] = profile;
+    state.profile[profileKey] = profile;
     saveState();
     render();
   }

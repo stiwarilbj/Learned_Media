@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import type { DisplayMode, FeedSettings, TopicNode } from "@/lib/types";
-import { flattenTopics } from "@/lib/topic-tree";
+import { selectedLeafCount, summarizeSelection } from "@/lib/topic-tree";
 import { Icon } from "./icons";
 import { TopicTree } from "./TopicTree";
 
@@ -32,8 +32,9 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
   }, []);
-  const selectedCount = flattenTopics(topics).filter((topic) => topic.selected).length;
+  const selectedCount = selectedLeafCount(topics);
   const hasSelection = selectedCount > 0;
+  const selectionSummary = summarizeSelection(topics);
   const difficulty = normalizeDifficulty(settings.obscurity);
   return (
     <div className="setup-stack">
@@ -42,6 +43,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
           <details className="setup-topics-details" open={topicsOpen} onToggle={(event) => setTopicsOpen(event.currentTarget.open)}>
             <summary><span><Icon name="check" size={17} /> Choose your topics</span><strong>{selectedCount} selected</strong></summary>
             <p className="setup-topic-help">Pick the subjects you want to see. You can change them anytime.</p>
+            <p className="topic-selection-summary" aria-live="polite">{selectionSummary}</p>
             <div className="topic-toolbar">
               <div className="topic-search-note"><Icon name="search" size={16} /><span>{query ? `Filtering for “${query}”` : "Search the topic checklist"}</span></div>
               <button type="button" className="text-button" onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={15} /> {settings.surpriseMe ? "Surprise me is on" : "Surprise me is off"}</button>

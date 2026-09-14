@@ -9,7 +9,7 @@ import { Navigation } from "@/components/learned-media/Navigation";
 import { SettingsView } from "@/components/learned-media/SettingsView";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { createDefaultTopics, DEFAULT_SETTINGS, DEMO_FACTS } from "@/lib/demo-data";
-import { clearTopicSelections, flattenTopics, updateTopicTree } from "@/lib/topic-tree";
+import { clearTopicSelections, flattenTopics, migrateTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
 import type { FactCard, FactCardAction, FeedSettings, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -121,7 +121,7 @@ export default function HomePage() {
       if (saved) {
         const parsed = JSON.parse(saved) as Partial<PersistedState>;
         const migrateTenLevelDifficulty = window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1";
-        if (parsed.topics) setTopics(parsed.topics);
+        if (parsed.topics) setTopics(migrateTopicTree(parsed.topics));
         if (parsed.settings) {
           const savedSettings: FeedSettings = {
             ...DEFAULT_SETTINGS,
@@ -165,14 +165,14 @@ export default function HomePage() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const selectedTopicPaths = useMemo(() => flattenTopics(topics).filter((topic) => topic.selected).map((topic) => ({ path: topic.path, weight: topic.weight })), [topics]);
+  const selectedCount = useMemo(() => selectedLeafCount(topics), [topics]);
   const allTopicResults = useMemo(() => flattenTopics(topics), [topics]);
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => setSettings((current) => ({ ...current, ...next })), []);
 
   const handleToggleTopic = useCallback((id: string) => {
     setFeedHasMore(true);
-    setTopics((current) => updateTopicTree(current, id, (node) => ({ ...node, selected: !node.selected })));
+    setTopics((current) => toggleTopicSelection(current, id));
   }, []);
 
   const handleExpandTopic = useCallback((id: string) => {
@@ -199,7 +199,7 @@ export default function HomePage() {
 
   const startFeed = useCallback(async (rabbitHoleOverride?: string | null) => {
     if (loading) return;
-    if (!selectedTopicPaths.length) {
+    if (!selectedCount) {
       setToast("Choose at least one topic before generating more facts.");
       return;
     }
@@ -217,7 +217,7 @@ export default function HomePage() {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim() || undefined, topics: selectedTopicPaths, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: cards.slice(-12).map((card) => card.title) }),
+        body: JSON.stringify({ apiKey: apiKey.trim() || undefined, topics: selectWeightedTopicPaths(topics, 10), settings, learningProfile, rabbitHole: activeRabbitHole, avoid: cards.slice(-12).map((card) => card.title) }),
         signal: controller.signal
       });
       const payload = await response.json().catch(() => ({})) as { cards?: Partial<FactCard>[]; demo?: boolean; error?: string };
@@ -254,7 +254,7 @@ export default function HomePage() {
         setLoading(false);
       }
     }
-  }, [apiKey, cards, learningProfile, loading, rabbitHole, selectedTopicPaths, serverConfigured, settings]);
+  }, [apiKey, cards, learningProfile, loading, rabbitHole, selectedCount, serverConfigured, settings, topics]);
 
   const resetFeed = useCallback(() => {
     cancelGeneration();
@@ -435,7 +435,7 @@ export default function HomePage() {
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={setApiKey} status={geminiStatus} feedback={toast} serverConfigured={serverConfigured} onTestConnection={testConnection} onRemoveKey={() => { setApiKey(""); setGeminiStatus("not-configured"); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (serverConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} />;
-    return <FeedView cards={filteredCards} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedTopicPaths.length > 0} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onLoadMore={() => void startFeed()} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
+    return <FeedView cards={filteredCards} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onLoadMore={() => void startFeed()} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
   };
 
   const searchResults = query.trim() ? allTopicResults.filter((topic) => topic.label.toLowerCase().includes(query.toLowerCase())).slice(0, 4) : [];

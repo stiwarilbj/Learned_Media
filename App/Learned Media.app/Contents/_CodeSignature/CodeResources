@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		wAmbGdzAdk0tdU++6qWYUMaBOQI=
+		VC/r0dqs2KifV5C9zjy3Qga3oeM=
 		</data>
 		<key>Resources/frontend/favicon.svg</key>
 		<data>
@@ -18,11 +18,15 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		Yrb+fd7OgjM1J4GEQrk+xl3mvKo=
+		ir01qUZ1BY0avull/9YrG5XND7o=
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		tlp3b2Gmo3CRl6d8fSEHz5K6qGQ=
+		xEz7776LdFiS0JCunP+hFmreeFc=
+		</data>
+		<key>Resources/frontend/topic-catalog.js</key>
+		<data>
+		tC6WEiRawTUbDXd8BmEGzsuiWV0=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -38,7 +42,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ADxEpOVMF554xCrX9eBsLUu61AF7GQxb3Yx5AH34QQM=
+			liO7FoHjPd9Ng54I6GdMZ5oaShHeC+Q8L6DsubZH2WM=
 			</data>
 		</dict>
 		<key>Resources/frontend/favicon.svg</key>
@@ -52,14 +56,21 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Wd6aVwY31NUSz0syiQj7K+LBH9Tv7GxL0IZ6vbiWZ+M=
+			EE2hT/PCHAi6qIdxBKVJEUbRCgHbW12RCjko7HHXDxs=
 			</data>
 		</dict>
 		<key>Resources/frontend/styles.css</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			mYjHfDHGYwgi8nt1bMQKuG6e4EVZ6DLC9bAjFTHOno0=
+			FQ6mmmUQLtC42F67vu1YM11wGaPrm2EpOpOjaiNrAfo=
+			</data>
+		</dict>
+		<key>Resources/frontend/topic-catalog.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			FwysYZxTVnOHZpuWcEDYTDW3PyZyyfjtO7owOktDNTI=
 			</data>
 		</dict>
 	</dict>

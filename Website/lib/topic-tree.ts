@@ -1,5 +1,16 @@
 import type { TopicNode } from "./types";
 
+export {
+  flattenTopics,
+  migrateTopicTree,
+  selectWeightedTopicPaths,
+  selectedLeafCount,
+  selectedLeafTopics,
+  selectionState,
+  summarizeSelection,
+  toggleTopicSelection
+} from "./topic-catalog";
+
 export function updateTopicTree(
   nodes: TopicNode[],
   id: string,
@@ -9,17 +20,6 @@ export function updateTopicTree(
     const next = node.id === id ? update(node) : node;
     return next.children ? { ...next, children: updateTopicTree(next.children, id, update) } : next;
   });
-}
-
-export function flattenTopics(nodes: TopicNode[], parentPath: string[] = []): Array<TopicNode & { path: string[] }> {
-  return nodes.flatMap((node) => {
-    const path = [...parentPath, node.label];
-    return [{ ...node, path }, ...(node.children ? flattenTopics(node.children, path) : [])];
-  });
-}
-
-export function selectedTopics(nodes: TopicNode[]) {
-  return flattenTopics(nodes).filter((topic) => topic.selected);
 }
 
 export function clearTopicSelections(nodes: TopicNode[]): TopicNode[] {

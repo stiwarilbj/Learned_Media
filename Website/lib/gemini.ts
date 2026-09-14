@@ -215,7 +215,7 @@ Return structured JSON only.`;
       hook: hookWithoutPeriods(fact.hook ?? candidate.hook ?? fact.title ?? candidate.title ?? "A fact worth keeping"),
       title: fact.title?.trim() || candidate.title?.trim() || "A fact worth keeping",
       body: fact.body?.trim() || candidate.fact?.trim() || "A curious detail grounded in Wikipedia.",
-      topicPath: candidate.topicPath?.filter(Boolean).slice(0, 4) ?? ["Surprise topic"],
+      topicPath: candidate.topicPath?.filter(Boolean) ?? ["Surprise topic"],
       sources: cardSources(chosenSources),
       image: imageSource?.image,
       difficulty: normalizeDifficulty(fact.difficulty ?? candidate.difficulty, normalizeDifficulty(settings.obscurity)),
