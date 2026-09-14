@@ -1,17 +1,13 @@
 # Learned Media
 
-The complete website is in [`Website/`](./Website).
+Learned Media is available as both a website and a standalone macOS application.
 
-## Quick launch
+## Website
 
-```bash
-cd Website
-npm install
-cp .env.example .env.local
-# add GEMINI_API_KEY to .env.local
-npm run dev
-```
+Open Website, install dependencies, copy .env.example to .env.local, then run npm run dev. Open http://localhost:3000.
 
-Open [http://localhost:3000](http://localhost:3000), choose topics, and press **Start learning**.
+## Mac application
 
-The demo feed works without a key. For Gemini features, open **Settings**, paste a session key, and press **Connect Gemini** (or press Enter). The built-in [Google AI Studio key page](https://aistudio.google.com/app/apikey) is linked there. Gemini summaries and questions require a key.
+Download the repository ZIP, unzip it, open App, and double-click Learned Media.app. Open Settings to paste a Gemini key. The app stores learning data in macOS Application Support and keeps the Gemini key in memory only.
+
+The included App source and build scripts are in the App folder. Google sign-in is wired to the dedicated Learned Media Supabase project, but the owner still needs to add a Google Cloud OAuth client ID and secret in Supabase Authentication > Providers and allow the callback learnedmedia://auth/callback before using that button.
