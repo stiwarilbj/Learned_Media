@@ -176,20 +176,20 @@ a { color: inherit; }
 .topic-search-note { display: flex; align-items: center; gap: 7px; color: var(--muted-soft); font-size: 11px; }
 .text-button { border: 0; background: transparent; color: var(--primary); display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 800; padding: 4px; }
 .text-button:hover { color: var(--primary-dark); }
-.topic-tree { padding: 9px 0 23px; }
-.topic-row { min-height: 42px; display: flex; align-items: center; gap: 9px; border-radius: 10px; position: relative; transition: background .18s ease; }
+.topic-tree { padding: 9px 0 23px; scrollbar-gutter: stable; }
+.topic-row { min-width: 0; min-height: 42px; display: flex; align-items: center; gap: 9px; border-radius: 10px; position: relative; transition: background .18s ease; }
 .topic-row:hover { background: var(--surface-soft); }
 .topic-row.root-row { min-height: 47px; }
 .topic-children { position: relative; }
 .topic-children::before { content: ""; position: absolute; left: 27px; top: -4px; bottom: 13px; border-left: 1px solid var(--border-strong); }
 .topic-expand { width: 18px; height: 24px; border: 0; background: transparent; color: var(--ink); display: grid; place-items: center; padding: 0; flex: 0 0 auto; }
 .topic-expand:disabled { opacity: 1; }
-.topic-spacer { display: block; width: 1px; }
+.topic-spacer { display: block; width: 18px; height: 24px; flex: 0 0 18px; }
 .topic-check { width: 21px; height: 21px; display: grid; place-items: center; border-radius: 6px; border: 1.5px solid #a8bfd0; color: #fff; background: transparent; padding: 0; flex: 0 0 auto; }
 .topic-check.checked { background: var(--primary); border-color: var(--primary); }
-.topic-name { color: var(--muted); font-size: 13px; font-weight: 600; flex: 1; min-width: 0; }
+.topic-name { color: var(--muted); font-size: 13px; font-weight: 600; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topic-name.selected { color: var(--ink-strong); font-weight: 750; }
-.topic-weight { height: 28px; border: 1px solid var(--border); background: var(--surface); border-radius: 9px; display: flex; align-items: center; overflow: hidden; color: var(--muted); font-size: 11px; font-weight: 800; }
+.topic-weight { height: 28px; flex: 0 0 auto; border: 1px solid var(--border); background: var(--surface); border-radius: 9px; display: flex; align-items: center; overflow: hidden; color: var(--muted); font-size: 11px; font-weight: 800; }
 .topic-weight span { min-width: 38px; text-align: center; }
 .topic-weight button { border: 0; background: transparent; color: var(--muted); height: 100%; width: 26px; display: grid; place-items: center; }
 .topic-weight button:hover { background: var(--surface-blue); color: var(--primary); }

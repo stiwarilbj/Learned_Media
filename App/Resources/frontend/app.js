@@ -209,7 +209,10 @@
   }
   function topicRow(topic, child) {
     const row = node("div", { className: "topic-row" + (child ? "" : " root-row") });
-    if (child) row.appendChild(node("span", { className: "topic-spacer" }));
+    if (child) {
+      row.style.paddingLeft = "24px";
+      row.appendChild(node("span", { className: "topic-spacer" }));
+    }
     else row.appendChild(node("button", { className: "topic-expand", ariaLabel: "Expand " + topic.label, onClick: function () { topic.expanded = !topic.expanded; render(); } }, svg(topic.expanded ? "chevronDown" : "chevronRight", 15)));
     row.appendChild(node("button", { className: "topic-check" + (topic.selected ? " checked" : ""), ariaLabel: "Select " + topic.label, onClick: function () { topic.selected = !topic.selected; saveState(); render(); } }, topic.selected ? svg("check", 14) : null));
     row.appendChild(node("span", { className: "topic-name" + (topic.selected ? " selected" : ""), text: topic.label }));
