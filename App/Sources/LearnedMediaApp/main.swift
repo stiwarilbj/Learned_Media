@@ -493,6 +493,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         webConfiguration.userContentController = controller
         webConfiguration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         webView = WKWebView(frame: .zero, configuration: webConfiguration)
+        configureMainMenu()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 860), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Learned Media"
         window.minSize = NSSize(width: 920, height: 640)
@@ -504,6 +505,28 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         if let index = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "frontend") {
             webView.loadFileURL(index, allowingReadAccessTo: index.deletingLastPathComponent())
         }
+    }
+
+    private func configureMainMenu() {
+        let mainMenu = NSMenu()
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu(title: "Learned Media")
+        appMenuItem.submenu = appMenu
+        appMenu.addItem(withTitle: "Quit Learned Media", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        mainMenu.addItem(appMenuItem)
+
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenuItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Undo", action: #selector(UndoManager.undo), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: #selector(UndoManager.redo), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        mainMenu.addItem(editMenuItem)
+        NSApp.mainMenu = mainMenu
     }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor { window }
@@ -522,6 +545,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             geminiKey = payload["key"] as? String ?? ""
             Task { await gemini.reset() }
             respond(id: id, result: true)
+        case "readClipboard":
+            respond(id: id, result: NSPasteboard.general.string(forType: .string) ?? "")
         case "testGemini":
             let task = Task { [weak self] in
                 guard let self else { return }

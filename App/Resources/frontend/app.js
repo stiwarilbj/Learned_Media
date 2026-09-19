@@ -143,6 +143,36 @@
     if (message.ok) item.resolve(message.result);
     else item.reject(new Error(message.error || "The request failed."));
   };
+  function applyPastedGeminiKey(value) {
+    const nextKey = String(value || "").trim();
+    if (!nextKey) {
+      showToast("Your clipboard is empty.");
+      return;
+    }
+    state.key = nextKey;
+    state.geminiStatus = "not-configured";
+    state.modelChecks = [];
+    state.generationError = "";
+    generationToken += 1;
+    focusedFieldId = "gemini-key";
+    focusedSelection = [nextKey.length, nextKey.length];
+    bridge("cancelAll", {}).catch(function () {});
+    bridge("setGeminiKey", { key: nextKey }).catch(function () {});
+    state.toast = "API key pasted. Connect Gemini to check it.";
+    render();
+    window.setTimeout(function () { if (state.toast === "API key pasted. Connect Gemini to check it.") { state.toast = ""; render(); } }, 4200);
+  }
+  function pasteGeminiKey() {
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.native) {
+      bridge("readClipboard", {}).then(applyPastedGeminiKey).catch(function () { showToast("Clipboard access failed. Click the field and use Command-V."); });
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(applyPastedGeminiKey).catch(function () { showToast("Clipboard access was blocked. Click the field and use Command-V."); });
+      return;
+    }
+    showToast("Click the field and use Command-V to paste your key.");
+  }
   function flatTopics(nodes, parentPath) {
     const list = nodes || state.topics;
     const prefix = parentPath || [];
@@ -339,7 +369,7 @@
     items.forEach(function (item) { links.appendChild(node("button", { className: "top-nav-link" + (state.view === item[0] ? " active" : ""), onClick: function () { state.view = item[0]; render(); } }, svg(item[2], 16), node("span", { text: item[1] }))); });
     header.appendChild(links);
     const accountName = state.account ? state.account.name || "Google learner" : "Local workspace";
-    header.appendChild(node("div", { className: "top-nav-account" }, node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"), node("button", { className: "profile-chip", onClick: function () { state.view = "settings"; render(); } }, node("span", { className: "profile-avatar", text: accountName.slice(0, 1).toUpperCase() }), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.account ? "Google account" : "Local workspace" })), svg("chevronDown", 15))));
+    header.appendChild(node("div", { className: "top-nav-account" }, node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"), node("button", { className: "profile-chip", onClick: function () { state.view = "settings"; render(); } }, node("span", { className: "profile-avatar", text: accountName.slice(0, 1).toUpperCase() }), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.account ? "Google account" : "Not signed in" })), svg("chevronDown", 15))));
     return header;
   }
   function topbar() {
@@ -491,6 +521,7 @@
     const keyRow = node("div", { className: "key-input-row" });
     keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
+    keyActions.appendChild(node("button", { className: "secondary-button small", onClick: pasteGeminiKey }, "Paste"));
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting…" : " Connect Gemini"));
     keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Session key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);

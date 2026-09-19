@@ -6,6 +6,7 @@ import { Icon } from "./icons";
 type SettingsViewProps = {
   apiKey: string;
   onApiKeyChange: (value: string) => void;
+  onPasteKey: () => void;
   status: GeminiStatus;
   feedback?: string;
   modelChecks: GeminiModelCheck[];
@@ -30,7 +31,7 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, onPasteKey, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
   return (
     <section className="content-view settings-view">
       <div className="view-heading">
@@ -58,6 +59,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             <div className="key-input-row">
               <input id="gemini-key" type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onTestConnection(); } }} placeholder="Paste your API key here" autoComplete="new-password" aria-describedby="gemini-key-note" />
               <div className="key-actions">
+                <button type="button" className="secondary-button small" onClick={onPasteKey}>Paste</button>
                 <button type="button" className="primary-button small" onClick={onTestConnection} disabled={status === "testing"}><Icon name="sparkles" size={15} /> {status === "testing" ? "Connecting…" : "Connect Gemini"}</button>
                 <button type="button" className="ghost-button" onClick={onRemoveKey}>Remove</button>
               </div>
