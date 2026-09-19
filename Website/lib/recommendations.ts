@@ -1,4 +1,4 @@
-import type { Difficulty, FactCard, FactFeedback, FeedSettings, LearningProfile, TopicLearningProfile } from "./types";
+import type { Difficulty, FactFeedback, LearningProfile, TopicLearningProfile } from "./types";
 
 export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
   1: "Starter",
@@ -85,51 +85,4 @@ export function recordTopicFeedback(
     threshold,
     adjusted: shouldEase
   };
-}
-
-function topicMatches(cardPath: string[], selectedPath: string[]) {
-  const normalizedCard = cardPath.map((part) => part.toLowerCase());
-  const normalizedSelected = selectedPath.map((part) => part.toLowerCase());
-  return normalizedSelected.every((part, index) => normalizedCard[index] === part) || normalizedCard.every((part, index) => normalizedSelected[index] === part);
-}
-
-function cardTargetDifficulty(card: FactCard, selectedPaths: Array<{ path: string[]; weight: number }>, profile: LearningProfile, fallback: Difficulty) {
-  const exact = getTopicLearningProfile(profile, card.topicPath, fallback);
-  if (profile[topicKey(card.topicPath)]) return exact.targetDifficulty;
-  const related = selectedPaths.find(({ path }) => topicMatches(card.topicPath, path));
-  return related ? getTopicLearningProfile(profile, related.path, fallback).targetDifficulty : fallback;
-}
-
-function shuffle<T>(items: T[]) {
-  const next = [...items];
-  for (let index = next.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
-  }
-  return next;
-}
-
-export function selectDemoFacts(
-  cards: FactCard[],
-  selectedPaths: Array<{ path: string[]; weight: number }>,
-  settings: FeedSettings,
-  profile: LearningProfile,
-  avoid: string[]
-) {
-  const avoided = new Set(avoid.map((title) => title.trim().toLowerCase()).filter(Boolean));
-  const relevant = cards.filter((card) => !selectedPaths.length || selectedPaths.some(({ path }) => topicMatches(card.topicPath, path)));
-  const pool = relevant.length ? relevant : cards;
-  const ranked = [...pool]
-    .sort((a, b) => {
-      const aTarget = cardTargetDifficulty(a, selectedPaths, profile, normalizeDifficulty(settings.obscurity));
-      const bTarget = cardTargetDifficulty(b, selectedPaths, profile, normalizeDifficulty(settings.obscurity));
-      const aAvoid = avoided.has(a.title.toLowerCase()) ? -100 : 0;
-      const bAvoid = avoided.has(b.title.toLowerCase()) ? -100 : 0;
-      const aScore = aAvoid + 20 - Math.abs(a.difficulty - aTarget) * 5 + (a.difficulty >= aTarget ? 2 : 0);
-      const bScore = bAvoid + 20 - Math.abs(b.difficulty - bTarget) * 5 + (b.difficulty >= bTarget ? 2 : 0);
-      return bScore - aScore || Math.random() - 0.5;
-    });
-  const notRecentlyShown = ranked.filter((card) => !avoided.has(card.title.toLowerCase()));
-  const candidateWindow = (notRecentlyShown.length ? notRecentlyShown : ranked).slice(0, Math.min(16, ranked.length));
-  return shuffle(candidateWindow).slice(0, 10);
 }

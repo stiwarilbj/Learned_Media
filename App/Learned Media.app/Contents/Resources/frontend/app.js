@@ -11,16 +11,7 @@
   const TOPIC_CATALOG_VERSION = 2;
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "Approachable", "Familiar", "Curious", "Uncommon", "Niche", "Obscure", "Deep cut", "Rare", "Very rare", "Deepest cut"];
-  const DEMO_FACTS = [
-    { id: "demo-dodecahedron", title: "Roman dodecahedra still have no agreed purpose", hook: "A Roman object with no agreed purpose", body: "Roman dodecahedra are hollow, twelve-sided objects with knobs at their corners. Archaeologists have found more than a hundred, but no surviving Roman text explains what they were used for.", topicPath: ["History", "Archaeology"], difficulty: 10, sourceTitle: "Roman dodecahedron", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Roman_dodecahedron.jpg?width=900" },
-    { id: "demo-antikythera", title: "The Antikythera mechanism modeled the sky", hook: "A 2,000-year-old machine modeled the heavens", body: "The Antikythera mechanism used interlocking bronze gears to represent astronomical cycles and predict eclipses. Its design is far more mechanically sophisticated than most surviving devices from the ancient world.", topicPath: ["Science", "Physics"], difficulty: 9, sourceTitle: "Antikythera mechanism", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Antikythera_mechanism.jpg?width=900" },
-    { id: "demo-blue-hole", title: "The Great Blue Hole is a flooded cave system", hook: "A blue circle hides an ancient cave system", body: "Belize’s Great Blue Hole formed when a limestone cave flooded as sea levels rose. Divers have found mineral formations deep inside that record earlier periods when the cave was dry.", topicPath: ["Nature", "Ocean"], difficulty: 8, sourceTitle: "Great Blue Hole", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Great_Blue_Hole.jpg?width=900" },
-    { id: "demo-wasp", title: "Paper wasps can recognize individual faces", hook: "Some wasps remember the faces of rivals", body: "The northern paper wasp can learn to recognize individual wasps by their facial patterns. Researchers think this ability helps colonies manage repeated social encounters.", topicPath: ["Science", "Biology"], difficulty: 8, sourceTitle: "Polistes fuscatus", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Polistes_fuscatus.jpg?width=900" },
-    { id: "demo-concrete", title: "Roman concrete can repair some of its own cracks", hook: "Ancient concrete carried tiny repair capsules", body: "Some Roman concrete contains lime clasts that can react with water when cracks form. That reaction may help seal fissures and helps explain why certain ancient marine structures remain intact.", topicPath: ["Technology", "Materials"], difficulty: 9, sourceTitle: "Roman concrete", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Roman_concrete.jpg?width=900" },
-    { id: "demo-jellyfish", title: "One jellyfish can return to an earlier life stage", hook: "This jellyfish can rewind its own life cycle", body: "Turritopsis dohrnii can transform adult cells back into an earlier polyp stage after injury or stress. It can repeat the process, although it can still die from disease or predators.", topicPath: ["Nature", "Animals"], difficulty: 8, sourceTitle: "Turritopsis dohrnii", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Turritopsis_dohrnii.jpg?width=900" },
-    { id: "demo-mouse", title: "The wooden prototype mouse was a simple block", hook: "The first computer mouse was a wooden block", body: "Douglas Engelbart’s early computer mouse prototype used a small wooden case and two wheels to measure movement. Its name came from the cable that looked like a tail.", topicPath: ["Technology", "Computing"], difficulty: 6, sourceTitle: "Computer mouse", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Computer_mouse.jpg?width=900" },
-    { id: "demo-whistle", title: "Some languages use whistling for long-distance speech", hook: "A whistle can carry an entire spoken language", body: "Whistled languages encode features of spoken language into changes in pitch and rhythm. In mountainous or forested places, a whistle can travel farther than an ordinary voice.", topicPath: ["Culture", "Language"], difficulty: 7, sourceTitle: "Whistled language", imageUrl: "https://en.wikipedia.org/wiki/Special:FilePath/Whistled_language.jpg?width=900" }
-  ];
+  const KNOWN_DEMO_IDS = new Set(["demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle", "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning"]);
   const state = {
     view: "feed",
     started: false,
@@ -33,11 +24,14 @@
     customTopic: "",
     key: "",
     geminiStatus: "not-configured",
+    modelChecks: [],
+    modelChecking: false,
     account: null,
     toast: "",
     loading: false,
     loadingCard: null,
-    errorByCard: {}
+    errorByCard: {},
+    generationError: ""
   };
   const app = document.getElementById("app");
   const pending = new Map();
@@ -45,6 +39,8 @@
   let generationToken = 0;
   let topicTreeScrollTop = 0;
   let focusedTopicId = null;
+  let focusedFieldId = null;
+  let focusedSelection = null;
 
   function makeTopics() {
     return TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
@@ -269,13 +265,13 @@
     const hook = String(card.hook || card.title || "A small fact worth keeping").replace(/[.!?]+/g, "").split(/\s+/).slice(0, 12).join(" ");
     return Object.assign({
       id: "card-" + Date.now() + "-" + index,
-      title: "A small fact worth keeping",
-      hook: "A small fact worth keeping",
-      body: "The explanation is still on its way.",
-      topicPath: ["Surprise topic"],
+      title: "",
+      hook: "",
+      body: "",
+      topicPath: [],
       difficulty: 10,
       accent: ["blue", "lilac", "mint", "sand", "coral"][index % 5],
-      createdAt: "Just now"
+      createdAt: new Date().toISOString()
     }, card, { sources: sources, image: image, hook: hook });
   }
   function externalLink(url, label, className) {
@@ -342,7 +338,7 @@
     const links = node("nav", { className: "top-nav-links", ariaLabel: "Primary navigation" });
     items.forEach(function (item) { links.appendChild(node("button", { className: "top-nav-link" + (state.view === item[0] ? " active" : ""), onClick: function () { state.view = item[0]; render(); } }, svg(item[2], 16), node("span", { text: item[1] }))); });
     header.appendChild(links);
-    const accountName = state.account ? state.account.name || "Google learner" : "Sample learner";
+    const accountName = state.account ? state.account.name || "Google learner" : "Local workspace";
     header.appendChild(node("div", { className: "top-nav-account" }, node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"), node("button", { className: "profile-chip", onClick: function () { state.view = "settings"; render(); } }, node("span", { className: "profile-avatar", text: accountName.slice(0, 1).toUpperCase() }), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.account ? "Google account" : "Local workspace" })), svg("chevronDown", 15))));
     return header;
   }
@@ -404,7 +400,6 @@
     keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Add key ", svg("arrow", 14)));
     panel.appendChild(keyCallout);
     panel.appendChild(feedCustomize(true));
-    panel.appendChild(node("div", { className: "setup-preview-note" }, node("span", { text: "Example" }), node("strong", { text: "A Roman object still has no agreed purpose" }), node("small", { text: "Roman dodecahedra · Ancient History · Wikipedia" })));
     return panel;
   }
   function setupView() {
@@ -480,6 +475,9 @@
     if (state.loading) list.appendChild(node("div", { className: "skeleton-card" }, node("div", { className: "skeleton-media shimmer" }), node("div", { className: "skeleton-line wide shimmer" }), node("div", { className: "skeleton-line shimmer" })));
     column.appendChild(list);
     layout.appendChild(column);
+    if (state.generationError && !state.loading) {
+      column.insertBefore(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { className: "secondary-button", onClick: function () { state.generationError = ""; generateBatch(generationToken); } }, "Retry")), list);
+    }
     return node("div", { className: "feed-workspace" }, state.toast ? node("div", { className: "feed-toast" }, svg("check", 15), " ", state.toast) : null, layout);
   }
   function settingsView() {
@@ -491,19 +489,27 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.key = event.target.value; bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting…" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Session key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Session key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is held in memory for this session, sent only when Gemini is requested, and never saved to disk." })));
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
+    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: state.modelChecks.length ? state.modelChecks.filter(function (model) { return model.status === "working"; }).length + " working of " + state.modelChecks.length : "Connect to discover models" })));
+    modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking…" : "Check all models"));
+    gemini.appendChild(modelHeading);
+    if (state.modelChecks.length) {
+      const modelList = node("div", { className: "model-check-list", ariaLive: "polite" });
+      state.modelChecks.forEach(function (model) { modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: model.status === "working" ? "Ready for generation" : model.error || "Unavailable" })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") }))); });
+      gemini.appendChild(modelList);
+    }
     gemini.appendChild(node("div", { className: "api-key-guide" }, node("div", { className: "api-key-guide-icon" }, svg("sparkles", 16)), node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a key?" }), node("p", { text: "Create or copy one in Google AI Studio, then paste it here." })), externalLink(AI_STUDIO_URL, "Open AI Studio", "api-key-link")));
     main.appendChild(gemini);
     const accountCard = node("section", { className: "settings-card" });
     accountCard.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("user", 19)), node("div", {}, node("h2", { text: "Account" }), node("p", { text: "Google sign-in keeps your account ready on this Mac." }))));
-    const accountRow = node("div", { className: "account-row" }, node("div", { className: "account-avatar", text: state.account ? (state.account.name || "G").slice(0, 1).toUpperCase() : "S" }), node("div", {}, node("strong", { text: state.account ? state.account.name : "Local workspace" }), node("span", { text: state.account ? state.account.email || "Google account" : "Not signed in" })));
+    const accountRow = node("div", { className: "account-row" }, node("div", { className: "account-avatar", text: state.account ? (state.account.name || "G").slice(0, 1).toUpperCase() : "L" }), node("div", {}, node("strong", { text: state.account ? state.account.name : "Local workspace" }), node("span", { text: state.account ? state.account.email || "Google account" : "Not signed in" })));
     accountRow.appendChild(node("button", { className: "secondary-button", onClick: state.account ? signOut : signIn }, svg("login", 15), state.account ? " Sign out" : " Continue with Google"));
     accountCard.appendChild(accountRow);
     if (!state.account) accountCard.appendChild(node("p", { className: "settings-feedback", text: "Google sign-in is wired to the Learned Media Supabase project. Enable Google in its Auth provider settings to use it." }));
@@ -545,6 +551,8 @@
     if (currentTopicTree) topicTreeScrollTop = currentTopicTree.scrollTop;
     const activeElement = document.activeElement;
     if (activeElement && activeElement.dataset && activeElement.dataset.topicId) focusedTopicId = activeElement.dataset.topicId;
+    focusedFieldId = activeElement && activeElement.id === "gemini-key" ? activeElement.id : null;
+    focusedSelection = focusedFieldId && typeof activeElement.selectionStart === "number" ? [activeElement.selectionStart, activeElement.selectionEnd] : null;
     document.body.classList.add("native-shell");
     app.replaceChildren();
     app.appendChild(navigation());
@@ -561,6 +569,13 @@
         const focusTarget = Array.from(document.querySelectorAll("[data-topic-id]")).find(function (element) { return element.dataset.topicId === focusedTopicId; });
         if (focusTarget && typeof focusTarget.focus === "function") focusTarget.focus();
       }
+      if (focusedFieldId) {
+        const field = document.getElementById(focusedFieldId);
+        if (field) {
+          field.focus();
+          if (focusedSelection && typeof field.setSelectionRange === "function") field.setSelectionRange(focusedSelection[0], focusedSelection[1]);
+        }
+      }
     });
   }
   function statusLabel() {
@@ -573,9 +588,9 @@
         const parsed = typeof saved === "string" ? JSON.parse(saved) : saved;
         if (parsed.topics) state.topics = migrateTopics(parsed.topics);
         if (parsed.settings) state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings);
-        if (parsed.cards) state.cards = parsed.cards.map(normalizeCard);
+        if (parsed.cards) state.cards = parsed.cards.filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
         if (parsed.profile) state.profile = parsed.profile;
-        if (parsed.started) state.started = true;
+        if (parsed.started && state.cards.length) state.started = true;
         if (parsed.account) state.account = parsed.account;
         document.body.classList.toggle("theme-dark", parsed.theme === "dark");
       }
@@ -595,8 +610,10 @@
   }
   function startFeed() {
     if (!selectedCount()) return showToast("Choose at least one topic before starting.");
+    if (!state.key.trim() || state.geminiStatus !== "connected") { state.view = "settings"; return showToast("Add your Gemini API key in Settings and connect it before starting."); }
     state.started = true;
     state.cards = [];
+    state.generationError = "";
     generationToken += 1;
     saveState();
     render();
@@ -604,11 +621,13 @@
   }
   function resetFeed() {
     generationToken += 1;
+    bridge("cancelAll", {}).catch(function () {});
     state.started = false;
     state.cards = [];
     state.profile = {};
     state.loading = false;
     state.loadingCard = null;
+    state.generationError = "";
     function clear(nodes) { nodes.forEach(function (topic) { topic.selected = false; if (topic.children) clear(topic.children); }); }
     clear(state.topics);
     saveState();
@@ -618,11 +637,13 @@
   function resetAll() {
     if (!window.confirm("Reset all preferences and return to the default topic mix?")) return;
     generationToken += 1;
+    bridge("cancelAll", {}).catch(function () {});
     state.topics = makeTopics();
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
     state.cards = [];
     state.profile = {};
     state.started = false;
+    state.generationError = "";
     state.view = "feed";
     saveState();
     render();
@@ -630,38 +651,36 @@
   function deleteData() {
     if (!window.confirm("Delete saved facts, likes, history, and the current feed?")) return;
     generationToken += 1;
+    bridge("cancelAll", {}).catch(function () {});
     state.cards = [];
     state.profile = {};
     state.started = false;
+    state.generationError = "";
     saveState();
     render();
     showToast("Learning data cleared.");
   }
-  function demoBatch() {
-    const available = DEMO_FACTS.filter(function (fact) { return !state.cards.some(function (card) { return card.id === fact.id; }); });
-    return available.sort(function () { return Math.random() - 0.5; }).slice(0, 10).map(normalizeCard);
-  }
   function onScroll() {
-    if (!state.loading && state.started && window.innerHeight + window.scrollY >= document.body.offsetHeight - 650) generateBatch(generationToken);
+    if (!state.loading && !state.generationError && state.started && window.innerHeight + window.scrollY >= document.body.offsetHeight - 650) generateBatch(generationToken);
   }
   async function generateBatch(token) {
     if (state.loading || !selectedCount()) return;
     const activeToken = token || generationToken;
+    if (!state.key.trim() || state.geminiStatus !== "connected") { state.generationError = "Connect Gemini in Settings before generating facts."; state.loading = false; render(); return; }
     state.loading = true;
+    state.generationError = "";
     render();
     try {
       const result = await bridge("generate", { topics: weightedTopicPaths(10), settings: state.settings, avoid: state.cards.slice(-20).map(function (card) { return card.title; }) });
       if (activeToken !== generationToken) return;
-      const fresh = (result.cards || []).map(normalizeCard).filter(function (card) { return !state.cards.some(function (existing) { return existing.id === card.id; }); });
+      const fresh = (result.cards || []).filter(function (card) { return card && card.id && card.title && card.body && card.hook && card.topicPath && card.topicPath.length && card.sources && card.sources.length; }).map(normalizeCard).filter(function (card) { return !state.cards.some(function (existing) { return existing.id === card.id; }); });
       state.cards = state.cards.concat(fresh);
-      if (!fresh.length) showToast("No new facts arrived. Try again in a moment.");
+      if (!fresh.length) { state.generationError = "Gemini returned no complete new cards. Retry when you are ready."; showToast("No new complete facts arrived. Retry when you are ready."); }
+      else if (result.partial) { state.generationError = result.retryGuidance || "Some work failed. Retry to fill the remaining batch."; showToast(fresh.length + " facts arrived. Retry to fill the remaining batch."); }
     } catch (error) {
       if (activeToken !== generationToken) return;
-      const fresh = demoBatch();
-      if (fresh.length) {
-        state.cards = state.cards.concat(fresh);
-        showToast(state.key ? error.message : "Starter facts loaded. Add your Gemini key for a larger mix.");
-      } else showToast(error.message || "Could not generate a new batch.");
+      state.generationError = error.message || "Could not generate a new batch.";
+      showToast(state.generationError);
     } finally {
       if (activeToken === generationToken) {
         state.loading = false;
@@ -671,29 +690,42 @@
     }
   }
   async function testKey() {
-    if (!state.key.trim()) return showToast("Paste your Gemini API key first.");
+    const keyAtStart = state.key.trim();
+    if (!keyAtStart) return showToast("Paste your Gemini API key first.");
     state.geminiStatus = "testing";
+    state.modelChecking = true;
+    state.modelChecks = [];
     render();
     try {
-      const result = await bridge("testGemini", { key: state.key.trim() });
+      const result = await bridge("testGemini", { key: keyAtStart });
+      if (state.key.trim() !== keyAtStart) return;
       state.geminiStatus = result.status || "unavailable";
+      state.modelChecks = result.models || [];
       showToast(result.message || "Gemini could not verify this key.");
     } catch (error) {
+      if (state.key.trim() !== keyAtStart) return;
       state.geminiStatus = "unavailable";
+      state.modelChecks = [];
       showToast(error.message);
     }
-    render();
+    if (state.key.trim() === keyAtStart) {
+      state.modelChecking = false;
+      render();
+    }
   }
   async function learnMore(id) {
     const card = state.cards.find(function (item) { return item.id === id; });
     if (!card || card.learnMore || state.loadingCard) return;
+    const activeToken = generationToken;
     state.loadingCard = id;
     state.errorByCard[id] = "";
     render();
     try {
       const result = await bridge("learn", { action: "learn", card: card });
-      card.learnMore = result.answer;
-      card.answerSources = result.citations || [];
+      if (activeToken === generationToken) {
+        card.learnMore = result.answer;
+        card.answerSources = result.citations || [];
+      }
     } catch (error) {
       state.errorByCard[id] = error.message;
     }
@@ -705,15 +737,18 @@
     const card = state.cards.find(function (item) { return item.id === id; });
     const question = String(value || "").trim();
     if (!card || !question || state.loadingCard) return;
+    const activeToken = generationToken;
     state.loadingCard = id;
     state.errorByCard[id] = "";
     render();
     try {
       const result = await bridge("learn", { action: "question", card: card, question: question, detailed: Boolean(card.answerDetailed), history: card.questionHistory || [] });
-      card.question = question;
-      card.answer = result.answer;
-      card.answerSources = result.citations || [];
-      card.questionHistory = (card.questionHistory || []).concat([{ role: "user", content: question }, { role: "assistant", content: card.answer }]);
+      if (activeToken === generationToken) {
+        card.question = question;
+        card.answer = result.answer;
+        card.answerSources = result.citations || [];
+        card.questionHistory = (card.questionHistory || []).concat([{ role: "user", content: question }, { role: "assistant", content: card.answer }]);
+      }
     } catch (error) {
       state.errorByCard[id] = error.message;
     }

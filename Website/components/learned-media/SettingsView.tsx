@@ -1,6 +1,6 @@
 "use client";
 
-import type { GeminiStatus } from "@/lib/types";
+import type { GeminiModelCheck, GeminiStatus } from "@/lib/types";
 import { Icon } from "./icons";
 
 type SettingsViewProps = {
@@ -8,7 +8,8 @@ type SettingsViewProps = {
   onApiKeyChange: (value: string) => void;
   status: GeminiStatus;
   feedback?: string;
-  serverConfigured: boolean;
+  modelChecks: GeminiModelCheck[];
+  modelChecking: boolean;
   onTestConnection: () => void;
   onRemoveKey: () => void;
   theme: "light" | "dark";
@@ -29,7 +30,7 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, feedback, serverConfigured, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
   return (
     <section className="content-view settings-view">
       <div className="view-heading">
@@ -63,9 +64,15 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, serverC
             </div>
             <div className="security-note" id="gemini-key-note">
               <Icon name="shield" size={16} />
-              <span>{serverConfigured ? "A server-side GEMINI_API_KEY is configured for this workspace. Your pasted key is never saved to localStorage." : "Your pasted key is held in memory for this session, sent only when Gemini is requested, and never saved to localStorage."}</span>
+              <span>Your pasted key is held in memory for this session, sent only when Gemini is requested, and never saved to localStorage.</span>
             </div>
             {feedback && <p className="settings-feedback" role="status">{feedback}</p>}
+
+            <div className="model-check-heading">
+              <div><strong>Available Gemini models</strong><span>{modelChecks.length ? `${modelChecks.filter((model) => model.status === "working").length} working of ${modelChecks.length}` : "Connect to discover models"}</span></div>
+              <button type="button" className="ghost-button" onClick={onTestConnection} disabled={modelChecking || !apiKey.trim()}>{modelChecking ? "Checking…" : "Check all models"}</button>
+            </div>
+            {modelChecks.length > 0 && <div className="model-check-list" aria-live="polite">{modelChecks.map((model) => <div className="model-check-row" key={model.model}><span className={`model-status-dot ${model.status}`} aria-label={model.status} /><div><strong>{model.model}</strong><small>{model.status === "working" ? "Ready for generation" : model.error ?? "Unavailable"}</small></div><span className="model-check-meta">{model.latencyMs ? `${model.latencyMs} ms` : "—"}<br />{model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked"}</span></div>)}</div>}
 
             <div className="api-key-guide">
               <div className="api-key-guide-icon"><Icon name="sparkles" size={16} /></div>
@@ -81,7 +88,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, serverC
 
           <section className="settings-card">
             <div className="settings-card-heading"><div className="settings-icon lilac"><Icon name="user" size={19} /></div><div><h2>Account</h2><p>Google sign-in keeps your mix available across sessions.</p></div></div>
-            <div className="account-row"><div className="account-avatar">S</div><div><strong>Sample learner</strong><span>Demo workspace · not signed in</span></div><button type="button" className="secondary-button" onClick={onGoogleSignIn}><Icon name="login" size={15} /> Continue with Google</button></div>
+            <div className="account-row"><div className="account-avatar">L</div><div><strong>Local workspace</strong><span>Not signed in</span></div><button type="button" className="secondary-button" onClick={onGoogleSignIn}><Icon name="login" size={15} /> Continue with Google</button></div>
           </section>
 
           <section className="settings-card">

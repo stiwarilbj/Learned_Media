@@ -57,6 +57,25 @@ export type LearningMessage = {
   content: string;
 };
 
+export type GeminiModelCheckStatus = "checking" | "working" | "failed" | "cooldown";
+
+export type GeminiModelCheck = {
+  model: string;
+  status: GeminiModelCheckStatus;
+  latencyMs?: number;
+  checkedAt?: string;
+  error?: string;
+  supportedGenerationMethods?: string[];
+};
+
+export type GeminiModelOutcome = {
+  model: string;
+  stage: "candidate" | "grounding" | "learning";
+  status: "success" | "failed" | "cooldown";
+  latencyMs?: number;
+  error?: string;
+};
+
 export type FactCard = {
   id: string;
   hook: string;
@@ -83,6 +102,11 @@ export type FactCard = {
   answerDetailed?: boolean;
   answerSources?: WikipediaSource[];
   questionHistory?: LearningMessage[];
+  provenance?: {
+    provider: "gemini";
+    model: string;
+    generatedAt: string;
+  };
 };
 
 export type GeminiStatus = "not-configured" | "testing" | "connected" | "invalid" | "rate-limited" | "unavailable";

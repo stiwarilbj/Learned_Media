@@ -3,12 +3,11 @@ import { testGeminiKey } from "@/lib/gemini";
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as { apiKey?: string };
-    const apiKey = body.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+    const apiKey = request.headers.get("x-gemini-api-key")?.trim() ?? "";
     if (!apiKey) return NextResponse.json({ status: "not-configured" }, { status: 400 });
-    const result = await testGeminiKey(apiKey);
-    return NextResponse.json({ status: result.ok ? "connected" : result.status }, { status: result.ok ? 200 : 400 });
-  } catch {
-    return NextResponse.json({ status: "unavailable" }, { status: 502 });
+    const result = await testGeminiKey(apiKey, request.signal);
+    return NextResponse.json({ status: result.ok ? "connected" : result.status, models: result.models, eligibleModelCount: result.eligibleModelCount }, { status: result.ok ? 200 : 400 });
+  } catch (error) {
+    return NextResponse.json({ status: "unavailable", models: [], error: error instanceof Error ? error.message : "Gemini model discovery failed." }, { status: 502 });
   }
 }

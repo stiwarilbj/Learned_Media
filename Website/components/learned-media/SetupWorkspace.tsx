@@ -82,7 +82,6 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
             </div>
           </details>
 
-          <div className="setup-preview-note"><span>Example</span><strong>A Roman object still has no agreed purpose</strong><small>Roman dodecahedra · Ancient History · Wikipedia</small></div>
         </section>
       </section>
     </div>

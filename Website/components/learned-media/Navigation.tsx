@@ -25,7 +25,7 @@ export function Navigation({ view, onNavigate, onReset }: NavigationProps) {
         <nav className="top-nav-links" aria-label="Primary navigation">
           {items.map((item) => <button type="button" className={`top-nav-link ${view === item.id ? "active" : ""}`} key={item.id} onClick={() => onNavigate(item.id)} aria-current={view === item.id ? "page" : undefined}><Icon name={item.icon} size={16} strokeWidth={1.9} /><span>{item.label}</span></button>)}
         </nav>
-        <div className="top-nav-account"><button type="button" className="nav-reset" onClick={onReset}><Icon name="reset" size={15} /> Reset feed</button><button type="button" className="profile-chip" onClick={() => onNavigate("settings")}><span className="profile-avatar">S</span><span className="profile-copy"><strong>Sample learner</strong><small>Demo workspace</small></span><Icon name="chevronDown" size={15} /></button></div>
+        <div className="top-nav-account"><button type="button" className="nav-reset" onClick={onReset}><Icon name="reset" size={15} /> Reset feed</button><button type="button" className="profile-chip" onClick={() => onNavigate("settings")}><span className="profile-avatar">L</span><span className="profile-copy"><strong>Local workspace</strong><small>Not signed in</small></span><Icon name="chevronDown" size={15} /></button></div>
       </header>
       <nav className="mobile-nav" aria-label="Mobile navigation">
         {items.filter((item) => item.id !== "likes").map((item) => <button type="button" key={item.id} className={`mobile-nav-link ${view === item.id ? "active" : ""}`} onClick={() => onNavigate(item.id)} aria-current={view === item.id ? "page" : undefined}><Icon name={item.icon} size={19} strokeWidth={1.8} /><span>{item.label}</span></button>)}

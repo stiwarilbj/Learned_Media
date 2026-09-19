@@ -15,6 +15,7 @@ type FeedViewProps = {
   customTopic: string;
   loading: boolean;
   canLoadMore: boolean;
+  generationError: string;
   rabbitHole: string | null;
   toast?: string;
   learnLoading: string | null;
@@ -24,6 +25,7 @@ type FeedViewProps = {
   onLearnMore: (id: string) => void;
   onAskQuestion: (id: string, question: string, detailed: boolean) => void;
   onReset: () => void;
+  onRetry: () => void;
   onLoadMore: () => void;
   onSettingsChange: (next: Partial<FeedSettings>) => void;
   onCustomTopicChange: (value: string) => void;
@@ -72,7 +74,7 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
   );
 }
 
-export function FeedView({ cards, settings, topics, customTopic, loading, canLoadMore, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic }: FeedViewProps) {
+export function FeedView({ cards, settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic }: FeedViewProps) {
   const sentinel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const element = sentinel.current;
@@ -99,6 +101,7 @@ export function FeedView({ cards, settings, topics, customTopic, loading, canLoa
               {canLoadMore && index === Math.max(cards.length - 3, 0) && <div ref={sentinel} className="feed-sentinel"><span>Finding 10 more facts…</span></div>}
               <FactCard card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} />
             </Fragment>)}
+            {generationError && !loading && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry}>Retry</button></div>}
             {loading && <><SkeletonCard /><SkeletonCard /></>}
           </div>
         </section>

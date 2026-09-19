@@ -5,14 +5,13 @@ import type { FactCard, LearningMessage } from "@/lib/types";
 export async function POST(request: Request) {
   try {
     const body = await request.json() as {
-      apiKey?: string;
       action?: "learn" | "question";
       card?: FactCard;
       question?: string;
       detailed?: boolean;
       history?: LearningMessage[];
     };
-    const apiKey = body.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+    const apiKey = request.headers.get("x-gemini-api-key")?.trim() ?? "";
     if (!apiKey) return NextResponse.json({ error: "Add your Gemini API key in Settings before asking for more detail." }, { status: 400 });
     if (!body.card || (body.action !== "learn" && body.action !== "question")) {
       return NextResponse.json({ error: "A fact and learning action are required." }, { status: 400 });
@@ -26,7 +25,8 @@ export async function POST(request: Request) {
       card: body.card,
       question: body.question?.trim().slice(0, 600),
       detailed: Boolean(body.detailed),
-      history: body.history?.slice(-6)
+      history: body.history?.slice(-6),
+      signal: request.signal
     });
     return NextResponse.json(result);
   } catch (error) {

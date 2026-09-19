@@ -4,7 +4,6 @@
 
 ```bash
 npm install
-cp .env.example .env.local
 npm run dev
 ```
 
@@ -12,8 +11,8 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Use
 
-1. Select topics and press **Start learning**
-2. Open **Settings** to paste a Gemini key, then press **Connect Gemini** or Enter
-3. Use **Learn more** or ask questions on any fact card
+1. Open **Settings**, paste a Gemini API key, and press **Connect Gemini**
+2. Select topics and press **Start learning**
+3. Use **Learn more** or ask questions on generated fact cards
 
-The demo feed works without a key. The Settings page links directly to [Google AI Studio](https://aistudio.google.com/app/apikey).
+No demo facts are included. Facts appear only after Gemini successfully generates them. The key stays in browser session memory; the Settings page links directly to [Google AI Studio](https://aistudio.google.com/app/apikey).
