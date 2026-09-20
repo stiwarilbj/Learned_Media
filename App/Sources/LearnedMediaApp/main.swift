@@ -266,8 +266,13 @@ private actor ModelScheduler {
     }
 
     func markFailure(_ model: String, retryable: Bool) {
-        if retryable { cooldowns[model] = Date().addingTimeInterval(45) }
-        healthy.remove(model)
+        if retryable {
+            healthy.insert(model)
+            cooldowns[model] = Date().addingTimeInterval(45)
+        } else {
+            healthy.remove(model)
+            cooldowns[model] = nil
+        }
         release(model)
     }
 
@@ -292,6 +297,10 @@ private actor ModelScheduler {
         let until = Date().addingTimeInterval(60)
         outageCooldownUntil = until
         return until
+    }
+
+    func nextRetryDate() -> Date? {
+        cooldowns.values.filter { $0 > Date() }.min()
     }
 
     private func availableModels() -> [String] {
@@ -427,6 +436,9 @@ private final class GeminiClient {
 
     private func structured(key: String, prompt: String, schema: [String: Any], stage: String, timeout: TimeInterval = 45) async throws -> (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]]) {
         try await ensureModels(key: key)
+        if !(await scheduler.hasHealthyModels()), let retryDate = await scheduler.nextRetryDate() {
+            try await Task.sleep(nanoseconds: UInt64(max(0, retryDate.timeIntervalSinceNow) * 1_000_000_000))
+        }
         guard await scheduler.hasHealthyModels() else { throw NativeError(message: "No healthy requested Gemini model is available. Recheck the models or retry after the cooldown.", retryable: true) }
         var outcomes: [[String: Any]] = []
         var tried = Set<String>()
@@ -462,6 +474,10 @@ private final class GeminiClient {
                 continue
             }
             if await scheduler.availableCount(excluding: tried) > 0 { continue }
+            if let retryDate = await scheduler.nextRetryDate() {
+                try await Task.sleep(nanoseconds: UInt64(max(0, retryDate.timeIntervalSinceNow) * 1_000_000_000))
+                continue
+            }
             if tried.isEmpty {
                 throw NativeError(message: "Every healthy requested Gemini model is busy or cooling down.", retryable: true)
             }

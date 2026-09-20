@@ -272,12 +272,18 @@ function workingModels(pool: ModelPool) {
   const now = Date.now();
   const resolved = new Set<string>();
   return pool.models.filter((model) => {
-    if (pool.checks.get(model)?.status !== "working" || (pool.cooldowns.get(model) ?? 0) > now) return false;
+    const status = pool.checks.get(model)?.status;
+    if ((status !== "working" && status !== "cooldown") || (pool.cooldowns.get(model) ?? 0) > now) return false;
     const version = pool.checks.get(model)?.resolvedModel;
     if (version && resolved.has(version)) return false;
     if (version) resolved.add(version);
     return true;
   });
+}
+
+function nextRetryAt(pool: ModelPool) {
+  const retryTimes = Array.from(pool.cooldowns.values()).filter((time) => time > Date.now());
+  return retryTimes.length ? Math.min(...retryTimes) : undefined;
 }
 
 function reserveModel(pool: ModelPool, tried: Set<string>) {
@@ -319,6 +325,10 @@ function markModelFailure(pool: ModelPool, model: string, error: GeminiFailure) 
 
 async function requestStructured<T>(apiKey: string, sessionId: string, prompt: string, responseSchema: Record<string, unknown>, stage: GeminiModelOutcome["stage"], timeoutMs = GENERATION_TIMEOUT_MS, signal?: AbortSignal, onProgress?: (event: GeminiProgressEvent) => void) {
   const pool = poolFor(apiKey, sessionId);
+  if (!workingModels(pool).length) {
+    const retryAt = nextRetryAt(pool);
+    if (retryAt) await delay(Math.max(0, retryAt - Date.now()), signal);
+  }
   if (!workingModels(pool).length) throw new GeminiFailure("No healthy allowed Gemini model is available right now. Recheck the models or retry after the cooldown.", undefined, [], undefined, true);
   const outcomes: GeminiModelOutcome[] = [];
   let lastError: GeminiFailure | undefined;
@@ -326,6 +336,10 @@ async function requestStructured<T>(apiKey: string, sessionId: string, prompt: s
   let sawRetryableFailure = false;
   let tried = new Set<string>();
   while (!signal?.aborted) {
+    if (pool.outageCooldownUntil > Date.now()) {
+      await delay(pool.outageCooldownUntil - Date.now(), signal);
+      continue;
+    }
     const model = reserveModel(pool, tried);
     if (!model) {
       const remaining = workingModels(pool).some((candidate) => !tried.has(candidate) && !pool.inFlight.has(candidate));
@@ -334,6 +348,11 @@ async function requestStructured<T>(apiKey: string, sessionId: string, prompt: s
         continue;
       }
       if (remaining) continue;
+      const retryAt = nextRetryAt(pool);
+      if (retryAt) {
+        await delay(Math.max(0, retryAt - Date.now()), signal);
+        continue;
+      }
       if (tried.size === 0) throw new GeminiFailure("Every working Gemini model is busy or cooling down.", undefined, outcomes, undefined, true);
       if (!sawRetryableFailure) throw lastError ?? new GeminiFailure("No working Gemini model could complete the request.", undefined, outcomes, undefined, false);
       if (pass < 1) {
