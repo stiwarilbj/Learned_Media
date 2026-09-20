@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { YouTubeChannelRecord, YouTubeImportProgress, YouTubeTopic, YouTubeVideo, YouTubeWorkspaceState } from "@/lib/youtube";
 import { YOUTUBE_TOPICS, filterYouTubeVideos } from "@/lib/youtube";
 import { Icon } from "./icons";
@@ -54,6 +54,7 @@ function VideoList({ videos, workspace, onOpenVideo, onSaveVideo }: { videos: Yo
 
 export function VideoWorkspace({ workspace, youtubeStatus, progress, error, searchResults, smartSearchLoading, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, onChannelOrder, onPauseImport, onResumeImport, onRetryImport }: VideoWorkspaceProps) {
   const [ended, setEnded] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const activeVideo = workspace.selectedVideoId ? workspace.videos.find((video) => video.id === workspace.selectedVideoId) : undefined;
   const activeChannel = workspace.selectedChannelId ? workspace.channels.find((channel) => channel.id === workspace.selectedChannelId) : undefined;
   const channelVideos = activeChannel ? filterYouTubeVideos(workspace.videos, workspace.searchText, workspace.selectedTopic, activeChannel.id) : [];
@@ -67,19 +68,22 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
     const onMessage = (event: MessageEvent) => {
       if (!String(event.origin).includes("youtube.com")) return;
       try {
-        const data = typeof event.data === "string" ? JSON.parse(event.data) as { event?: string; info?: number } : event.data as { event?: string; info?: number };
+        const data = typeof event.data === "string" ? JSON.parse(event.data) as { event?: string; info?: number | { currentTime?: number } } : event.data as { event?: string; info?: number | { currentTime?: number } };
         if (data?.event === "onStateChange" && data.info === 0) setEnded(true);
+        if (data?.event === "infoDelivery" && typeof data.info === "object" && typeof data.info.currentTime === "number") onPlaybackPosition(activeVideo.id, data.info.currentTime);
       } catch { /* YouTube also emits non-JSON messages. */ }
     };
+    const requestPosition = () => iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: "getCurrentTime", args: [] }), "https://www.youtube.com");
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [activeVideo?.id]);
+    const timer = window.setInterval(requestPosition, 5000);
+    return () => { window.removeEventListener("message", onMessage); window.clearInterval(timer); };
+  }, [activeVideo?.id, onPlaybackPosition]);
 
   if (activeVideo) return <section className="content-view video-workspace">
     <button type="button" className="text-button video-back-button" onClick={onBack}><Icon name="chevronRight" size={15} /> Back to videos</button>
     <div className="video-player-layout">
       <div className="video-player-column">
-        <div className="video-player-shell">{activeVideo.embedAvailable ? <iframe title={activeVideo.title} src={`https://www.youtube.com/embed/${encodeURIComponent(activeVideo.id)}?enablejsapi=1&origin=https%3A%2F%2Fstiwarilbj.github.io&rel=0&playsinline=1`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" /> : <div className="video-unavailable"><Icon name="external" size={24} /><strong>Watch this one on YouTube</strong><a href={videoUrl(activeVideo.id)} target="_blank" rel="noreferrer">Open video</a></div>}</div>
+        <div className="video-player-shell">{activeVideo.embedAvailable ? <iframe ref={iframeRef} title={activeVideo.title} src={`https://www.youtube.com/embed/${encodeURIComponent(activeVideo.id)}?enablejsapi=1&origin=https%3A%2F%2Fstiwarilbj.github.io&rel=0&playsinline=1${workspace.playbackPositions[activeVideo.id] ? `&start=${Math.max(0, Math.floor(workspace.playbackPositions[activeVideo.id]))}` : ""}`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" /> : <div className="video-unavailable"><Icon name="external" size={24} /><strong>Watch this one on YouTube</strong><a href={videoUrl(activeVideo.id)} target="_blank" rel="noreferrer">Open video</a></div>}</div>
         <div className="video-player-heading"><div><span className="eyebrow">Now watching</span><h1>{activeVideo.title}</h1><p>{activeVideo.channelName} · {formatDate(activeVideo.publishedAt)} · {activeVideo.durationLabel}</p></div><button type="button" className={`secondary-button ${workspace.savedIds.includes(activeVideo.id) ? "selected" : ""}`} onClick={() => onSaveVideo(activeVideo.id)}><Icon name="bookmark" size={15} /> {workspace.savedIds.includes(activeVideo.id) ? "Saved" : "Save video"}</button></div>
         <div className="video-player-links"><a className="ghost-button" href={videoUrl(activeVideo.id)} target="_blank" rel="noreferrer">Watch on YouTube <Icon name="external" size={13} /></a><span>{activeVideo.topics.join(" · ")}</span></div>
         {ended && related.length > 0 && <section className="video-related"><div className="section-heading"><div><span className="eyebrow">Up next to explore</span><h2>More like this</h2></div></div><VideoList videos={related} workspace={workspace} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /></section>}

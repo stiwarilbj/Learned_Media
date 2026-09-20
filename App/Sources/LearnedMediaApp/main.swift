@@ -124,6 +124,30 @@ private actor WikipediaRequestLimiter {
     }
 }
 
+private actor YouTubeRequestLimiter {
+    private var permits = 4
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if permits > 0 {
+            permits -= 1
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if let waiter = waiters.first {
+            waiters.removeFirst()
+            waiter.resume()
+        } else {
+            permits += 1
+        }
+    }
+}
+
 private final class KeychainStore {
     private let service = "com.learnedmedia.app"
     private let account = "supabase-session"
@@ -768,6 +792,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let keychain = KeychainStore()
     private let workspace = LocalWorkspaceStore()
     private let videoCatalog = VideoCatalogStore()
+    private let youtubeLimiter = YouTubeRequestLimiter()
     private var geminiKey = ""
     private var authSession: ASWebAuthenticationSession?
     private var authRequestID = ""
@@ -944,10 +969,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        await youtubeLimiter.acquire()
         let (data, response): (Data, URLResponse)
-        do { (data, response) = try await URLSession(configuration: .ephemeral).data(for: request) }
-        catch is CancellationError { throw NativeError(message: "YouTube request canceled.", retryable: false) }
-        catch { throw NativeError(message: "YouTube could not be reached right now.") }
+        do {
+            (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+            await youtubeLimiter.release()
+        } catch is CancellationError {
+            await youtubeLimiter.release()
+            throw NativeError(message: "YouTube request canceled.", retryable: false)
+        } catch {
+            await youtubeLimiter.release()
+            throw NativeError(message: "YouTube could not be reached right now.")
+        }
         guard let http = response as? HTTPURLResponse else { throw NativeError(message: "YouTube returned no HTTP response.") }
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(http.statusCode) else {

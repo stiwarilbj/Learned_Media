@@ -130,10 +130,10 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
 export const APPROVED_INDIVIDUAL_VIDEOS: ApprovedVideoSeed[] = [
   { creator: "melodysheep", title: "TIMELAPSE OF THE ENTIRE UNIVERSE", videoId: "TBikbn5XJhg" },
   { creator: "Ollie Bye", title: "The History of the World: Every Year", videoId: "-6Wu0Q7x5D0" },
-  { creator: "Ollie Bye", title: "Top 5 Tallest Buildings Throughout History" },
-  { creator: "Ollie Bye", title: "The Largest Cities Throughout History: Every Year" },
+  { creator: "Ollie Bye", title: "Top 5 Tallest Buildings Throughout History", videoId: "0MobSmVpvTM" },
+  { creator: "Ollie Bye", title: "The Largest Cities Throughout History: Every Year", videoId: "kptMVQRud5c" },
   { creator: "Ollie Bye", title: "The Spread of Writing: Every Year", videoId: "eUpJ4yVCNrI" },
-  { creator: "American Museum of Natural History", title: "Human Population Through Time (Updated in 2023)" }
+  { creator: "American Museum of Natural History", title: "Human Population Through Time (Updated in 2023)", videoId: "vJ5p3pZlBi4" }
 ];
 
 export const DEFAULT_YOUTUBE_WORKSPACE: YouTubeWorkspaceState = {
@@ -162,6 +162,50 @@ function normalized(value: string) {
 
 function abortError() {
   return new YouTubeApiError("YouTube request canceled.", undefined, "canceled", false);
+}
+
+class YouTubeRequestLimiter {
+  private permits = 4;
+  private waiters: Array<{ resolve: () => void; reject: (reason: unknown) => void; signal?: AbortSignal; onAbort?: () => void }> = [];
+
+  private remove(waiter: { resolve: () => void; reject: (reason: unknown) => void; signal?: AbortSignal; onAbort?: () => void }) {
+    const index = this.waiters.indexOf(waiter);
+    if (index >= 0) this.waiters.splice(index, 1);
+    waiter.signal?.removeEventListener("abort", waiter.onAbort as EventListener);
+  }
+
+  async acquire(signal?: AbortSignal) {
+    if (signal?.aborted) throw abortError();
+    if (this.permits > 0) {
+      this.permits -= 1;
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const waiter: { resolve: () => void; reject: (reason: unknown) => void; signal?: AbortSignal; onAbort?: () => void } = { resolve, reject, signal };
+      waiter.onAbort = () => { this.remove(waiter); reject(abortError()); };
+      this.waiters.push(waiter);
+      signal?.addEventListener("abort", waiter.onAbort, { once: true });
+    });
+  }
+
+  release() {
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter.signal?.removeEventListener("abort", waiter.onAbort as EventListener);
+      waiter.resolve();
+    } else {
+      this.permits += 1;
+    }
+  }
+
+  async run<T>(signal: AbortSignal | undefined, work: () => Promise<T>) {
+    await this.acquire(signal);
+    try {
+      return await work();
+    } finally {
+      this.release();
+    }
+  }
 }
 
 function withTimeout(signal: AbortSignal | undefined, timeoutMs = 30_000) {
@@ -250,11 +294,15 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item
 }
 
 export class YouTubeClient {
+  private readonly limiter = new YouTubeRequestLimiter();
+
   constructor(private readonly apiKey: string, private readonly requestOverride?: (resource: string, params: Record<string, string>, signal?: AbortSignal) => Promise<unknown>) {}
 
   private request<T>(resource: string, params: Record<string, string>, signal?: AbortSignal) {
-    if (this.requestOverride) return this.requestOverride(resource, params, signal) as Promise<T>;
-    return fetchYouTubeJson<T>(this.apiKey, resource, params, signal);
+    return this.limiter.run(signal, async () => {
+      if (this.requestOverride) return this.requestOverride(resource, params, signal) as Promise<T>;
+      return fetchYouTubeJson<T>(this.apiKey, resource, params, signal);
+    });
   }
 
   async resolveChannel(seed: ApprovedChannelSeed, signal?: AbortSignal): Promise<YouTubeChannelRecord> {
