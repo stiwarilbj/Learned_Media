@@ -560,7 +560,7 @@ private final class GeminiClient {
     private func generateJob(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [String], jobIndex: Int, attempt: Int) async throws -> GeminiJobResult {
         let topicText = topics.map { "\(($0["path"] as? [String] ?? []).joined(separator: " / ")) (relative weight \($0["weight"] ?? 10))" }.joined(separator: "\n")
         let prompt = """
-        Create exactly one genuinely obscure, accurate, understandable fact for Learned Media. Do not use common knowledge, famous trivia, textbook definitions, or the first obvious examples. Vary the subject from other concurrent jobs. Preserve the complete topic path. The candidate needs a title, hook (4 to 12 words with no punctuation), topicPath, one to three exact English Wikipedia article titles, and difficulty 1 to 10, where 10 is most obscure. Avoid these titles: \(avoid.suffix(12).joined(separator: " | "))
+        Create exactly one genuinely obscure, accurate, understandable fact for Learned Media. Do not use common knowledge, famous trivia, textbook definitions, or the first obvious examples. Vary the subject from other concurrent jobs. Preserve the complete topic path. Give it a specific but broadly understandable title of about 3 to 9 words. Make the title and hook fresh and different from the avoided titles, without clickbait or vague wording. The candidate needs a title, hook (4 to 12 words with its first word capitalized and no terminal punctuation), topicPath, one to three exact English Wikipedia article titles, and difficulty 1 to 10, where 10 is most obscure. Avoid these titles: \(avoid.suffix(12).joined(separator: " | "))
         Topics and relative weights:
         \(topicText)
         Target difficulty: \(settings["obscurity"] ?? 10)/10.
@@ -575,7 +575,7 @@ private final class GeminiClient {
         let bundle = GeminiBundle(candidate: candidate, sources: grounding.sources, image: grounding.image)
         let evidence: [[String: Any]] = [["candidateIndex": 0, "candidateTitle": bundle.candidate.title ?? "", "candidateTopicPath": bundle.candidate.topicPath ?? [], "sources": bundle.sources.enumerated().map { sourceIndex, source in ["index": sourceIndex, "title": source["title"] ?? "Wikipedia", "url": source["url"] ?? "", "extract": source["extract"] ?? ""] }]]
         let evidenceJSON = (try? JSONSerialization.data(withJSONObject: evidence)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        let groundingPrompt = "Turn this candidate into one final card using only its matching Wikipedia evidence. Every claim in body must be supported. Use one to three sourceIndexes, write a 4 to 12 word hook with no punctuation, and reject incomplete cards. Evidence:\n\(evidenceJSON)\nReturn structured JSON only with a facts array containing exactly one object with candidateIndex, title, hook, body, sourceIndexes, and difficulty."
+        let groundingPrompt = "Turn this candidate into one final card using only its matching Wikipedia evidence. Every claim in body must be supported. Keep the title specific but broadly understandable and different from recent cards. Use one to three sourceIndexes, write a 4 to 12 word hook with a capitalized first word and no terminal punctuation, and write the body in two or three short sentences using clear eighth-grade English and common words. Difficulty controls how obscure the fact is, not how hard the writing is. Reject incomplete cards. Evidence:\n\(evidenceJSON)\nReturn structured JSON only with a facts array containing exactly one object with candidateIndex, title, hook, body, sourceIndexes, and difficulty."
         let groundedResult = try await structured(key: key, prompt: groundingPrompt, schema: groundedSchema(), stage: "grounding")
         let grounded = try JSONDecoder().decode(GeminiGroundedEnvelope.self, from: Data(groundedResult.text.utf8))
         var cards: [[String: Any]] = []
@@ -586,7 +586,8 @@ private final class GeminiClient {
         let indexes = Array(Set((fact.sourceIndexes ?? []).filter { $0 >= 0 && $0 < bundle.sources.count })).prefix(3)
         let sources = (indexes.isEmpty ? Array(bundle.sources.prefix(1)) : indexes.map { bundle.sources[$0] })
         guard !sources.isEmpty else { throw NativeError(message: "The final fact did not cite a verified Wikipedia page.", retryable: true) }
-        let hook = rawHook.replacingOccurrences(of: "[.!?]+", with: "", options: .regularExpression).split(whereSeparator: { $0.isWhitespace }).prefix(12).joined(separator: " ")
+        let cleanedHook = rawHook.replacingOccurrences(of: "[.!?]+", with: "", options: .regularExpression).split(whereSeparator: { $0.isWhitespace }).prefix(12).joined(separator: " ")
+        let hook = cleanedHook.prefix(1).uppercased() + cleanedHook.dropFirst()
         let generatedAt = isoNow()
         var card: [String: Any] = ["id": "gemini-\(UUID().uuidString)", "title": factTitle, "hook": hook, "body": body, "topicPath": bundle.candidate.topicPath ?? [], "sources": sources, "difficulty": max(1, min(10, fact.difficulty ?? bundle.candidate.difficulty ?? 10)), "accent": ["blue", "lilac", "mint", "sand", "coral"][jobIndex % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": groundedResult.resolvedModel ?? groundedResult.model, "generatedAt": generatedAt]]
         if let image = bundle.image, (image["url"] as? String)?.isEmpty == false { card["image"] = image }
@@ -595,11 +596,12 @@ private final class GeminiClient {
         return GeminiJobResult(cards: cards, outcomes: candidateResult.outcomes + groundedResult.outcomes, error: nil)
     }
 
-    func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [String], onCard: @escaping ([String: Any], Int, Int) -> Void) async throws -> [String: Any] {
+    func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [String], requestedCount: Int = 10, onCard: @escaping ([String: Any], Int, Int) -> Void) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings to generate a fresh batch.") }
+        let targetCount = max(1, min(10, requestedCount))
         let jobs: [GeminiJobResult] = await withTaskGroup(of: GeminiJobResult.self, returning: [GeminiJobResult].self) { group in
             var nextIndex = 0
-            for _ in 0..<min(5, 10) {
+            for _ in 0..<min(5, targetCount) {
                 let index = nextIndex
                 nextIndex += 1
                 group.addTask { await self.runSlot(key: key, topics: topics, settings: settings, avoid: avoid, jobIndex: index) }
@@ -610,9 +612,9 @@ private final class GeminiClient {
                 result.append(job)
                 if let card = job.cards.first {
                     completed += 1
-                    onCard(card, completed, 10)
+                    onCard(card, completed, targetCount)
                 }
-                if nextIndex < 10 {
+                if nextIndex < targetCount {
                     let index = nextIndex
                     nextIndex += 1
                     group.addTask { await self.runSlot(key: key, topics: topics, settings: settings, avoid: avoid, jobIndex: index) }
@@ -623,11 +625,11 @@ private final class GeminiClient {
         let cards = jobs.flatMap(\.cards).reduce(into: [[String: Any]]()) { result, card in
             let title = card["title"] as? String ?? ""
             if !result.contains(where: { ($0["title"] as? String)?.caseInsensitiveCompare(title) == .orderedSame }) { result.append(card) }
-        }.prefix(10)
+        }.prefix(targetCount)
         let outcomes = jobs.flatMap(\.outcomes)
         let failed = jobs.filter { $0.cards.isEmpty }.count
         guard !cards.isEmpty else { throw NativeError(message: jobs.compactMap(\.error).first ?? "Gemini could not complete a Wikipedia-grounded batch.") }
-        return ["cards": Array(cards), "modelOutcomes": outcomes, "partial": failed > 0 || cards.count < 10, "failedJobs": failed, "retryable": failed > 0 || cards.count < 10, "retryGuidance": failed > 0 || cards.count < 10 ? "Some work failed. Retry to fill the remaining cards." : ""]
+        return ["cards": Array(cards), "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "partial": failed > 0 || cards.count < targetCount, "failedJobs": failed, "retryable": failed > 0 || cards.count < targetCount, "retryGuidance": failed > 0 || cards.count < targetCount ? "Some work failed. Retry to fill the remaining cards." : ""]
     }
 
     private func runSlot(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [String], jobIndex: Int) async -> GeminiJobResult {
@@ -755,11 +757,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let topics = payload["topics"] as? [[String: Any]] ?? []
             let settings = payload["settings"] as? [String: Any] ?? [:]
             let avoid = payload["avoid"] as? [String] ?? []
+            let requestedCount = payload["requestedCount"] as? Int ?? 10
             let token = payload["token"] as? Int ?? 0
             let task = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let result = try await gemini.generate(key: geminiKey, topics: topics, settings: settings, avoid: avoid) { [weak self] card, completed, requested in
+                    let result = try await gemini.generate(key: geminiKey, topics: topics, settings: settings, avoid: avoid, requestedCount: requestedCount) { [weak self] card, completed, requested in
                         self?.respondEvent(id: id, payload: ["type": "generationCard", "token": token, "card": card, "completed": completed, "requested": requested])
                     }
                     respond(id: id, result: result)

@@ -45,6 +45,11 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
             <summary><span><Icon name="check" size={17} /> Choose your topics</span><strong>{selectedCount} selected</strong></summary>
             <p className="setup-topic-help">Pick the subjects you want to see. You can change them anytime.</p>
             <p className="topic-selection-summary" aria-live="polite">{selectionSummary}</p>
+            <label className="topic-difficulty-control" htmlFor="obscurity">
+              <span className="control-label"><span>Fact difficulty</span><strong>{difficulty}/10 · {DIFFICULTY_LABELS[difficulty]}</strong></span>
+              <input id="obscurity" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
+              <span className="range-ends"><span>Approachable</span><span>Obscure</span></span>
+            </label>
             <div className="topic-toolbar">
               <div className="topic-search-note"><Icon name="search" size={16} /><span>{query ? `Filtering for “${query}”` : "Search the topic checklist"}</span></div>
               <button type="button" className="text-button" onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={15} /> {settings.surpriseMe ? "Surprise me is on" : "Surprise me is off"}</button>
@@ -72,9 +77,6 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
           <details className="setup-customize">
             <summary><span><Icon name="sliders" size={16} /> Customize your feed</span><Icon name="chevronDown" size={15} /></summary>
             <div className="setup-customize-body">
-              <label className="control-label" htmlFor="obscurity"><span>Fact difficulty</span><span>{difficulty}/10 · {DIFFICULTY_LABELS[difficulty]}</span></label>
-              <input id="obscurity" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
-              <div className="range-ends"><span>Approachable</span><span>Obscure</span></div>
               <span className="control-label">Display style</span>
               <div className="option-grid two">{modeCopy.map((mode) => <button type="button" key={mode.id} className={`option-card ${settings.displayMode === mode.id ? "selected" : ""}`} onClick={() => onSettingsChange({ displayMode: mode.id })}><Icon name={mode.icon} size={16} /><span>{mode.label}</span></button>)}</div>
               <span className="control-label">Description length</span>

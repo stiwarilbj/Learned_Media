@@ -75,6 +75,8 @@ export type GeminiProgressEvent =
 export type GeminiGenerationResult = {
   cards: FactCard[];
   modelOutcomes: GeminiModelOutcome[];
+  requestedCount: number;
+  completedCount: number;
   partial: boolean;
   failedJobs: number;
   retryable: boolean;
@@ -408,7 +410,8 @@ export function describeGeminiError(error: unknown) {
 }
 
 function hookWithoutPeriods(value: string) {
-  return value.replace(/[.!?]+/g, "").replace(/\s+/g, " ").trim().split(" ").slice(0, 12).join(" ");
+  const clean = value.replace(/[.!?]+/g, "").replace(/\s+/g, " ").trim().split(" ").slice(0, 12).join(" ");
+  return clean.replace(/^(\s*[\"'“‘([{]*)([a-z])/, (_, prefix: string, letter: string) => prefix + letter.toUpperCase());
 }
 
 function cardSources(source: ResolvedWikipediaSource[]) {
@@ -440,7 +443,7 @@ function candidatePrompt(topicPaths: Array<{ path: string[]; weight: number }>, 
     return path.join(" → ") + ": target difficulty " + profile.targetDifficulty + "/10 (" + DIFFICULTY_LABELS[profile.targetDifficulty] + "; " + profile.heard + " heard, " + profile.unknown + " unknown)";
   }).join("\n") : "Default target difficulty: " + settings.obscurity + "/10";
   return "Create exactly one genuinely obscure, accurate, interesting fact for Learned Media. Avoid common sense, famous trivia, textbook definitions, and the first obvious examples. Prefer a specific forgotten event, unusual invention, counterintuitive scientific detail, hidden technical behavior, or precise geographic detail. Do not invent or speculate.\n\n" +
-    "Suggest one to three exact English Wikipedia article titles that can support the claim. Include the complete topicPath. Write a 4 to 12 word hook with no period, exclamation mark, or question mark. Difficulty is standardized from 1 to 10, where 10 is most obscure.\n\n" +
+    "Suggest one to three exact English Wikipedia article titles that can support the claim. Include the complete topicPath. Give the card a specific but broadly understandable title of about 3 to 9 words. Make the title and hook feel fresh and different from recent cards, without clickbait or vague phrases. Write a 4 to 12 word hook with its first word capitalized and no period, exclamation mark, or question mark. Difficulty is standardized from 1 to 10, where 10 is most obscure.\n\n" +
     "Topics and relative weights:\n" + topicText + "\n\nLearning targets:\n" + targetText + "\n\n" +
     "Baseline difficulty: " + settings.obscurity + "/10\nDesired sentence length: " + settings.sentenceLength + "\nSurprise Me: " + (settings.surpriseMe ? "enabled" : "disabled") +
     "\nRabbit hole thread: " + (rabbitHole ?? "none") + "\nVariation: " + variation + "\nDo not repeat these recent cards:\n" + (avoid.slice(-16).join("\n") || "none") +
@@ -456,7 +459,7 @@ async function generateFactJob(apiKey: string, sessionId: string, topicPaths: Ar
   const sources = await resolveWikipediaSources(candidate.wikipediaSearchTitles?.slice(0, 3) ?? [candidate.title ?? ""], 3, signal);
   if (!sources.length) throw new GeminiFailure("Wikipedia did not return supporting articles for this fact.", undefined, outcomes, undefined, true);
   const evidence = sources.map((source, index) => ({ index, title: source.title, url: source.url, extract: source.extract?.slice(0, 1100) ?? "" }));
-  const groundingPrompt = "Turn this candidate into one final Learned Media card using only the supplied Wikipedia evidence. Every claim in body must be supported by the excerpts. Use one to three sourceIndexes, but use one when sufficient. Write a 4 to 12 word hook without punctuation at the end and a useful description in two or three sentences. Do not invent citations or use sources not listed.\n\nCandidate:\n" +
+  const groundingPrompt = "Turn this candidate into one final Learned Media card using only the supplied Wikipedia evidence. Every claim in body must be supported by the excerpts. Use one to three sourceIndexes, but use one when sufficient. Keep the title specific but broadly understandable and different from recent cards. Write a 4 to 12 word hook with a capitalized first word and no terminal punctuation. Write the body in two or three short sentences using clear eighth-grade English, common words, and a brief explanation of any necessary technical term. Difficulty controls how obscure the fact is, not how hard the writing is. Do not invent citations or use sources not listed.\n\nCandidate:\n" +
     JSON.stringify({ title: candidate.title, topicPath: candidate.topicPath, difficulty: candidate.difficulty }) + "\nEvidence:\n" + JSON.stringify(evidence) +
     "\nReturn structured JSON only with a facts array containing exactly one final card.";
   const groundedResult = await requestStructured<{ facts?: GroundedFact[] }>(apiKey, sessionId, groundingPrompt, groundedSchema(), "grounding", GENERATION_TIMEOUT_MS, signal, onProgress);
@@ -487,19 +490,20 @@ async function generateFactJob(apiKey: string, sessionId: string, topicPaths: Ar
   return { card, outcomes };
 }
 
-export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: string[]; rabbitHole?: string | null; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
+export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, requestedCount = MAX_FACTS_PER_BATCH, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: string[]; rabbitHole?: string | null; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
   if (!apiKey.trim()) throw new GeminiFailure("Paste your Gemini API key in Settings to generate a fresh batch.", undefined, [], undefined, false);
   if (!topicPaths.length) throw new GeminiFailure("Choose at least one topic before generating a batch.", undefined, [], undefined, false);
   const cards: FactCard[] = [];
   const outcomes: GeminiModelOutcome[] = [];
   const failures: string[] = [];
+  const targetCount = Math.max(1, Math.min(MAX_FACTS_PER_BATCH, Math.round(requestedCount)));
   const seenTitles = new Set(avoid.map((title) => title.toLowerCase()));
   let nextSlot = 0;
   async function runWorker() {
-    while (nextSlot < MAX_FACTS_PER_BATCH) {
+    while (nextSlot < targetCount) {
       if (signal?.aborted) throw abortError();
       const slot = nextSlot++;
-      onProgress?.({ type: "slot-start", slot, requested: MAX_FACTS_PER_BATCH });
+      onProgress?.({ type: "slot-start", slot, requested: targetCount });
       let accepted: FactCard | undefined;
       let lastFailure: GeminiFailure | undefined;
       for (let attempt = 0; attempt < MAX_CANDIDATE_RETRIES && !accepted; attempt += 1) {
@@ -534,10 +538,10 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
     }
   }
   await Promise.all(Array.from({ length: MAX_CONCURRENT_GEMINI_REQUESTS }, () => runWorker()));
-  const uniqueCards = cards.filter((card, index, list) => list.findIndex((item) => item.title.toLowerCase() === card.title.toLowerCase()) === index).slice(0, MAX_FACTS_PER_BATCH);
+  const uniqueCards = cards.filter((card, index, list) => list.findIndex((item) => item.title.toLowerCase() === card.title.toLowerCase()) === index).slice(0, targetCount);
   if (!uniqueCards.length) throw new GeminiFailure(failures[0] ?? "Gemini could not complete a Wikipedia-grounded batch.", undefined, outcomes);
-  const partial = uniqueCards.length < MAX_FACTS_PER_BATCH;
-  return { cards: shuffle(uniqueCards), modelOutcomes: outcomes, partial, failedJobs: failures.length, retryable: partial, retryGuidance: partial ? uniqueCards.length + " facts arrived. Retry to fill the remaining slots." : undefined };
+  const partial = uniqueCards.length < targetCount;
+  return { cards: shuffle(uniqueCards), modelOutcomes: outcomes, requestedCount: targetCount, completedCount: uniqueCards.length, partial, failedJobs: failures.length, retryable: partial, retryGuidance: partial ? uniqueCards.length + " facts arrived. Retry to fill the remaining slots." : undefined };
 }
 
 export async function generateLearningResponse({ apiKey, sessionId = "default-session", action, card, question, detailed, history, signal }: { apiKey: string; sessionId?: string; action: "learn" | "question"; card: FactCard; question?: string; detailed?: boolean; history?: LearningMessage[]; signal?: AbortSignal }): Promise<{ answer: string; citations: WikipediaSource[]; modelOutcomes: GeminiModelOutcome[] }> {

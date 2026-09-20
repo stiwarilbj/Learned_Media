@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import type { DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, TopicNode } from "@/lib/types";
 import { selectedLeafCount } from "@/lib/topic-tree";
@@ -50,6 +50,11 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
       <details className="topics-details" open={topicsOpen} onToggle={(event) => setTopicsOpen(event.currentTarget.open)}>
         <summary><span><Icon name="check" size={16} /> Your topics</span><strong>{selectedCount} selected</strong></summary>
         <div className="feed-topic-copy">Keep the checklist close while you read. New choices shape the next batch.</div>
+        <label className="topic-difficulty-control" htmlFor="feed-obscurity">
+          <span className="control-label"><span>Fact difficulty</span><strong>{normalizeDifficulty(settings.obscurity)}/10 · {DIFFICULTY_LABELS[normalizeDifficulty(settings.obscurity)]}</strong></span>
+          <input id="feed-obscurity" className="feed-range" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
+          <span className="range-ends"><span>Approachable</span><span>Obscure</span></span>
+        </label>
         <TopicTree nodes={topics} onToggle={onToggleTopic} onExpand={onExpandTopic} onWeight={onWeightTopic} />
         <div className="feed-custom-topic">
           <input value={customTopic} onChange={(event) => onCustomTopicChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onAddCustomTopic()} placeholder="Add a topic" aria-label="Add a custom topic" />
@@ -59,8 +64,6 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
       <details className="feed-customize">
         <summary><span><Icon name="sliders" size={16} /> Customize your feed</span><Icon name="chevronDown" size={15} /></summary>
         <div className="feed-customize-body">
-          <label className="control-label" htmlFor="feed-obscurity"><span>Fact difficulty</span><span>{settings.obscurity}/10 · {DIFFICULTY_LABELS[normalizeDifficulty(settings.obscurity)]}</span></label>
-          <input id="feed-obscurity" className="feed-range" type="range" min="1" max="10" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
           <span className="control-label">Display</span>
           <div className="feed-display-options">
             {(["picture-text", "text"] as DisplayMode[]).map((mode) => <button type="button" key={mode} className={settings.displayMode === mode ? "selected" : ""} onClick={() => onSettingsChange({ displayMode: mode })}>{mode === "picture-text" ? "Image + text" : "Text only"}</button>)}
@@ -75,15 +78,6 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
 }
 
 export function FeedView({ cards, settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic }: FeedViewProps) {
-  const sentinel = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const element = sentinel.current;
-    if (!element || loading || !canLoadMore) return;
-    const observer = new IntersectionObserver((entries) => entries[0]?.isIntersecting && onLoadMore(), { rootMargin: "180px" });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [canLoadMore, loading, onLoadMore]);
-
   return (
     <div className="feed-workspace">
       {rabbitHole && <div className="rabbit-banner"><div><Icon name="arrow" size={16} /><span>Rabbit Hole Mode <strong>→ {rabbitHole}</strong></span></div><button type="button" onClick={onReset}>Exit rabbit hole</button></div>}
@@ -98,11 +92,12 @@ export function FeedView({ cards, settings, topics, customTopic, loading, canLoa
           <div className="feed-intro"><div><h1>Keep going.</h1><p>One small idea at a time. Every card has a place to look next.</p></div><span className="feed-count">{cards.length} cards in this session</span></div>
           <div className="fact-feed">
             {cards.map((card, index) => <Fragment key={card.id}>
-              {canLoadMore && index === Math.max(cards.length - 3, 0) && <div ref={sentinel} className="feed-sentinel"><span>Finding 10 more facts…</span></div>}
+              {canLoadMore && !loading && index === Math.max(cards.length - 3, 0) && <div className="feed-load-more-nearby"><button type="button" className="small-load-button" onClick={onLoadMore}>Generate 10 more</button></div>}
               <FactCard card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} />
             </Fragment>)}
-            {generationError && !loading && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry}>Retry</button></div>}
-            {loading && <><SkeletonCard /><SkeletonCard /></>}
+            {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> Gemini is building the next facts…</div>}
+            {generationError && !loading && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry}>Retry missing facts</button></div>}
+            {canLoadMore && !loading && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore}>Generate 10 more</button></div>}
           </div>
         </section>
       </div>

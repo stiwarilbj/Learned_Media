@@ -1,10 +1,68 @@
 import type { TopicNode } from "./types";
 
-export const TOPIC_CATALOG_VERSION = 2;
+export const TOPIC_CATALOG_VERSION = 3;
 
 type TopicSeed = string | { label: string; children: TopicSeed[] };
 
 const branch = (label: string, children: TopicSeed[]): TopicSeed => ({ label, children });
+
+const LITERATURE_SEED: TopicSeed = branch("Literature", [
+  branch("Books", [
+    branch("By time period", [
+      branch("Ancient", ["The Epic of Gilgamesh", "The Iliad", "The Odyssey", "The Art of War"]),
+      branch("Medieval", ["The Canterbury Tales", "The Divine Comedy", "Le Morte d'Arthur", "The Tale of Genji"]),
+      branch("Renaissance", ["Don Quixote", "The Prince", "Utopia", "The Decameron"]),
+      branch("Eighteenth century", ["Gulliver's Travels", "Candide", "Pamela", "The Sorrows of Young Werther"]),
+      branch("Nineteenth century", ["Pride and Prejudice", "Jane Eyre", "Moby-Dick", "Middlemarch"]),
+      branch("Modern", ["Mrs Dalloway", "The Great Gatsby", "One Hundred Years of Solitude", "Beloved"])
+    ]),
+    branch("By genre", [
+      branch("Fantasy", ["The Lord of the Rings", "The Hobbit", "A Wizard of Earthsea", "The Chronicles of Narnia"]),
+      branch("Science fiction", ["Frankenstein", "The Time Machine", "Dune", "The Left Hand of Darkness"]),
+      branch("Mystery", ["The Murder of Roger Ackroyd", "The Big Sleep", "The Hound of the Baskervilles", "And Then There Were None"]),
+      branch("Historical fiction", ["War and Peace", "The Name of the Rose", "Wolf Hall", "Things Fall Apart"]),
+      branch("Literary fiction", ["Anna Karenina", "To the Lighthouse", "The Sound and the Fury", "The Remains of the Day"])
+    ]),
+    branch("By historical context", [
+      branch("Slavery and abolition", ["Uncle Tom's Cabin", "Narrative of the Life of Frederick Douglass", "The Interesting Narrative of the Life of Olaudah Equiano", "Beloved"]),
+      branch("Industrialization", ["Hard Times", "North and South", "The Jungle", "Sister Carrie"]),
+      branch("Colonialism", ["Heart of Darkness", "A Passage to India", "Wide Sargasso Sea", "Things Fall Apart"]),
+      branch("The world wars", ["All Quiet on the Western Front", "A Farewell to Arms", "The Book Thief", "Catch-22"])
+    ])
+  ]),
+  branch("Poems", [
+    branch("Epic poetry", ["The Epic of Gilgamesh", "The Iliad", "The Odyssey", "The Aeneid"]),
+    branch("Sonnets", ["Shakespeare's Sonnets", "Astrophil and Stella", "Sonnets from the Portuguese", "The Sonnets of Gerard Manley Hopkins"]),
+    branch("Lyric poetry", ["The Prelude", "Leaves of Grass", "Duino Elegies", "Ariel"]),
+    branch("Narrative poetry", ["The Rime of the Ancient Mariner", "The Lady of the Lake", "The Waste Land", "The Faerie Queene"]),
+    branch("Modern poetry", ["The Cantos", "Howl", "Ariel", "Twenty Love Poems and a Song of Despair"])
+  ]),
+  branch("Political Writings", [
+    branch("Political philosophy", ["The Republic", "Leviathan", "The Social Contract", "On Liberty"]),
+    branch("Rights and democracy", ["Two Treatises of Government", "The Federalist Papers", "A Vindication of the Rights of Woman", "Democracy in America"]),
+    branch("Revolutions", ["Common Sense", "Reflections on the Revolution in France", "The Rights of Man", "The Communist Manifesto"]),
+    branch("Social criticism", ["The Souls of Black Folk", "The Feminine Mystique", "Silent Spring", "The Wretched of the Earth"])
+  ]),
+  branch("Plays and Drama", [
+    branch("Tragedy", ["Oedipus Rex", "Hamlet", "King Lear", "A Doll's House"]),
+    branch("Comedy", ["The Comedy of Errors", "The Importance of Being Earnest", "The Cherry Orchard", "Waiting for Godot"]),
+    branch("Historical plays", ["Henry V", "Richard III", "The Persians", "The Life and Adventures of Nicholas Nickleby"]),
+    branch("Modern drama", ["A Streetcar Named Desire", "Death of a Salesman", "The Glass Menagerie", "The Crucible"])
+  ]),
+  branch("Essays and Speeches", [
+    branch("Personal essays", ["Essays of Michel de Montaigne", "Confessions", "Walden", "The Diary of a Young Girl"]),
+    branch("Literary essays", ["The Common Reader", "Tradition and the Individual Talent", "The Poetic Principle", "The Death of the Author"]),
+    branch("Public speeches", ["Gettysburg Address", "I Have a Dream", "We Shall Fight on the Beaches", "The Gettysburg Address"])
+  ]),
+  branch("Myths and Folklore", [
+    branch("Greek and Roman", ["Metamorphoses", "Theogony", "The Argonautica", "The Golden Ass"]),
+    branch("Norse", ["Poetic Edda", "Prose Edda", "The Saga of the Volsungs", "Beowulf"]),
+    branch("South Asian", ["Mahabharata", "Ramayana", "Panchatantra", "Jataka tales"]),
+    branch("East Asian", ["Journey to the West", "Romance of the Three Kingdoms", "The Tale of Genji", "The Pillow Book"]),
+    branch("African", ["Anansi stories", "Sunjata", "The Mwindo Epic", "The Ozidi Saga"]),
+    branch("Indigenous traditions", ["Popol Vuh", "The Dreaming", "The Legend of the Seven Cities of Cibola", "Raven Tales"])
+  ])
+]);
 
 const countries = [
   "United States", "Canada", "Mexico", "Guatemala", "Cuba", "Haiti", "Dominican Republic", "Jamaica",
@@ -152,7 +210,8 @@ const TOPIC_SEEDS: TopicSeed[] = [
     branch("Cloud and DevOps", ["Cloud Computing", "Virtual Machines", "Containers", "Docker", "Kubernetes", "Serverless", "Infrastructure", "CI/CD", "Observability", "Logging", "Monitoring", "Cloud Storage", "Distributed Computing"]),
     branch("Software Engineering", ["Git", "Version Control", "Testing", "Unit Testing", "Integration Testing", "Debugging", "Code Review", "Design Patterns", "Software Architecture", "Technical Debt", "Refactoring", "APIs", "Documentation", "Open Source"]),
     branch("Other Fields", ["Distributed Systems", "Compilers", "Programming Language Design", "Computer Graphics", "Game Development", "Human-Computer Interaction", "Mobile Development", "Embedded Systems", "Internet of Things", "Robotics", "Data Engineering", "Data Science", "Parallel Computing", "Quantum Computing", "Theory of Computation", "Information Theory", "Computer History", "Famous Computer Scientists", "Famous Software Bugs", "Early Internet History", "Computing Oddities"])
-  ])
+  ]),
+  LITERATURE_SEED
 ];
 
 function slug(value: string) {
@@ -174,7 +233,7 @@ function buildNode(seed: TopicSeed, parentPath: string[], depth: number, rootInd
   const path = [...parentPath, label];
   return {
     id: nodeId(path), label, selected: false, expanded: depth === 0,
-    weight: depth === 0 ? [30, 25, 20, 25][rootIndex] : 10,
+    weight: depth === 0 ? ([30, 25, 20, 25][rootIndex] ?? 10) : 10,
     children: children?.map((child) => buildNode(child, path, depth + 1, rootIndex))
   };
 }

@@ -8,7 +8,7 @@
     sentenceLength: 2,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 2;
+  const TOPIC_CATALOG_VERSION = 3;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.5-flash-lite-preview", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "Approachable", "Familiar", "Curious", "Uncommon", "Niche", "Obscure", "Deep cut", "Rare", "Very rare", "Deepest cut"];
@@ -33,6 +33,7 @@
     loadingCard: null,
     errorByCard: {},
     generationError: "",
+    pendingSlots: 10,
     connectionToken: 0,
     generationRequestToken: 0
   };
@@ -41,9 +42,12 @@
   let requestID = 0;
   let generationToken = 0;
   let topicTreeScrollTop = 0;
+  let mainScrollTop = 0;
   let focusedTopicId = null;
   let focusedFieldId = null;
   let focusedSelection = null;
+  let focusedQuestionCardId = null;
+  let focusedQuestionSelection = null;
 
   function makeTopics() {
     return TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
@@ -287,7 +291,7 @@
     const first = card.sources && card.sources[0] ? card.sources[0] : { title: card.sourceTitle || "Wikipedia", url: card.sourceUrl || wikiURL(card.sourceTitle || card.title) };
     const sources = (card.sources && card.sources.length ? card.sources : [first]).slice(0, 3);
     const image = card.image || (card.imageUrl ? { url: card.imageUrl, alt: card.title, sourceTitle: first.title, sourceUrl: first.url, filePageUrl: first.url, credit: "Wikipedia image" } : null);
-    const hook = String(card.hook || card.title || "A small fact worth keeping").replace(/[.!?]+/g, "").split(/\s+/).slice(0, 12).join(" ");
+    const hook = String(card.hook || card.title || "A small fact worth keeping").replace(/[.!?]+/g, "").split(/\s+/).slice(0, 12).join(" ").replace(/^(\s*[\"'“‘([{]*)([a-z])/, function (_, prefix, letter) { return prefix + letter.toUpperCase(); });
     return Object.assign({
       id: "card-" + Date.now() + "-" + index,
       title: "",
@@ -392,6 +396,11 @@
     if (setup) details.appendChild(node("p", { className: "setup-topic-help", text: "Pick the subjects you want to see. You can change them anytime." }));
     else details.appendChild(node("div", { className: "feed-topic-copy", text: "New choices shape the next batch." }));
     details.appendChild(node("p", { className: "topic-selection-summary", text: selectedSummary(), ariaLive: "polite" }));
+    const difficulty = node("label", { className: "topic-difficulty-control", for: setup ? "setup-difficulty" : "feed-difficulty" });
+    difficulty.appendChild(node("span", { className: "control-label" }, node("span", { text: "Fact difficulty" }), node("strong", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
+    difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
+    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "Approachable" }), node("span", { text: "Obscure" })));
+    details.appendChild(difficulty);
     details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; render(); } })));
     details.appendChild(topicTree());
     details.appendChild(customTopicForm(setup ? "custom-topic-form" : "feed-custom-topic"));
@@ -403,8 +412,6 @@
     const details = node("details", { className: setup ? "setup-customize" : "feed-customize" });
     details.appendChild(node("summary", {}, node("span", {}, svg("sliders", 16), " Customize your feed", svg("chevronDown", 15))));
     const body = node("div", { className: "setup-customize-body" });
-    body.appendChild(node("label", { className: "control-label" }, node("span", { text: "Fact difficulty" }), node("span", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
-    body.appendChild(node("input", { id: "difficulty", type: "range", min: "1", max: "10", value: state.settings.obscurity, onInput: function (event) { state.settings.obscurity = Number(event.target.value); saveState(); render(); } }));
     body.appendChild(node("span", { className: "control-label", text: "Display style" }));
     const display = node("div", { className: "feed-display-options" });
     display.appendChild(node("button", { className: state.settings.displayMode === "picture-text" ? "selected" : "", onClick: function () { state.settings.displayMode = "picture-text"; saveState(); render(); } }, "Image + text"));
@@ -452,7 +459,7 @@
   function questionArea(card) {
     const box = node("div", { className: "question-box" });
     const row = node("div", { className: "question-row" });
-    const input = node("input", { value: card.question || "", placeholder: "Ask a question about this fact…", ariaLabel: "Ask a question about this fact", onInput: function (event) { card.question = event.target.value; } });
+    const input = node("input", { value: card.question || "", placeholder: "Ask a question about this fact…", ariaLabel: "Ask a question about this fact", dataset: { cardId: card.id }, onInput: function (event) { card.question = event.target.value; } });
     row.appendChild(input);
     row.appendChild(node("button", { className: "details-toggle" + (card.answerDetailed ? " selected" : ""), onClick: function () { card.answerDetailed = !card.answerDetailed; render(); } }, "More Details"));
     row.appendChild(node("button", { className: "question-send", ariaLabel: "Send question", onClick: function () { askQuestion(card.id, input.value); } }, svg("arrow", 16)));
@@ -497,12 +504,17 @@
     column.appendChild(node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" })), node("button", { className: "toolbar-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed")));
     column.appendChild(node("div", { className: "feed-intro" }, node("div", {}, node("h1", { text: "Keep going." }), node("p", { text: "One small idea at a time. Every card has a place to look next." })), node("span", { className: "feed-count", text: state.cards.length + " cards in this session" })));
     const list = node("div", { className: "fact-feed" });
-    state.cards.forEach(function (card) { if (!state.query || (card.title + " " + card.body).toLowerCase().includes(state.query)) list.appendChild(cardElement(card)); });
-    if (state.loading) list.appendChild(node("div", { className: "skeleton-card" }, node("div", { className: "skeleton-media shimmer" }), node("div", { className: "skeleton-line wide shimmer" }), node("div", { className: "skeleton-line shimmer" })));
+    state.cards.forEach(function (card, index) {
+      if (state.query && !(card.title + " " + card.body).toLowerCase().includes(state.query)) return;
+      if (!state.loading && !state.generationError && index === Math.max(state.cards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { className: "small-load-button", onClick: function () { generateBatch(generationToken, 10); } }, "Generate 10 more")));
+      list.appendChild(cardElement(card));
+    });
+    if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), " Gemini is building the next facts…"));
+    if (!state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { className: "small-load-button", onClick: function () { generateBatch(generationToken, 10); } }, "Generate 10 more")));
     column.appendChild(list);
     layout.appendChild(column);
     if (state.generationError && !state.loading) {
-      column.insertBefore(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { className: "secondary-button", onClick: function () { state.generationError = ""; generateBatch(generationToken); } }, "Retry")), list);
+      list.appendChild(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { className: "secondary-button", onClick: function () { state.generationError = ""; generateBatch(generationToken, state.pendingSlots); } }, "Retry missing facts")));
     }
     return node("div", { className: "feed-workspace" }, state.toast ? node("div", { className: "feed-toast" }, svg("check", 15), " ", state.toast) : null, layout);
   }
@@ -577,10 +589,14 @@
   function render() {
     const currentTopicTree = document.querySelector(".topic-tree");
     if (currentTopicTree) topicTreeScrollTop = currentTopicTree.scrollTop;
+    const currentMainScroll = document.querySelector(".main-scroll");
+    if (currentMainScroll) mainScrollTop = currentMainScroll.scrollTop;
     const activeElement = document.activeElement;
     if (activeElement && activeElement.dataset && activeElement.dataset.topicId) focusedTopicId = activeElement.dataset.topicId;
     focusedFieldId = activeElement && activeElement.id === "gemini-key" ? activeElement.id : null;
     focusedSelection = focusedFieldId && typeof activeElement.selectionStart === "number" ? [activeElement.selectionStart, activeElement.selectionEnd] : null;
+    focusedQuestionCardId = activeElement && activeElement.dataset ? activeElement.dataset.cardId || null : null;
+    focusedQuestionSelection = focusedQuestionCardId && typeof activeElement.selectionStart === "number" ? [activeElement.selectionStart, activeElement.selectionEnd] : null;
     document.body.classList.add("native-shell");
     app.replaceChildren();
     app.appendChild(navigation());
@@ -593,6 +609,8 @@
     window.requestAnimationFrame(function () {
       const nextTopicTree = document.querySelector(".topic-tree");
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
+      const nextMainScroll = document.querySelector(".main-scroll");
+      if (nextMainScroll) nextMainScroll.scrollTop = mainScrollTop;
       if (focusedTopicId) {
         const focusTarget = Array.from(document.querySelectorAll("[data-topic-id]")).find(function (element) { return element.dataset.topicId === focusedTopicId; });
         if (focusTarget && typeof focusTarget.focus === "function") focusTarget.focus();
@@ -602,6 +620,13 @@
         if (field) {
           field.focus();
           if (focusedSelection && typeof field.setSelectionRange === "function") field.setSelectionRange(focusedSelection[0], focusedSelection[1]);
+        }
+      }
+      if (focusedQuestionCardId) {
+        const questionField = document.querySelector('[data-card-id="' + CSS.escape(focusedQuestionCardId) + '"]');
+        if (questionField) {
+          questionField.focus();
+          if (focusedQuestionSelection && typeof questionField.setSelectionRange === "function") questionField.setSelectionRange(focusedQuestionSelection[0], focusedQuestionSelection[1]);
         }
       }
     });
@@ -639,14 +664,16 @@
   function startFeed() {
     if (!selectedCount()) return showToast("Choose at least one topic before starting.");
     if (!state.key.trim() || state.geminiStatus !== "connected") { state.view = "settings"; return showToast("Add your Gemini API key in Settings and connect it before starting."); }
+    const wasStarted = state.started;
     state.started = true;
-    state.cards = [];
+    if (!wasStarted) state.cards = [];
+    state.pendingSlots = 10;
     state.generationError = "";
     generationToken += 1;
     state.generationRequestToken += 1;
     saveState();
     render();
-    generateBatch(generationToken);
+    generateBatch(generationToken, 10);
   }
   function resetFeed() {
     generationToken += 1;
@@ -654,6 +681,7 @@
     bridge("cancelAll", {}).catch(function () {});
     state.started = false;
     state.cards = [];
+    state.pendingSlots = 10;
     state.profile = {};
     state.loading = false;
     state.loadingCard = null;
@@ -692,23 +720,22 @@
     render();
     showToast("Learning data cleared.");
   }
-  function onScroll() {
-    if (!state.loading && !state.generationError && state.started && window.innerHeight + window.scrollY >= document.body.offsetHeight - 650) generateBatch(generationToken);
-  }
-  async function generateBatch(token) {
+  async function generateBatch(token, requestedCount) {
     if (state.loading || !selectedCount()) return;
     const activeToken = token || generationToken;
     if (!state.key.trim() || state.geminiStatus !== "connected") { state.generationError = "Connect Gemini in Settings before generating facts."; state.loading = false; render(); return; }
     state.loading = true;
     state.generationError = "";
+    const count = Math.max(1, Math.min(10, Number(requestedCount) || 10));
     render();
     try {
-      const result = await bridge("generate", { topics: weightedTopicPaths(10), settings: state.settings, avoid: state.cards.slice(-20).map(function (card) { return card.title; }), token: state.generationRequestToken });
+      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: state.settings, avoid: state.cards.map(function (card) { return card.title; }), token: state.generationRequestToken });
       if (activeToken !== generationToken) return;
       const fresh = (result.cards || []).filter(function (card) { return card && card.id && card.title && card.body && card.hook && card.topicPath && card.topicPath.length && card.sources && card.sources.length; }).map(normalizeCard).filter(function (card) { return !state.cards.some(function (existing) { return existing.id === card.id; }); });
       state.cards = state.cards.concat(fresh);
-      if (!fresh.length) { state.generationError = "Gemini returned no complete new cards. Retry when you are ready."; showToast("No new complete facts arrived. Retry when you are ready."); }
-      else if (result.partial) { state.generationError = result.retryGuidance || "Some work failed. Retry to fill the remaining batch."; showToast(fresh.length + " facts arrived. Retry to fill the remaining batch."); }
+      if (!fresh.length) { state.pendingSlots = count; state.generationError = "Gemini returned no complete new cards. Retry when you are ready."; showToast("No new complete facts arrived. Retry when you are ready."); }
+      else if (result.partial) { state.pendingSlots = Math.max(1, count - fresh.length); state.generationError = result.retryGuidance || "Some work failed. Retry to fill the remaining batch."; showToast(fresh.length + " facts arrived. Retry to fill the remaining batch."); }
+      else { state.pendingSlots = 10; }
     } catch (error) {
       if (activeToken !== generationToken) return;
       state.generationError = error.message || "Could not generate a new batch.";
@@ -847,6 +874,5 @@
       showToast(error.message);
     }
   }
-  window.addEventListener("scroll", onScroll, { passive: true });
   hydrate();
 })();

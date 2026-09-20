@@ -8,6 +8,7 @@ type GenerateBody = {
   learningProfile?: LearningProfile;
   avoid?: string[];
   rabbitHole?: string | null;
+  requestedCount?: number;
 };
 
 function streamResponse(request: Request, apiKey: string, sessionId: string, body: GenerateBody) {
@@ -36,6 +37,7 @@ function streamResponse(request: Request, apiKey: string, sessionId: string, bod
         learningProfile: body.learningProfile ?? {},
         avoid: body.avoid ?? [],
         rabbitHole: body.rabbitHole,
+        requestedCount: body.requestedCount,
         signal: request.signal,
         onProgress: (event) => send({ type: "progress", event })
       }).then((result) => {
@@ -64,6 +66,7 @@ export async function POST(request: Request) {
       learningProfile: body.learningProfile ?? {},
       avoid: body.avoid ?? [],
       rabbitHole: body.rabbitHole,
+      requestedCount: body.requestedCount,
       signal: request.signal
     });
     return NextResponse.json(result);
