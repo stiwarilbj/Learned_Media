@@ -1,0 +1,32 @@
+<svg width="1600" height="720" viewBox="0 0 1600 720" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <defs>
+    <linearGradient id="ice" x1="0" y1="0" x2="1600" y2="540" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#BEEBFF" stop-opacity="0.92"/>
+      <stop offset="0.48" stop-color="#B9D9FF" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#D9D5FF" stop-opacity="0.54"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="150" y1="0" x2="1370" y2="590" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D9FAFF" stop-opacity="0.86"/>
+      <stop offset="0.5" stop-color="#8EDBF2" stop-opacity="0.52"/>
+      <stop offset="1" stop-color="#AEB5F2" stop-opacity="0.3"/>
+    </linearGradient>
+    <linearGradient id="lilac" x1="1600" y1="90" x2="360" y2="650" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DCD8FF" stop-opacity="0.72"/>
+      <stop offset="0.55" stop-color="#B4C9FA" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#F7FCFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft-blur" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="34"/>
+    </filter>
+    <linearGradient id="fade" x1="0" y1="360" x2="0" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5FBFF" stop-opacity="0"/>
+      <stop offset="1" stop-color="#F5FBFF" stop-opacity="0.92"/>
+    </linearGradient>
+  </defs>
+  <path d="M0 0H1600V264C1414 219 1248 196 1075 224C862 259 771 390 552 398C338 406 188 299 0 333V0Z" fill="url(#ice)"/>
+  <path d="M0 82C205 30 360 85 505 174C648 262 768 289 926 236C1117 172 1254 77 1600 128V0H0V82Z" fill="url(#cyan)"/>
+  <path d="M1600 156C1403 119 1279 182 1152 300C1021 422 891 496 696 456C512 418 362 314 190 365C119 386 55 423 0 456V612H1600V156Z" fill="url(#lilac)"/>
+  <ellipse cx="1375" cy="95" rx="214" ry="116" fill="#B9D4FF" fill-opacity="0.36" filter="url(#soft-blur)"/>
+  <ellipse cx="217" cy="295" rx="190" ry="92" fill="#8FDEF0" fill-opacity="0.22" filter="url(#soft-blur)"/>
+  <rect y="350" width="1600" height="370" fill="url(#fade)"/>
+</svg>

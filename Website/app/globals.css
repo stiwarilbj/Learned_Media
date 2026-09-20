@@ -694,6 +694,169 @@ a { color: inherit; }
   .setup-layout, .feed-layout { grid-template-columns: minmax(350px, 390px) minmax(0, 1fr); }
 }
 
+/* Glacial Glass: a distinctive frame around a quiet reading surface. */
+:root {
+  --page: #eef8ff;
+  --surface: #ffffff;
+  --surface-soft: #f4faff;
+  --surface-blue: #e1f4ff;
+  --ink: #234264;
+  --ink-strong: #102a50;
+  --muted: #5f789b;
+  --muted-soft: #89a4c1;
+  --border: #d4e7f6;
+  --border-strong: #b8d5ed;
+  --primary: #4d91e8;
+  --primary-dark: #3978c9;
+  --lilac: #eeeefe;
+  --mint: #e4f8f3;
+  --sand: #fff5e5;
+  --coral: #ffebe9;
+  --shadow: 0 24px 60px rgba(39, 91, 141, .13);
+  --shadow-small: 0 12px 30px rgba(39, 91, 141, .09);
+  --page-gradient: linear-gradient(125deg, #fbfdff 0%, #eef8ff 47%, #f4f1ff 100%);
+  --surface-glass: rgba(255, 255, 255, .75);
+  --primary-gradient: linear-gradient(128deg, #70d5ee 0%, #5a9bea 56%, #8788e9 100%);
+  --highlight: rgba(255, 255, 255, .9);
+  --ambient-waves: url("/Learned_Media/ice-waves.svg");
+}
+
+.theme-dark {
+  --page: #0b1b2c;
+  --surface: #14273e;
+  --surface-soft: #183650;
+  --surface-blue: #1d405d;
+  --ink: #e8f5ff;
+  --ink-strong: #ffffff;
+  --muted: #a9c1d7;
+  --muted-soft: #7d9ab5;
+  --border: #29445f;
+  --border-strong: #3b5f7e;
+  --primary: #75c9ed;
+  --primary-dark: #93d8f4;
+  --lilac: #302e52;
+  --mint: #1b403f;
+  --sand: #493b29;
+  --coral: #4d3033;
+  --shadow: 0 22px 55px rgba(0, 0, 0, .25);
+  --shadow-small: 0 12px 30px rgba(0, 0, 0, .2);
+  --page-gradient: linear-gradient(125deg, #091827 0%, #102b45 52%, #202044 100%);
+  --surface-glass: rgba(16, 39, 62, .78);
+  --primary-gradient: linear-gradient(128deg, #67c9e9 0%, #6a9fed 55%, #a19ced 100%);
+  --highlight: rgba(255, 255, 255, .08);
+  --ambient-waves: url("/Learned_Media/ice-waves.svg");
+}
+
+body { background: var(--page-gradient); }
+
+.app-frame {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+}
+
+.app-frame::before {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  inset: 0 0 auto;
+  height: 560px;
+  background-image: var(--ambient-waves);
+  background-position: center top;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: .92;
+  pointer-events: none;
+}
+
+.app-frame::after {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  top: 110px;
+  right: -86px;
+  width: 300px;
+  height: 230px;
+  border-radius: 44% 56% 62% 38% / 45% 38% 62% 55%;
+  background: linear-gradient(140deg, rgba(125, 224, 239, .24), rgba(137, 128, 234, .12));
+  filter: blur(28px);
+  opacity: .8;
+  pointer-events: none;
+}
+
+.app-frame > * { position: relative; z-index: 1; }
+.main-scroll { position: relative; }
+
+.desktop-rail, .top-navigation, .topbar, .mobile-nav {
+  background: var(--surface-glass);
+  border-color: rgba(164, 203, 232, .5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  backdrop-filter: blur(22px) saturate(1.08);
+  box-shadow: 0 1px 0 var(--highlight), 0 10px 35px rgba(54, 113, 165, .04);
+}
+
+.surface-panel, .settings-card, .danger-card, .settings-help, .preview-strip, .empty-collection, .search-popover, .channel-card {
+  background: var(--surface-glass);
+  border-color: rgba(164, 203, 232, .55);
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
+  backdrop-filter: blur(18px) saturate(1.06);
+  box-shadow: var(--shadow-small), inset 0 1px 0 var(--highlight);
+}
+
+/* Posts and media stay opaque so the reading surface remains calm. */
+.fact-card, .video-card, .video-player-shell, .video-unavailable {
+  background: var(--surface);
+  background-color: var(--surface);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: 0 12px 30px rgba(39, 91, 141, .08), inset 0 1px 0 var(--highlight);
+}
+
+.setup-topics-panel, .feed-topics-panel {
+  background: linear-gradient(160deg, rgba(255, 255, 255, .78), rgba(235, 247, 255, .72));
+}
+
+.setup-start-panel {
+  background: linear-gradient(140deg, rgba(255, 255, 255, .82), rgba(224, 246, 255, .84) 56%, rgba(239, 237, 255, .82));
+  border-color: rgba(137, 191, 229, .56);
+  box-shadow: 0 24px 55px rgba(56, 119, 172, .1), inset 0 1px 0 var(--highlight);
+}
+
+.brand-mark { background: var(--primary-gradient); box-shadow: 0 12px 25px rgba(67, 151, 218, .28); }
+.top-nav-link.active { background: linear-gradient(135deg, rgba(220, 247, 255, .95), rgba(236, 235, 255, .96)); box-shadow: inset 0 0 0 1px rgba(77, 145, 232, .14), 0 5px 15px rgba(68, 136, 194, .07); }
+.theme-dark .top-nav-link.active { background: linear-gradient(135deg, rgba(29, 69, 93, .95), rgba(53, 48, 83, .95)); }
+.primary-button, .start-button, .question-send, .icon-button.filled { background: var(--primary-gradient); border-color: transparent; box-shadow: 0 10px 22px rgba(66, 143, 214, .2); }
+.primary-button:hover, .start-button:hover, .question-send:hover, .icon-button.filled:hover { background: var(--primary-gradient); filter: saturate(1.12) brightness(.99); box-shadow: 0 12px 27px rgba(66, 143, 214, .28); }
+.topic-check.checked, .toggle.on { background: var(--primary-gradient); border-color: transparent; }
+.start-orbit { background: linear-gradient(145deg, rgba(218, 247, 255, .96), rgba(234, 231, 255, .94)); box-shadow: 0 0 0 12px rgba(76, 176, 226, .07), 0 18px 35px rgba(70, 120, 165, .12); }
+.api-key-guide, .setup-key-callout { background: linear-gradient(135deg, rgba(244, 251, 255, .9), rgba(222, 244, 255, .9)); border-color: rgba(137, 191, 229, .48); }
+.theme-switcher button.selected, .feed-display-options button.selected, .feed-length-options button.selected, .setup-surprise.selected, .feed-surprise-toggle.selected { background: linear-gradient(135deg, var(--surface-blue), var(--lilac)); }
+.fact-actions .learn-more-button { background: linear-gradient(135deg, var(--surface-blue), var(--lilac)); }
+
+.primary-button, .secondary-button, .ghost-button, .danger-button, .start-button, .question-send, .icon-button, .topic-check, .topic-subtopics-toggle, .topic-expand, .feed-custom-topic button, .top-nav-link, .rail-link, .video-card, .channel-card {
+  transition: color .18s ease, background-color .18s ease, border-color .18s ease, box-shadow .18s ease, filter .18s ease;
+}
+
+.primary-button:hover, .secondary-button:hover, .ghost-button:hover, .danger-button:hover, .start-button:hover, .question-send:hover, .icon-button:hover, .topic-check:hover, .topic-subtopics-toggle:hover, .feed-custom-topic button:hover, .topic-expand:hover, .top-nav-link:hover, .rail-link:hover, .video-card:hover, .channel-card:hover { transform: none !important; }
+.secondary-button:hover, .ghost-button:hover, .icon-button:hover, .topic-subtopics-toggle:hover, .top-nav-link:hover, .rail-link:hover { border-color: var(--primary); color: var(--primary); background-color: rgba(224, 246, 255, .7); box-shadow: 0 6px 18px rgba(68, 136, 194, .08); }
+.video-card:hover, .channel-card:hover { border-color: rgba(77, 145, 232, .62); box-shadow: 0 14px 32px rgba(39, 91, 141, .14); }
+.custom-topic-input-wrap button, .feed-custom-topic button { background: #b9e4fb !important; border-color: #b9e4fb !important; color: #245b8e !important; box-shadow: none !important; }
+.custom-topic-input-wrap button:hover, .feed-custom-topic button:hover { background: #a6d9f6 !important; border-color: #a6d9f6 !important; color: #173f69 !important; }
+.fact-card .fact-body, .video-player-column, .question-panel { background: var(--surface); }
+.theme-dark .fact-card, .theme-dark .video-card, .theme-dark .video-player-shell, .theme-dark .video-unavailable { box-shadow: 0 14px 32px rgba(0, 0, 0, .22), inset 0 1px 0 var(--highlight); }
+.theme-dark .app-frame::before { opacity: .16; filter: saturate(.7) brightness(.72); }
+.theme-dark .app-frame::after { opacity: .25; }
+
+@media (max-width: 680px) {
+  .app-frame::before { height: 430px; background-size: auto 470px; opacity: .7; }
+  .app-frame::after { top: 84px; right: -120px; width: 230px; height: 170px; opacity: .52; }
+  .surface-panel, .settings-card, .settings-help, .preview-strip, .empty-collection, .search-popover { -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .primary-button, .secondary-button, .ghost-button, .danger-button, .start-button, .question-send, .icon-button, .topic-check, .topic-subtopics-toggle, .topic-expand, .feed-custom-topic button, .top-nav-link, .rail-link, .video-card, .channel-card { transition-duration: .01ms; }
+}
+
 /* Keep the identity, search, and workspace controls in one calm header row. */
 .top-navigation {
   min-height: 72px;

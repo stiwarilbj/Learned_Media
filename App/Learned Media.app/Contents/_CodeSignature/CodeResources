@@ -16,13 +16,17 @@
 		<data>
 		QZBUVLJ06rdQ0MvEhaUSEp7+gNc=
 		</data>
+		<key>Resources/frontend/ice-waves.svg</key>
+		<data>
+		mPrO5dhxyq7tgtM0/xmkPK6h4KA=
+		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		nPKPbAUs0yHSAZXVzaTCvyWL8/s=
+		PYuR71amiJO4TwQZL75LdNIIEDA=
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		PCx3RxSjMqbz+pmpbIA7Rs+mCk0=
+		NFLqXS3KPj6L22IZZrpNZSU/igg=
 		</data>
 		<key>Resources/frontend/topic-catalog.js</key>
 		<data>
@@ -56,18 +60,25 @@
 			I9PC1in8rq6Ej0YKNBCDt23d3EonNqKTddq78HxW3Eg=
 			</data>
 		</dict>
+		<key>Resources/frontend/ice-waves.svg</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			zYG73/d/0f1QI9ZlImWGvtH0oWj4G8ea2MVj02cL6Cw=
+			</data>
+		</dict>
 		<key>Resources/frontend/index.html</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			jVjp+UUsntVtGt+nIu9mtSB07TQqqWEMElJXs+Ft7DQ=
+			FHs/XqG3PpdTJltQDzWTUcct7aAGwZTXaZI0z7jK1xA=
 			</data>
 		</dict>
 		<key>Resources/frontend/styles.css</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			P5QvbVE5xvLOOrh8OcrVmSShGEgsWIxA1TsqnG1od0M=
+			WmzywG2pXV/K1OIbvZCA8PLuOPEQ/SJTNiMNYgZPriQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/topic-catalog.js</key>
