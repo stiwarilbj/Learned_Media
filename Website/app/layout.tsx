@@ -5,7 +5,7 @@ export const metadata: Metadata = {
   title: "Learned Media — Learn something every time you scroll.",
   description: "A social feed for obscure, useful knowledge.",
   icons: {
-    icon: "/favicon.svg"
+    icon: `${process.env.NEXT_PUBLIC_GITHUB_PAGES === "true" ? "/Learned_Media" : ""}/favicon.svg`
   }
 };
 

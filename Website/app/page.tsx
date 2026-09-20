@@ -9,8 +9,10 @@ import { Navigation } from "@/components/learned-media/Navigation";
 import { SettingsView } from "@/components/learned-media/SettingsView";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
+import { generateGeminiFacts, generateLearningResponse, testGeminiKey } from "@/lib/gemini";
 import { clearTopicSelections, flattenTopics, migrateTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
+import { isGitHubPagesRuntime } from "@/lib/runtime";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const STORAGE_KEY = "learned-media-state";
@@ -203,6 +205,10 @@ export default function HomePage() {
       // A corrupt local cache should never prevent the app from loading.
     }
     setHydrated(true);
+    if (isGitHubPagesRuntime()) {
+      setSupabaseConfigured(false);
+      return;
+    }
     void fetch("/api/status").then((response) => response.json()).then((data: { supabaseConfigured?: boolean }) => {
       setSupabaseConfigured(Boolean(data.supabaseConfigured));
     }).catch(() => undefined);
@@ -284,6 +290,43 @@ export default function HomePage() {
     let finalPayload: { cards?: Partial<FactCard>[]; partial?: boolean; retryGuidance?: string } | undefined;
     let streamError = "";
     try {
+      if (isGitHubPagesRuntime()) {
+        const result = await generateGeminiFacts({
+          apiKey: apiKey.trim(),
+          sessionId: sessionIdRef.current,
+          topicPaths: selectWeightedTopicPaths(topics, count),
+          requestedCount: count,
+          settings,
+          learningProfile,
+          rabbitHole: activeRabbitHole,
+          avoid: cards.map((card) => card.title),
+          signal: controller.signal,
+          onProgress: (event) => {
+            if (event.type !== "card") return;
+            const card = normalizeFact(event.card, receivedIds.size);
+            receivedIds.add(card.id);
+            setCards((current) => appendUniqueCards(current, [card]));
+          }
+        });
+        if (controller.signal.aborted || requestGeneration.current !== requestId) return;
+        setCards((current) => appendUniqueCards(current, result.cards.map((card, index) => normalizeFact(card, index))));
+        if (!result.completedCount) {
+          setFeedHasMore(false);
+          setPendingSlots(count);
+          setGenerationError("Gemini returned no new complete cards. Retry when you are ready.");
+          setToast("No new complete facts arrived. Retry when you are ready.");
+        } else if (result.partial) {
+          setFeedHasMore(false);
+          setPendingSlots(Math.max(1, count - result.completedCount));
+          setGenerationError(result.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards.");
+          setToast(result.completedCount + " facts arrived. Retry to fill the remaining slots.");
+        } else {
+          setFeedHasMore(true);
+          setPendingSlots(10);
+          setGenerationError("");
+        }
+        return;
+      }
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
@@ -377,6 +420,12 @@ export default function HomePage() {
     setLearnLoading(id);
     setLearningErrors((current) => ({ ...current, [`${id}:learn`]: undefined }));
     try {
+      if (isGitHubPagesRuntime()) {
+        const payload = await generateLearningResponse({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, action: "learn", card, signal: controller.signal });
+        if (controller.signal.aborted || requestGeneration.current !== requestId) return;
+        setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer } : item));
+        return;
+      }
       const response = await fetch("/api/learn", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
@@ -408,6 +457,13 @@ export default function HomePage() {
     setQuestionLoading(id);
     setLearningErrors((current) => ({ ...current, [id]: undefined }));
     try {
+      if (isGitHubPagesRuntime()) {
+        const payload = await generateLearningResponse({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, action: "question", card, question, detailed, history, signal: controller.signal });
+        if (controller.signal.aborted || requestGeneration.current !== requestId) return;
+        const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: payload.answer }];
+        setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: payload.answer, answerDetailed: detailed, answerSources: payload.citations, questionHistory: nextHistory } : item));
+        return;
+      }
       const response = await fetch("/api/learn", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
@@ -531,6 +587,23 @@ export default function HomePage() {
     setModelChecking(true);
     setGeminiStatus("testing");
     try {
+      if (isGitHubPagesRuntime()) {
+        const result = await testGeminiKey(keyAtStart, controller.signal, sessionIdRef.current, (check, readyCount) => {
+          setModelChecks((current) => {
+            const next = [...current];
+            const index = next.findIndex((item) => item?.model === check.model);
+            if (index >= 0) next[index] = check;
+            else next.push(check);
+            return next;
+          });
+          if (readyCount >= 5) setGeminiStatus("connected");
+        });
+        if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
+        setModelChecks(result.models);
+        setGeminiStatus(result.status);
+        setToast(result.status === "connected" ? "Gemini connected. At least five allowed models passed." : "Fewer than five allowed models passed. Fix the key or retry the checks.");
+        return;
+      }
       const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": keyAtStart, "x-learned-media-session": sessionIdRef.current }, signal: controller.signal });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({})) as { error?: string };

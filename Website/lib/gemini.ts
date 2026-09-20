@@ -1,8 +1,7 @@
-import type { FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, LearningMessage, WikipediaSource } from "./types";
+import type { FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, WikipediaSource } from "./types";
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaSources, type ResolvedWikipediaSource } from "./wikipedia";
-import { createHmac, randomBytes } from "node:crypto";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
 const MODEL_CHECK_TIMEOUT_MS = 20_000;
@@ -19,7 +18,6 @@ export const ALLOWED_GEMINI_MODELS = [
   "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
   "gemini-flash-lite-latest",
-  "gemini-3.5-flash-lite-preview",
   "gemini-3.1-flash-lite",
   "gemini-3-flash-preview",
   "gemini-2.5-flash",
@@ -103,12 +101,30 @@ const pools = new Map<string, ModelPool>();
 const sessionSecrets = new Map<string, string>();
 const activePoolKeys = new Map<string, string>();
 
-function poolFor(_apiKey: string, sessionId = "default-session") {
+function randomSessionSecret() {
+  const values = new Uint32Array(8);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(values);
+  else for (let index = 0; index < values.length; index += 1) values[index] = Math.floor(Math.random() * 0xffffffff);
+  return Array.from(values, (value) => value.toString(16).padStart(8, "0")).join("");
+}
+
+async function credentialFingerprint(secret: string, apiKey: string) {
+  const material = new TextEncoder().encode(secret + ":" + apiKey);
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", material);
+    return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+  let hash = 2166136261;
+  Array.from(material).forEach((value) => { hash = Math.imul(hash ^ value, 16777619); });
+  return (hash >>> 0).toString(16);
+}
+
+async function poolFor(_apiKey: string, sessionId = "default-session") {
   // Keep the model pool isolated to both this browser session and the current
   // credential without storing the credential or using a collision-prone hash.
-  const secret = sessionSecrets.get(sessionId) ?? randomBytes(32).toString("hex");
+  const secret = sessionSecrets.get(sessionId) ?? randomSessionSecret();
   sessionSecrets.set(sessionId, secret);
-  const key = sessionId + ":" + createHmac("sha256", secret).update(_apiKey).digest("hex");
+  const key = sessionId + ":" + await credentialFingerprint(secret, _apiKey);
   const previousKey = activePoolKeys.get(sessionId);
   if (previousKey && previousKey !== key) pools.delete(previousKey);
   activePoolKeys.set(sessionId, key);
@@ -224,7 +240,7 @@ async function discoverModels(apiKey: string, signal?: AbortSignal) {
 }
 
 async function refreshPool(apiKey: string, sessionId: string, signal?: AbortSignal, resetChecks = false) {
-  const pool = poolFor(apiKey, sessionId);
+  const pool = await poolFor(apiKey, sessionId);
   const discovered = await discoverModels(apiKey, signal);
   pool.models = [...ALLOWED_GEMINI_MODELS];
   if (resetChecks) {
@@ -326,7 +342,7 @@ function markModelFailure(pool: ModelPool, model: string, error: GeminiFailure) 
 }
 
 async function requestStructured<T>(apiKey: string, sessionId: string, prompt: string, responseSchema: Record<string, unknown>, stage: GeminiModelOutcome["stage"], timeoutMs = GENERATION_TIMEOUT_MS, signal?: AbortSignal, onProgress?: (event: GeminiProgressEvent) => void) {
-  const pool = poolFor(apiKey, sessionId);
+  const pool = await poolFor(apiKey, sessionId);
   if (!workingModels(pool).length) {
     const retryAt = nextRetryAt(pool);
     if (retryAt) await delay(Math.max(0, retryAt - Date.now()), signal);
@@ -596,6 +612,6 @@ export async function testGeminiKey(apiKey: string, signal?: AbortSignal, sessio
   const working = checks.filter((check) => check.status === "working");
   const distinctWorking = new Set(working.map((check) => check.resolvedModel ?? check.model));
   const firstFailure = checks.find((check) => check.status !== "working");
-  const status = distinctWorking.size >= 5 ? "connected" : firstFailure?.error && /401|403|key|permission/i.test(firstFailure.error) ? "invalid" : checks.some((check) => check.status === "cooldown") ? "rate-limited" : "unavailable";
+  const status: GeminiStatus = distinctWorking.size >= 5 ? "connected" : firstFailure?.error && /401|403|key|permission/i.test(firstFailure.error) ? "invalid" : checks.some((check) => check.status === "cooldown") ? "rate-limited" : "unavailable";
   return { ok: distinctWorking.size >= 5, status, models: checks, eligibleModelCount: ALLOWED_GEMINI_MODELS.length, requiredWorkingModels: 5 };
 }
