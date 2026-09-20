@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		yqPPuqwqIhIGB9+atU2QPuUZrek=
+		zNqJemUL7Pd63jW8C7YLi0KlG44=
 		</data>
 		<key>Resources/frontend/favicon.svg</key>
 		<data>
@@ -18,15 +18,19 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		ir01qUZ1BY0avull/9YrG5XND7o=
+		nPKPbAUs0yHSAZXVzaTCvyWL8/s=
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		TLVrpazVfDNGwrNgSZuYcXjc4BM=
+		PCx3RxSjMqbz+pmpbIA7Rs+mCk0=
 		</data>
 		<key>Resources/frontend/topic-catalog.js</key>
 		<data>
 		FjYypKmVvX/hDjKHpYUmBT7tYGY=
+		</data>
+		<key>Resources/frontend/youtube-catalog.js</key>
+		<data>
+		xzAOpEkOiMP9aP+aIxcEFBYqBtg=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -42,7 +46,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			TmXxK+qmOhkVtqHHQF80yANOAii0wjPrSyb/o+BObNg=
+			2h+7BRJLiRNvLtSMV3MS7jqTU0xh8KXgexVk6gfK15E=
 			</data>
 		</dict>
 		<key>Resources/frontend/favicon.svg</key>
@@ -56,14 +60,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			EE2hT/PCHAi6qIdxBKVJEUbRCgHbW12RCjko7HHXDxs=
+			jVjp+UUsntVtGt+nIu9mtSB07TQqqWEMElJXs+Ft7DQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/styles.css</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			wLTsqoO3XOfWjRzPKheWKWMQsIDz417HE0kL31UCpyY=
+			P5QvbVE5xvLOOrh8OcrVmSShGEgsWIxA1TsqnG1od0M=
 			</data>
 		</dict>
 		<key>Resources/frontend/topic-catalog.js</key>
@@ -71,6 +75,13 @@
 			<key>hash2</key>
 			<data>
 			veynTmdHoSK/h/wdDGy10OBFOTJ5KfDRobl2MHgRQyw=
+			</data>
+		</dict>
+		<key>Resources/frontend/youtube-catalog.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			mKb33vTsRkFQQ+Db//5+wzRrWpJefEuNZnpNdZTmFVE=
 			</data>
 		</dict>
 	</dict>

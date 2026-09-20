@@ -20,6 +20,7 @@ type NavigationProps = {
 const items: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "feed", label: "Feed", icon: "home" },
   { id: "explore", label: "Explore", icon: "compass" },
+  { id: "videos", label: "Videos", icon: "image" },
   { id: "saved", label: "Saved", icon: "bookmark" },
   { id: "likes", label: "Likes", icon: "heart" },
   { id: "history", label: "History", icon: "history" },

@@ -35,6 +35,18 @@ private struct GeminiGroundedFact: Decodable {
 }
 private struct GeminiGroundedEnvelope: Decodable { let facts: [GeminiGroundedFact]? }
 private struct GeminiAnswerEnvelope: Decodable { let answer: String?; let citationIndexes: [Int]? }
+private struct GeminiVideoSearchEnvelope: Decodable {
+    let terms: [String]?
+    let include: [String]?
+    let exclude: [String]?
+    let topics: [String]?
+    let channel: String?
+    let minDate: String?
+    let maxDate: String?
+    let minDurationSeconds: Int?
+    let maxDurationSeconds: Int?
+    let sort: String?
+}
 
 private struct GeminiTextResponse: Decodable {
     struct Candidate: Decodable {
@@ -153,6 +165,38 @@ private final class LocalWorkspaceStore {
     func save(_ value: Any?) throws {
         guard let value, !(value is NSNull) else { return }
         guard JSONSerialization.isValidJSONObject(value) else { throw NativeError(message: "The local workspace contained unsupported data.", retryable: false) }
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+        let locations = try urls()
+        if fileManager.fileExists(atPath: locations.primary.path) {
+            try? fileManager.removeItem(at: locations.backup)
+            try? fileManager.copyItem(at: locations.primary, to: locations.backup)
+        }
+        try data.write(to: locations.primary, options: [.atomic])
+    }
+}
+
+private final class VideoCatalogStore {
+    private let fileManager = FileManager.default
+
+    private func urls() throws -> (primary: URL, backup: URL) {
+        let base = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let folder = base.appendingPathComponent("Learned Media", isDirectory: true)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let primary = folder.appendingPathComponent("youtube-catalog.json")
+        return (primary, primary.appendingPathExtension("backup"))
+    }
+
+    func load() -> Any {
+        guard let locations = try? urls() else { return NSNull() }
+        for url in [locations.primary, locations.backup] {
+            guard let data = try? Data(contentsOf: url), let object = try? JSONSerialization.jsonObject(with: data) else { continue }
+            return object
+        }
+        return NSNull()
+    }
+
+    func save(_ value: Any?) throws {
+        guard let value, !(value is NSNull), JSONSerialization.isValidJSONObject(value) else { return }
         let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
         let locations = try urls()
         if fileManager.fileExists(atPath: locations.primary.path) {
@@ -699,6 +743,22 @@ private final class GeminiClient {
         let citations = (envelope.citationIndexes ?? []).filter { $0 >= 0 && $0 < sourceArray.count }.prefix(3).map { sourceArray[$0] }
         return ["answer": answer, "citations": Array(citations.isEmpty ? Array(sourceArray.prefix(1)) : citations), "modelOutcomes": result.outcomes]
     }
+
+    func interpretVideoSearch(key: String, query: String) async throws -> [String: Any] {
+        guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using Smart search.", retryable: false) }
+        let prompt = "Interpret this natural-language search for a closed catalog of approved educational YouTube videos. Extract search terms, included concepts, excluded concepts, an optional channel name, optional ISO date bounds, optional duration bounds in seconds, and a sort preference. Never invent videos or channels. Return JSON only. Query: \(query)"
+        let schema: [String: Any] = ["type": "OBJECT", "properties": ["terms": ["type": "ARRAY", "items": ["type": "STRING"]], "include": ["type": "ARRAY", "items": ["type": "STRING"]], "exclude": ["type": "ARRAY", "items": ["type": "STRING"]], "topics": ["type": "ARRAY", "items": ["type": "STRING"]], "channel": ["type": "STRING"], "minDate": ["type": "STRING"], "maxDate": ["type": "STRING"], "minDurationSeconds": ["type": "INTEGER"], "maxDurationSeconds": ["type": "INTEGER"], "sort": ["type": "STRING", "enum": ["relevance", "newest", "oldest", "random"]]], "required": ["terms", "include", "exclude", "topics"]]
+        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning")
+        let envelope = try JSONDecoder().decode(GeminiVideoSearchEnvelope.self, from: Data(result.text.utf8))
+        var output: [String: Any] = ["terms": envelope.terms ?? [], "include": envelope.include ?? [], "exclude": envelope.exclude ?? [], "topics": envelope.topics ?? []]
+        if let channel = envelope.channel, !channel.isEmpty { output["channel"] = channel }
+        if let minDate = envelope.minDate, !minDate.isEmpty { output["minDate"] = minDate }
+        if let maxDate = envelope.maxDate, !maxDate.isEmpty { output["maxDate"] = maxDate }
+        if let minDurationSeconds = envelope.minDurationSeconds { output["minDurationSeconds"] = minDurationSeconds }
+        if let maxDurationSeconds = envelope.maxDurationSeconds { output["maxDurationSeconds"] = maxDurationSeconds }
+        if let sort = envelope.sort, !sort.isEmpty { output["sort"] = sort }
+        return output
+    }
 }
 
 private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, ASWebAuthenticationPresentationContextProviding {
@@ -707,6 +767,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let gemini = GeminiClient()
     private let keychain = KeychainStore()
     private let workspace = LocalWorkspaceStore()
+    private let videoCatalog = VideoCatalogStore()
     private var geminiKey = ""
     private var authSession: ASWebAuthenticationSession?
     private var authRequestID = ""
@@ -770,9 +831,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         switch action {
         case "loadState":
             respond(id: id, result: loadState())
+        case "loadVideoCatalog":
+            respond(id: id, result: videoCatalog.load())
         case "saveState":
             do { try saveState(payload["state"]); respond(id: id, result: true) }
             catch { respond(id: id, error: "Learning data could not be saved.") }
+        case "saveVideoCatalog":
+            do { try videoCatalog.save(payload["catalog"]); respond(id: id, result: true) }
+            catch { respond(id: id, error: "The YouTube catalog could not be saved.") }
         case "setGeminiKey":
             cancelActiveTasks()
             geminiKey = payload["key"] as? String ?? ""
@@ -820,6 +886,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 activeTasks[id] = nil
             }
             activeTasks[id] = task
+        case "youtubeRequest":
+            let resource = payload["resource"] as? String ?? ""
+            let key = payload["key"] as? String ?? ""
+            let params = payload["params"] as? [String: Any] ?? [:]
+            let task = Task { [weak self] in
+                guard let self else { return }
+                do { respond(id: id, result: try await youtubeRequest(resource: resource, key: key, params: params)) }
+                catch { respond(id: id, error: userMessage(error)) }
+                activeTasks[id] = nil
+            }
+            activeTasks[id] = task
+        case "videoSearch":
+            let query = payload["query"] as? String ?? ""
+            let key = payload["key"] as? String ?? geminiKey
+            let task = Task { [weak self] in
+                guard let self else { return }
+                do { respond(id: id, result: try await gemini.interpretVideoSearch(key: key, query: query)) }
+                catch { respond(id: id, error: userMessage(error)) }
+                activeTasks[id] = nil
+            }
+            activeTasks[id] = task
         case "cancelAll":
             cancelActiveTasks()
             respond(id: id, result: true)
@@ -841,7 +928,36 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private func allowedExternal(_ url: URL) -> Bool {
         guard url.scheme == "https" else { return false }
         let host = url.host ?? ""
-        return host == "aistudio.google.com" || host.hasSuffix(".wikipedia.org") || host.hasSuffix(".wikimedia.org") || host.hasSuffix(".supabase.co")
+        return host == "aistudio.google.com" || host == "console.cloud.google.com" || host == "www.youtube.com" || host == "youtube.com" || host.hasSuffix(".wikipedia.org") || host.hasSuffix(".wikimedia.org") || host.hasSuffix(".supabase.co")
+    }
+
+    private func youtubeRequest(resource: String, key: String, params: [String: Any]) async throws -> Any {
+        let allowedResources: Set<String> = ["channels", "search", "playlistItems", "videos"]
+        guard allowedResources.contains(resource) else { throw NativeError(message: "That YouTube request is outside the approved catalog service.", retryable: false) }
+        guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeError(message: "Paste your YouTube API key in Settings before connecting.", retryable: false) }
+        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/\(resource)")!
+        components.queryItems = params.compactMap { name, value in
+            guard let string = value as? String else { return nil }
+            return URLQueryItem(name: name, value: string)
+        }
+        guard let url = components.url else { throw NativeError(message: "The YouTube request could not be formed.", retryable: false) }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        let (data, response): (Data, URLResponse)
+        do { (data, response) = try await URLSession(configuration: .ephemeral).data(for: request) }
+        catch is CancellationError { throw NativeError(message: "YouTube request canceled.", retryable: false) }
+        catch { throw NativeError(message: "YouTube could not be reached right now.") }
+        guard let http = response as? HTTPURLResponse else { throw NativeError(message: "YouTube returned no HTTP response.") }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard (200..<300).contains(http.statusCode) else {
+            let errorObject = object["error"] as? [String: Any]
+            let message = errorObject?["message"] as? String ?? "YouTube returned HTTP \(http.statusCode)."
+            let reason = (errorObject?["errors"] as? [[String: Any]])?.first?["reason"] as? String
+            if reason == "quotaExceeded" { throw NativeError(message: "YouTube API quota is exhausted. Resume after the quota resets.", retryable: false) }
+            throw NativeError(message: message, retryable: [408, 429].contains(http.statusCode) || http.statusCode >= 500)
+        }
+        return object
     }
 
     private func userMessage(_ error: Error) -> String {

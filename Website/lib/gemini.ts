@@ -578,6 +578,32 @@ export async function generateLearningResponse({ apiKey, sessionId = "default-se
   return { answer: result.value.answer.trim(), citations: (indexes.length ? indexes : [0]).map((index) => sources[index]).filter(Boolean).map(({ image: _image, ...source }) => source), modelOutcomes: result.outcomes };
 }
 
+export type VideoSearchPlan = {
+  terms?: string[];
+  include?: string[];
+  exclude?: string[];
+  topics?: string[];
+  channel?: string;
+  minDate?: string;
+  maxDate?: string;
+  minDurationSeconds?: number;
+  maxDurationSeconds?: number;
+  sort?: "relevance" | "newest" | "oldest" | "random";
+};
+
+export async function interpretVideoSearch({ apiKey, sessionId = "default-session", query, signal }: { apiKey: string; sessionId?: string; query: string; signal?: AbortSignal }): Promise<{ plan: VideoSearchPlan; modelOutcomes: GeminiModelOutcome[] }> {
+  if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before using smart video search.", undefined, [], undefined, false);
+  const prompt = "Interpret this natural-language video search for a closed catalog of approved educational YouTube videos. Do not invent channel names or videos. Extract useful search terms, included concepts, excluded concepts, an optional channel name, optional ISO date bounds, optional duration bounds in seconds, and a sort preference. Keep the answer as JSON only. Query: " + query;
+  const result = await requestStructured<{ terms?: string[]; include?: string[]; exclude?: string[]; topics?: string[]; channel?: string; minDate?: string; maxDate?: string; minDurationSeconds?: number; maxDurationSeconds?: number; sort?: VideoSearchPlan["sort"] }>(apiKey, sessionId, prompt, {
+    type: "OBJECT",
+    properties: {
+      terms: { type: "ARRAY", items: { type: "STRING" } }, include: { type: "ARRAY", items: { type: "STRING" } }, exclude: { type: "ARRAY", items: { type: "STRING" } }, topics: { type: "ARRAY", items: { type: "STRING" } }, channel: { type: "STRING" }, minDate: { type: "STRING" }, maxDate: { type: "STRING" }, minDurationSeconds: { type: "INTEGER" }, maxDurationSeconds: { type: "INTEGER" }, sort: { type: "STRING", enum: ["relevance", "newest", "oldest", "random"] }
+    },
+    required: ["terms", "include", "exclude", "topics"]
+  }, "learning", GENERATION_TIMEOUT_MS, signal);
+  return { plan: result.value, modelOutcomes: result.outcomes };
+}
+
 async function checkOneModel(apiKey: string, model: string, signal?: AbortSignal): Promise<GeminiModelCheck> {
   const started = Date.now();
   try {

@@ -1,4 +1,4 @@
-export type View = "feed" | "explore" | "saved" | "likes" | "history" | "settings";
+export type View = "feed" | "explore" | "videos" | "saved" | "likes" | "history" | "settings";
 
 export type DisplayMode = "picture-text" | "text";
 

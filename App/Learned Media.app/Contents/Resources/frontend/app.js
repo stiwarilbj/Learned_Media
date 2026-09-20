@@ -9,7 +9,7 @@
     surpriseMe: true
   };
   const TOPIC_CATALOG_VERSION = 3;
-  const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.5-flash-lite-preview", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "Approachable", "Familiar", "Curious", "Uncommon", "Niche", "Obscure", "Deep cut", "Rare", "Very rare", "Deepest cut"];
   const PERSISTENCE_VERSION = 1;
@@ -29,6 +29,11 @@
     geminiStatus: "not-configured",
     modelChecks: [],
     modelChecking: false,
+    youtubeKey: "",
+    youtubeStatus: "not-configured",
+    youtubeProgress: { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE ? window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length : 51, importedVideos: 0 },
+    youtubeError: "",
+    youtube: { channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest", incomplete: false },
     account: null,
     toast: "",
     loading: false,
@@ -147,6 +152,7 @@
       window.webkit.messageHandlers.native.postMessage({ id: id, action: action, payload: payload || {} });
     });
   }
+  window.__learnedMediaNativeRequest = bridge;
   window.__nativeResolve = function (message) {
     const item = pending.get(message.id);
     if (!item) return;
@@ -288,10 +294,12 @@
       profile: state.profile,
       started: state.started,
       account: state.account,
+      youtube: state.youtube,
       theme: document.body.classList.contains("theme-dark") ? "dark" : "light"
     };
     queuedWorkspaceState = snapshot;
     try { window.localStorage.setItem(LOCAL_WORKSPACE_KEY, JSON.stringify(snapshot)); } catch (_) {}
+    bridge("saveVideoCatalog", { catalog: state.youtube }).catch(function () {});
     flushWorkspaceSave();
   }
   function flushWorkspaceSave() {
@@ -339,6 +347,109 @@
     list.appendChild(links);
     return list;
   }
+  function youtubeDate(value) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? "Date unavailable" : date.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }); }
+  function youtubeURL(id) { return "https://www.youtube.com/watch?v=" + encodeURIComponent(id); }
+  function youtubeSave(id) { const saved = state.youtube.savedIds.indexOf(id) >= 0; state.youtube.savedIds = saved ? state.youtube.savedIds.filter(function (item) { return item !== id; }) : state.youtube.savedIds.concat(id); saveState(); render(); }
+  function youtubeOpenVideo(id) {
+    state.youtube.selectedVideoId = id; state.youtube.selectedChannelId = null;
+    state.youtube.history = [{ videoId: id, watchedAt: new Date().toISOString() }].concat(state.youtube.history.filter(function (item) { return item.videoId !== id; })).slice(0, 200);
+    saveState(); render();
+  }
+  function youtubeOpenChannel(id) { state.youtube.selectedChannelId = id; state.youtube.selectedVideoId = null; state.youtube.tab = "channels"; state.youtube.searchText = ""; state.youtube.smartIds = null; render(); }
+  function youtubeVideoCard(video) {
+    const card = node("article", { className: "video-card" });
+    const main = node("button", { className: "video-card-main", ariaLabel: "Watch " + video.title, onClick: function () { youtubeOpenVideo(video.id); } });
+    const thumbnail = node("div", { className: "video-thumbnail" });
+    if (video.thumbnailUrl) { const image = node("img", { src: video.thumbnailUrl, alt: "", loading: "lazy" }); thumbnail.appendChild(image); }
+    else thumbnail.appendChild(node("span", {}, svg("image", 22)));
+    thumbnail.appendChild(node("small", { text: video.durationLabel || "" }));
+    main.appendChild(thumbnail);
+    main.appendChild(node("div", { className: "video-card-copy" }, node("h3", { text: video.title }), node("p", { text: video.channelName }), node("time", { text: youtubeDate(video.publishedAt) })));
+    card.appendChild(main);
+    card.appendChild(node("button", { className: "video-save-button" + (state.youtube.savedIds.indexOf(video.id) >= 0 ? " saved" : ""), ariaLabel: state.youtube.savedIds.indexOf(video.id) >= 0 ? "Remove from saved videos" : "Save video", onClick: function () { youtubeSave(video.id); } }, svg("bookmark", 16)));
+    return card;
+  }
+  function youtubeList(videos) {
+    if (!videos.length) return node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("search", 24)), node("h2", { text: "No approved videos match that yet" }), node("p", { text: "Try another phrase, topic, or channel. Search stays inside the approved collection." }));
+    const grid = node("div", { className: "video-grid" }); videos.forEach(function (video) { grid.appendChild(youtubeVideoCard(video)); }); return grid;
+  }
+  function youtubeImportNotice() {
+    const progress = state.youtubeProgress || {};
+    const notice = node("div", { className: "video-import-notice", role: "status" }, node("div", {}, node("strong", { text: progress.phase === "paused" ? "Import paused" : "Building your approved library" }), node("span", { text: (progress.completedChannels || 0) + "/" + (progress.totalChannels || 51) + " channels · " + (progress.importedVideos || 0).toLocaleString() + " videos imported" + (state.youtubeError ? " · " + state.youtubeError : "") })));
+    notice.appendChild(node("button", { className: "ghost-button", onClick: progress.phase === "paused" ? youtubeConnect : progress.phase === "complete" || progress.phase === "error" ? youtubeConnect : function () { state.youtubeStatus = "paused"; state.youtubeProgress.phase = "paused"; generationToken += 1; render(); } }, progress.phase === "paused" ? "Resume" : progress.phase === "complete" || progress.phase === "error" ? "Retry" : "Pause"));
+    return notice;
+  }
+  function youtubeConnect() {
+    const key = state.youtubeKey.trim();
+    if (!key) { state.view = "settings"; showToast("Paste your YouTube API key in Settings first."); return; }
+    const token = ++state.connectionToken;
+    state.youtubeStatus = "connecting"; state.youtubeError = ""; state.youtubeProgress = { phase: "resolving", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0 }; render();
+    window.LEARNED_MEDIA_YOUTUBE.sync(key, state.youtube.channels, function (progress) { if (token !== state.connectionToken) return; state.youtubeProgress = progress; render(); }).then(function (result) {
+      if (token !== state.connectionToken) return;
+      state.youtube.channels = result.channels; state.youtube.videos = result.videos; state.youtube.incomplete = result.incomplete; state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(result.videos, 24, []).map(function (video) { return video.id; }); state.youtubeStatus = result.incomplete ? "error" : "connected"; state.youtubeError = result.progress.error || ""; saveState(); render(); showToast(result.incomplete ? "YouTube connected, but some approved channels need a retry." : "YouTube connected. Your approved video library is ready.");
+    }).catch(function (error) { if (token !== state.connectionToken) return; state.youtubeStatus = "error"; state.youtubeProgress.phase = "error"; state.youtubeError = error.message || "YouTube import failed."; render(); showToast(state.youtubeError); });
+  }
+  async function youtubeSmartSearch() {
+    const query = state.youtube.searchText.trim();
+    if (!query) return;
+    if (!state.key.trim() || state.geminiStatus !== "connected") { state.view = "settings"; showToast("Connect Gemini in Settings before using Smart search. Ordinary video search works without it."); return; }
+    state.youtubeSmartLoading = true; render();
+    try {
+      const plan = await bridge("videoSearch", { key: state.key.trim(), query: query });
+      const terms = (plan.terms || []).concat(plan.include || []).join(" ") || query;
+      let results = window.LEARNED_MEDIA_YOUTUBE.filter(state.youtube.videos, terms, state.youtube.topic, plan.channel ? (state.youtube.channels.find(function (channel) { return channel.name.toLowerCase().includes(String(plan.channel).toLowerCase()); }) || {}).id : null);
+      (plan.exclude || []).forEach(function (term) { results = results.filter(function (video) { return !(video.title + " " + video.description + " " + (video.tags || []).join(" ")).toLowerCase().includes(String(term).toLowerCase()); }); });
+      if (plan.minDate) results = results.filter(function (video) { return video.publishedAt >= plan.minDate; });
+      if (plan.maxDate) results = results.filter(function (video) { return video.publishedAt <= plan.maxDate; });
+      if (plan.minDurationSeconds !== undefined) results = results.filter(function (video) { return video.durationSeconds >= Number(plan.minDurationSeconds); });
+      if (plan.maxDurationSeconds !== undefined) results = results.filter(function (video) { return video.durationSeconds <= Number(plan.maxDurationSeconds); });
+      if (plan.sort === "newest") results.sort(function (a, b) { return b.publishedAt.localeCompare(a.publishedAt); });
+      if (plan.sort === "oldest") results.sort(function (a, b) { return a.publishedAt.localeCompare(b.publishedAt); });
+      if (plan.sort === "random") results = window.LEARNED_MEDIA_YOUTUBE.shuffle(results, results.length, []);
+      state.youtube.smartIds = results.map(function (video) { return video.id; }); showToast(results.length + " approved video" + (results.length === 1 ? "" : "s") + " matched your search.");
+    } catch (error) { showToast(error.message || "Smart video search could not complete."); }
+    state.youtubeSmartLoading = false; render();
+  }
+  function youtubeFilteredVideos() {
+    const all = state.youtube.videos || [];
+    if (state.youtube.tab === "saved") return all.filter(function (video) { return state.youtube.savedIds.indexOf(video.id) >= 0; });
+    if (state.youtube.tab === "history") return state.youtube.history.map(function (item) { return all.find(function (video) { return video.id === item.videoId; }); }).filter(Boolean);
+    if (state.youtube.selectedChannelId) return window.LEARNED_MEDIA_YOUTUBE.filter(all, state.youtube.searchText, state.youtube.topic, state.youtube.selectedChannelId).sort(function (a, b) { return state.youtube.order === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : state.youtube.order === "random" ? Math.random() - .5 : b.publishedAt.localeCompare(a.publishedAt); });
+    if (Array.isArray(state.youtube.smartIds)) return state.youtube.smartIds.map(function (id) { return all.find(function (video) { return video.id === id; }); }).filter(Boolean);
+    if (state.youtube.searchText) return window.LEARNED_MEDIA_YOUTUBE.filter(all, state.youtube.searchText, state.youtube.topic);
+    const byId = {}; all.forEach(function (video) { byId[video.id] = video; }); return (state.youtube.discoverIds || []).map(function (id) { return byId[id]; }).filter(Boolean);
+  }
+  function youtubeDetail(video) {
+    const section = node("section", { className: "content-view video-workspace" });
+    section.appendChild(node("button", { className: "text-button video-back-button", onClick: function () { state.youtube.selectedVideoId = null; render(); } }, svg("chevronRight", 15), " Back to videos"));
+    const player = node("div", { className: "video-player-shell" });
+    if (video.embedAvailable) player.appendChild(node("iframe", { title: video.title, src: "https://www.youtube.com/embed/" + encodeURIComponent(video.id) + "?enablejsapi=1&origin=https%3A%2F%2Fcom.learnedmedia.app&rel=0&playsinline=1", allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share", allowFullscreen: "true", referrerpolicy: "strict-origin-when-cross-origin" }));
+    else player.appendChild(node("div", { className: "video-unavailable" }, svg("external", 24), node("strong", { text: "Watch this one on YouTube" }), externalLink(youtubeURL(video.id), "Open video", "api-key-link")));
+    const playerColumn = node("div", { className: "video-player-column" });
+    playerColumn.appendChild(player);
+    const heading = node("div", { className: "video-player-heading" });
+    heading.appendChild(node("div", {}, node("span", { className: "eyebrow", text: "Now watching" }), node("h1", { text: video.title }), node("p", { text: video.channelName + " · " + youtubeDate(video.publishedAt) + " · " + video.durationLabel })));
+    heading.appendChild(node("button", { className: "secondary-button", onClick: function () { youtubeSave(video.id); } }, svg("bookmark", 15), state.youtube.savedIds.indexOf(video.id) >= 0 ? " Saved" : " Save video"));
+    playerColumn.appendChild(heading);
+    playerColumn.appendChild(node("div", { className: "video-player-links" }, externalLink(youtubeURL(video.id), "Watch on YouTube", "ghost-button"), node("span", { text: (video.topics || []).join(" · ") })));
+    section.appendChild(node("div", { className: "video-player-layout" }, playerColumn));
+    const related = (state.youtube.videos || []).filter(function (item) { return item.id !== video.id && (item.topics || []).some(function (topic) { return (video.topics || []).indexOf(topic) >= 0; }); }).slice(0, 6);
+    if (related.length) playerColumn.appendChild(node("section", { className: "video-related" }, node("div", { className: "section-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Up next to explore" }), node("h2", { text: "More like this" }))), youtubeList(related)));
+    return section;
+  }
+  function videosView() {
+    const section = node("section", { className: "content-view video-workspace" });
+    if (state.youtube.selectedVideoId) { const selected = state.youtube.videos.find(function (video) { return video.id === state.youtube.selectedVideoId; }); if (selected) return youtubeDetail(selected); }
+    if (state.youtube.selectedChannelId) { const channel = state.youtube.channels.find(function (item) { return item.id === state.youtube.selectedChannelId; }); section.appendChild(node("button", { className: "text-button video-back-button", onClick: function () { state.youtube.selectedChannelId = null; render(); } }, svg("chevronRight", 15), " All channels")); section.appendChild(node("div", { className: "view-heading video-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Channel catalog" }), node("h1", { text: channel ? channel.name : "Channel" }), node("p", { text: channel ? channel.videoCount.toLocaleString() + " imported videos from this approved channel" : "" })))); const controls = node("div", { className: "video-controls" }); controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { value: state.youtube.searchText, placeholder: "Search this channel", ariaLabel: "Search this channel", onInput: function (event) { state.youtube.searchText = event.target.value; render(); } }))); controls.appendChild(node("select", { value: state.youtube.order, ariaLabel: "Sort channel videos", onChange: function (event) { state.youtube.order = event.target.value; render(); } }, node("option", { value: "newest", text: "Newest" }), node("option", { value: "oldest", text: "Oldest" }), node("option", { value: "random", text: "Random" }))); section.appendChild(controls); section.appendChild(youtubeList(youtubeFilteredVideos())); return section; }
+    section.appendChild(node("div", { className: "view-heading video-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Learned Media Videos" }), node("h1", { text: state.youtube.tab === "saved" ? "Saved videos" : state.youtube.tab === "history" ? "Watch history" : "A calmer way to find something good." }), node("p", { text: "Discover approved creators, search their imported catalogs, and watch without leaving your workspace." })), node("div", { className: "video-heading-actions" }, node("button", { className: "secondary-button", disabled: !state.youtube.videos.length, onClick: function () { state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; }); state.youtube.tab = "discover"; render(); } }, svg("reset", 15), " Shuffle"), node("button", { className: "primary-button small", disabled: !state.youtube.videos.length, onClick: function () { const next = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, state.youtube.discoverIds); state.youtube.discoverIds = state.youtube.discoverIds.concat(next.map(function (video) { return video.id; })); render(); } }, svg("plus", 15), " Show more"))));
+    if ((state.youtubeStatus === "connecting" || state.youtubeStatus === "error" || state.youtube.incomplete) && state.youtubeProgress.phase !== "idle") section.appendChild(youtubeImportNotice());
+    const tabs = node("div", { className: "video-tabs", role: "tablist" }); [["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]].forEach(function (item) { tabs.appendChild(node("button", { className: state.youtube.tab === item[0] ? "active" : "", role: "tab", ariaSelected: state.youtube.tab === item[0], onClick: function () { state.youtube.tab = item[0]; state.youtube.selectedChannelId = null; state.youtube.selectedVideoId = null; render(); } }, item[1], item[0] === "saved" && state.youtube.savedIds.length ? " " + state.youtube.savedIds.length : "")); }); section.appendChild(tabs);
+    if (state.youtube.tab === "discover") { const controls = node("div", { className: "video-controls" }); controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { value: state.youtube.searchText, placeholder: "Search approved videos", ariaLabel: "Search approved videos", onInput: function (event) { state.youtube.searchText = event.target.value; state.youtube.smartIds = null; render(); } }))); controls.appendChild(node("button", { className: "ghost-button", disabled: Boolean(state.youtubeSmartLoading) || !state.youtube.searchText.trim(), onClick: youtubeSmartSearch }, state.youtubeSmartLoading ? "Searching" : "Smart search")); section.appendChild(controls); const filters = node("div", { className: "video-topic-filters" }); ["All"].concat(window.LEARNED_MEDIA_YOUTUBE.TOPICS).forEach(function (topic) { filters.appendChild(node("button", { className: state.youtube.topic === topic ? "active" : "", onClick: function () { state.youtube.topic = topic; state.youtube.smartIds = null; state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; }); render(); } }, topic === "All" ? "All topics" : topic)); }); section.appendChild(filters); }
+    if (state.youtube.tab === "channels") { if (state.youtube.channels.length) { const channels = node("div", { className: "channel-grid" }); state.youtube.channels.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (channel) { channels.appendChild(node("button", { className: "channel-card", onClick: function () { youtubeOpenChannel(channel.id); } }, channel.thumbnailUrl ? node("img", { src: channel.thumbnailUrl, alt: "" }) : node("span", { className: "channel-avatar", text: channel.name.slice(0, 1) }), node("span", {}, node("strong", { text: channel.name }), node("small", { text: channel.videoCount.toLocaleString() + " videos" })), svg("chevronRight", 17))); }); section.appendChild(channels); } else section.appendChild(node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("image", 24)), node("h2", { text: "Connect YouTube to start discovering" }), node("p", { text: "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos." }), node("button", { className: "primary-button", onClick: function () { state.view = "settings"; render(); } }, "Open video settings"))); }
+    else if (state.youtube.videos.length) section.appendChild(youtubeList(youtubeFilteredVideos()));
+    else section.appendChild(node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("image", 24)), node("h2", { text: "Connect YouTube to start discovering" }), node("p", { text: "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos." }), node("button", { className: "primary-button", onClick: function () { state.view = "settings"; render(); } }, "Open video settings")));
+    return section;
+  }
   function topicMatches(topic, query) {
     if (!query) return true;
     const term = query.toLowerCase();
@@ -380,7 +491,7 @@
     return tree;
   }
   function navigation() {
-    const items = [["feed", "Feed", "home"], ["saved", "Saved", "bookmark"], ["likes", "Likes", "heart"], ["history", "History", "history"], ["settings", "Settings", "settings"]];
+    const items = [["feed", "Feed", "home"], ["videos", "Videos", "image"], ["saved", "Saved", "bookmark"], ["likes", "Likes", "heart"], ["history", "History", "history"], ["settings", "Settings", "settings"]];
     const header = node("header", { className: "top-navigation" });
     header.appendChild(node("button", { className: "nav-brand", ariaLabel: "Learned Media home", onClick: function () { state.view = "feed"; render(); } }, node("span", { className: "brand-mark", text: "LM" }), node("span", { className: "brand-wordmark" }, node("strong", { text: "Learned" }), node("small", { text: "Media" }))));
     const links = node("nav", { className: "top-nav-links", ariaLabel: "Primary navigation" });
@@ -562,6 +673,22 @@
     }
     gemini.appendChild(node("div", { className: "api-key-guide" }, node("div", { className: "api-key-guide-icon" }, svg("sparkles", 16)), node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a key?" }), node("p", { text: "Create or copy one in Google AI Studio, then paste it here." })), externalLink(AI_STUDIO_URL, "Open AI Studio", "api-key-link")));
     main.appendChild(gemini);
+    const youtube = node("section", { className: "settings-card youtube-settings-card" });
+    youtube.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("image", 19)), node("div", {}, node("h2", { text: "YouTube Videos" }), node("p", { text: "Use your own YouTube Data API key for the approved video library." })), node("span", { className: "status-dot " + (state.youtubeStatus === "connected" ? "connected" : state.youtubeStatus === "error" ? "unavailable" : ""), text: state.youtubeStatus === "connecting" ? "Connecting" : state.youtubeStatus === "connected" ? "Connected" : state.youtubeStatus === "error" ? "Needs attention" : "Not configured" })));
+    youtube.appendChild(node("label", { className: "field-label", text: "Paste your YouTube API key here" }));
+    const youtubeRow = node("div", { className: "key-input-row" });
+    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.youtubeKey = event.target.value; state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; state.youtubeProgress = { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0 }; render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
+    const youtubeActions = node("div", { className: "key-actions" });
+    youtubeActions.appendChild(node("button", { className: "primary-button small", disabled: state.youtubeStatus === "connecting", onClick: youtubeConnect }, state.youtubeStatus === "connecting" ? " Connecting" : " Connect YouTube"));
+    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.youtubeKey = ""; state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; bridge("cancelAll", {}).catch(function () {}); showToast("YouTube session key removed."); } }, "Remove key"));
+    youtubeRow.appendChild(youtubeActions); youtube.appendChild(youtubeRow);
+    youtube.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your YouTube key stays in session memory and is never saved to learning data or GitHub." })));
+    const guideCopy = node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a YouTube key?" }), node("p", { html: "1. <a href=\"https://console.cloud.google.com/projectcreate\" target=\"_blank\">Create or select a Google Cloud project</a><br>2. <a href=\"https://console.cloud.google.com/apis/library/youtube.googleapis.com\" target=\"_blank\">Enable YouTube Data API v3</a><br>3. Open <a href=\"https://console.cloud.google.com/apis/credentials\" target=\"_blank\">Credentials</a> → Create credentials → API key and restrict it to YouTube Data API v3<br>4. Copy the key into Learned Media and connect" }));
+    guideCopy.querySelectorAll("a").forEach(function (link) { link.addEventListener("click", function (event) { event.preventDefault(); bridge("openURL", { url: link.href }).catch(function (error) { showToast(error.message); }); }); });
+    youtube.appendChild(node("div", { className: "api-key-guide youtube-guide" }, node("div", { className: "api-key-guide-icon" }, svg("image", 16)), guideCopy));
+    youtube.appendChild(node("p", { className: "youtube-restriction-note", text: "Website keys may be restricted to the GitHub Pages site. The Mac app needs a key that permits native requests. Google will report restriction failures clearly." }));
+    if (state.youtubeProgress.phase !== "idle") youtube.appendChild(youtubeImportNotice());
+    main.appendChild(youtube);
     const accountCard = node("section", { className: "settings-card" });
     accountCard.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("user", 19)), node("div", {}, node("h2", { text: "Account" }), node("p", { text: "Google sign-in keeps your account ready on this Mac." }))));
     const accountRow = node("div", { className: "account-row" }, node("div", { className: "account-avatar", text: state.account ? (state.account.name || "G").slice(0, 1).toUpperCase() : "L" }), node("div", {}, node("strong", { text: state.account ? state.account.name : "Local workspace" }), node("span", { text: state.account ? state.account.email || "Google account" : "Not signed in" })));
@@ -608,7 +735,7 @@
     if (currentMainScroll) mainScrollTop = currentMainScroll.scrollTop;
     const activeElement = document.activeElement;
     if (activeElement && activeElement.dataset && activeElement.dataset.topicId) focusedTopicId = activeElement.dataset.topicId;
-    focusedFieldId = activeElement && activeElement.id === "gemini-key" ? activeElement.id : null;
+    focusedFieldId = activeElement && (activeElement.id === "gemini-key" || activeElement.id === "youtube-key") ? activeElement.id : null;
     focusedSelection = focusedFieldId && typeof activeElement.selectionStart === "number" ? [activeElement.selectionStart, activeElement.selectionEnd] : null;
     focusedQuestionCardId = activeElement && activeElement.dataset ? activeElement.dataset.cardId || null : null;
     focusedQuestionSelection = focusedQuestionCardId && typeof activeElement.selectionStart === "number" ? [activeElement.selectionStart, activeElement.selectionEnd] : null;
@@ -617,7 +744,7 @@
     app.appendChild(navigation());
     const main = node("main", { className: "main-column" });
     const scroll = node("div", { className: "main-scroll" });
-    scroll.appendChild(state.view === "settings" ? settingsView() : state.view === "feed" && !state.started ? setupView() : state.view === "feed" ? feedView() : collectionView(state.view));
+    scroll.appendChild(state.view === "settings" ? settingsView() : state.view === "videos" ? videosView() : state.view === "feed" && !state.started ? setupView() : state.view === "feed" ? feedView() : collectionView(state.view));
     main.appendChild(scroll);
     app.appendChild(main);
     window.requestAnimationFrame(function () {
@@ -664,10 +791,13 @@
         if (parsed.settings) state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings);
         if (parsed.cards) state.cards = parsed.cards.filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
         if (parsed.profile) state.profile = parsed.profile;
+        if (parsed.youtube) state.youtube = Object.assign({}, state.youtube, parsed.youtube);
         if (parsed.started && state.cards.length) state.started = true;
         if (parsed.account) state.account = parsed.account;
         document.body.classList.toggle("theme-dark", parsed.theme === "dark");
       }
+      const catalog = await bridge("loadVideoCatalog", {});
+      if (catalog && catalog.videos) state.youtube = Object.assign({}, state.youtube, catalog);
     } catch (error) {
       state.toast = error.message;
     }
