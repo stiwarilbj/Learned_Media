@@ -12,6 +12,7 @@ export async function POST(request: Request) {
       history?: LearningMessage[];
     };
     const apiKey = request.headers.get("x-gemini-api-key")?.trim() ?? "";
+    const sessionId = request.headers.get("x-learned-media-session")?.trim() || "browser-session";
     if (!apiKey) return NextResponse.json({ error: "Add your Gemini API key in Settings before asking for more detail." }, { status: 400 });
     if (!body.card || (body.action !== "learn" && body.action !== "question")) {
       return NextResponse.json({ error: "A fact and learning action are required." }, { status: 400 });
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
     }
     const result = await generateLearningResponse({
       apiKey,
+      sessionId,
       action: body.action,
       card: body.card,
       question: body.question?.trim().slice(0, 600),

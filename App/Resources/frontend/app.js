@@ -9,6 +9,7 @@
     surpriseMe: true
   };
   const TOPIC_CATALOG_VERSION = 2;
+  const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.5-flash-lite-preview", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "Approachable", "Familiar", "Curious", "Uncommon", "Niche", "Obscure", "Deep cut", "Rare", "Very rare", "Deepest cut"];
   const KNOWN_DEMO_IDS = new Set(["demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle", "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning"]);
@@ -31,7 +32,9 @@
     loading: false,
     loadingCard: null,
     errorByCard: {},
-    generationError: ""
+    generationError: "",
+    connectionToken: 0,
+    generationRequestToken: 0
   };
   const app = document.getElementById("app");
   const pending = new Map();
@@ -143,36 +146,28 @@
     if (message.ok) item.resolve(message.result);
     else item.reject(new Error(message.error || "The request failed."));
   };
-  function applyPastedGeminiKey(value) {
-    const nextKey = String(value || "").trim();
-    if (!nextKey) {
-      showToast("Your clipboard is empty.");
+  window.__nativeEvent = function (message) {
+    if (!message || (message.token !== undefined && message.type === "modelCheck" && message.token !== state.connectionToken)) return;
+    if (message.type === "modelCheck" && state.modelChecking) {
+      const check = message.check;
+      if (check && check.model) {
+        const next = state.modelChecks.filter(function (item) { return item.model !== check.model; });
+        next.push(check);
+        next.sort(function (left, right) { return ALLOWED_GEMINI_MODELS.indexOf(left.model) - ALLOWED_GEMINI_MODELS.indexOf(right.model); });
+        state.modelChecks = next;
+      }
+      if (Number(message.readyCount) >= 5) state.geminiStatus = "connected";
+      render();
       return;
     }
-    state.key = nextKey;
-    state.geminiStatus = "not-configured";
-    state.modelChecks = [];
-    state.generationError = "";
-    generationToken += 1;
-    focusedFieldId = "gemini-key";
-    focusedSelection = [nextKey.length, nextKey.length];
-    bridge("cancelAll", {}).catch(function () {});
-    bridge("setGeminiKey", { key: nextKey }).catch(function () {});
-    state.toast = "API key pasted. Connect Gemini to check it.";
-    render();
-    window.setTimeout(function () { if (state.toast === "API key pasted. Connect Gemini to check it.") { state.toast = ""; render(); } }, 4200);
-  }
-  function pasteGeminiKey() {
-    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.native) {
-      bridge("readClipboard", {}).then(applyPastedGeminiKey).catch(function () { showToast("Clipboard access failed. Click the field and use Command-V."); });
-      return;
+    if (message.type === "generationCard" && message.token === state.generationRequestToken && state.started) {
+      const raw = message.card;
+      if (!raw || !raw.id || state.cards.some(function (card) { return card.id === raw.id || card.title === raw.title; })) return;
+      state.cards.push(normalizeCard(raw));
+      saveState();
+      render();
     }
-    if (navigator.clipboard && navigator.clipboard.readText) {
-      navigator.clipboard.readText().then(applyPastedGeminiKey).catch(function () { showToast("Clipboard access was blocked. Click the field and use Command-V."); });
-      return;
-    }
-    showToast("Click the field and use Command-V to paste your key.");
-  }
+  };
   function flatTopics(nodes, parentPath) {
     const list = nodes || state.topics;
     const prefix = parentPath || [];
@@ -334,9 +329,8 @@
     const childrenVisible = hasChildren && (topic.expanded || searchExpanded);
     const branchWrap = node("div", { className: "topic-branch" });
     const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + " selection-" + selection, dataset: { topicId: topic.id } });
-    row.style.paddingLeft = Math.min(depth, 4) * 16 + "px";
-    if (hasChildren) row.appendChild(node("button", { className: "topic-expand", ariaLabel: "Show subtopics for " + topic.label, ariaExpanded: childrenVisible, dataset: { topicId: topic.id }, onClick: function () { topic.expanded = !topic.expanded; saveState(); render(); } }, svg(childrenVisible ? "chevronDown" : "chevronRight", 15)));
-    else row.appendChild(node("span", { className: "topic-spacer" }));
+    row.style.paddingLeft = Math.min(depth, 5) * 20 + 4 + "px";
+    row.appendChild(node("button", { className: "topic-expand", disabled: !hasChildren, ariaLabel: (childrenVisible ? "Hide" : "Show") + " subtopics for " + topic.label, ariaExpanded: hasChildren ? childrenVisible : undefined, dataset: { topicId: topic.id }, onClick: function () { if (!hasChildren) return; topic.expanded = !topic.expanded; saveState(); render(); } }, hasChildren ? svg(childrenVisible ? "chevronDown" : "chevronRight", 15) : null));
     row.appendChild(node("button", { className: "topic-check" + (selection === "selected" ? " checked" : "") + (selection === "mixed" ? " mixed" : ""), ariaLabel: (selection === "selected" ? "Deselect " : "Select ") + topic.label, ariaPressed: selection === "selected", dataset: { topicId: topic.id }, onClick: function () { toggleTopicSelection(topic.id); saveState(); render(); } }, selection === "selected" ? svg("check", 14) : selection === "mixed" ? node("span", { className: "topic-check-dash" }) : null));
     const nameWrap = node("div", { className: "topic-name-wrap" + (selection === "none" ? " unselected" : "") });
     nameWrap.appendChild(node("span", { className: "topic-name" + (selection === "selected" ? " selected" : ""), text: topic.label }));
@@ -350,6 +344,7 @@
     branchWrap.appendChild(row);
     if (childrenVisible) {
       const children = node("div", { className: "topic-children" });
+      children.style.setProperty("--guide-left", Math.min(depth + 1, 5) * 20 + 28 + "px");
       topic.children.forEach(function (child) { const childRow = topicRow(child, depth + 1, query); if (childRow) children.appendChild(childRow); });
       branchWrap.appendChild(children);
     }
@@ -421,11 +416,12 @@
   }
   function startPanel() {
     const hasSelection = selectedCount() > 0;
+    const canStart = state.geminiStatus === "connected";
     const panel = node("section", { className: "setup-start-panel surface-panel" });
     panel.appendChild(node("div", { className: "start-panel-copy" }, node("span", { className: "eyebrow", text: "Your next feed" }), node("h1", { text: "Ready to learn something unexpected?" }), node("p", { text: hasSelection ? selectedCount() + " topics in your mix, sourced from Wikipedia and shaped by your curiosity." : "Choose at least one topic from the checklist to begin." })));
     panel.appendChild(node("div", { className: "start-orbit" }, svg("sparkles", 24), node("span", { text: "Every card has a source" })));
-    panel.appendChild(node("button", { className: "start-button", disabled: !hasSelection, onClick: startFeed }, node("span", { text: hasSelection ? "Start learning" : "Choose a topic first" }), svg("arrow", 21)));
-    panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection ? "shield" : "help", 13), " ", hasSelection ? "Your mix stays yours." : "Select a topic to unlock your feed."));
+    panel.appendChild(node("button", { className: "start-button", disabled: !hasSelection || !canStart, onClick: startFeed }, node("span", { text: !hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first" }), svg("arrow", 21)));
+    panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection && canStart ? "shield" : "help", 13), " ", !hasSelection ? "Select a topic to unlock your feed." : canStart ? "Your mix stays yours." : "Connect at least five Gemini models in Settings to begin."));
     const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings to personalize the next batch." })));
     keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Add key ", svg("arrow", 14)));
     panel.appendChild(keyCallout);
@@ -519,21 +515,22 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
-    keyActions.appendChild(node("button", { className: "secondary-button small", onClick: pasteGeminiKey }, "Paste"));
-    keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting…" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Session key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Session key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is held in memory for this session, sent only when Gemini is requested, and never saved to disk." })));
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
-    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: state.modelChecks.length ? state.modelChecks.filter(function (model) { return model.status === "working"; }).length + " working of " + state.modelChecks.length : "Connect to discover models" })));
-    modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking…" : "Check all models"));
+    const workingModels = {};
+    state.modelChecks.forEach(function (model) { if (model.status === "working") workingModels[model.resolvedModel || model.model] = true; });
+    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: state.modelChecks.length ? Object.keys(workingModels).length + " ready of " + state.modelChecks.length + " checks" : "Connect to discover models" })));
+    modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking" : "Check all models"));
     gemini.appendChild(modelHeading);
     if (state.modelChecks.length) {
       const modelList = node("div", { className: "model-check-list", ariaLive: "polite" });
-      state.modelChecks.forEach(function (model) { modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: model.status === "working" ? "Ready for generation" : model.error || "Unavailable" })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") }))); });
+      state.modelChecks.forEach(function (model) { modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? "Ready · resolves to " + model.resolvedModel : "Ready for generation") : model.error || "Unavailable" })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") }))); });
       gemini.appendChild(modelList);
     }
     gemini.appendChild(node("div", { className: "api-key-guide" }, node("div", { className: "api-key-guide-icon" }, svg("sparkles", 16)), node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a key?" }), node("p", { text: "Create or copy one in Google AI Studio, then paste it here." })), externalLink(AI_STUDIO_URL, "Open AI Studio", "api-key-link")));
@@ -610,7 +607,7 @@
     });
   }
   function statusLabel() {
-    return { "not-configured": "Not configured", testing: "Testing…", connected: "Connected", invalid: "Invalid key", "rate-limited": "Rate limited", unavailable: "Gemini unavailable" }[state.geminiStatus] || "Not configured";
+    return { "not-configured": "Not configured", testing: "Testing", connected: "Connected", invalid: "Invalid key", "rate-limited": "Rate limited", unavailable: "Gemini unavailable" }[state.geminiStatus] || "Not configured";
   }
   async function hydrate() {
     try {
@@ -646,12 +643,14 @@
     state.cards = [];
     state.generationError = "";
     generationToken += 1;
+    state.generationRequestToken += 1;
     saveState();
     render();
     generateBatch(generationToken);
   }
   function resetFeed() {
     generationToken += 1;
+    state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
     state.started = false;
     state.cards = [];
@@ -668,6 +667,7 @@
   function resetAll() {
     if (!window.confirm("Reset all preferences and return to the default topic mix?")) return;
     generationToken += 1;
+    state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
     state.topics = makeTopics();
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
@@ -682,6 +682,7 @@
   function deleteData() {
     if (!window.confirm("Delete saved facts, likes, history, and the current feed?")) return;
     generationToken += 1;
+    state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
     state.cards = [];
     state.profile = {};
@@ -702,7 +703,7 @@
     state.generationError = "";
     render();
     try {
-      const result = await bridge("generate", { topics: weightedTopicPaths(10), settings: state.settings, avoid: state.cards.slice(-20).map(function (card) { return card.title; }) });
+      const result = await bridge("generate", { topics: weightedTopicPaths(10), settings: state.settings, avoid: state.cards.slice(-20).map(function (card) { return card.title; }), token: state.generationRequestToken });
       if (activeToken !== generationToken) return;
       const fresh = (result.cards || []).filter(function (card) { return card && card.id && card.title && card.body && card.hook && card.topicPath && card.topicPath.length && card.sources && card.sources.length; }).map(normalizeCard).filter(function (card) { return !state.cards.some(function (existing) { return existing.id === card.id; }); });
       state.cards = state.cards.concat(fresh);
@@ -726,9 +727,11 @@
     state.geminiStatus = "testing";
     state.modelChecking = true;
     state.modelChecks = [];
+    state.connectionToken += 1;
+    const connectionToken = state.connectionToken;
     render();
     try {
-      const result = await bridge("testGemini", { key: keyAtStart });
+      const result = await bridge("testGemini", { key: keyAtStart, token: connectionToken });
       if (state.key.trim() !== keyAtStart) return;
       state.geminiStatus = result.status || "unavailable";
       state.modelChecks = result.models || [];

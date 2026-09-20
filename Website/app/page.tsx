@@ -31,6 +31,29 @@ type PersistedState = {
   theme: "light" | "dark";
 };
 
+async function readNdjson(response: Response, onMessage: (message: Record<string, any>) => void) {
+  if (!response.body) {
+    onMessage(await response.json() as Record<string, any>);
+    return;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      onMessage(JSON.parse(line) as Record<string, any>);
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) onMessage(JSON.parse(buffer) as Record<string, any>);
+}
+
 function uniqueSources(sources: WikipediaSource[]) {
   const seen = new Set<string>();
   return sources.filter((source) => {
@@ -78,7 +101,14 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     feedback: raw.feedback ?? (raw.known ? "heard" : undefined),
     known: raw.known,
     surprise: raw.surprise,
-    createdAt: raw.createdAt ?? "Just now"
+    createdAt: raw.createdAt ?? "Just now",
+    learnMore: raw.learnMore,
+    question: raw.question,
+    answer: raw.answer,
+    answerDetailed: raw.answerDetailed,
+    answerSources: raw.answerSources ? uniqueSources(raw.answerSources) : undefined,
+    questionHistory: raw.questionHistory,
+    provenance: raw.provenance
   };
 }
 
@@ -113,7 +143,10 @@ export default function HomePage() {
   const requestGeneration = useRef(0);
   const generationAbortController = useRef<AbortController | null>(null);
   const connectionAbortController = useRef<AbortController | null>(null);
+  const learningAbortController = useRef<AbortController | null>(null);
+  const questionAbortController = useRef<AbortController | null>(null);
   const apiKeyRef = useRef("");
+  const sessionIdRef = useRef("browser-" + Math.random().toString(36).slice(2));
 
   const cancelGeneration = useCallback(() => {
     generationAbortController.current?.abort();
@@ -124,6 +157,8 @@ export default function HomePage() {
   useEffect(() => () => {
     generationAbortController.current?.abort();
     connectionAbortController.current?.abort();
+    learningAbortController.current?.abort();
+    questionAbortController.current?.abort();
   }, []);
 
   useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
@@ -232,27 +267,50 @@ export default function HomePage() {
     setToast("");
     setGenerationError("");
     const activeRabbitHole = rabbitHoleOverride ?? rabbitHole;
+    const receivedIds = new Set<string>();
+    let finalPayload: { cards?: Partial<FactCard>[]; partial?: boolean; retryGuidance?: string } | undefined;
+    let streamError = "";
     try {
       const response = await fetch("/api/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey.trim() },
+        headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
         body: JSON.stringify({ topics: selectWeightedTopicPaths(topics, 10), settings, learningProfile, rabbitHole: activeRabbitHole, avoid: cards.slice(-12).map((card) => card.title) }),
         signal: controller.signal
       });
-      const payload = await response.json().catch(() => ({})) as { cards?: Partial<FactCard>[]; error?: string; partial?: boolean; retryGuidance?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Gemini could not generate this batch. Check the key in Settings and try again.");
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(payload.error ?? "Gemini could not generate this batch. Check the key in Settings and try again.");
+      }
+      await readNdjson(response, (message) => {
+        if (message.type === "progress") {
+          const event = message.event as { type?: string; card?: Partial<FactCard> };
+          if (event.type === "card" && event.card?.id && event.card.title && event.card.body && event.card.hook && event.card.topicPath?.length && event.card.sources?.length) {
+            const card = normalizeFact(event.card, receivedIds.size);
+            receivedIds.add(card.id);
+            setCards((current) => appendUniqueCards(current, [card]));
+          }
+        } else if (message.type === "complete") {
+          finalPayload = message as typeof finalPayload;
+        } else if (message.type === "error") {
+          streamError = String(message.error ?? "Gemini could not complete this batch.");
+        }
+      });
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-      const generated = (payload.cards ?? []).filter((card) => Boolean(card.id && card.title?.trim() && card.body?.trim() && card.hook?.trim() && card.topicPath?.length && card.sources?.length)).map((card, index) => normalizeFact(card, index));
-      const freshGenerated = generated.filter((card) => !cards.some((existing) => existing.id === card.id));
-      setCards((current) => appendUniqueCards(current, freshGenerated));
-      if (!freshGenerated.length) {
+      if (streamError) throw new Error(streamError);
+      const generated = (finalPayload?.cards ?? []).filter((card) => Boolean(card.id && card.title?.trim() && card.body?.trim() && card.hook?.trim() && card.topicPath?.length && card.sources?.length)).map((card, index) => normalizeFact(card, index));
+      generated.forEach((card) => receivedIds.add(card.id));
+      setCards((current) => appendUniqueCards(current, generated));
+      if (!receivedIds.size) {
         setFeedHasMore(false);
         setGenerationError("Gemini returned no new complete cards. Retry when you are ready.");
         setToast("No new complete facts arrived. Retry when you are ready.");
+      } else if (finalPayload?.partial) {
+        setFeedHasMore(false);
+        setGenerationError(finalPayload.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards.");
+        setToast(receivedIds.size + " facts arrived. Retry to fill the remaining slots.");
       } else {
-        setFeedHasMore(!payload.partial);
+        setFeedHasMore(true);
         setGenerationError("");
-        if (payload.partial) setToast(`${freshGenerated.length} facts arrived. Retry to fill the remaining batch.`);
       }
     } catch (error) {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
@@ -270,6 +328,8 @@ export default function HomePage() {
 
   const resetFeed = useCallback(() => {
     cancelGeneration();
+    learningAbortController.current?.abort();
+    questionAbortController.current?.abort();
     requestGeneration.current += 1;
     const blankTopics = clearTopicSelections(topics);
     setFeedStarted(false);
@@ -293,22 +353,29 @@ export default function HomePage() {
     const card = cards.find((item) => item.id === id);
     if (!card || card.learnMore || learnLoading) return;
     const requestId = requestGeneration.current;
+    const controller = new AbortController();
+    learningAbortController.current?.abort();
+    learningAbortController.current = controller;
     setLearnLoading(id);
     setLearningErrors((current) => ({ ...current, [`${id}:learn`]: undefined }));
     try {
       const response = await fetch("/api/learn", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey.trim() },
-        body: JSON.stringify({ action: "learn", card })
+        headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
+        body: JSON.stringify({ action: "learn", card }),
+        signal: controller.signal
       });
       const payload = await response.json() as { answer?: string; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Gemini could not expand this fact.");
-      if (requestGeneration.current !== requestId) return;
+      if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer } : item));
     } catch (error) {
-      if (requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [`${id}:learn`]: error instanceof Error ? error.message : "Gemini could not expand this fact." }));
+      if (!controller.signal.aborted && requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [`${id}:learn`]: error instanceof Error ? error.message : "Gemini could not expand this fact." }));
     } finally {
-      if (requestGeneration.current === requestId) setLearnLoading(null);
+      if (learningAbortController.current === controller) {
+        learningAbortController.current = null;
+        if (requestGeneration.current === requestId) setLearnLoading(null);
+      }
     }
   }, [apiKey, cards, learnLoading]);
 
@@ -316,24 +383,31 @@ export default function HomePage() {
     const card = cards.find((item) => item.id === id);
     if (!card || questionLoading) return;
     const requestId = requestGeneration.current;
+    const controller = new AbortController();
+    questionAbortController.current?.abort();
+    questionAbortController.current = controller;
     const history: LearningMessage[] = card.questionHistory ?? [];
     setQuestionLoading(id);
     setLearningErrors((current) => ({ ...current, [id]: undefined }));
     try {
       const response = await fetch("/api/learn", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey.trim() },
-        body: JSON.stringify({ action: "question", card, question, detailed, history })
+        headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
+        body: JSON.stringify({ action: "question", card, question, detailed, history }),
+        signal: controller.signal
       });
       const payload = await response.json() as { answer?: string; citations?: FactCard["sources"]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Gemini could not answer this question.");
-      if (requestGeneration.current !== requestId) return;
+      if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: payload.answer ?? "" }];
       setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: payload.answer, answerDetailed: detailed, answerSources: payload.citations, questionHistory: nextHistory } : item));
     } catch (error) {
-      if (requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [id]: error instanceof Error ? error.message : "Gemini could not answer this question." }));
+      if (!controller.signal.aborted && requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [id]: error instanceof Error ? error.message : "Gemini could not answer this question." }));
     } finally {
-      if (requestGeneration.current === requestId) setQuestionLoading(null);
+      if (questionAbortController.current === controller) {
+        questionAbortController.current = null;
+        if (requestGeneration.current === requestId) setQuestionLoading(null);
+      }
     }
   }, [apiKey, cards, questionLoading]);
 
@@ -412,30 +486,18 @@ export default function HomePage() {
     apiKeyRef.current = value;
     connectionAbortController.current?.abort();
     generationAbortController.current?.abort();
+    learningAbortController.current?.abort();
+    questionAbortController.current?.abort();
     requestGeneration.current += 1;
     setApiKey(value);
     setGeminiStatus("not-configured");
     setModelChecks([]);
     setModelChecking(false);
     setLoading(false);
+    setLearnLoading(null);
+    setQuestionLoading(null);
     setGenerationError("");
   }, []);
-
-  const pasteApiKey = useCallback(async () => {
-    try {
-      if (!navigator.clipboard?.readText) throw new Error("Clipboard access is unavailable.");
-      const value = (await navigator.clipboard.readText()).trim();
-      if (!value) {
-        setToast("Your clipboard is empty.");
-        return;
-      }
-      handleApiKeyChange(value);
-      setToast("API key pasted. Connect Gemini to check it.");
-    } catch {
-      document.getElementById("gemini-key")?.focus();
-      setToast("Clipboard access was blocked. Click the field and use Command-V or Ctrl-V.");
-    }
-  }, [handleApiKeyChange]);
 
   const testConnection = useCallback(async () => {
     const keyAtStart = apiKeyRef.current.trim();
@@ -450,19 +512,37 @@ export default function HomePage() {
     setModelChecking(true);
     setGeminiStatus("testing");
     try {
-      const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json", "x-gemini-api-key": keyAtStart }, signal: controller.signal });
-      const payload = await response.json() as { status?: GeminiStatus; models?: GeminiModelCheck[]; error?: string; eligibleModelCount?: number };
+      const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": keyAtStart, "x-learned-media-session": sessionIdRef.current }, signal: controller.signal });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(payload.error ?? "Gemini could not verify this key.");
+      }
+      let finalStatus: GeminiStatus | undefined;
+      let finalModels: GeminiModelCheck[] | undefined;
+      let streamError = "";
+      await readNdjson(response, (message) => {
+        if (message.type === "model") {
+          const check = message.check as GeminiModelCheck;
+          setModelChecks((current) => {
+            const next = [...current];
+            const index = next.findIndex((item) => item?.model === check.model);
+            if (index >= 0) next[index] = check;
+            else next.push(check);
+            return next;
+          });
+          if (Number(message.readyCount) >= 5) setGeminiStatus("connected");
+        } else if (message.type === "complete") {
+          finalStatus = message.status as GeminiStatus;
+          finalModels = message.models as GeminiModelCheck[];
+        } else if (message.type === "error") {
+          streamError = String(message.error ?? "Gemini could not verify this key.");
+        }
+      });
       if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
-      setModelChecks(payload.models ?? []);
-      setGeminiStatus(payload.status ?? (response.ok ? "connected" : "unavailable"));
-      const statusMessage = payload.status === "invalid"
-        ? "Gemini rejected this key. Check it in Google AI Studio and paste it again."
-        : payload.status === "rate-limited"
-          ? "Gemini is rate-limited right now. Wait a moment and try again."
-          : payload.status === "unavailable"
-            ? "Gemini models were unavailable for this key. Try again in a moment."
-            : "Gemini could not verify this key.";
-      setToast(response.ok ? `Gemini connected. Checked ${payload.eligibleModelCount ?? payload.models?.length ?? 0} models.` : payload.error ?? statusMessage);
+      if (streamError) throw new Error(streamError);
+      if (finalModels) setModelChecks(finalModels);
+      setGeminiStatus(finalStatus ?? "unavailable");
+      setToast(finalStatus === "connected" ? "Gemini connected. At least five allowed models passed." : "Fewer than five allowed models passed. Fix the key or retry the checks.");
     } catch (error) {
       if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
       setGeminiStatus("unavailable");
@@ -491,8 +571,8 @@ export default function HomePage() {
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={(topic) => { if (topic === "Custom topic") { setView("feed"); setToast("Add a custom topic from your learning mix."); } else { setQuery(topic); setView("feed"); } }} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} onPasteKey={() => void pasteApiKey()} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} />;
-    if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} />;
+    if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} />;
     return <FeedView cards={filteredCards} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed()} onLoadMore={() => void startFeed()} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
   };
 

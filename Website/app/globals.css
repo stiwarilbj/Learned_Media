@@ -540,6 +540,39 @@ a { color: inherit; }
 .feedback-button.unknown.selected { color: #fff !important; background: #6878e7 !important; border-color: #6878e7 !important; }
 .fact-actions .feedback-button span { display: inline; }
 
+/* Final control pass: stable hover targets, separated hierarchy, and roomy desktop panels. */
+@media (min-width: 1101px) {
+  .setup-layout { grid-template-columns: minmax(400px, 440px) minmax(0, 1fr); }
+  .feed-layout { grid-template-columns: minmax(400px, 440px) minmax(0, 760px); }
+}
+
+.topic-row { gap: 10px; }
+.topic-children { margin-left: 0; padding-left: 0; }
+.topic-children::before { left: var(--guide-left, 28px); top: -5px; bottom: 12px; opacity: .85; pointer-events: none; }
+.topic-expand { width: 40px; height: 40px; flex: 0 0 40px; margin-left: -4px; border-radius: 9px; }
+.topic-expand:hover:not(:disabled) { background: transparent; color: var(--primary); }
+.topic-expand:disabled { cursor: default; }
+.topic-weight { width: 112px; flex: 0 0 112px; display: grid; grid-template-columns: 30px minmax(38px, 1fr) 30px; overflow: visible; }
+.topic-weight button { width: auto; min-width: 30px; }
+.topic-weight > .topic-weight-value { min-width: 0; }
+.topic-selection-summary { height: 2.9em; min-height: 2.9em; max-height: 2.9em; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
+.setup-topics-panel .topic-tree, .feed-topics-panel .topic-tree { scrollbar-gutter: stable; padding-right: 14px; }
+.setup-topics-panel .topic-tree::-webkit-scrollbar, .feed-topics-panel .topic-tree::-webkit-scrollbar { width: 12px; }
+.setup-topics-panel .topic-tree::-webkit-scrollbar-track, .feed-topics-panel .topic-tree::-webkit-scrollbar-track { background: rgba(210, 228, 244, .42); border-radius: 999px; margin: 6px 0; }
+.setup-topics-panel .topic-tree::-webkit-scrollbar-thumb, .feed-topics-panel .topic-tree::-webkit-scrollbar-thumb { background: #9fc8ee; border: 3px solid transparent; background-clip: padding-box; border-radius: 999px; }
+.setup-topics-panel .topic-tree, .feed-topics-panel .topic-tree { scrollbar-color: #9fc8ee rgba(210, 228, 244, .42); scrollbar-width: auto; }
+
+.primary-button:hover, .secondary-button:hover, .ghost-button:hover, .danger-button:hover, .start-button:hover, .question-send:hover, .icon-button:hover, .topic-check:hover, .topic-subtopics-toggle:hover, .feed-custom-topic button:hover, .topic-expand:hover { transform: none !important; }
+.primary-button:hover, .start-button:hover { filter: saturate(1.08) brightness(.98); }
+.start-button:disabled { background: #b7d7f3 !important; border-color: #b7d7f3 !important; color: #6283a8; cursor: not-allowed; opacity: .82; filter: none; }
+.custom-topic-input-wrap button, .feed-custom-topic button { background: #b7dcfa !important; border-color: #b7dcfa !important; color: #285b91 !important; box-shadow: none !important; }
+.custom-topic-input-wrap button:hover, .feed-custom-topic button:hover { background: #a5d0f5 !important; border-color: #a5d0f5 !important; }
+
+@media (max-width: 1100px) and (min-width: 821px) {
+  .setup-layout, .feed-layout { grid-template-columns: minmax(350px, 390px) minmax(0, 1fr); }
+}
+
 /* Nested topic browser: calm states, stable controls, and readable deep paths. */
 .topic-row { align-items: flex-start; min-height: 50px; padding-top: 6px; padding-bottom: 6px; }
 .topic-row:hover { background: rgba(226, 240, 255, .5); }
@@ -695,3 +728,30 @@ a { color: inherit; }
 .theme-switcher button.selected, .feed-display-options button.selected, .feed-length-options button.selected, .setup-surprise.selected, .feed-surprise-toggle.selected { background: linear-gradient(135deg, var(--surface-blue), var(--lilac)); }
 .fact-actions .learn-more-button { background: linear-gradient(135deg, var(--surface-blue), var(--lilac)); }
 .fact-actions .feedback-button span { display: inline; }
+
+/* Stable controls and a single, capped hierarchy layout. */
+@media (min-width: 1101px) {
+  .setup-layout { grid-template-columns: minmax(400px, 440px) minmax(0, 1fr); }
+  .feed-layout { grid-template-columns: minmax(400px, 440px) minmax(0, 760px); }
+}
+.topic-row { gap: 10px; }
+.topic-children { margin-left: 0; padding-left: 0; }
+.topic-children::before { left: var(--guide-left, 28px); top: -5px; bottom: 12px; opacity: .85; pointer-events: none; }
+.topic-expand, .topic-spacer { width: 40px; height: 40px; flex: 0 0 40px; margin-left: -4px; border-radius: 9px; }
+.topic-expand:hover:not(:disabled) { background: transparent; color: var(--primary); }
+.topic-expand:disabled { cursor: default; }
+.topic-weight { width: 112px; flex: 0 0 112px; display: grid; grid-template-columns: 30px minmax(38px, 1fr) 30px; overflow: visible; }
+.topic-weight button { width: auto; min-width: 30px; }
+.topic-weight > .topic-weight-value { min-width: 0; }
+.topic-selection-summary { height: 2.9em; min-height: 2.9em; max-height: 2.9em; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.setup-topics-panel .topic-tree, .feed-topics-panel .topic-tree { scrollbar-gutter: stable; padding-right: 14px; scrollbar-color: #9fc8ee rgba(210, 228, 244, .42); scrollbar-width: auto; }
+.setup-topics-panel .topic-tree::-webkit-scrollbar, .feed-topics-panel .topic-tree::-webkit-scrollbar { width: 12px; }
+.setup-topics-panel .topic-tree::-webkit-scrollbar-track, .feed-topics-panel .topic-tree::-webkit-scrollbar-track { background: rgba(210, 228, 244, .42); border-radius: 999px; margin: 6px 0; }
+.setup-topics-panel .topic-tree::-webkit-scrollbar-thumb, .feed-topics-panel .topic-tree::-webkit-scrollbar-thumb { background: #9fc8ee; border: 3px solid transparent; background-clip: padding-box; border-radius: 999px; }
+.primary-button:hover, .secondary-button:hover, .ghost-button:hover, .danger-button:hover, .start-button:hover, .question-send:hover, .icon-button:hover, .topic-check:hover, .topic-subtopics-toggle:hover, .feed-custom-topic button:hover, .topic-expand:hover { transform: none !important; }
+.primary-button:hover, .start-button:hover { filter: saturate(1.08) brightness(.98); }
+.custom-topic-input-wrap button, .feed-custom-topic button { background: #b7dcfa !important; border-color: #b7dcfa !important; color: #285b91 !important; box-shadow: none !important; }
+.custom-topic-input-wrap button:hover, .feed-custom-topic button:hover { background: #a5d0f5 !important; border-color: #a5d0f5 !important; }
+@media (max-width: 1100px) and (min-width: 821px) {
+  .setup-layout, .feed-layout { grid-template-columns: minmax(350px, 390px) minmax(0, 1fr); }
+}

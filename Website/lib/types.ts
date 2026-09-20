@@ -65,11 +65,13 @@ export type GeminiModelCheck = {
   latencyMs?: number;
   checkedAt?: string;
   error?: string;
+  resolvedModel?: string;
   supportedGenerationMethods?: string[];
 };
 
 export type GeminiModelOutcome = {
   model: string;
+  resolvedModel?: string;
   stage: "candidate" | "grounding" | "learning";
   status: "success" | "failed" | "cooldown";
   latencyMs?: number;

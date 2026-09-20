@@ -26,7 +26,6 @@ export function clearTopicSelections(nodes: TopicNode[]): TopicNode[] {
   return nodes.map((node) => ({
     ...node,
     selected: false,
-    expanded: false,
     children: node.children ? clearTopicSelections(node.children) : undefined
   }));
 }

@@ -1,6 +1,34 @@
 import type { ImageAttribution, WikipediaSource } from "./types";
 
 const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
+const MAX_CONCURRENT_WIKIPEDIA_REQUESTS = 4;
+let wikipediaInFlight = 0;
+const wikipediaWaiters: Array<() => void> = [];
+
+async function acquireWikipediaSlot(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException("Wikipedia request canceled.", "AbortError");
+  if (wikipediaInFlight >= MAX_CONCURRENT_WIKIPEDIA_REQUESTS) {
+    await new Promise<void>((resolve, reject) => {
+      const waiter = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = () => {
+        const index = wikipediaWaiters.indexOf(waiter);
+        if (index >= 0) wikipediaWaiters.splice(index, 1);
+        reject(new DOMException("Wikipedia request canceled.", "AbortError"));
+      };
+      wikipediaWaiters.push(waiter);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+  wikipediaInFlight += 1;
+}
+
+function releaseWikipediaSlot() {
+  wikipediaInFlight = Math.max(0, wikipediaInFlight - 1);
+  wikipediaWaiters.shift()?.();
+}
 
 type SearchResponse = {
   query?: { search?: Array<{ title?: string }> };
@@ -50,6 +78,7 @@ function apiUrl(params: Record<string, string>) {
 }
 
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T | null> {
+  await acquireWikipediaSlot(signal);
   try {
     const response = await fetch(url, {
       headers: { accept: "application/json", "user-agent": "LearnedMedia/0.2 (knowledge-feed)" },
@@ -58,8 +87,11 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T | null> 
     });
     if (!response.ok) return null;
     return await response.json() as T;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     return null;
+  } finally {
+    releaseWikipediaSlot();
   }
 }
 

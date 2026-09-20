@@ -6,7 +6,6 @@ import { Icon } from "./icons";
 type SettingsViewProps = {
   apiKey: string;
   onApiKeyChange: (value: string) => void;
-  onPasteKey: () => void;
   status: GeminiStatus;
   feedback?: string;
   modelChecks: GeminiModelCheck[];
@@ -24,14 +23,15 @@ const AI_STUDIO_KEY_URL = "https://aistudio.google.com/app/apikey";
 
 const statusCopy: Record<GeminiStatus, string> = {
   "not-configured": "Not configured",
-  testing: "Testing…",
+  testing: "Testing",
   connected: "Connected",
   invalid: "Invalid key",
   "rate-limited": "Rate limited",
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, onPasteKey, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn }: SettingsViewProps) {
+  const workingModelCount = new Set(modelChecks.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
   return (
     <section className="content-view settings-view">
       <div className="view-heading">
@@ -59,8 +59,7 @@ export function SettingsView({ apiKey, onApiKeyChange, onPasteKey, status, feedb
             <div className="key-input-row">
               <input id="gemini-key" type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onTestConnection(); } }} placeholder="Paste your API key here" autoComplete="new-password" aria-describedby="gemini-key-note" />
               <div className="key-actions">
-                <button type="button" className="secondary-button small" onClick={onPasteKey}>Paste</button>
-                <button type="button" className="primary-button small" onClick={onTestConnection} disabled={status === "testing"}><Icon name="sparkles" size={15} /> {status === "testing" ? "Connecting…" : "Connect Gemini"}</button>
+                <button type="button" className="primary-button small" onClick={onTestConnection} disabled={status === "testing"}><Icon name="sparkles" size={15} /> {status === "testing" ? "Connecting" : "Connect Gemini"}</button>
                 <button type="button" className="ghost-button" onClick={onRemoveKey}>Remove</button>
               </div>
             </div>
@@ -71,10 +70,10 @@ export function SettingsView({ apiKey, onApiKeyChange, onPasteKey, status, feedb
             {feedback && <p className="settings-feedback" role="status">{feedback}</p>}
 
             <div className="model-check-heading">
-              <div><strong>Available Gemini models</strong><span>{modelChecks.length ? `${modelChecks.filter((model) => model.status === "working").length} working of ${modelChecks.length}` : "Connect to discover models"}</span></div>
-              <button type="button" className="ghost-button" onClick={onTestConnection} disabled={modelChecking || !apiKey.trim()}>{modelChecking ? "Checking…" : "Check all models"}</button>
+              <div><strong>Available Gemini models</strong><span>{modelChecks.length ? `${workingModelCount} ready of ${modelChecks.length} checks` : "Connect to discover models"}</span></div>
+              <button type="button" className="ghost-button" onClick={onTestConnection} disabled={modelChecking || !apiKey.trim()}>{modelChecking ? "Checking" : "Check all models"}</button>
             </div>
-            {modelChecks.length > 0 && <div className="model-check-list" aria-live="polite">{modelChecks.map((model) => <div className="model-check-row" key={model.model}><span className={`model-status-dot ${model.status}`} aria-label={model.status} /><div><strong>{model.model}</strong><small>{model.status === "working" ? "Ready for generation" : model.error ?? "Unavailable"}</small></div><span className="model-check-meta">{model.latencyMs ? `${model.latencyMs} ms` : "—"}<br />{model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked"}</span></div>)}</div>}
+            {modelChecks.length > 0 && <div className="model-check-list" aria-live="polite">{modelChecks.map((model) => <div className="model-check-row" key={model.model}><span className={`model-status-dot ${model.status}`} aria-label={model.status} /><div><strong>{model.model}</strong><small>{model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? `Ready · resolves to ${model.resolvedModel}` : "Ready for generation") : model.error ?? "Unavailable"}</small></div><span className="model-check-meta">{model.latencyMs ? `${model.latencyMs} ms` : "—"}<br />{model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked"}</span></div>)}</div>}
 
             <div className="api-key-guide">
               <div className="api-key-guide-icon"><Icon name="sparkles" size={16} /></div>

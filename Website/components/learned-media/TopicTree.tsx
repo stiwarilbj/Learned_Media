@@ -1,6 +1,7 @@
 "use client";
 
 import type { TopicNode } from "@/lib/types";
+import type { CSSProperties } from "react";
 import { selectionState } from "@/lib/topic-tree";
 import { Icon } from "./icons";
 
@@ -27,7 +28,7 @@ function TopicRow({ node, depth, query, onToggle, onExpand, onWeight }: TopicTre
 
   return (
     <div className="topic-branch">
-      <div className={`topic-row ${depth === 0 ? "root-row" : ""} selection-${state}`} style={{ paddingLeft: `${Math.min(depth, 4) * 16}px` }}>
+      <div className={`topic-row ${depth === 0 ? "root-row" : ""} selection-${state}`} style={{ paddingLeft: `${Math.min(depth, 5) * 20 + 4}px` }}>
         <button
           type="button"
           className="topic-expand"
@@ -64,7 +65,7 @@ function TopicRow({ node, depth, query, onToggle, onExpand, onWeight }: TopicTre
         {node.custom && <span className="custom-mark">Custom</span>}
       </div>
       {childrenVisible && (
-        <div className="topic-children">
+        <div className="topic-children" style={{ "--guide-left": `${Math.min(depth + 1, 5) * 20 + 28}px` } as CSSProperties}>
           {node.children?.map((child) => (
             <TopicRow
               key={child.id}
