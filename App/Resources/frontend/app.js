@@ -57,6 +57,7 @@
   let focusedQuestionSelection = null;
   let saveInFlight = false;
   let queuedWorkspaceState = null;
+  let stopYoutubePlayback = null;
 
   function makeTopics() {
     return TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
@@ -423,7 +424,13 @@
     const section = node("section", { className: "content-view video-workspace" });
     section.appendChild(node("button", { className: "text-button video-back-button", onClick: function () { state.youtube.selectedVideoId = null; render(); } }, svg("chevronRight", 15), " Back to videos"));
     const player = node("div", { className: "video-player-shell" });
-    if (video.embedAvailable) player.appendChild(node("iframe", { title: video.title, src: "https://www.youtube.com/embed/" + encodeURIComponent(video.id) + "?enablejsapi=1&origin=https%3A%2F%2Fcom.learnedmedia.app&rel=0&playsinline=1", allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share", allowFullscreen: "true", referrerpolicy: "strict-origin-when-cross-origin" }));
+    let frame = null;
+    if (video.embedAvailable) {
+      const position = Number(state.youtube.playbackPositions[video.id] || 0);
+      const start = position > 1 ? "&start=" + Math.floor(position) : "";
+      frame = node("iframe", { title: video.title, src: "https://www.youtube.com/embed/" + encodeURIComponent(video.id) + "?enablejsapi=1&origin=https%3A%2F%2Fcom.learnedmedia.app&rel=0&playsinline=1" + start, allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share", allowFullscreen: "true", referrerpolicy: "strict-origin-when-cross-origin" });
+      player.appendChild(frame);
+    }
     else player.appendChild(node("div", { className: "video-unavailable" }, svg("external", 24), node("strong", { text: "Watch this one on YouTube" }), externalLink(youtubeURL(video.id), "Open video", "api-key-link")));
     const playerColumn = node("div", { className: "video-player-column" });
     playerColumn.appendChild(player);
@@ -435,6 +442,25 @@
     section.appendChild(node("div", { className: "video-player-layout" }, playerColumn));
     const related = (state.youtube.videos || []).filter(function (item) { return item.id !== video.id && (item.topics || []).some(function (topic) { return (video.topics || []).indexOf(topic) >= 0; }); }).slice(0, 6);
     if (related.length) playerColumn.appendChild(node("section", { className: "video-related" }, node("div", { className: "section-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Up next to explore" }), node("h2", { text: "More like this" }))), youtubeList(related)));
+    if (frame) {
+      let lastSaved = 0;
+      const onMessage = function (event) {
+        if (!String(event.origin).includes("youtube.com")) return;
+        try {
+          const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+          const seconds = data && data.event === "infoDelivery" && data.info && Number(data.info.currentTime);
+          if (Number.isFinite(seconds) && seconds >= 0) {
+            state.youtube.playbackPositions[video.id] = seconds;
+            if (Date.now() - lastSaved > 15000) { lastSaved = Date.now(); saveState(); }
+          }
+        } catch (_) {}
+      };
+      const requestPosition = function () { if (frame.contentWindow) frame.contentWindow.postMessage(JSON.stringify({ event: "command", func: "getCurrentTime", args: [] }), "https://www.youtube.com"); };
+      window.addEventListener("message", onMessage);
+      const timer = window.setInterval(requestPosition, 5000);
+      stopYoutubePlayback = function () { window.removeEventListener("message", onMessage); window.clearInterval(timer); stopYoutubePlayback = null; };
+      requestPosition();
+    }
     return section;
   }
   function videosView() {
@@ -729,6 +755,7 @@
     return section;
   }
   function render() {
+    if (stopYoutubePlayback) stopYoutubePlayback();
     const currentTopicTree = document.querySelector(".topic-tree");
     if (currentTopicTree) topicTreeScrollTop = currentTopicTree.scrollTop;
     const currentMainScroll = document.querySelector(".main-scroll");
