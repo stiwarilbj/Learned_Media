@@ -1,6 +1,8 @@
 "use client";
 
-import type { GeminiModelCheck, GeminiStatus } from "@/lib/types";
+import { useState } from "react";
+import type { FactCard, GeminiModelCheck, GeminiStatus } from "@/lib/types";
+import { buildFactExport, downloadBlob, type FactExportFormat } from "@/lib/exports";
 import type { YouTubeImportProgress } from "@/lib/youtube";
 import { Icon } from "./icons";
 
@@ -29,6 +31,8 @@ type SettingsViewProps = {
   onResumeYoutubeImport: () => void;
   onRetryYoutubeImport: () => void;
   onRefreshYoutube: () => void;
+  workspaceName: string;
+  cards: FactCard[];
 };
 
 const AI_STUDIO_KEY_URL = "https://aistudio.google.com/app/apikey";
@@ -45,8 +49,22 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, onYoutubeKeyChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, onYoutubeKeyChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
   const workingModelCount = new Set(modelChecks.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
+  const [exportCollection, setExportCollection] = useState<"all" | "saved">("all");
+  const [exporting, setExporting] = useState<FactExportFormat | null>(null);
+  const exportCards = exportCollection === "saved" ? cards.filter((card) => card.saved) : cards;
+  async function exportFacts(format: FactExportFormat) {
+    if (!exportCards.length || exporting) return;
+    setExporting(format);
+    try {
+      const result = await buildFactExport(format, workspaceName, exportCards);
+      downloadBlob(result.blob, result.filename);
+      if (result.omittedImages.length) window.alert(`The export is complete. Images could not be loaded for ${result.omittedImages.length} fact${result.omittedImages.length === 1 ? "" : "s"}; all text and sources were kept.`);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "The facts could not be exported.");
+    } finally { setExporting(null); }
+  }
   return (
     <section className="content-view settings-view">
       <div className="view-heading">
@@ -115,6 +133,12 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             <p className="youtube-restriction-note">Website keys may be restricted to this GitHub Pages site. The Mac app needs a key that also permits native requests. If a restriction blocks a request, Google will report it here</p>
             {youtubeLastSyncAt && <p className="youtube-restriction-note">Last successful refresh: {new Date(youtubeLastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</p>}
             {youtubeProgress.phase !== "idle" && <div className="video-import-notice" role="status"><div><strong>{youtubeProgress.phase === "paused" ? "Import paused" : youtubeStatus === "refreshing" ? "Refreshing library" : "Library import"}</strong><span>{youtubeProgress.completedSources !== undefined ? `${youtubeProgress.completedSources}/${youtubeProgress.totalSources ?? 0} sources · ` : `${youtubeProgress.completedChannels}/${youtubeProgress.totalChannels} channels · `}{youtubeProgress.importedVideos.toLocaleString()} videos</span></div>{youtubeProgress.phase === "paused" ? <button type="button" className="ghost-button" onClick={onResumeYoutubeImport}>Resume</button> : youtubeProgress.phase === "complete" || youtubeProgress.phase === "error" ? <button type="button" className="ghost-button" onClick={onRetryYoutubeImport}>Retry</button> : <button type="button" className="ghost-button" onClick={onPauseYoutubeImport}>Pause</button>}</div>}
+          </section>
+
+          <section className="settings-card export-settings-card">
+            <div className="settings-card-heading"><div className="settings-icon lilac"><Icon name="bookmark" size={19} /></div><div><h2>Download Facts</h2><p>Save this workspace with its topic paths and Wikipedia sources</p></div></div>
+            <div className="export-controls"><label className="field-label" htmlFor="export-collection">Collection</label><select id="export-collection" value={exportCollection} onChange={(event) => setExportCollection(event.target.value as "all" | "saved")}><option value="all">All Facts ({cards.length})</option><option value="saved">Saved Facts ({cards.filter((card) => card.saved).length})</option></select><div className="export-buttons"><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("pdf")}>{exporting === "pdf" ? "Preparing PDF…" : "PDF"}</button><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("txt")}>{exporting === "txt" ? "Preparing TXT…" : "TXT"}</button><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("docx")}>{exporting === "docx" ? "Preparing DOCX…" : "DOCX"}</button></div></div>
+            {!cards.length && <p className="youtube-restriction-note">Generate or save a fact before downloading it</p>}
           </section>
 
           <section className="settings-card">

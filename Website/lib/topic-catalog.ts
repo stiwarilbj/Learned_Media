@@ -1,10 +1,11 @@
 import type { TopicNode } from "./types";
 
-export const TOPIC_CATALOG_VERSION = 4;
+export const TOPIC_CATALOG_VERSION = 5;
 
-type TopicSeed = string | { label: string; children: TopicSeed[] };
+type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
 const branch = (label: string, children: TopicSeed[]): TopicSeed => ({ label, children });
+const series = (label: string, aliases: string[] = []): TopicSeed => ({ label, children: [], aliases });
 
 const LITERATURE_SEED: TopicSeed = branch("Literature", [
   branch("Books", [
@@ -93,26 +94,8 @@ const BOOK_EXPANSION: TopicSeed[] = [
 ];
 
 const BEST_SELLING_BOOK_SERIES: TopicSeed = branch("Best-Selling Book Series", [
-  branch("Harry Potter", ["Harry Potter and the Philosopher's Stone", "Harry Potter and the Chamber of Secrets", "Harry Potter and the Prisoner of Azkaban", "Harry Potter and the Goblet of Fire", "Harry Potter and the Order of the Phoenix", "Harry Potter and the Half-Blood Prince", "Harry Potter and the Deathly Hallows"]),
-  branch("Goosebumps", ["Welcome to Dead House", "Stay Out of the Basement", "Monster Blood", "Say Cheese and Die!", "The Haunted Mask", "Night of the Living Dummy", "The Cuckoo Clock of Doom", "One Day at HorrorLand", "The Scarecrow Walks at Midnight", "The Ghost Next Door"]),
-  branch("Perry Mason", ["The Case of the Velvet Claws", "The Case of the Sulky Girl", "The Case of the Lucky Legs", "The Case of the Howling Dog", "The Case of the Curious Bride", "The Case of the Stuttering Bishop", "The Case of the Substitute Face", "The Case of the Caretaker's Cat", "The Case of the Empty Tin", "The Case of the Green-Eyed Sister"]),
-  branch("Diary of a Wimpy Kid", ["Diary of a Wimpy Kid", "Rodrick Rules", "The Last Straw", "Dog Days", "The Ugly Truth", "Cabin Fever", "The Third Wheel", "Hard Luck", "The Long Haul", "Old School"]),
-  branch("Choose Your Own Adventure", ["The Cave of Time", "Journey Under the Sea", "By Balloon to the Sahara", "Space and Beyond", "The Lost Jewels of Náplak", "House of Danger", "The Third Planet from Altair", "The Lost Ninja", "Prisoner of the Ant People", "The Race Forever"]),
-  branch("The Berenstain Bears", ["The Big Honey Hunt", "The Bike Lesson", "The Bears' Picnic", "The Bears Go to the Doctor", "The Spooky Old Mansion", "The Berenstain Bears and the Messy Room", "The Berenstain Bears Go to School", "The Berenstain Bears and Too Much TV", "The Berenstain Bears Learn to Share", "The Berenstain Bears and the Trouble with Chores"]),
-  branch("Mr. Men and Little Miss", ["Mr. Tickle", "Mr. Happy", "Mr. Bump", "Mr. Strong", "Mr. Messy", "Little Miss Sunshine", "Little Miss Bossy", "Little Miss Helpful", "Little Miss Naughty", "Little Miss Chatterbox"]),
-  branch("Sweet Valley High", ["Double Love", "Secrets", "Playing with Fire", "Power Play", "All Night Long", "Lovebirds", "Heartbreaker", "Dangerous Love", "Promises", "The New Jessica"]),
-  branch("Noddy", ["Noddy Goes to Toyland", "Noddy and the Magic Rubber", "Noddy and the Goblins", "Noddy Goes to School", "Noddy and the Bumpy Dog", "Noddy and the Birthday Present", "Noddy and the Runaway Wheel", "Noddy and the Broken Bicycle", "Noddy and the Tooting Bagpipes", "Noddy and the Aeroplane"]),
-  branch("Jack Reacher", ["Killing Floor", "Die Trying", "Tripwire", "Running Blind", "Echo Burning", "Without Fail", "Persuader", "The Enemy", "One Shot", "The Hard Way"]),
-  branch("The Railway Series / Thomas & Friends", ["The Three Railway Engines", "Thomas the Tank Engine", "James the Red Engine", "Troublesome Engines", "Henry the Green Engine", "Percy the Small Engine", "The Eight Famous Engines", "Gordon the Big Engine", "Edward the Blue Engine", "Four Little Engines"]),
-  branch("Nancy Drew", ["The Secret of the Old Clock", "The Hidden Staircase", "The Bungalow Mystery", "The Mystery at Lilac Inn", "The Secret of Shadow Ranch", "The Secret of Red Gate Farm", "The Clue in the Diary", "Nancy's Mysterious Letter", "The Sign of the Twisted Candles", "The Password to Larkspur Lane"]),
-  branch("San-Antonio", ["Réglez-lui son compte", "J'ai bien l'honneur", "Deuils à mourir", "Bérurier au sérail", "Fais pas dans le porno", "La Rate au court-bouillon", "Les Doigts dans le nez", "Le Coup du père François", "Le Secret de Polichinelle", "Ménage tes méninges"]),
-  branch("Robert Langdon", ["Angels & Demons", "The Da Vinci Code", "The Lost Symbol", "Inferno", "Origin"]),
-  branch("Geronimo Stilton", ["Lost Treasure of the Emerald Eye", "The Curse of the Cheese Pyramid", "Cat and Mouse in a Haunted House", "I'm Too Fond of My Fur", "Four Mice Deep in the Jungle", "Paws Off, Cheddarface!", "Attack of the Pirate Cats", "A Cheese-Colored Camper", "Down and Out Down Under", "The Peculiar Pumpkin Thief"]),
-  branch("Percy Jackson & the Olympians", ["The Lightning Thief", "The Sea of Monsters", "The Titan's Curse", "The Battle of the Labyrinth", "The Last Olympian"]),
-  branch("The Baby-Sitters Club", ["Kristy's Great Idea", "Claudia and Mean Janine", "The Truth About Stacey", "Mary Anne Saves the Day", "Dawn and the Impossible Three", "Kristy's Big Day", "Boy-Crazy Stacey", "Claudia and the Phantom Phone Calls", "The Ghost at Dawn's House", "Mary Anne and the Search for Tigger"]),
-  branch("American Girl", ["Meet Samantha", "Meet Molly", "Meet Felicity", "Meet Addy", "Meet Josefina", "Meet Kirsten", "Meet Kit", "Meet Ruthie", "Meet Nanea", "Meet Julie"]),
-  branch("Twilight", ["Twilight", "New Moon", "Eclipse", "Breaking Dawn"]),
-  branch("Star Wars", ["Heir to the Empire", "Dark Force Rising", "The Last Command", "The Truce at Bakura", "The Courtship of Princess Leia", "Darth Bane: Path of Destruction", "Lost Stars", "Bloodline", "Thrawn", "Shadow of the Sith"])
+  series("Harry Potter"), series("Goosebumps"), series("Perry Mason"), series("Diary of a Wimpy Kid"), series("Choose Your Own Adventure"), series("The Berenstain Bears"), series("Mr. Men and Little Miss"), series("Sweet Valley High"), series("Noddy"), series("Jack Reacher"), series("The Railway Series / Thomas & Friends"), series("Nancy Drew"), series("San-Antonio"), series("Robert Langdon"), series("Geronimo Stilton"), series("Percy Jackson & the Olympians"), series("The Baby-Sitters Club"), series("American Girl"), series("Twilight"), series("Star Wars"),
+  series("One Piece"), series("Little Critter"), series("Peter Rabbit"), series("Fifty Shades"), series("Chicken Soup for the Soul"), series("Clifford the Big Red Dog"), series("Frank Merriwell"), series("Dirk Pitt"), series("Musashi", ["宮本武蔵"]), series("The Chronicles of Narnia"), series("SAS"), series("A Song of Ice and Fire"), series("The Hunger Games"), series("James Bond"), series("Martine"), series("Millennium"), series("The Wheel of Time"), series("Discworld"), series("Miffy", ["Nijntje"]), series("Alex Cross"), series("Anpanman", ["アンパンマン"]), series("Captain Underpants"), series("Fear Street"), series("Pippi Longstocking", ["Pippi Långstrump"]), series("The Vampire Chronicles"), series("OSS 117"), series("Winnie-the-Pooh"), series("Magic Tree House"), series("Left Behind"), series("A Series of Unfortunate Events"), series("Arthur"), series("Little House on the Prairie"), series("All Creatures Great and Small"), series("The Magic School Bus"), series("Where’s Wally?", ["Where's Wally?", "Where’s Waldo?", "Where's Waldo?"]), series("Men Are from Mars, Women Are from Venus"), series("The Hardy Boys"), series("The Bobbsey Twins"), series("Tarzan")
 ]);
 
 /**
@@ -334,6 +317,7 @@ function buildNode(seed: TopicSeed, parentPath: string[], depth: number, rootInd
   return {
     id: nodeId(path), label, selected: false, expanded: false,
     weight: depth === 0 ? ([30, 25, 20, 25][rootIndex] ?? 10) : 10,
+    aliases: typeof seed === "string" ? undefined : seed.aliases,
     children: children?.map((child) => buildNode(child, path, depth + 1, rootIndex))
   };
 }
@@ -431,6 +415,7 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
   fresh.forEach((topic) => byLabel.set(topic.label.toLowerCase(), [...(byLabel.get(topic.label.toLowerCase()) ?? []), topic]));
   const missingCustom = new Map<string, TopicNode>();
   const selectedIds = new Set<string>();
+  const legacySeriesParents = new Map<string, { selected: boolean; weight?: number }>();
   flattenTopics(saved).forEach((oldTopic) => {
     const key = oldTopic.path.join("\u0000").toLowerCase();
     const target = byPath.get(key) ?? (byLabel.get(oldTopic.label.toLowerCase())?.length === 1 ? byLabel.get(oldTopic.label.toLowerCase())?.[0] : undefined);
@@ -439,10 +424,18 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
       if (oldTopic.selected) selectedIds.add(target.id);
       return;
     }
+    const seriesParentPath = oldTopic.path.length > 3 && oldTopic.path[0] === "Literature" && oldTopic.path[1] === "Best-Selling Book Series" ? oldTopic.path.slice(0, 3).join("\u0000").toLowerCase() : undefined;
+    if (seriesParentPath && !legacySeriesParents.has(seriesParentPath)) legacySeriesParents.set(seriesParentPath, { selected: Boolean(oldTopic.selected), weight: oldTopic.weight });
     if (oldTopic.custom || oldTopic.selected) {
       const customKey = oldTopic.label.toLowerCase();
       if (!missingCustom.has(customKey)) missingCustom.set(customKey, { id: `custom-${slug(oldTopic.label)}`, label: oldTopic.label, selected: oldTopic.selected, expanded: false, weight: oldTopic.weight || 10, custom: true });
     }
+  });
+  legacySeriesParents.forEach((legacy, path) => {
+    const parent = byPath.get(path);
+    if (!parent) return;
+    next = updateById(next, parent.id, (node) => ({ ...node, selected: legacy.selected || node.selected, weight: legacy.weight || node.weight }));
+    if (legacy.selected) selectedIds.add(parent.id);
   });
   selectedIds.forEach((id) => { next = updateById(next, id, (node) => setBranchSelected(node, true)); });
   return [...next, ...Array.from(missingCustom.values())];

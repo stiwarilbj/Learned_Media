@@ -1091,6 +1091,18 @@ body { background: var(--page-gradient); }
 .custom-topic-form .icon-button, .icon-button.filled { background: #b7dcfa !important; border-color: #b7dcfa !important; color: #285b91 !important; box-shadow: none !important; }
 .custom-topic-form .icon-button:hover, .icon-button.filled:hover { background: #a5d0f5 !important; border-color: #a5d0f5 !important; }
 .feed-topics-panel { position: static; top: auto; }
+.workspace-switcher { position: relative; }
+.workspace-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 40; width: 230px; padding: 8px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+.workspace-menu-label { display: block; padding: 5px 8px 7px; color: var(--muted-soft); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+.workspace-menu > button, .workspace-menu-actions button { display: block; width: 100%; border: 0; border-radius: 9px; padding: 9px 10px; background: transparent; color: var(--ink); text-align: left; font-size: 11px; cursor: pointer; }
+.workspace-menu > button:hover, .workspace-menu > button.active, .workspace-menu-actions button:hover { background: var(--surface-blue); color: var(--primary); }
+.workspace-menu-actions { display: grid; gap: 2px; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }
+.workspace-menu-actions button { color: var(--primary); font-weight: 800; }
+.export-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 14px; }
+.export-controls .field-label { margin: 0; }
+.export-controls select { min-height: 39px; border: 1px solid var(--border); border-radius: 9px; padding: 0 10px; background: var(--surface-soft); color: var(--ink); font-size: 11px; }
+.export-buttons { display: flex; gap: 7px; grid-column: 1 / -1; }
+.export-buttons .secondary-button { min-width: 72px; }
 @media (max-width: 1100px) and (min-width: 821px) {
   .setup-layout, .feed-layout { grid-template-columns: minmax(350px, 390px) minmax(0, 1fr); }
 }

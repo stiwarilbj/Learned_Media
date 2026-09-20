@@ -15,6 +15,7 @@ import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog"
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
 import { rankSearchResults } from "@/lib/search";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
+import { makeWorkspaceId, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_WORKSPACE, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, relatedYouTubeVideos, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -23,7 +24,7 @@ const STORAGE_BACKUP_KEY = "learned-media-state-backup";
 const LEGACY_STORAGE_KEY = "learned-media-demo-state";
 const THEME_MIGRATION_KEY = "learned-media-light-theme-v1";
 const TEN_LEVEL_DIFFICULTY_MIGRATION_KEY = "learned-media-ten-level-difficulty-v1";
-const PERSISTENCE_VERSION = 1;
+const PERSISTENCE_VERSION = 2;
 const KNOWN_DEMO_IDS = new Set([
   "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning",
   "demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle"
@@ -39,7 +40,13 @@ type PersistedState = {
   feedStarted: boolean;
   theme: "light" | "dark";
   topicCatalogVersion?: number;
+  youtubeActivity?: YouTubeWorkspaceActivity;
 };
+
+type YouTubeWorkspaceActivity = Pick<YouTubeWorkspaceState, "savedIds" | "history" | "playbackPositions" | "searchText" | "selectedTopic" | "activeTab" | "selectedChannelId" | "selectedVideoId" | "discoverIds" | "channelOrder">;
+
+type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
+type AppWorkspaceStore = WorkspaceStore<PersistedState>;
 
 function readWorkspaceState() {
   for (const key of [STORAGE_KEY, STORAGE_BACKUP_KEY, LEGACY_STORAGE_KEY]) {
@@ -62,6 +69,30 @@ function writeWorkspaceState(state: PersistedState) {
   } catch {
     // Local persistence is best effort; a browser quota error must not interrupt reading.
   }
+}
+
+function youtubeActivityOf(workspace: YouTubeWorkspaceState): YouTubeWorkspaceActivity {
+  return {
+    savedIds: workspace.savedIds,
+    history: workspace.history,
+    playbackPositions: workspace.playbackPositions,
+    searchText: workspace.searchText,
+    selectedTopic: workspace.selectedTopic,
+    activeTab: workspace.activeTab,
+    selectedChannelId: workspace.selectedChannelId,
+    selectedVideoId: workspace.selectedVideoId,
+    discoverIds: workspace.discoverIds,
+    channelOrder: workspace.channelOrder
+  };
+}
+
+function applyYouTubeActivity(workspace: YouTubeWorkspaceState, activity?: YouTubeWorkspaceActivity): YouTubeWorkspaceState {
+  return activity ? { ...workspace, ...activity } : workspace;
+}
+
+function makeLocalWorkspace(state: PersistedState): AppWorkspaceRecord {
+  const now = new Date().toISOString();
+  return { id: "local-workspace", name: "Local Workspace", createdAt: now, updatedAt: now, state };
 }
 
 async function readNdjson(response: Response, onMessage: (message: Record<string, any>) => void) {
@@ -155,6 +186,9 @@ function migrateLearningProfile(profile: LearningProfile): LearningProfile {
 }
 
 export default function HomePage() {
+  const [workspaceId, setWorkspaceId] = useState("local-workspace");
+  const [workspaceName, setWorkspaceName] = useState("Local Workspace");
+  const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummary[]>([{ id: "local-workspace", name: "Local Workspace", createdAt: "", updatedAt: "" }]);
   const [view, setView] = useState<View>("feed");
   const [topics, setTopics] = useState<TopicNode[]>(createDefaultTopics);
   const [settings, setSettings] = useState<FeedSettings>(DEFAULT_SETTINGS);
@@ -201,11 +235,133 @@ export default function HomePage() {
   const sessionIdRef = useRef("browser-" + Math.random().toString(36).slice(2));
   const persistedStateRef = useRef<PersistedState | null>(null);
   const youtubeWorkspaceRef = useRef<YouTubeWorkspaceState>(DEFAULT_YOUTUBE_WORKSPACE);
+  const workspaceStoreRef = useRef<AppWorkspaceStore | null>(null);
+  const workspaceIdRef = useRef("local-workspace");
+  const workspaceNameRef = useRef("Local Workspace");
+  const workspaceEpochRef = useRef(0);
 
   const cancelGeneration = useCallback(() => {
     generationAbortController.current?.abort();
     generationAbortController.current = null;
     setLoading(false);
+  }, []);
+
+  const cancelWorkspaceRequests = useCallback(() => {
+    generationAbortController.current?.abort();
+    connectionAbortController.current?.abort();
+    learningAbortController.current?.abort();
+    questionAbortController.current?.abort();
+    youtubeAbortController.current?.abort();
+    youtubeSearchAbortController.current?.abort();
+    requestGeneration.current += 1;
+    workspaceEpochRef.current += 1;
+    setLoading(false);
+    setLearnLoading(null);
+    setQuestionLoading(null);
+    setYoutubeSmartSearchLoading(false);
+  }, []);
+
+  const makeCurrentSnapshot = useCallback((): PersistedState => ({
+    persistenceVersion: PERSISTENCE_VERSION,
+    topicCatalogVersion: TOPIC_CATALOG_VERSION,
+    savedAt: new Date().toISOString(),
+    topics,
+    settings,
+    cards,
+    learningProfile,
+    feedStarted,
+    theme,
+    youtubeActivity: youtubeActivityOf(youtubeWorkspaceRef.current)
+  }), [cards, feedStarted, learningProfile, settings, theme, topics]);
+
+  const saveWorkspaceRecordNow = useCallback(async (id: string, name: string, snapshot: PersistedState) => {
+    const store = workspaceStoreRef.current;
+    if (!store) return;
+    const index = store.records.findIndex((record) => record.id === id);
+    const now = new Date().toISOString();
+    const record: AppWorkspaceRecord = { id, name, createdAt: index >= 0 ? store.records[index].createdAt : now, updatedAt: now, state: snapshot };
+    if (index >= 0) store.records[index] = record;
+    else store.records.push(record);
+    store.activeId = id;
+    try {
+      await writeWorkspaceStore(store);
+    } catch {
+      setToast("Your workspace could not be saved. A local recovery copy was kept.");
+    }
+  }, []);
+
+  const switchWorkspace = useCallback(async (targetId: string) => {
+    if (targetId === workspaceIdRef.current || !workspaceStoreRef.current) return;
+    cancelWorkspaceRequests();
+    const currentId = workspaceIdRef.current;
+    const currentName = workspaceNameRef.current;
+    await saveWorkspaceRecordNow(currentId, currentName, makeCurrentSnapshot());
+    const target = workspaceStoreRef.current.records.find((record) => record.id === targetId);
+    if (!target) return;
+    workspaceStoreRef.current.activeId = target.id;
+    workspaceIdRef.current = target.id;
+    workspaceNameRef.current = target.name;
+    setWorkspaceId(target.id);
+    setWorkspaceName(target.name);
+    const restoredTopics = migrateTopicTree(target.state.topics, false);
+    setTopics(restoredTopics);
+    setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings });
+    setCards(uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body)));
+    setLearningProfile(target.state.learningProfile ?? {});
+    setFeedStarted(Boolean(target.state.feedStarted && target.state.cards?.length));
+    setFeedHasMore(true);
+    setPendingSlots(10);
+    setQuery("");
+    setCustomTopic("");
+    setRabbitHole(null);
+    setGenerationError("");
+    setLearningErrors({});
+    setView("feed");
+    setYoutubeWorkspace((current) => applyYouTubeActivity(current, target.state.youtubeActivity));
+    persistedStateRef.current = target.state;
+    await writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The workspace changed, but the active workspace could not be saved."));
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow]);
+
+  const createWorkspace = useCallback(async () => {
+    if (!workspaceStoreRef.current) return;
+    cancelWorkspaceRequests();
+    await saveWorkspaceRecordNow(workspaceIdRef.current, workspaceNameRef.current, makeCurrentSnapshot());
+    const now = new Date().toISOString();
+    const record: AppWorkspaceRecord = { id: makeWorkspaceId(), name: `Workspace ${workspaceStoreRef.current.records.length + 1}`, createdAt: now, updatedAt: now, state: { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: createDefaultTopics(), settings: { ...DEFAULT_SETTINGS, obscurity: 5 }, cards: [], learningProfile: {}, feedStarted: false, theme } };
+    workspaceStoreRef.current.records.push(record);
+    workspaceStoreRef.current.activeId = record.id;
+    workspaceIdRef.current = record.id;
+    workspaceNameRef.current = record.name;
+    setWorkspaceId(record.id);
+    setWorkspaceName(record.name);
+    setWorkspaceSummaries(workspaceStoreRef.current.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+    setTopics(record.state.topics);
+    setSettings(record.state.settings);
+    setCards([]);
+    setLearningProfile({});
+    setFeedStarted(false);
+    setFeedHasMore(true);
+    setPendingSlots(10);
+    setQuery("");
+    setView("feed");
+    setYoutubeWorkspace((current) => ({ ...current, savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", selectedChannelId: undefined, selectedVideoId: undefined, discoverIds: [], channelOrder: "newest" }));
+    await writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The new workspace could not be saved. A local recovery copy was kept."));
+    setToast(`${record.name} created.`);
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow, theme]);
+
+  const renameWorkspace = useCallback(() => {
+    const nextName = window.prompt("Name this workspace", workspaceNameRef.current)?.trim();
+    if (!nextName || nextName === workspaceNameRef.current || !workspaceStoreRef.current) return;
+    if (workspaceStoreRef.current.records.some((record) => record.id !== workspaceIdRef.current && record.name.toLocaleLowerCase() === nextName.toLocaleLowerCase())) {
+      setToast("A workspace with that name already exists.");
+      return;
+    }
+    workspaceNameRef.current = nextName;
+    setWorkspaceName(nextName);
+    const record = workspaceStoreRef.current.records.find((item) => item.id === workspaceIdRef.current);
+    if (record) record.name = nextName;
+    setWorkspaceSummaries(workspaceStoreRef.current.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+    void writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The new name could not be saved."));
   }, []);
 
   useEffect(() => () => {
@@ -225,9 +381,11 @@ export default function HomePage() {
     let active = true;
     void loadYouTubeWorkspace().then((workspace) => {
       if (!active) return;
-      youtubeWorkspaceRef.current = workspace;
-      setYoutubeWorkspace(workspace);
-      if (workspace.videos.length) setYoutubeStatus("connected");
+      const activeRecord = workspaceStoreRef.current?.records.find((record) => record.id === workspaceIdRef.current);
+      const restored = applyYouTubeActivity(workspace, activeRecord?.state.youtubeActivity);
+      youtubeWorkspaceRef.current = restored;
+      setYoutubeWorkspace(restored);
+      if (restored.videos.length) setYoutubeStatus("connected");
     });
     return () => { active = false; };
   }, []);
@@ -237,62 +395,80 @@ export default function HomePage() {
   }, [hydrated, youtubeWorkspace]);
 
   useEffect(() => {
-    try {
-      const parsed = readWorkspaceState();
-      if (parsed) {
-        const migrateTenLevelDifficulty = window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1";
-        const restoredTopics = parsed.topics ? migrateTopicTree(parsed.topics, (parsed.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION) : createDefaultTopics();
-        const restoredSettings: FeedSettings = {
-          ...DEFAULT_SETTINGS,
-          ...parsed.settings,
-          displayMode: parsed.settings?.displayMode === "text" ? "text" : "picture-text"
-        };
-        if (migrateTenLevelDifficulty) restoredSettings.obscurity = migrateLegacyDifficulty(parsed.settings?.obscurity);
-        const realCards = (parsed.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));
-        const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index, migrateTenLevelDifficulty)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
-        const restoredProfile = parsed.learningProfile ? (migrateTenLevelDifficulty ? migrateLearningProfile(parsed.learningProfile) : parsed.learningProfile) : {};
-        const restoredTheme = window.localStorage.getItem(THEME_MIGRATION_KEY) === "1" && parsed.theme ? parsed.theme : "light";
-        const restoredState: PersistedState = {
-          persistenceVersion: PERSISTENCE_VERSION,
-          savedAt: parsed.savedAt,
-          topics: restoredTopics,
-          settings: restoredSettings,
-          cards: restoredCards,
-          learningProfile: restoredProfile,
-          feedStarted: Boolean(parsed.feedStarted && restoredCards.length),
-          theme: restoredTheme
-        };
-        persistedStateRef.current = restoredState;
-        setTopics(restoredTopics);
-        setSettings(restoredSettings);
-        setCards(restoredCards);
-        setLearningProfile(restoredProfile);
-        setFeedStarted(restoredState.feedStarted);
-        setTheme(restoredTheme);
-      }
-      if (window.localStorage.getItem(THEME_MIGRATION_KEY) !== "1") {
-        setTheme("light");
-        window.localStorage.setItem(THEME_MIGRATION_KEY, "1");
-      }
-      if (window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1") window.localStorage.setItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY, "1");
-    } catch {
-      // A corrupt local cache should never prevent the app from loading.
-    }
-    setHydrated(true);
-    if (isGitHubPagesRuntime()) {
-      setSupabaseConfigured(false);
-      return;
-    }
-    void fetch("/api/status").then((response) => response.json()).then((data: { supabaseConfigured?: boolean }) => {
-      setSupabaseConfigured(Boolean(data.supabaseConfigured));
-    }).catch(() => undefined);
+    if (!hydrated || !workspaceStoreRef.current || !persistedStateRef.current) return;
+    const record = workspaceStoreRef.current.records.find((item) => item.id === workspaceIdRef.current);
+    if (!record) return;
+    record.state = { ...record.state, youtubeActivity: youtubeActivityOf(youtubeWorkspace), savedAt: new Date().toISOString() };
+    void writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("Your video activity could not be saved. A local recovery copy was kept."));
+  }, [hydrated, youtubeWorkspace]);
+
+  useEffect(() => {
+    let active = true;
+    const normalizeSavedState = (parsed: Partial<PersistedState> | null, collapseInitial: boolean): PersistedState => {
+      const restoredTopics = parsed?.topics ? migrateTopicTree(parsed.topics, collapseInitial) : createDefaultTopics();
+      const restoredSettings: FeedSettings = { ...DEFAULT_SETTINGS, ...parsed?.settings, displayMode: parsed?.settings?.displayMode === "text" ? "text" : "picture-text" };
+      if (collapseInitial && parsed?.settings?.obscurity !== undefined) restoredSettings.obscurity = migrateLegacyDifficulty(parsed.settings.obscurity);
+      const realCards = (parsed?.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));
+      const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index, collapseInitial)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
+      const restoredProfile = parsed?.learningProfile ? (collapseInitial ? migrateLearningProfile(parsed.learningProfile) : parsed.learningProfile) : {};
+      const restoredTheme = parsed?.theme === "dark" ? "dark" : "light";
+      return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
+    };
+    const restore = async () => {
+      let legacy: Partial<PersistedState> | null = null;
+      try { legacy = readWorkspaceState(); } catch { legacy = null; }
+      const shouldMigrate = typeof window !== "undefined" && window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1";
+      const legacyState = normalizeSavedState(legacy, shouldMigrate || (legacy?.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION);
+      const fallback: AppWorkspaceStore = { version: 1, activeId: "local-workspace", records: [makeLocalWorkspace(legacyState)], theme: legacyState.theme };
+      const loaded = await readWorkspaceStore<PersistedState>(fallback);
+      if (!active) return;
+      const store = loaded ?? fallback;
+      if (!store.records.length) store.records = fallback.records;
+      const activeRecord = store.records.find((record) => record.id === store.activeId) ?? store.records[0];
+      workspaceStoreRef.current = store;
+      workspaceIdRef.current = activeRecord.id;
+      workspaceNameRef.current = activeRecord.name;
+      setWorkspaceId(activeRecord.id);
+      setWorkspaceName(activeRecord.name);
+      setWorkspaceSummaries(store.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+      const restored = normalizeSavedState(activeRecord.state, shouldMigrate || (activeRecord.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION);
+      persistedStateRef.current = restored;
+      setTopics(restored.topics);
+      setSettings(restored.settings);
+      setCards(restored.cards);
+      setLearningProfile(restored.learningProfile);
+      setFeedStarted(restored.feedStarted);
+      const sharedTheme = store.theme ?? restored.theme;
+      store.theme = sharedTheme;
+      setTheme(sharedTheme);
+      if (shouldMigrate) window.localStorage.setItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY, "1");
+      if (window.localStorage.getItem(THEME_MIGRATION_KEY) !== "1") window.localStorage.setItem(THEME_MIGRATION_KEY, "1");
+      await writeWorkspaceStore(store).catch(() => undefined);
+      setHydrated(true);
+    };
+    void restore();
+    if (isGitHubPagesRuntime()) setSupabaseConfigured(false);
+    else void fetch("/api/status").then((response) => response.json()).then((data: { supabaseConfigured?: boolean }) => setSupabaseConfigured(Boolean(data.supabaseConfigured))).catch(() => undefined);
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
-    const state: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics, settings, cards, learningProfile, feedStarted, theme };
+    const state: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics, settings, cards, learningProfile, feedStarted, theme, youtubeActivity: youtubeActivityOf(youtubeWorkspaceRef.current) };
     persistedStateRef.current = state;
     writeWorkspaceState(state);
+    const currentStore = workspaceStoreRef.current;
+    if (currentStore) {
+      const index = currentStore.records.findIndex((record) => record.id === workspaceIdRef.current);
+      const now = new Date().toISOString();
+      const record: AppWorkspaceRecord = { id: workspaceIdRef.current, name: workspaceNameRef.current, createdAt: index >= 0 ? currentStore.records[index].createdAt : now, updatedAt: now, state };
+      if (index >= 0) currentStore.records[index] = record;
+      else currentStore.records.push(record);
+      currentStore.activeId = workspaceIdRef.current;
+      currentStore.theme = theme;
+      setWorkspaceSummaries(currentStore.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+      void writeWorkspaceStore(currentStore).catch(() => setToast("Your workspace could not be saved. A local recovery copy was kept."));
+    }
   }, [cards, feedStarted, hydrated, learningProfile, settings, theme, topics]);
 
   useEffect(() => {
@@ -977,12 +1153,12 @@ export default function HomePage() {
     if (view === "explore") return <ExploreView onChoose={(topic) => { if (topic === "Custom topic") { setView("feed"); setToast("Add a custom topic from your learning mix."); } else { setQuery(topic); setView("feed"); } }} />;
     if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(filterYouTubeVideos(current.videos, "", topic), 24).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={(id, seconds) => updateYouTubeWorkspace((current) => ({ ...current, playbackPositions: { ...current.playbackPositions, [id]: seconds } }))} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} />;
     return <FeedView cards={filteredCards} query={query} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, 10)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
   };
 
-  const searchResults = query.trim() ? rankSearchResults(query, allTopicResults, (topic) => `${topic.path.join(" ")} ${topic.label}`, 6) : [];
+  const searchResults = query.trim() ? rankSearchResults(query, allTopicResults, (topic) => `${topic.path.join(" ")} ${topic.label} ${(topic.aliases ?? []).join(" ")}`, 6) : [];
   const searchCollection = view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : cards;
   const factResults = query.trim() ? rankSearchResults(query, searchCollection, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`, 6) : [];
 
@@ -998,6 +1174,11 @@ export default function HomePage() {
         factResults={factResults}
         onChooseTopic={(label) => { setView("feed"); setQuery(label); }}
         onChooseFact={(title) => { setView("history"); setQuery(title); }}
+        workspaceName={workspaceName}
+        workspaces={workspaceSummaries}
+        onSwitchWorkspace={(id) => void switchWorkspace(id)}
+        onCreateWorkspace={() => void createWorkspace()}
+        onRenameWorkspace={renameWorkspace}
       />
       <main className="main-column">
         <div className="main-scroll">{renderMain()}</div>

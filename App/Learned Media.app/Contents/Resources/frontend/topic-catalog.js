@@ -136,8 +136,16 @@
       "James Baldwin", "Julio Cortázar", "Mario Vargas Llosa", "David Malouf", "Joy Harjo", "Tommy Orange", "Leanne Betasamosake Simpson"
     ]));
   }
+  if (nativeLiterature) {
+    const seriesAliases = { "Musashi": ["宮本武蔵"], "Miffy": ["Nijntje"], "Anpanman": ["アンパンマン"], "Pippi Longstocking": ["Pippi Långstrump"], "Where’s Wally?": ["Where's Wally?", "Where’s Waldo?", "Where's Waldo?"] };
+    const seriesNames = [
+      "Harry Potter", "Goosebumps", "Perry Mason", "Diary of a Wimpy Kid", "Choose Your Own Adventure", "The Berenstain Bears", "Mr. Men and Little Miss", "Sweet Valley High", "Noddy", "Jack Reacher", "The Railway Series / Thomas & Friends", "Nancy Drew", "San-Antonio", "Robert Langdon", "Geronimo Stilton", "Percy Jackson & the Olympians", "The Baby-Sitters Club", "American Girl", "Twilight", "Star Wars", "One Piece", "Little Critter", "Peter Rabbit", "Fifty Shades", "Chicken Soup for the Soul", "Clifford the Big Red Dog", "Frank Merriwell", "Dirk Pitt", "Musashi", "The Chronicles of Narnia", "SAS", "A Song of Ice and Fire", "The Hunger Games", "James Bond", "Martine", "Millennium", "The Wheel of Time", "Discworld", "Miffy", "Alex Cross", "Anpanman", "Captain Underpants", "Fear Street", "Pippi Longstocking", "The Vampire Chronicles", "OSS 117", "Winnie-the-Pooh", "Magic Tree House", "Left Behind", "A Series of Unfortunate Events", "Arthur", "Little House on the Prairie", "All Creatures Great and Small", "The Magic School Bus", "Where’s Wally?", "Men Are from Mars, Women Are from Venus", "The Hardy Boys", "The Bobbsey Twins", "Tarzan"
+    ];
+    nativeLiterature.children = nativeLiterature.children.filter(function (item) { return item.label !== "Best-Selling Book Series"; });
+    nativeLiterature.children.push(branch("Best-Selling Book Series", seriesNames.map(function (label) { return { label: label, children: [], aliases: seriesAliases[label] || [] }; })));
+  }
   window.LEARNED_MEDIA_TOPIC_METADATA = {
-    catalogVersion: 4,
+    catalogVersion: 5,
     bestSellingBookSeries: {
       sourceUrl: "https://en.wikipedia.org/wiki/List_of_best-selling_books#List_of_best-selling_book_series",
       sourceLabel: "Wikipedia's List of best-selling book series",

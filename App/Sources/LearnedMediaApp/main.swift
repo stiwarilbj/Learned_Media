@@ -2,7 +2,10 @@ import AppKit
 import AuthenticationServices
 import Cocoa
 import CryptoKit
+import CoreText
 import Foundation
+import PDFKit
+import UniformTypeIdentifiers
 import WebKit
 import LearnedMediaCore
 
@@ -906,6 +909,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         case "saveVideoCatalog":
             do { try videoCatalog.save(payload["catalog"]); respond(id: id, result: true) }
             catch { respond(id: id, error: "The YouTube catalog could not be saved.") }
+        case "exportFacts":
+            exportFacts(id: id, format: payload["format"] as? String ?? "txt", workspaceName: payload["workspaceName"] as? String ?? "Local Workspace", facts: payload["facts"] as? [[String: Any]] ?? [])
         case "setGeminiKey":
             cancelActiveTasks()
             geminiKey = payload["key"] as? String ?? ""
@@ -1053,6 +1058,137 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private func userMessage(_ error: Error) -> String {
         if let error = error as? NativeError { return error.message }
         return "The request could not be completed. Check your key and try again."
+    }
+
+    private func exportText(workspaceName: String, exportedAt: String, facts: [[String: Any]]) -> String {
+        var lines = ["LEARNED MEDIA", "Workspace: \(workspaceName)", "Exported: \(exportedAt)", ""]
+        for (index, fact) in facts.enumerated() {
+            let title = fact["title"] as? String ?? "Untitled fact"
+            let hook = fact["hook"] as? String ?? ""
+            let body = fact["body"] as? String ?? ""
+            let path = (fact["topicPath"] as? [String] ?? []).joined(separator: " / ")
+            lines += [String(repeating: "=", count: 72), "\(index + 1). \(title)", "Hook: \(hook)", "Fact: \(body)", "Topic path: \(path)", "Wikipedia Sources:"]
+            for source in fact["sources"] as? [[String: Any]] ?? [] {
+                lines += ["- \(source["title"] as? String ?? "Wikipedia")", "  \(source["url"] as? String ?? "")"]
+            }
+            if let image = fact["image"] as? [String: Any] {
+                if let credit = image["credit"] as? String, !credit.isEmpty { lines.append("Image credit: \(credit)") }
+                if let source = image["filePageUrl"] as? String ?? image["sourceUrl"] as? String, !source.isEmpty { lines.append("Image source: \(source)") }
+            }
+            lines.append("")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func exportAttributedString(workspaceName: String, exportedAt: String, facts: [[String: Any]]) -> (NSAttributedString, Int) {
+        let output = NSMutableAttributedString()
+        let titleAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 20), .foregroundColor: NSColor(calibratedRed: 0.08, green: 0.16, blue: 0.30, alpha: 1)]
+        let headingAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor(calibratedRed: 0.08, green: 0.16, blue: 0.30, alpha: 1)]
+        let bodyAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor(calibratedRed: 0.10, green: 0.14, blue: 0.22, alpha: 1)]
+        func append(_ text: String, attributes: [NSAttributedString.Key: Any], spacing: CGFloat = 5) {
+            output.append(NSAttributedString(string: text + "\n", attributes: attributes))
+            output.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: spacing)]))
+        }
+        append("LEARNED MEDIA", attributes: titleAttributes, spacing: 2)
+        append("Workspace: \(workspaceName)", attributes: bodyAttributes, spacing: 0)
+        append("Exported: \(exportedAt)", attributes: bodyAttributes, spacing: 10)
+        var omittedImages = 0
+        for (index, fact) in facts.enumerated() {
+            append("\(index + 1). \(fact["title"] as? String ?? "Untitled fact")", attributes: headingAttributes, spacing: 4)
+            if let image = fact["image"] as? [String: Any], let imageURL = URL(string: image["url"] as? String ?? ""), let data = try? Data(contentsOf: imageURL), let nsImage = croppedExportImage(data: data) {
+                let attachment = NSTextAttachment()
+                attachment.image = nsImage
+                attachment.bounds = NSRect(x: 0, y: 0, width: 512, height: 288)
+                output.append(NSAttributedString(attachment: attachment))
+                output.append(NSAttributedString(string: "\n\n", attributes: bodyAttributes))
+            } else if fact["image"] != nil { omittedImages += 1 }
+            append(fact["hook"] as? String ?? "", attributes: bodyAttributes, spacing: 1)
+            append(fact["body"] as? String ?? "", attributes: bodyAttributes, spacing: 4)
+            append("Topic path: \((fact["topicPath"] as? [String] ?? []).joined(separator: " / "))", attributes: bodyAttributes, spacing: 4)
+            append("Wikipedia Sources", attributes: bodyAttributes, spacing: 1)
+            for source in fact["sources"] as? [[String: Any]] ?? [] {
+                let title = source["title"] as? String ?? "Wikipedia"
+                let url = source["url"] as? String ?? ""
+                let linkAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor(calibratedRed: 0.10, green: 0.30, blue: 0.70, alpha: 1), .link: url]
+                output.append(NSAttributedString(string: title + "\n", attributes: linkAttributes))
+                output.append(NSAttributedString(string: url + "\n\n", attributes: linkAttributes))
+            }
+            if let image = fact["image"] as? [String: Any] {
+                if let credit = image["credit"] as? String, !credit.isEmpty { append("Image credit: \(credit)", attributes: bodyAttributes, spacing: 1) }
+                if let source = image["filePageUrl"] as? String ?? image["sourceUrl"] as? String, !source.isEmpty {
+                    let linkAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor(calibratedRed: 0.10, green: 0.30, blue: 0.70, alpha: 1), .link: source]
+                    output.append(NSAttributedString(string: source + "\n\n", attributes: linkAttributes))
+                }
+            }
+        }
+        return (output, omittedImages)
+    }
+
+    private func croppedExportImage(data: Data) -> NSImage? {
+        guard let source = NSImage(data: data), let representation = source.bestRepresentation(for: NSRect(origin: .zero, size: source.size), context: nil, hints: nil) else { return nil }
+        let targetSize = NSSize(width: 1200, height: 675)
+        let sourceWidth = CGFloat(representation.pixelsWide > 0 ? representation.pixelsWide : Int(source.size.width))
+        let sourceHeight = CGFloat(representation.pixelsHigh > 0 ? representation.pixelsHigh : Int(source.size.height))
+        guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+        let scale = max(targetSize.width / sourceWidth, targetSize.height / sourceHeight)
+        let drawSize = NSSize(width: sourceWidth * scale, height: sourceHeight * scale)
+        let cropped = NSImage(size: targetSize)
+        cropped.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: targetSize).fill()
+        representation.draw(in: NSRect(x: (targetSize.width - drawSize.width) / 2, y: (targetSize.height - drawSize.height) / 2, width: drawSize.width, height: drawSize.height), from: NSRect(x: 0, y: 0, width: sourceWidth, height: sourceHeight), operation: .copy, fraction: 1, respectFlipped: false, hints: nil)
+        cropped.unlockFocus()
+        return cropped
+    }
+
+    private func makePDF(data: NSAttributedString) -> Data? {
+        let output = NSMutableData()
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        guard let consumer = CGDataConsumer(data: output as CFMutableData), let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+        let framesetter = CTFramesetterCreateWithAttributedString(data as CFAttributedString)
+        var location = 0
+        var pageNumber = 1
+        while location < data.length || pageNumber == 1 {
+            context.beginPDFPage(nil)
+            let path = CGPath(rect: CGRect(x: 50, y: 55, width: 512, height: 680), transform: nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: location, length: 0), path, nil)
+            CTFrameDraw(frame, context)
+            let visible = CTFrameGetVisibleStringRange(frame)
+            location += visible.length
+            let footer = NSAttributedString(string: "\(pageNumber)", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.gray])
+            let line = CTLineCreateWithAttributedString(footer as CFAttributedString)
+            context.textPosition = CGPoint(x: 50, y: 30)
+            CTLineDraw(line, context)
+            context.endPDFPage()
+            pageNumber += 1
+            if visible.length == 0 { break }
+        }
+        context.closePDF()
+        return output as Data
+    }
+
+    private func exportFacts(id: String, format: String, workspaceName: String, facts: [[String: Any]]) {
+        let exportedAt = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
+        let (attributed, omittedImages) = exportAttributedString(workspaceName: workspaceName, exportedAt: exportedAt, facts: facts)
+        let data: Data?
+        let fileExtension: String
+        let contentType: UTType
+        switch format.lowercased() {
+        case "pdf": data = makePDF(data: attributed); fileExtension = "pdf"; contentType = .pdf
+        case "docx": data = try? attributed.data(from: NSRange(location: 0, length: attributed.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.officeOpenXML]); fileExtension = "docx"; contentType = UTType(filenameExtension: "docx") ?? .data
+        default: data = exportText(workspaceName: workspaceName, exportedAt: exportedAt, facts: facts).data(using: .utf8); fileExtension = "txt"; contentType = .plainText
+        }
+        guard let data else { respond(id: id, error: "The \(format.uppercased()) export could not be created."); return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(workspaceName.replacingOccurrences(of: "/", with: "-"))-facts.\(fileExtension)"
+        panel.allowedContentTypes = [contentType]
+        panel.canCreateDirectories = true
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            guard response == .OK, let url = panel.url else { self.respond(id: id, result: ["canceled": true]); return }
+            do { try data.write(to: url, options: .atomic); self.respond(id: id, result: ["canceled": false, "omittedImages": omittedImages]) }
+            catch { self.respond(id: id, error: "The export could not be saved.") }
+        }
     }
 
     private func cancelActiveTasks() {

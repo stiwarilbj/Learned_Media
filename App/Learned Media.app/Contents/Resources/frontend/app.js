@@ -8,14 +8,17 @@
     sentenceLength: 2,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 4;
+  const TOPIC_CATALOG_VERSION = 5;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "Very Easy", "Easy", "Moderate", "Challenging", "Hard", "Very Hard", "Expert", "Specialist", "Extremely Obscure", "Exceptionally Obscure"];
-  const PERSISTENCE_VERSION = 1;
+  const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const KNOWN_DEMO_IDS = new Set(["demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle", "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning"]);
   const state = {
+    workspaceId: "local-workspace",
+    workspaceName: "Local Workspace",
+    workspaces: [],
     view: "feed",
     started: false,
     topics: makeTopics(),
@@ -70,7 +73,7 @@
     const label = typeof seed === "string" ? seed : titleCaseCatalogLabel(seed.label);
     const path = parentPath.concat(label);
     const children = typeof seed === "string" ? undefined : (seed.children || []).map(function (child) { return buildTopicNode(child, path, depth + 1, rootIndex); });
-    return { id: "topic-" + path.map(slug).join("--"), label: label, selected: false, expanded: false, weight: depth === 0 ? [30, 25, 20, 25][rootIndex] || 10 : 10, children: children };
+    return { id: "topic-" + path.map(slug).join("--"), label: label, aliases: typeof seed === "string" ? undefined : seed.aliases, selected: false, expanded: false, weight: depth === 0 ? [30, 25, 20, 25][rootIndex] || 10 : 10, children: children };
   }
   function titleCaseCatalogLabel(label) {
     const small = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
@@ -308,6 +311,7 @@
     const byLabel = new Map();
     fresh.forEach(function (topic) { const key = topic.label.toLowerCase(); byLabel.set(key, (byLabel.get(key) || []).concat(topic)); });
     const selectedIds = [];
+    const legacySeriesParents = new Map();
     const customs = new Map();
     function oldFlat(nodes, parentPath) {
       const prefix = parentPath || [];
@@ -321,10 +325,21 @@
       if (target) {
         next = updateTopicById(next, target.id, function (topic) { return Object.assign({}, topic, { weight: oldTopic.weight || topic.weight, expanded: collapseInitial ? false : oldTopic.expanded }); });
         if (oldTopic.selected) selectedIds.push(target.id);
-      } else if (oldTopic.custom || oldTopic.selected) {
+      } else {
+        if (oldTopic.path.length > 3 && oldTopic.path[0] === "Literature" && oldTopic.path[1] === "Best-Selling Book Series") {
+          const parentPath = oldTopic.path.slice(0, 3).join("\u0000").toLowerCase();
+          if (!legacySeriesParents.has(parentPath)) legacySeriesParents.set(parentPath, { selected: Boolean(oldTopic.selected), weight: oldTopic.weight });
+        }
+        if (!(oldTopic.custom || oldTopic.selected)) return;
         const key = oldTopic.label.toLowerCase();
         if (!customs.has(key)) customs.set(key, { id: "custom-" + slug(oldTopic.label), label: oldTopic.label, selected: Boolean(oldTopic.selected), expanded: false, weight: oldTopic.weight || 10, custom: true });
       }
+    });
+    legacySeriesParents.forEach(function (legacy, path) {
+      const parent = byPath.get(path);
+      if (!parent) return;
+      next = updateTopicById(next, parent.id, function (topic) { return Object.assign({}, topic, { selected: legacy.selected || topic.selected, weight: legacy.weight || topic.weight }); });
+      if (legacy.selected) selectedIds.push(parent.id);
     });
     selectedIds.forEach(function (id) { next = updateTopicById(next, id, function (topic) { return setBranchSelected(topic, true); }); });
     return next.concat(Array.from(customs.values()));
@@ -336,22 +351,34 @@
     render();
     if (message) window.setTimeout(function () { if (state.toast === message) { state.toast = ""; render(); } }, 4200);
   }
+  function youtubeActivity(workspace) {
+    const source = workspace || state.youtube;
+    return { savedIds: source.savedIds || [], history: source.history || [], playbackPositions: source.playbackPositions || {}, searchText: source.searchText || "", smartIds: source.smartIds || null, smartReasons: source.smartReasons || {}, smartRan: Boolean(source.smartRan), topic: source.topic || "All", tab: source.tab || "discover", selectedChannelId: source.selectedChannelId || null, selectedVideoId: source.selectedVideoId || null, discoverIds: source.discoverIds || [], order: source.order || "newest" };
+  }
+  function applyYoutubeActivity(activity) {
+    if (!activity) return;
+    state.youtube = Object.assign({}, state.youtube, activity, { savedIds: activity.savedIds || [], history: activity.history || [], playbackPositions: activity.playbackPositions || {} });
+  }
+  function currentWorkspaceSnapshot() {
+    return { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), topics: state.topics, settings: state.settings, cards: state.cards, profile: state.profile, started: state.started, youtubeActivity: youtubeActivity() };
+  }
+  function activeWorkspaceRecord() {
+    const existing = state.workspaces.find(function (item) { return item.id === state.workspaceId; });
+    if (existing) return existing;
+    const now = new Date().toISOString();
+    const created = { id: state.workspaceId, name: state.workspaceName, createdAt: now, updatedAt: now, state: currentWorkspaceSnapshot() };
+    state.workspaces.push(created);
+    return created;
+  }
   function saveState() {
-    const snapshot = {
-      persistenceVersion: PERSISTENCE_VERSION,
-      catalogVersion: TOPIC_CATALOG_VERSION,
-      savedAt: new Date().toISOString(),
-      topics: state.topics,
-      settings: state.settings,
-      cards: state.cards,
-      profile: state.profile,
-      started: state.started,
-      account: state.account,
-      youtube: state.youtube,
-      theme: document.body.classList.contains("theme-dark") ? "dark" : "light"
-    };
-    queuedWorkspaceState = snapshot;
-    try { window.localStorage.setItem(LOCAL_WORKSPACE_KEY, JSON.stringify(snapshot)); } catch (_) {}
+    const snapshot = currentWorkspaceSnapshot();
+    const record = activeWorkspaceRecord();
+    record.name = state.workspaceName;
+    record.updatedAt = snapshot.savedAt;
+    record.state = snapshot;
+    const envelope = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: snapshot.savedAt, activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, account: state.account, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" };
+    queuedWorkspaceState = envelope;
+    try { window.localStorage.setItem(LOCAL_WORKSPACE_KEY, JSON.stringify(envelope)); } catch (_) {}
     bridge("saveVideoCatalog", { catalog: state.youtube }).catch(function () {});
     flushWorkspaceSave();
   }
@@ -574,7 +601,7 @@
   }
   function topicMatches(topic, query) {
     if (!query) return true;
-    return searchScore(query, topic.label) > 0 || Boolean(topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
+    return searchScore(query, topic.label + " " + (topic.aliases || []).join(" ")) > 0 || Boolean(topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
   }
   function topicRow(topic, depth, query) {
     if (query && !topicMatches(topic, query)) return null;
@@ -611,6 +638,84 @@
     state.topics.forEach(function (topic) { const row = topicRow(topic, 0, query); if (row) tree.appendChild(row); });
     return tree;
   }
+  function cancelWorkspaceOperations() {
+    generationToken += 1;
+    state.connectionToken += 1;
+    state.generationRequestToken += 1;
+    youtubeSearchToken += 1;
+    state.loading = false;
+    state.loadingCard = null;
+    state.youtubeSmartLoading = false;
+    if (stopYoutubePlayback) stopYoutubePlayback();
+    bridge("cancelAll", {}).catch(function () {});
+  }
+  function applyWorkspaceSnapshot(record) {
+    const snapshot = record.state || record;
+    state.workspaceId = record.id || "local-workspace";
+    state.workspaceName = record.name || "Local Workspace";
+    state.topics = migrateTopics(snapshot.topics || makeTopics(), Number(snapshot.catalogVersion || 0) < TOPIC_CATALOG_VERSION);
+    state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {});
+    state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
+    state.profile = snapshot.profile || {};
+    state.started = Boolean(snapshot.started && state.cards.length);
+    applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube);
+  }
+  function workspaceMenu() {
+    const menu = node("div", { className: "workspace-menu", role: "menu" });
+    menu.appendChild(node("span", { className: "workspace-menu-label", text: "Workspaces" }));
+    state.workspaces.forEach(function (workspace) {
+      menu.appendChild(node("button", { role: "menuitem", className: workspace.id === state.workspaceId ? "active" : "", onClick: function () { switchWorkspace(workspace.id); } }, workspace.name));
+    });
+    const actions = node("div", { className: "workspace-menu-actions" });
+    actions.appendChild(node("button", { onClick: createWorkspace }, "Create Workspace"));
+    actions.appendChild(node("button", { onClick: renameWorkspace }, "Rename"));
+    menu.appendChild(actions);
+    return menu;
+  }
+  function switchWorkspace(id) {
+    if (id === state.workspaceId) return;
+    const target = state.workspaces.find(function (workspace) { return workspace.id === id; });
+    if (!target) return;
+    cancelWorkspaceOperations();
+    saveState();
+    applyWorkspaceSnapshot(target);
+    state.query = "";
+    state.topicQuery = "";
+    state.customTopic = "";
+    state.generationError = "";
+    state.errorByCard = {};
+    state.view = "feed";
+    saveState();
+    render();
+  }
+  function createWorkspace() {
+    cancelWorkspaceOperations();
+    saveState();
+    const now = new Date().toISOString();
+    const id = "workspace-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    const name = "Workspace " + (state.workspaces.length + 1);
+    const snapshot = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: now, topics: makeTopics(), settings: Object.assign({}, DEFAULT_SETTINGS, { obscurity: 5 }), cards: [], profile: {}, started: false, youtubeActivity: youtubeActivity({ savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, smartReasons: {}, smartRan: false, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest" }) };
+    const record = { id: id, name: name, createdAt: now, updatedAt: now, state: snapshot };
+    state.workspaces.push(record);
+    applyWorkspaceSnapshot(record);
+    state.view = "feed";
+    state.query = "";
+    state.topicQuery = "";
+    state.youtube = Object.assign({}, state.youtube, { savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, smartReasons: {}, smartRan: false, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest" });
+    saveState();
+    render();
+    showToast(name + " created.");
+  }
+  function renameWorkspace() {
+    const name = window.prompt("Name this workspace", state.workspaceName);
+    const trimmed = name && name.trim();
+    if (!trimmed || trimmed === state.workspaceName) return;
+    if (state.workspaces.some(function (workspace) { return workspace.id !== state.workspaceId && workspace.name.toLowerCase() === trimmed.toLowerCase(); })) return showToast("A workspace with that name already exists.");
+    state.workspaceName = trimmed;
+    activeWorkspaceRecord().name = trimmed;
+    saveState();
+    render();
+  }
   function navigation() {
     const items = [["feed", "Feed", "home"], ["videos", "Videos", "image"], ["saved", "Saved", "bookmark"], ["likes", "Likes", "heart"], ["history", "History", "history"], ["settings", "Settings", "settings"]];
     const header = node("header", { className: "top-navigation" });
@@ -624,8 +729,12 @@
     search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts...", ariaLabel: "Search topics or facts", onInput: function (event) { state.query = event.target.value; document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); } }));
     searchWrap.appendChild(search);
     header.appendChild(searchWrap);
-    const accountName = state.account ? state.account.name || "Google learner" : "Local workspace";
-    header.appendChild(node("div", { className: "top-nav-account" }, node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"), node("button", { className: "profile-chip", onClick: function () { state.view = "settings"; render(); } }, node("span", { className: "profile-avatar", text: accountName.slice(0, 1).toUpperCase() }), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.account ? "Google account" : "Not signed in" })), svg("chevronDown", 15))));
+    const accountName = state.workspaceName;
+    const account = node("div", { className: "top-nav-account" });
+    account.appendChild(node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"));
+    const switcher = node("div", { className: "workspace-switcher" });
+    const profile = node("button", { className: "profile-chip", ariaExpanded: false, onClick: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); else switcher.appendChild(workspaceMenu()); } }, node("span", { className: "profile-avatar", text: accountName.slice(0, 1).toUpperCase() }), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.workspaces.length + " " + (state.workspaces.length === 1 ? "workspace" : "workspaces") })), svg("chevronDown", 15));
+    switcher.appendChild(profile); account.appendChild(switcher); header.appendChild(account);
     return header;
   }
   function customTopicForm(className) {
@@ -812,6 +921,16 @@
     if (state.youtube.lastSyncAt) youtube.appendChild(node("p", { className: "youtube-restriction-note", text: "Last refresh: " + new Date(state.youtube.lastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) }));
     if (state.youtubeProgress.phase !== "idle") youtube.appendChild(youtubeImportNotice());
     main.appendChild(youtube);
+    const exports = node("section", { className: "settings-card export-settings-card" });
+    exports.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("bookmark", 19)), node("div", {}, node("h2", { text: "Download Facts" }), node("p", { text: "Save this workspace with its topic paths and Wikipedia sources." }))));
+    const exportRow = node("div", { className: "export-controls" });
+    const exportSelect = node("select", { id: "native-export-collection" });
+    exportSelect.appendChild(node("option", { value: "all", text: "All Facts (" + state.cards.length + ")" }));
+    exportSelect.appendChild(node("option", { value: "saved", text: "Saved Facts (" + state.cards.filter(function (card) { return card.saved; }).length + ")" }));
+    exportRow.appendChild(exportSelect);
+    const exportButtons = node("div", { className: "export-buttons" });
+    ["pdf", "txt", "docx"].forEach(function (format) { exportButtons.appendChild(node("button", { className: "secondary-button", disabled: !state.cards.length, onClick: function () { exportFactsNative(format, exportSelect.value); } }, format.toUpperCase())); });
+    exportRow.appendChild(exportButtons); exports.appendChild(exportRow); main.appendChild(exports);
     const accountCard = node("section", { className: "settings-card" });
     accountCard.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("user", 19)), node("div", {}, node("h2", { text: "Account" }), node("p", { text: "Google sign-in keeps your account ready on this Mac." }))));
     const accountRow = node("div", { className: "account-row" }, node("div", { className: "account-avatar", text: state.account ? (state.account.name || "G").slice(0, 1).toUpperCase() : "L" }), node("div", {}, node("strong", { text: state.account ? state.account.name : "Local workspace" }), node("span", { text: state.account ? state.account.email || "Google account" : "Not signed in" })));
@@ -850,6 +969,11 @@
       section.appendChild(node("div", { className: "empty-collection" }, node("div", { className: "empty-orbit" }, svg(kind === "saved" ? "bookmark" : kind === "likes" ? "heart" : "history", 25)), node("h2", { text: "Nothing here yet." }), node("p", { text: "As you explore, your " + label.toLowerCase() + " facts will appear here." })));
     }
     return section;
+  }
+  function exportFactsNative(format, collection) {
+    const facts = (collection === "saved" ? state.cards.filter(function (card) { return card.saved; }) : state.cards).map(function (card) { return { id: card.id, hook: card.hook, title: card.title, body: card.body, topicPath: card.topicPath, sources: card.sources, image: card.image || null }; });
+    if (!facts.length) return showToast("There are no facts in that collection yet.");
+    bridge("exportFacts", { format: format, workspaceName: state.workspaceName, facts: facts }).then(function (result) { if (result && result.omittedImages) showToast("Export complete. " + result.omittedImages + " image" + (result.omittedImages === 1 ? "" : "s") + " could not be loaded."); else showToast("Export complete."); }).catch(function (error) { showToast(error.message || "The facts could not be exported."); });
   }
   function render() {
     if (stopYoutubePlayback) stopYoutubePlayback();
@@ -911,22 +1035,26 @@
       candidates.sort(function (left, right) { return String(right.savedAt || "").localeCompare(String(left.savedAt || "")); });
       const parsed = candidates[0];
       if (parsed) {
-        if (parsed.topics) state.topics = migrateTopics(parsed.topics, Number(parsed.catalogVersion || 0) < TOPIC_CATALOG_VERSION);
-        if (parsed.settings) state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings);
-        if (parsed.cards) state.cards = parsed.cards.filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
-        if (parsed.profile) state.profile = parsed.profile;
-        if (parsed.youtube) {
-          state.youtube = Object.assign({}, state.youtube, parsed.youtube, { catalogVersion: 4, sourceStates: Object.assign({}, parsed.youtube.sourceStates || {}) });
-          state.youtube.videos = window.LEARNED_MEDIA_YOUTUBE.filter(state.youtube.videos || [], "", "All");
+        if (Array.isArray(parsed.workspaces) && parsed.workspaces.length) {
+          state.workspaces = parsed.workspaces;
+          const active = state.workspaces.find(function (workspace) { return workspace.id === parsed.activeWorkspaceId; }) || state.workspaces[0];
+          applyWorkspaceSnapshot(active);
+        } else {
+          const legacy = { id: "local-workspace", name: "Local Workspace", createdAt: parsed.savedAt || new Date().toISOString(), updatedAt: parsed.savedAt || new Date().toISOString(), state: { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: Number(parsed.catalogVersion || 0), savedAt: parsed.savedAt, topics: parsed.topics, settings: parsed.settings, cards: parsed.cards, profile: parsed.profile, started: parsed.started, youtubeActivity: parsed.youtube } };
+          state.workspaces = [legacy];
+          applyWorkspaceSnapshot(legacy);
         }
-        if (parsed.started && state.cards.length) state.started = true;
         if (parsed.account) state.account = parsed.account;
         document.body.classList.toggle("theme-dark", parsed.theme === "dark");
+      } else {
+        state.workspaces = [{ id: state.workspaceId, name: state.workspaceName, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: currentWorkspaceSnapshot() }];
       }
       const catalog = await bridge("loadVideoCatalog", {});
       if (catalog && catalog.videos) {
-        state.youtube = Object.assign({}, state.youtube, catalog, { catalogVersion: 4, sourceStates: Object.assign({}, catalog.sourceStates || {}) });
+        const activity = youtubeActivity();
+        state.youtube = Object.assign({}, state.youtube, catalog, { catalogVersion: 3, sourceStates: Object.assign({}, catalog.sourceStates || {}) });
         state.youtube.videos = window.LEARNED_MEDIA_YOUTUBE.filter(state.youtube.videos || [], "", "All");
+        applyYoutubeActivity(activity);
       }
     } catch (error) {
       state.toast = error.message;

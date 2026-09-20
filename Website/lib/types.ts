@@ -22,6 +22,7 @@ export type LearningProfile = Record<string, TopicLearningProfile>;
 export type TopicNode = {
   id: string;
   label: string;
+  aliases?: string[];
   selected: boolean;
   expanded: boolean;
   weight: number;
