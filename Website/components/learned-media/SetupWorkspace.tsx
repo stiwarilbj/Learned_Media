@@ -42,13 +42,14 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
       <section className="setup-layout">
         <aside className="setup-topics-panel surface-panel">
           <details className="setup-topics-details" open={topicsOpen} onToggle={(event) => setTopicsOpen(event.currentTarget.open)}>
-            <summary><span><Icon name="check" size={17} /> Choose your topics</span><strong>{selectedCount} selected</strong></summary>
+            <summary><span><Icon name="check" size={17} /> Choose your topics</span></summary>
+            <strong className="topic-selected-count">{selectedCount} selected</strong>
             <p className="setup-topic-help">Pick the subjects you want to see. You can change them anytime</p>
             <p className="topic-selection-summary" aria-live="polite">{selectionSummary}</p>
             <label className="topic-difficulty-control" htmlFor="obscurity">
               <span className="control-label"><span>Fact Difficulty</span><strong>{difficulty}/10 · {DIFFICULTY_LABELS[difficulty]}</strong></span>
               <input id="obscurity" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
-              <span className="range-ends"><span>Very Easy</span><span>Exceptionally Obscure</span></span>
+              <span className="range-ends"><span>A Little Hard</span><span>Super Duper Hard</span></span>
             </label>
             <div className="topic-toolbar">
               <div className="topic-search-note"><Icon name="search" size={16} /><span>{query ? `Filtering for “${query}”` : "Search the topic checklist"}</span></div>
@@ -57,7 +58,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
             <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onWeight={onWeightTopic} />
             <div className="custom-topic-form">
               <div><strong>Add a custom topic</strong><span>Make the feed as specific as you are</span></div>
-              <div className="custom-topic-input-wrap"><input value={customTopic} onChange={(event) => onCustomTopicChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onAddCustomTopic()} placeholder="Formula 1 engineering" aria-label="Custom topic" /><button type="button" className="icon-button filled" onClick={onAddCustomTopic} aria-label="Add custom topic"><Icon name="plus" size={17} /></button></div>
+              <div className="custom-topic-input-wrap"><input value={customTopic} onChange={(event) => onCustomTopicChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onAddCustomTopic()} placeholder="Rajah Humabon" aria-label="Custom topic" /><button type="button" className="icon-button filled" onClick={onAddCustomTopic} aria-label="Add custom topic"><Icon name="plus" size={17} /></button></div>
             </div>
           </details>
         </aside>

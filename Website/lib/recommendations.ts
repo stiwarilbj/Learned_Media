@@ -1,16 +1,16 @@
 import type { Difficulty, FactFeedback, LearningProfile, TopicLearningProfile } from "./types";
 
 export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
-  1: "Very Easy",
+  1: "A Little Hard",
   2: "Easy",
   3: "Moderate",
   4: "Challenging",
-  5: "Hard",
-  6: "Very Hard",
-  7: "Expert",
-  8: "Specialist",
-  9: "Extremely Obscure",
-  10: "Exceptionally Obscure"
+  5: "Decently Hard",
+  6: "Hard",
+  7: "Very Hard",
+  8: "Extremely Hard",
+  9: "Nearly Impossible",
+  10: "Super Duper Hard"
 };
 
 export const MAX_DIFFICULTY = 10;

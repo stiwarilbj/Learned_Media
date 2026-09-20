@@ -303,7 +303,7 @@ export default function HomePage() {
     workspaceNameRef.current = target.name;
     setWorkspaceId(target.id);
     setWorkspaceName(target.name);
-    const restoredTopics = migrateTopicTree(target.state.topics, false);
+    const restoredTopics = migrateTopicTree(target.state.topics, false, (target.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION);
     setTopics(restoredTopics);
     setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings });
     setCards(uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body)));
@@ -405,7 +405,7 @@ export default function HomePage() {
   useEffect(() => {
     let active = true;
     const normalizeSavedState = (parsed: Partial<PersistedState> | null, collapseInitial: boolean): PersistedState => {
-      const restoredTopics = parsed?.topics ? migrateTopicTree(parsed.topics, collapseInitial) : createDefaultTopics();
+      const restoredTopics = parsed?.topics ? migrateTopicTree(parsed.topics, collapseInitial, (parsed?.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION) : createDefaultTopics();
       const restoredSettings: FeedSettings = { ...DEFAULT_SETTINGS, ...parsed?.settings, displayMode: parsed?.settings?.displayMode === "text" ? "text" : "picture-text" };
       if (collapseInitial && parsed?.settings?.obscurity !== undefined) restoredSettings.obscurity = migrateLegacyDifficulty(parsed.settings.obscurity);
       const realCards = (parsed?.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));

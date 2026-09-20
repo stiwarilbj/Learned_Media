@@ -1,6 +1,6 @@
 import type { TopicNode } from "./types";
 
-export const TOPIC_CATALOG_VERSION = 5;
+export const TOPIC_CATALOG_VERSION = 6;
 
 type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -316,7 +316,7 @@ function buildNode(seed: TopicSeed, parentPath: string[], depth: number, rootInd
   const path = [...parentPath, label];
   return {
     id: nodeId(path), label, selected: false, expanded: false,
-    weight: depth === 0 ? ([30, 25, 20, 25][rootIndex] ?? 10) : 10,
+    weight: 10,
     aliases: typeof seed === "string" ? undefined : seed.aliases,
     children: children?.map((child) => buildNode(child, path, depth + 1, rootIndex))
   };
@@ -406,7 +406,7 @@ function updateById(nodes: TopicNode[], id: string, update: (node: TopicNode) =>
     : node.children ? { ...node, children: updateById(node.children, id, update) } : node);
 }
 
-export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial = false): TopicNode[] {
+export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial = false, migrateLegacyRootWeights = false): TopicNode[] {
   if (!saved?.length) return createCatalogTopics();
   let next = createCatalogTopics();
   const fresh = flattenTopics(next);
@@ -420,7 +420,8 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
     const key = oldTopic.path.join("\u0000").toLowerCase();
     const target = byPath.get(key) ?? (byLabel.get(oldTopic.label.toLowerCase())?.length === 1 ? byLabel.get(oldTopic.label.toLowerCase())?.[0] : undefined);
     if (target) {
-      next = updateById(next, target.id, (node) => ({ ...node, weight: oldTopic.weight || node.weight, expanded: collapseInitial ? false : oldTopic.expanded }));
+      const isLegacyBuiltInRoot = migrateLegacyRootWeights && oldTopic.path.length === 1 && [30, 25, 20, 25].includes(oldTopic.weight ?? 10);
+      next = updateById(next, target.id, (node) => ({ ...node, weight: isLegacyBuiltInRoot ? 10 : (oldTopic.weight || node.weight), expanded: collapseInitial ? false : oldTopic.expanded }));
       if (oldTopic.selected) selectedIds.add(target.id);
       return;
     }

@@ -1050,6 +1050,55 @@ body { background: var(--page-gradient); }
 .fact-actions .learn-more-button { background: linear-gradient(135deg, var(--surface-blue), var(--lilac)); }
 .fact-actions .feedback-button span { display: inline; }
 
+/* Compact desktop setup: keep the first screen calm and fully visible. */
+.setup-topics-details, .topics-details { position: relative; }
+.setup-topics-details > summary, .topics-details > summary { padding-right: 96px; }
+.topic-selected-count { position: absolute; top: 0; right: 0; color: var(--primary); font-size: 10px; font-weight: 850; pointer-events: none; user-select: none; cursor: default; }
+.topic-weight > .topic-weight-value { pointer-events: none; user-select: none; cursor: default; }
+
+@media (min-width: 1101px) {
+  .main-scroll:has(.setup-stack) { padding-top: 20px; padding-bottom: 20px; overflow-y: hidden; }
+  .top-navigation { min-height: 58px; }
+  .setup-layout { gap: 18px; }
+  .setup-topics-panel { padding-top: 15px; }
+  .setup-topics-details > summary { font-size: 13px; }
+  .setup-topic-help { margin-top: 6px; font-size: 10px; line-height: 1.35; }
+  .topic-selection-summary { margin-top: 5px; line-height: 1.25; }
+  .topic-difficulty-control { margin-top: 9px; margin-bottom: 7px; padding: 9px 10px 10px; }
+  .topic-difficulty-control .control-label { margin-bottom: 5px; font-size: 11px; }
+  .topic-difficulty-control .control-label strong { font-size: 9px; }
+  .topic-difficulty-control input[type="range"] { height: 16px; }
+  .topic-difficulty-control input[type="range"]::-webkit-slider-thumb { width: 18px; height: 18px; }
+  .topic-difficulty-control input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; }
+  .topic-difficulty-control .range-ends { margin-top: 0; font-size: 8px; }
+  .setup-topics-panel .topic-toolbar { margin-top: 8px; margin-bottom: 2px; padding-top: 7px; padding-bottom: 7px; gap: 5px; }
+  .setup-topics-panel .topic-search-note, .setup-topics-panel .text-button { font-size: 9px; }
+  .setup-topics-panel .topic-tree { max-height: none; overflow: visible; padding-bottom: 5px; }
+  .setup-topics-panel .topic-row { min-height: 30px; gap: 7px; }
+  .setup-topics-panel .topic-row.root-row { min-height: 34px; }
+  .setup-topics-panel .topic-name { font-size: 11px; }
+  .setup-topics-panel .topic-subtopics-toggle { font-size: 8px; }
+  .setup-topics-panel .topic-expand, .setup-topics-panel .topic-spacer { width: 32px; height: 32px; flex-basis: 32px; }
+  .setup-topics-panel .topic-check { width: 18px; height: 18px; }
+  .setup-topics-panel .topic-weight { width: 92px; flex-basis: 92px; height: 23px; grid-template-columns: 24px minmax(30px, 1fr) 24px; font-size: 9px; }
+  .setup-topics-panel .topic-weight button { min-width: 24px; }
+  .setup-topics-panel .custom-topic-form { padding-top: 10px; padding-bottom: 12px; gap: 7px; }
+  .setup-topics-panel .custom-topic-form strong { font-size: 11px; }
+  .setup-topics-panel .custom-topic-form span { font-size: 10px; }
+  .setup-topics-panel .custom-topic-input-wrap { height: 34px; }
+  .setup-topics-panel .custom-topic-input-wrap input { font-size: 10px; }
+  .setup-topics-panel .custom-topic-form .icon-button { width: 34px; height: 34px; }
+  .setup-start-panel { min-height: 0; padding: 26px 42px 20px; }
+  .start-panel-copy .eyebrow { margin-bottom: 7px; font-size: 9px; }
+  .start-panel-copy h1 { font-size: clamp(26px, 3.1vw, 38px); }
+  .start-panel-copy p { margin-top: 9px; font-size: 11px; line-height: 1.4; }
+  .start-orbit { width: 104px; height: 104px; margin-top: 17px; margin-bottom: 14px; }
+  .start-button { min-height: 50px; font-size: 13px; border-radius: 13px; }
+  .setup-start-panel .panel-footnote { margin-top: 8px; font-size: 9px; }
+  .setup-key-callout { padding: 9px 11px; }
+  .setup-customize { margin-top: 10px; padding-top: 10px; }
+}
+
 /* Stable controls and a single, capped hierarchy layout. */
 @media (min-width: 1101px) {
   .setup-layout { grid-template-columns: minmax(400px, 440px) minmax(0, 1fr); }

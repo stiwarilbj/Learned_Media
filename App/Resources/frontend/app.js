@@ -8,10 +8,10 @@
     sentenceLength: 2,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 5;
+  const TOPIC_CATALOG_VERSION = 6;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
-  const DIFFICULTY_LABELS = ["", "Very Easy", "Easy", "Moderate", "Challenging", "Hard", "Very Hard", "Expert", "Specialist", "Extremely Obscure", "Exceptionally Obscure"];
+  const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Super Duper Hard"];
   const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const KNOWN_DEMO_IDS = new Set(["demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle", "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning"]);
@@ -73,7 +73,7 @@
     const label = typeof seed === "string" ? seed : titleCaseCatalogLabel(seed.label);
     const path = parentPath.concat(label);
     const children = typeof seed === "string" ? undefined : (seed.children || []).map(function (child) { return buildTopicNode(child, path, depth + 1, rootIndex); });
-    return { id: "topic-" + path.map(slug).join("--"), label: label, aliases: typeof seed === "string" ? undefined : seed.aliases, selected: false, expanded: false, weight: depth === 0 ? [30, 25, 20, 25][rootIndex] || 10 : 10, children: children };
+    return { id: "topic-" + path.map(slug).join("--"), label: label, aliases: typeof seed === "string" ? undefined : seed.aliases, selected: false, expanded: false, weight: 10, children: children };
   }
   function titleCaseCatalogLabel(label) {
     const small = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
@@ -303,7 +303,7 @@
   function updateTopicById(nodes, id, update) {
     return nodes.map(function (topic) { return topic.id === id ? update(topic) : topic.children ? Object.assign({}, topic, { children: updateTopicById(topic.children, id, update) }) : topic; });
   }
-  function migrateTopics(saved, collapseInitial) {
+  function migrateTopics(saved, collapseInitial, migrateLegacyRootWeights) {
     if (!Array.isArray(saved) || !saved.length) return makeTopics();
     let next = makeTopics();
     const fresh = flatTopics(next);
@@ -323,7 +323,8 @@
     oldFlat(saved).forEach(function (oldTopic) {
       const target = byPath.get(oldTopic.path.join("\u0000").toLowerCase()) || ((byLabel.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byLabel.get(oldTopic.label.toLowerCase())[0] : null);
       if (target) {
-        next = updateTopicById(next, target.id, function (topic) { return Object.assign({}, topic, { weight: oldTopic.weight || topic.weight, expanded: collapseInitial ? false : oldTopic.expanded }); });
+        const isLegacyBuiltInRoot = Boolean(migrateLegacyRootWeights && oldTopic.path.length === 1 && [30, 25, 20, 25].indexOf(oldTopic.weight == null ? 10 : oldTopic.weight) >= 0);
+        next = updateTopicById(next, target.id, function (topic) { return Object.assign({}, topic, { weight: isLegacyBuiltInRoot ? 10 : (oldTopic.weight || topic.weight), expanded: collapseInitial ? false : oldTopic.expanded }); });
         if (oldTopic.selected) selectedIds.push(target.id);
       } else {
         if (oldTopic.path.length > 3 && oldTopic.path[0] === "Literature" && oldTopic.path[1] === "Best-Selling Book Series") {
@@ -405,7 +406,7 @@
       hook: "",
       body: "",
       topicPath: [],
-      difficulty: 10,
+      difficulty: 5,
       accent: ["blue", "lilac", "mint", "sand", "coral"][index % 5],
       createdAt: new Date().toISOString()
     }, card, { sources: sources, image: image, hook: hook });
@@ -653,7 +654,7 @@
     const snapshot = record.state || record;
     state.workspaceId = record.id || "local-workspace";
     state.workspaceName = record.name || "Local Workspace";
-    state.topics = migrateTopics(snapshot.topics || makeTopics(), Number(snapshot.catalogVersion || 0) < TOPIC_CATALOG_VERSION);
+    state.topics = migrateTopics(snapshot.topics || makeTopics(), Number(snapshot.catalogVersion || 0) < TOPIC_CATALOG_VERSION, Number(snapshot.catalogVersion || 0) < TOPIC_CATALOG_VERSION);
     state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {});
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
     state.profile = snapshot.profile || {};
@@ -748,14 +749,15 @@
     const aside = node("aside", { className: (setup ? "setup-topics-panel" : "feed-topics-panel") + " surface-panel" });
     const details = node("details", { className: setup ? "setup-topics-details" : "topics-details" });
     details.open = true;
-    details.appendChild(node("summary", {}, node("span", {}, svg("check", 17), setup ? " Choose your topics" : " Your topics"), node("strong", { text: selectedCount() + " selected" })));
+    details.appendChild(node("summary", {}, node("span", {}, svg("check", 17), setup ? " Choose your topics" : " Your topics")));
+    details.appendChild(node("strong", { className: "topic-selected-count", text: selectedCount() + " selected" }));
     if (setup) details.appendChild(node("p", { className: "setup-topic-help", text: "Pick the subjects you want to see. You can change them anytime." }));
     else details.appendChild(node("div", { className: "feed-topic-copy", text: "New choices shape the next batch." }));
     details.appendChild(node("p", { className: "topic-selection-summary", text: selectedSummary(), ariaLive: "polite" }));
     const difficulty = node("label", { className: "topic-difficulty-control", for: setup ? "setup-difficulty" : "feed-difficulty" });
     difficulty.appendChild(node("span", { className: "control-label" }, node("span", { text: "Fact Difficulty" }), node("strong", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
     difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
-    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "Very Easy" }), node("span", { text: "Exceptionally Obscure" })));
+    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Super Duper Hard" })));
     details.appendChild(difficulty);
     details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; render(); } })));
     details.appendChild(topicTree());
@@ -833,7 +835,7 @@
     const crumbs = node("div", { className: "fact-breadcrumbs" });
     (card.topicPath || []).forEach(function (topic) { crumbs.appendChild(node("span", { text: topic })); });
     meta.appendChild(crumbs);
-    meta.appendChild(node("span", { className: "difficulty-mark", text: "Difficulty " + (card.difficulty || 10) + " · " + difficultyLabel(card.difficulty || 10) }));
+    meta.appendChild(node("span", { className: "difficulty-mark", text: "Difficulty " + (card.difficulty || 5) + " · " + difficultyLabel(card.difficulty || 5) }));
     content.appendChild(meta);
     content.appendChild(node("p", { className: "fact-hook", text: card.hook }));
     content.appendChild(node("h3", { text: card.title }));
