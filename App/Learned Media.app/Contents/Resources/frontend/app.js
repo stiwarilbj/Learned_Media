@@ -367,19 +367,15 @@
     const links = node("nav", { className: "top-nav-links", ariaLabel: "Primary navigation" });
     items.forEach(function (item) { links.appendChild(node("button", { className: "top-nav-link" + (state.view === item[0] ? " active" : ""), onClick: function () { state.view = item[0]; render(); } }, svg(item[2], 16), node("span", { text: item[1] }))); });
     header.appendChild(links);
+    const searchWrap = node("div", { className: "top-nav-search" });
+    const search = node("div", { className: "global-search-wrap" });
+    search.appendChild(svg("search", 17));
+    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts...", ariaLabel: "Search topics or facts", onInput: function (event) { state.query = event.target.value.toLowerCase(); document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || card.textContent.toLowerCase().includes(state.query) ? "" : "none"; }); } }));
+    searchWrap.appendChild(search);
+    header.appendChild(searchWrap);
     const accountName = state.account ? state.account.name || "Google learner" : "Local workspace";
     header.appendChild(node("div", { className: "top-nav-account" }, node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"), node("button", { className: "profile-chip", onClick: function () { state.view = "settings"; render(); } }, node("span", { className: "profile-avatar", text: accountName.slice(0, 1).toUpperCase() }), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.account ? "Google account" : "Not signed in" })), svg("chevronDown", 15))));
     return header;
-  }
-  function topbar() {
-    const bar = node("header", { className: "topbar" });
-    bar.appendChild(node("div", { className: "topbar-title" }, node("strong", { text: "Learned Media" }), node("span", { text: "Learn something every time you scroll." })));
-    const searchWrap = node("div", { className: "global-search-wrap" });
-    searchWrap.appendChild(svg("search", 17));
-    searchWrap.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search your feed…", ariaLabel: "Search your feed", onInput: function (event) { state.query = event.target.value.toLowerCase(); document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || card.textContent.toLowerCase().includes(state.query) ? "" : "none"; }); } }));
-    bar.appendChild(searchWrap);
-    bar.appendChild(node("button", { className: "topbar-account", onClick: function () { state.view = "settings"; render(); } }, svg("settings", 16), " Settings"));
-    return bar;
   }
   function customTopicForm(className) {
     const form = node("div", { className: className || "custom-topic-form" });
@@ -397,7 +393,7 @@
     else details.appendChild(node("div", { className: "feed-topic-copy", text: "New choices shape the next batch." }));
     details.appendChild(node("p", { className: "topic-selection-summary", text: selectedSummary(), ariaLive: "polite" }));
     const difficulty = node("label", { className: "topic-difficulty-control", for: setup ? "setup-difficulty" : "feed-difficulty" });
-    difficulty.appendChild(node("span", { className: "control-label" }, node("span", { text: "Fact difficulty" }), node("strong", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
+    difficulty.appendChild(node("span", { className: "control-label" }, node("span", { text: "Fact Difficulty" }), node("strong", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
     difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
     difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "Approachable" }), node("span", { text: "Obscure" })));
     details.appendChild(difficulty);
@@ -601,7 +597,6 @@
     app.replaceChildren();
     app.appendChild(navigation());
     const main = node("main", { className: "main-column" });
-    main.appendChild(topbar());
     const scroll = node("div", { className: "main-scroll" });
     scroll.appendChild(state.view === "settings" ? settingsView() : state.view === "feed" && !state.started ? setupView() : state.view === "feed" ? feedView() : collectionView(state.view));
     main.appendChild(scroll);

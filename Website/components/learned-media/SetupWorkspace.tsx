@@ -46,7 +46,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
             <p className="setup-topic-help">Pick the subjects you want to see. You can change them anytime.</p>
             <p className="topic-selection-summary" aria-live="polite">{selectionSummary}</p>
             <label className="topic-difficulty-control" htmlFor="obscurity">
-              <span className="control-label"><span>Fact difficulty</span><strong>{difficulty}/10 · {DIFFICULTY_LABELS[difficulty]}</strong></span>
+              <span className="control-label"><span>Fact Difficulty</span><strong>{difficulty}/10 · {DIFFICULTY_LABELS[difficulty]}</strong></span>
               <input id="obscurity" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
               <span className="range-ends"><span>Approachable</span><span>Obscure</span></span>
             </label>

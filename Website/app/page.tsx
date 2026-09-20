@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CollectionView } from "@/components/learned-media/CollectionView";
 import { ExploreView } from "@/components/learned-media/ExploreView";
 import { FeedView } from "@/components/learned-media/FeedView";
-import { Icon } from "@/components/learned-media/icons";
 import { Navigation } from "@/components/learned-media/Navigation";
 import { SettingsView } from "@/components/learned-media/SettingsView";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
@@ -673,19 +672,18 @@ export default function HomePage() {
 
   return (
     <div className={`app-frame theme-${theme}`}>
-      <Navigation view={view} onNavigate={(nextView) => { setView(nextView); if (nextView !== "feed") setQuery(""); }} onReset={resetFeed} />
+      <Navigation
+        view={view}
+        onNavigate={(nextView) => { setView(nextView); if (nextView !== "feed") setQuery(""); }}
+        onReset={resetFeed}
+        query={query}
+        onQueryChange={setQuery}
+        topicResults={searchResults}
+        factResults={factResults}
+        onChooseTopic={(label) => { setView("feed"); setQuery(label); }}
+        onChooseFact={(title) => { setView("history"); setQuery(title); }}
+      />
       <main className="main-column">
-        <header className="topbar">
-          <div className="mobile-brand"><div className="brand-mark">LM</div><span>Learned Media</span></div>
-          <div className="topbar-title"><strong>Learned Media</strong><span>Learn something every time you scroll.</span></div>
-          <div className="global-search-wrap">
-            <Icon name="search" size={18} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search topics or facts..." aria-label="Search topics or facts" />
-            {query && <button type="button" className="clear-search" onClick={() => setQuery("")} aria-label="Clear search"><Icon name="x" size={15} /></button>}
-            {query && (searchResults.length > 0 || factResults.length > 0) && <div className="search-popover"><span className="search-group-label">Topics</span>{searchResults.map((topic) => <button type="button" key={topic.id} onClick={() => { setView("feed"); setQuery(topic.label); }}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}{factResults.length > 0 && <><span className="search-group-label">Past facts</span>{factResults.map((card) => <button type="button" key={card.id} onClick={() => { setView("history"); setQuery(card.title); }}><span>{card.title}</span><Icon name="arrow" size={14} /></button>)}</>}</div>}
-          </div>
-          <button type="button" className="topbar-account" onClick={() => setView("settings")} aria-label="Open account settings"><span className="profile-avatar">S</span><Icon name="chevronDown" size={15} /></button>
-        </header>
         <div className="main-scroll">{renderMain()}</div>
       </main>
     </div>

@@ -51,7 +51,7 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
         <summary><span><Icon name="check" size={16} /> Your topics</span><strong>{selectedCount} selected</strong></summary>
         <div className="feed-topic-copy">Keep the checklist close while you read. New choices shape the next batch.</div>
         <label className="topic-difficulty-control" htmlFor="feed-obscurity">
-          <span className="control-label"><span>Fact difficulty</span><strong>{normalizeDifficulty(settings.obscurity)}/10 · {DIFFICULTY_LABELS[normalizeDifficulty(settings.obscurity)]}</strong></span>
+          <span className="control-label"><span>Fact Difficulty</span><strong>{normalizeDifficulty(settings.obscurity)}/10 · {DIFFICULTY_LABELS[normalizeDifficulty(settings.obscurity)]}</strong></span>
           <input id="feed-obscurity" className="feed-range" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
           <span className="range-ends"><span>Approachable</span><span>Obscure</span></span>
         </label>
