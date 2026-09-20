@@ -15,15 +15,19 @@ import { isGitHubPagesRuntime } from "@/lib/runtime";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const STORAGE_KEY = "learned-media-state";
+const STORAGE_BACKUP_KEY = "learned-media-state-backup";
 const LEGACY_STORAGE_KEY = "learned-media-demo-state";
 const THEME_MIGRATION_KEY = "learned-media-light-theme-v1";
 const TEN_LEVEL_DIFFICULTY_MIGRATION_KEY = "learned-media-ten-level-difficulty-v1";
+const PERSISTENCE_VERSION = 1;
 const KNOWN_DEMO_IDS = new Set([
   "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning",
   "demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle"
 ]);
 
 type PersistedState = {
+  persistenceVersion?: number;
+  savedAt?: string;
   topics: TopicNode[];
   settings: FeedSettings;
   cards: FactCard[];
@@ -31,6 +35,29 @@ type PersistedState = {
   feedStarted: boolean;
   theme: "light" | "dark";
 };
+
+function readWorkspaceState() {
+  for (const key of [STORAGE_KEY, STORAGE_BACKUP_KEY, LEGACY_STORAGE_KEY]) {
+    try {
+      const value = window.localStorage.getItem(key);
+      if (value) return JSON.parse(value) as Partial<PersistedState>;
+    } catch {
+      // Try the next local snapshot instead of losing the workspace.
+    }
+  }
+  return null;
+}
+
+function writeWorkspaceState(state: PersistedState) {
+  const snapshot = JSON.stringify({ ...state, persistenceVersion: PERSISTENCE_VERSION, savedAt: new Date().toISOString() });
+  try {
+    const previous = window.localStorage.getItem(STORAGE_KEY);
+    if (previous) window.localStorage.setItem(STORAGE_BACKUP_KEY, previous);
+    window.localStorage.setItem(STORAGE_KEY, snapshot);
+  } catch {
+    // Local persistence is best effort; a browser quota error must not interrupt reading.
+  }
+}
 
 async function readNdjson(response: Response, onMessage: (message: Record<string, any>) => void) {
   if (!response.body) {
@@ -154,6 +181,7 @@ export default function HomePage() {
   const questionAbortController = useRef<AbortController | null>(null);
   const apiKeyRef = useRef("");
   const sessionIdRef = useRef("browser-" + Math.random().toString(36).slice(2));
+  const persistedStateRef = useRef<PersistedState | null>(null);
 
   const cancelGeneration = useCallback(() => {
     generationAbortController.current?.abort();
@@ -172,28 +200,37 @@ export default function HomePage() {
 
   useEffect(() => {
     try {
-      const saved = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as Partial<PersistedState>;
+      const parsed = readWorkspaceState();
+      if (parsed) {
         const migrateTenLevelDifficulty = window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1";
-        if (parsed.topics) setTopics(migrateTopicTree(parsed.topics));
-        if (parsed.settings) {
-          const savedSettings: FeedSettings = {
-            ...DEFAULT_SETTINGS,
-            ...parsed.settings,
-            displayMode: parsed.settings.displayMode === "text" ? "text" : "picture-text"
-          };
-          if (migrateTenLevelDifficulty) savedSettings.obscurity = migrateLegacyDifficulty(parsed.settings.obscurity);
-          setSettings(savedSettings);
-        }
+        const restoredTopics = parsed.topics ? migrateTopicTree(parsed.topics) : createDefaultTopics();
+        const restoredSettings: FeedSettings = {
+          ...DEFAULT_SETTINGS,
+          ...parsed.settings,
+          displayMode: parsed.settings?.displayMode === "text" ? "text" : "picture-text"
+        };
+        if (migrateTenLevelDifficulty) restoredSettings.obscurity = migrateLegacyDifficulty(parsed.settings?.obscurity);
         const realCards = (parsed.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));
-        if (parsed.cards) {
-          const migratedCards = realCards.map((card, index) => normalizeFact(card, index, migrateTenLevelDifficulty)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length);
-          setCards(uniqueCards(migratedCards));
-        }
-        if (parsed.learningProfile) setLearningProfile(migrateTenLevelDifficulty ? migrateLearningProfile(parsed.learningProfile) : parsed.learningProfile);
-        if (typeof parsed.feedStarted === "boolean") setFeedStarted(Boolean(parsed.feedStarted && realCards.length));
-        if (window.localStorage.getItem(THEME_MIGRATION_KEY) === "1" && parsed.theme) setTheme(parsed.theme);
+        const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index, migrateTenLevelDifficulty)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
+        const restoredProfile = parsed.learningProfile ? (migrateTenLevelDifficulty ? migrateLearningProfile(parsed.learningProfile) : parsed.learningProfile) : {};
+        const restoredTheme = window.localStorage.getItem(THEME_MIGRATION_KEY) === "1" && parsed.theme ? parsed.theme : "light";
+        const restoredState: PersistedState = {
+          persistenceVersion: PERSISTENCE_VERSION,
+          savedAt: parsed.savedAt,
+          topics: restoredTopics,
+          settings: restoredSettings,
+          cards: restoredCards,
+          learningProfile: restoredProfile,
+          feedStarted: Boolean(parsed.feedStarted && restoredCards.length),
+          theme: restoredTheme
+        };
+        persistedStateRef.current = restoredState;
+        setTopics(restoredTopics);
+        setSettings(restoredSettings);
+        setCards(restoredCards);
+        setLearningProfile(restoredProfile);
+        setFeedStarted(restoredState.feedStarted);
+        setTheme(restoredTheme);
       }
       if (window.localStorage.getItem(THEME_MIGRATION_KEY) !== "1") {
         setTheme("light");
@@ -215,9 +252,28 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const state: PersistedState = { topics, settings, cards, learningProfile, feedStarted, theme };
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const state: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topics, settings, cards, learningProfile, feedStarted, theme };
+    persistedStateRef.current = state;
+    writeWorkspaceState(state);
   }, [cards, feedStarted, hydrated, learningProfile, settings, theme, topics]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const flushWorkspace = () => {
+      if (persistedStateRef.current) writeWorkspaceState(persistedStateRef.current);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flushWorkspace();
+    };
+    window.addEventListener("pagehide", flushWorkspace);
+    window.addEventListener("beforeunload", flushWorkspace);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flushWorkspace);
+      window.removeEventListener("beforeunload", flushWorkspace);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [hydrated]);
 
   useEffect(() => {
     if (!toast) return;
@@ -404,7 +460,7 @@ export default function HomePage() {
     setTopics(blankTopics);
     setView("feed");
     if (hydrated) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ topics: blankTopics, settings, cards: [], learningProfile, feedStarted: false, theme } satisfies PersistedState));
+      writeWorkspaceState({ persistenceVersion: PERSISTENCE_VERSION, topics: blankTopics, settings, cards: [], learningProfile, feedStarted: false, theme });
     }
     setToast("Feed reset. Nothing will generate until you press Start again.");
   }, [cancelGeneration, hydrated, learningProfile, settings, theme, topics]);

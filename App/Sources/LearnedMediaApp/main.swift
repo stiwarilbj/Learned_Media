@@ -128,6 +128,41 @@ private final class KeychainStore {
     }
 }
 
+private final class LocalWorkspaceStore {
+    private let fileManager = FileManager.default
+
+    private func urls() throws -> (primary: URL, backup: URL) {
+        let base = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let folder = base.appendingPathComponent("Learned Media", isDirectory: true)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let primary = folder.appendingPathComponent("learning-state.json")
+        return (primary, primary.appendingPathExtension("backup"))
+    }
+
+    private func readObject(at url: URL) -> Any? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        return object
+    }
+
+    func load() -> Any {
+        guard let locations = try? urls() else { return NSNull() }
+        return readObject(at: locations.primary) ?? readObject(at: locations.backup) ?? NSNull()
+    }
+
+    func save(_ value: Any?) throws {
+        guard let value, !(value is NSNull) else { return }
+        guard JSONSerialization.isValidJSONObject(value) else { throw NativeError(message: "The local workspace contained unsupported data.", retryable: false) }
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+        let locations = try urls()
+        if fileManager.fileExists(atPath: locations.primary.path) {
+            try? fileManager.removeItem(at: locations.backup)
+            try? fileManager.copyItem(at: locations.primary, to: locations.backup)
+        }
+        try data.write(to: locations.primary, options: [.atomic])
+    }
+}
+
 private final class WikipediaClient {
     private let session = URLSession(configuration: .ephemeral)
     private let limiter = WikipediaRequestLimiter()
@@ -671,6 +706,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private var webView: WKWebView!
     private let gemini = GeminiClient()
     private let keychain = KeychainStore()
+    private let workspace = LocalWorkspaceStore()
     private var geminiKey = ""
     private var authSession: ASWebAuthenticationSession?
     private var authRequestID = ""
@@ -818,24 +854,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         activeTasks.removeAll()
     }
 
-    private func applicationDataURL() throws -> URL {
-        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let folder = base.appendingPathComponent("Learned Media", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder.appendingPathComponent("learning-state.json")
-    }
-
     private func loadState() -> Any {
-        guard let url = try? applicationDataURL(),
-              let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) else { return NSNull() }
-        return object
+        workspace.load()
     }
 
     private func saveState(_ value: Any?) throws {
-        guard let value, !(value is NSNull) else { return }
-        let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: try applicationDataURL(), options: .atomic)
+        try workspace.save(value)
     }
 
     private func signIn(id: String) {

@@ -12,6 +12,8 @@
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.5-flash-lite-preview", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "Approachable", "Familiar", "Curious", "Uncommon", "Niche", "Obscure", "Deep cut", "Rare", "Very rare", "Deepest cut"];
+  const PERSISTENCE_VERSION = 1;
+  const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const KNOWN_DEMO_IDS = new Set(["demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle", "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning"]);
   const state = {
     view: "feed",
@@ -48,6 +50,8 @@
   let focusedSelection = null;
   let focusedQuestionCardId = null;
   let focusedQuestionSelection = null;
+  let saveInFlight = false;
+  let queuedWorkspaceState = null;
 
   function makeTopics() {
     return TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
@@ -274,18 +278,33 @@
     if (message) window.setTimeout(function () { if (state.toast === message) { state.toast = ""; render(); } }, 4200);
   }
   function saveState() {
-    bridge("saveState", {
-      state: {
-        catalogVersion: TOPIC_CATALOG_VERSION,
-        topics: state.topics,
-        settings: state.settings,
-        cards: state.cards,
-        profile: state.profile,
-        started: state.started,
-        account: state.account,
-        theme: document.body.classList.contains("theme-dark") ? "dark" : "light"
-      }
-    }).catch(function () {});
+    const snapshot = {
+      persistenceVersion: PERSISTENCE_VERSION,
+      catalogVersion: TOPIC_CATALOG_VERSION,
+      savedAt: new Date().toISOString(),
+      topics: state.topics,
+      settings: state.settings,
+      cards: state.cards,
+      profile: state.profile,
+      started: state.started,
+      account: state.account,
+      theme: document.body.classList.contains("theme-dark") ? "dark" : "light"
+    };
+    queuedWorkspaceState = snapshot;
+    try { window.localStorage.setItem(LOCAL_WORKSPACE_KEY, JSON.stringify(snapshot)); } catch (_) {}
+    flushWorkspaceSave();
+  }
+  function flushWorkspaceSave() {
+    if (saveInFlight || !queuedWorkspaceState) return;
+    const snapshot = queuedWorkspaceState;
+    queuedWorkspaceState = null;
+    saveInFlight = true;
+    bridge("saveState", { state: snapshot }).catch(function (error) {
+      state.toast = error.message || "Local workspace could not be saved.";
+    }).then(function () {
+      saveInFlight = false;
+      if (queuedWorkspaceState) flushWorkspaceSave();
+    });
   }
   function normalizeCard(card, index) {
     const first = card.sources && card.sources[0] ? card.sources[0] : { title: card.sourceTitle || "Wikipedia", url: card.sourceUrl || wikiURL(card.sourceTitle || card.title) };
@@ -631,9 +650,16 @@
   }
   async function hydrate() {
     try {
-      const saved = await bridge("loadState", {});
-      if (saved) {
-        const parsed = typeof saved === "string" ? JSON.parse(saved) : saved;
+      const nativeSaved = await bridge("loadState", {});
+      let localSaved = null;
+      try { localSaved = window.localStorage.getItem(LOCAL_WORKSPACE_KEY); } catch (_) {}
+      const candidates = [nativeSaved, localSaved].map(function (saved) {
+        if (!saved) return null;
+        try { return typeof saved === "string" ? JSON.parse(saved) : saved; } catch (_) { return null; }
+      }).filter(Boolean);
+      candidates.sort(function (left, right) { return String(right.savedAt || "").localeCompare(String(left.savedAt || "")); });
+      const parsed = candidates[0];
+      if (parsed) {
         if (parsed.topics) state.topics = migrateTopics(parsed.topics);
         if (parsed.settings) state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings);
         if (parsed.cards) state.cards = parsed.cards.filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
