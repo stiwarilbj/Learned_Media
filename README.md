@@ -27,3 +27,5 @@ The App folder includes source and rebuild scripts. Google sign-in remains avail
 Videos is a separate workspace limited to the approved creator and individual-video catalog. Ordinary search, topic filters, saved videos, history, and playback work from the imported local catalog. Smart search uses the Gemini key. A YouTube key is required to import the catalog; Settings links to Google Cloud project creation, YouTube Data API v3, and Credentials with the exact setup steps.
 
 While connected, overdue creator sources refresh once a day and **Refresh videos** starts an immediate scan. 3Blue1Brown is limited to the two approved Neural Networks and Statistics playlists; new playlist additions are picked up automatically.
+
+Smart video search first retrieves weighted matches from titles, descriptions, tags, and topic metadata, then asks Gemini to verify relevance. It can expand the search once when the first pass is too small, keeps channel/topic filters active, and explains why each accepted result matches. The approved catalog includes Jabroni Baseball (`UCfBXZotQqPlpDWXTbRbi2qA`).

@@ -33,7 +33,7 @@ export function Navigation({ view, onNavigate, onReset, query, onQueryChange, to
       <header className="top-navigation">
         <button type="button" className="nav-brand" onClick={() => onNavigate("feed")} aria-label="Learned Media home">
           <span className="brand-mark">LM</span>
-          <span className="brand-wordmark"><strong>Learned</strong><small>Media</small></span>
+          <span className="brand-wordmark"><strong>Learned Media</strong></span>
         </button>
         <nav className="top-nav-links" aria-label="Primary navigation">
           {items.map((item) => <button type="button" className={`top-nav-link ${view === item.id ? "active" : ""}`} key={item.id} onClick={() => onNavigate(item.id)} aria-current={view === item.id ? "page" : undefined}><Icon name={item.icon} size={16} strokeWidth={1.9} /><span>{item.label}</span></button>)}

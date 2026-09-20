@@ -87,6 +87,35 @@ export type YouTubeImportProgress = {
   paused?: boolean;
 };
 
+export type YouTubeSearchConceptGroup = {
+  label?: string;
+  terms: string[];
+  required?: boolean;
+};
+
+export type YouTubeSearchPlanLike = {
+  terms?: string[];
+  include?: string[];
+  alternatives?: string[];
+  exclude?: string[];
+  topics?: string[];
+  conceptGroups?: YouTubeSearchConceptGroup[];
+  channel?: string;
+  channelId?: string;
+  dateIntent?: "upload" | "event" | "either";
+  minDate?: string;
+  maxDate?: string;
+  minDurationSeconds?: number;
+  maxDurationSeconds?: number;
+};
+
+export type YouTubeSearchCandidate = {
+  video: YouTubeVideo;
+  score: number;
+  matchedFields: string[];
+  supportingText: string[];
+};
+
 export const YOUTUBE_TOPICS: YouTubeTopic[] = ["History", "Politics", "Geography", "Science", "Nature", "Mathematics", "Literature", "Sports", "Culture", "Technology"];
 
 // This is the only channel catalog used by the feature. Handles are retained
@@ -150,7 +179,8 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
   { name: "J.J. McCullough", handle: "@JJMcCullough", channelId: "UCyhOl6uRlxryALlT5yifldw" },
   { name: "Primer", handle: "@primerlearning", channelId: "UCKzJFdi57J53Vr_BkTfN3uQ" },
   { name: "Primal Space", handle: "@primalspace", channelId: "UClZbmi9JzfnB2CEb0fG8iew" },
-  { name: "Mitsi Studio", handle: "@mitsistudio", channelId: "UCuXCgyOCMXic7j0_wghXnRA" }
+  { name: "Mitsi Studio", handle: "@mitsistudio", channelId: "UCuXCgyOCMXic7j0_wghXnRA" },
+  { name: "Jabroni Baseball", handle: "@JabroniBaseball", channelId: "UCfBXZotQqPlpDWXTbRbi2qA" }
 ];
 
 // Individual videos are intentionally separate from the channel catalog.
@@ -168,7 +198,7 @@ export const APPROVED_INDIVIDUAL_VIDEOS: ApprovedVideoSeed[] = [
 const APPROVED_3BLUE_PLAYLIST_SOURCE_IDS = new Set((APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown")?.playlistIds ?? []).map((id) => `playlist:${id}`));
 
 export const DEFAULT_YOUTUBE_WORKSPACE: YouTubeWorkspaceState = {
-  channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", channelOrder: "newest", discoverIds: [], libraryIncomplete: false, catalogVersion: 2, sourceStates: {}
+  channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", channelOrder: "newest", discoverIds: [], libraryIncomplete: false, catalogVersion: 3, sourceStates: {}
 };
 
 const YOUTUBE_API_ROOT = "https://www.googleapis.com/youtube/v3";
@@ -514,6 +544,107 @@ export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclud
   return result;
 }
 
+const SEARCH_BOILERPLATE = /(?:subscribe|like and subscribe|follow us|social media|patreon|sponsor(?:ed)? by|use code|affiliate|merch(?:andise)?|join the discord|business inquiries|check out my|support the channel|all links? in the description)[^.!?]*(?:[.!?]|$)/gi;
+
+function searchableDescription(video: YouTubeVideo) {
+  return video.description.replace(SEARCH_BOILERPLATE, " ").replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim().slice(0, 1800);
+}
+
+function editDistance(left: string, right: string) {
+  if (left === right) return 0;
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current[column] = Math.min(
+        current[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function tokenMatches(token: string, words: string[]) {
+  if (token.length < 3) return words.includes(token);
+  return words.some((word) => word === token || (token.length >= 5 && word.length >= 5 && editDistance(token, word) <= (token.length >= 8 ? 2 : 1)));
+}
+
+function fieldMatches(term: string, fields: Array<{ name: string; value: string }>) {
+  const normalizedTerm = normalized(term);
+  if (!normalizedTerm) return { matched: false, score: 0, fields: [], supportingText: [] as string[] };
+  const termWords = normalizedTerm.split(" ").filter((word) => word.length > 1);
+  let score = 0;
+  const matchedFields: string[] = [];
+  const supportingText: string[] = [];
+  fields.forEach(({ name, value }) => {
+    const normalizedValue = normalized(value);
+    const words = normalizedValue.split(" ").filter(Boolean);
+    const phrase = normalizedValue.includes(normalizedTerm);
+    const matchedWords = termWords.filter((word) => tokenMatches(word, words));
+    if (!phrase && (!matchedWords.length || matchedWords.length < Math.max(1, Math.ceil(termWords.length * 0.5)))) return;
+    const multiplier = name === "title" ? 8 : name === "tags" ? 4 : name === "topics" ? 3 : name === "description" ? 2 : 1;
+    score += multiplier * (phrase ? 2 : matchedWords.length / Math.max(termWords.length, 1));
+    matchedFields.push(name);
+    if (name === "title" || name === "description") supportingText.push(value.slice(0, 220));
+  });
+  return { matched: score > 0, score, fields: Array.from(new Set(matchedFields)), supportingText: supportingText.slice(0, 3) };
+}
+
+export function searchYouTubeCandidates(videos: YouTubeVideo[], plan: YouTubeSearchPlanLike, topic: YouTubeTopic | "All" = "All", channelId?: string, limit = 80, excludedIds: string[] = [], expanded = false) {
+  const excluded = new Set(excludedIds);
+  const groups = (plan.conceptGroups ?? []).filter((group) => group.terms?.length).map((group) => ({ ...group, terms: group.terms.slice(0, 12) }));
+  const terms = [
+    ...(plan.terms ?? []),
+    ...(plan.include ?? []),
+    ...(expanded ? (plan.alternatives ?? []) : [])
+  ].filter((term) => term.trim()).slice(0, 36);
+  const effectiveChannelId = plan.channelId ?? channelId;
+  const explicitTopics = new Set((plan.topics ?? []).map((value) => normalized(value)));
+  const exclusions = (plan.exclude ?? []).map((term) => normalized(term)).filter(Boolean);
+  const results: YouTubeSearchCandidate[] = [];
+  videos.forEach((video) => {
+    if (excluded.has(video.id) || !isApprovedYouTubeVideo(video)) return;
+    if (effectiveChannelId && video.channelId !== effectiveChannelId) return;
+    if (topic !== "All" && !video.topics.includes(topic)) return;
+    if (explicitTopics.size && !video.topics.some((item) => explicitTopics.has(normalized(item)))) return;
+    const dateIntent = plan.dateIntent ?? "upload";
+    if (dateIntent !== "event" && plan.minDate && video.publishedAt < plan.minDate) return;
+    if (dateIntent !== "event" && plan.maxDate && video.publishedAt > plan.maxDate) return;
+    if (plan.minDurationSeconds !== undefined && video.durationSeconds < plan.minDurationSeconds) return;
+    if (plan.maxDurationSeconds !== undefined && video.durationSeconds > plan.maxDurationSeconds) return;
+    const description = searchableDescription(video);
+    const fields = [
+      { name: "title", value: video.title },
+      { name: "description", value: description },
+      { name: "tags", value: video.tags.join(" ") },
+      { name: "topics", value: video.topics.join(" ") }
+    ];
+    const searchable = normalized(fields.map((field) => field.value).join(" "));
+    if (exclusions.some((term) => searchable.includes(term))) return;
+    const matches = terms.map((term) => fieldMatches(term, fields)).filter((match) => match.matched);
+    const groupMatches = groups.map((group) => {
+      const groupResults = group.terms.map((term) => fieldMatches(term, fields)).filter((match) => match.matched);
+      return groupResults.sort((left, right) => right.score - left.score)[0];
+    });
+    if (groups.some((group, index) => group.required !== false && !groupMatches[index])) return;
+    const matched = [...matches, ...groupMatches.filter(Boolean)];
+    if (!matched.length && !explicitTopics.size) return;
+    const score = matched.reduce((sum, match) => sum + match.score, 0) + (video.title.toLowerCase().includes(" ") ? 0 : 0);
+    results.push({
+      video,
+      score,
+      matchedFields: Array.from(new Set(matched.flatMap((match) => match.fields))),
+      supportingText: Array.from(new Set(matched.flatMap((match) => match.supportingText))).slice(0, 3)
+    });
+  });
+  return results.sort((left, right) => right.score - left.score).slice(0, Math.max(1, Math.min(80, limit)));
+}
+
 export function filterYouTubeVideos(videos: YouTubeVideo[], searchText: string, topic: YouTubeTopic | "All", channelId?: string) {
   const term = normalized(searchText);
   return videos.filter((video) => {
@@ -558,7 +689,7 @@ export async function loadYouTubeWorkspace() {
       const request = db.transaction("workspace", "readonly").objectStore("workspace").get("state");
       request.onsuccess = () => {
         const raw = request.result ?? {};
-        const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: 2, sourceStates: { ...(raw.sourceStates ?? {}) } } as YouTubeWorkspaceState;
+        const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: 3, sourceStates: { ...(raw.sourceStates ?? {}) } } as YouTubeWorkspaceState;
         workspace.videos = (workspace.videos ?? []).filter(isApprovedYouTubeVideo).map((video) => ({ ...video, sourceIds: video.sourceIds ?? [] }));
         resolve(workspace);
       };
