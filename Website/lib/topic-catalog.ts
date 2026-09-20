@@ -1,6 +1,6 @@
 import type { TopicNode } from "./types";
 
-export const TOPIC_CATALOG_VERSION = 3;
+export const TOPIC_CATALOG_VERSION = 4;
 
 type TopicSeed = string | { label: string; children: TopicSeed[] };
 
@@ -63,6 +63,87 @@ const LITERATURE_SEED: TopicSeed = branch("Literature", [
     branch("Indigenous traditions", ["Popol Vuh", "The Dreaming", "The Legend of the Seven Cities of Cibola", "Raven Tales"])
   ])
 ]);
+
+// This expansion is kept as catalog data (rather than generated search results) so
+// it is available offline, has stable path-based IDs, and can be migrated like
+// every other topic. Repeated works are intentional when they fit more than one
+// subject, but each placement remains a distinct contextual topic ID.
+const BOOK_EXPANSION: TopicSeed[] = [
+  branch("Romance", ["Love Story", "Pride and Prejudice", "Jane Eyre", "The Bridges of Madison County", "The Notebook", "The Time Traveler's Wife"]),
+  branch("Thrillers", ["The Girl with the Dragon Tattoo", "The Girl on the Train", "Gone Girl", "The Da Vinci Code", "The Lost Symbol", "The Bourne Identity"]),
+  branch("Horror", ["The Shining", "It", "Dracula", "Frankenstein", "The Haunting of Hill House", "The Exorcist"]),
+  branch("Children's Literature", ["Alice's Adventures in Wonderland", "Charlotte's Web", "The Tale of Peter Rabbit", "The Very Hungry Caterpillar", "Matilda", "The Wind in the Willows", "Goodnight Moon", "The Poky Little Puppy", "James and the Giant Peach", "The Little Prince"]),
+  branch("Biography and Memoir", ["The Diary of Anne Frank (Het Achterhuis)", "Long Walk to Freedom", "The Story of My Life", "I Know Why the Caged Bird Sings", "The Autobiography of Malcolm X", "Educated"]),
+  branch("Popular Science", ["Cosmos", "A Brief History of Time", "The Naked Ape", "The Selfish Gene", "Silent Spring", "The Immortal Life of Henrietta Lacks"]),
+  branch("Self-Development", ["How to Win Friends and Influence People", "The 7 Habits of Highly Effective People", "The Power of Positive Thinking", "The Purpose Driven Life", "Your Erroneous Zones", "The Secret"]),
+  branch("Religion and Spirituality", ["The Bible", "The Quran", "The Bhagavad Gita", "The Celestine Prophecy", "The Alchemist", "The Seven Spiritual Laws of Success"]),
+  branch("Education", ["Scouting for Boys", "The McGuffey Readers", "The Common Sense Book of Baby and Child Care", "American Spelling Book (Webster's Dictionary)", "A Message to Garcia", "The 4-Hour Workweek"]),
+  branch("Reference Works", ["Guinness World Records", "Alcoholics Anonymous", "The Hite Report", "The Art of War", "Gray's Anatomy", "Roget's Thesaurus"]),
+  branch("Books from Your List", [
+    "Scouting for Boys", "The McGuffey Readers", "Guinness World Records", "六星占術によるあなたの運命 (Rokusei Senjutsu: Six-Star Astrology Tells Your Fortune)", "American Spelling Book (Webster's Dictionary)",
+    "A Tale of Two Cities", "The Little Prince (Le Petit Prince)", "The Alchemist (O Alquimista)", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber (紅樓夢)", "The Hobbit", "Alice's Adventures in Wonderland",
+    "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World (Sofies verden)", "The Bridges of Madison County", "One Hundred Years of Solitude (Cien años de soledad)", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose (Il Nome della Rosa)", "The Eagle Has Landed", "Watership Down", "The Hite Report",
+    "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life", "The Tale of Peter Rabbit", "Jonathan Livingston Seagull", "The Very Hungry Caterpillar", "A Message to Garcia", "To Kill a Mockingbird", "Flowers in the Attic", "Cosmos", "Angels & Demons", "How to Win Friends and Influence People", "Alcoholics Anonymous", "Fear of Flying", "How the Steel Was Tempered (Kak zakalyalas' stal)", "War and Peace (Война и мир)", "The Adventures of Pinocchio (Le avventure di Pinocchio)",
+    "The Diary of Anne Frank (Het Achterhuis)", "Your Erroneous Zones", "The Thorn Birds", "Kane and Abel", "The Kite Runner", "Valley of the Dolls", "The Great Gatsby", "Gone with the Wind", "Rebecca", "The Revolt of Mamie Stover", "The Girl with the Dragon Tattoo (Män som hatar kvinnor)", "The Lost Symbol", "The Hunger Games", "James and the Giant Peach",
+    "Ben-Hur: A Tale of the Christ", "The Young Guard (Молодая гвардия)", "Who Moved My Cheese?", "A Brief History of Time", "Paul et Virginie", "Lust for Life", "The Wind in the Willows", "The 7 Habits of Highly Effective People", "Totto-Chan: The Little Girl at the Window (窓ぎわのトットちゃん)", "Sapiens: A Brief History of Humankind", "Virgin Soil Upturned (Поднятая целина)", "The Celestine Prophecy", "The Fault in Our Stars",
+    "The Girl on the Train", "The Shack", "Uncle Styopa (Дядя Стёпа)", "The Godfather", "Love Story", "Catching Fire", "Mockingjay", "Kitchen (キッチン)", "Andromeda Nebula (Туманность Андромеды)", "Gone Girl", "The Bermuda Triangle", "Things Fall Apart", "Wolf Totem (狼圖騰)", "The Happy Hooker: My Own Story", "Jaws",
+    "Love You Forever", "The Women's Room", "What to Expect When You're Expecting", "Adventures of Huckleberry Finn", "The Secret Diary of Adrian Mole, Aged 13¾", "Pride and Prejudice", "Kon-Tiki: Across the Pacific in a Raft (Kon-Tiki ekspedisjonen)", "The Good Soldier Švejk (Osudy dobrého vojáka Švejka za světové války)", "Where the Wild Things Are", "The Power of Positive Thinking", "The Secret", "Dune", "Charlie and the Chocolate Factory", "The Naked Ape", "Kokoro (こころ)",
+    "Where the Crawdads Sing", "Follow Your Heart (Va' dove ti porta il cuore)", "Matilda", "The Book Thief", "The Horse Whisperer", "Goodnight Moon", "The Neverending Story (Die unendliche Geschichte)", "All the Light We Cannot See", "Fifty Shades of Grey", "The Outsiders", "Guess How Much I Love You", "Shōgun", "The Poky Little Puppy", "The Pillars of the Earth", "Perfume (Das Parfum)", "The Grapes of Wrath"
+  ])
+];
+
+const BEST_SELLING_BOOK_SERIES: TopicSeed = branch("Best-Selling Book Series", [
+  branch("Harry Potter", ["Harry Potter and the Philosopher's Stone", "Harry Potter and the Chamber of Secrets", "Harry Potter and the Prisoner of Azkaban", "Harry Potter and the Goblet of Fire", "Harry Potter and the Order of the Phoenix", "Harry Potter and the Half-Blood Prince", "Harry Potter and the Deathly Hallows"]),
+  branch("Goosebumps", ["Welcome to Dead House", "Stay Out of the Basement", "Monster Blood", "Say Cheese and Die!", "The Haunted Mask", "Night of the Living Dummy", "The Cuckoo Clock of Doom", "One Day at HorrorLand", "The Scarecrow Walks at Midnight", "The Ghost Next Door"]),
+  branch("Perry Mason", ["The Case of the Velvet Claws", "The Case of the Sulky Girl", "The Case of the Lucky Legs", "The Case of the Howling Dog", "The Case of the Curious Bride", "The Case of the Stuttering Bishop", "The Case of the Substitute Face", "The Case of the Caretaker's Cat", "The Case of the Empty Tin", "The Case of the Green-Eyed Sister"]),
+  branch("Diary of a Wimpy Kid", ["Diary of a Wimpy Kid", "Rodrick Rules", "The Last Straw", "Dog Days", "The Ugly Truth", "Cabin Fever", "The Third Wheel", "Hard Luck", "The Long Haul", "Old School"]),
+  branch("Choose Your Own Adventure", ["The Cave of Time", "Journey Under the Sea", "By Balloon to the Sahara", "Space and Beyond", "The Lost Jewels of Náplak", "House of Danger", "The Third Planet from Altair", "The Lost Ninja", "Prisoner of the Ant People", "The Race Forever"]),
+  branch("The Berenstain Bears", ["The Big Honey Hunt", "The Bike Lesson", "The Bears' Picnic", "The Bears Go to the Doctor", "The Spooky Old Mansion", "The Berenstain Bears and the Messy Room", "The Berenstain Bears Go to School", "The Berenstain Bears and Too Much TV", "The Berenstain Bears Learn to Share", "The Berenstain Bears and the Trouble with Chores"]),
+  branch("Mr. Men and Little Miss", ["Mr. Tickle", "Mr. Happy", "Mr. Bump", "Mr. Strong", "Mr. Messy", "Little Miss Sunshine", "Little Miss Bossy", "Little Miss Helpful", "Little Miss Naughty", "Little Miss Chatterbox"]),
+  branch("Sweet Valley High", ["Double Love", "Secrets", "Playing with Fire", "Power Play", "All Night Long", "Lovebirds", "Heartbreaker", "Dangerous Love", "Promises", "The New Jessica"]),
+  branch("Noddy", ["Noddy Goes to Toyland", "Noddy and the Magic Rubber", "Noddy and the Goblins", "Noddy Goes to School", "Noddy and the Bumpy Dog", "Noddy and the Birthday Present", "Noddy and the Runaway Wheel", "Noddy and the Broken Bicycle", "Noddy and the Tooting Bagpipes", "Noddy and the Aeroplane"]),
+  branch("Jack Reacher", ["Killing Floor", "Die Trying", "Tripwire", "Running Blind", "Echo Burning", "Without Fail", "Persuader", "The Enemy", "One Shot", "The Hard Way"]),
+  branch("The Railway Series / Thomas & Friends", ["The Three Railway Engines", "Thomas the Tank Engine", "James the Red Engine", "Troublesome Engines", "Henry the Green Engine", "Percy the Small Engine", "The Eight Famous Engines", "Gordon the Big Engine", "Edward the Blue Engine", "Four Little Engines"]),
+  branch("Nancy Drew", ["The Secret of the Old Clock", "The Hidden Staircase", "The Bungalow Mystery", "The Mystery at Lilac Inn", "The Secret of Shadow Ranch", "The Secret of Red Gate Farm", "The Clue in the Diary", "Nancy's Mysterious Letter", "The Sign of the Twisted Candles", "The Password to Larkspur Lane"]),
+  branch("San-Antonio", ["Réglez-lui son compte", "J'ai bien l'honneur", "Deuils à mourir", "Bérurier au sérail", "Fais pas dans le porno", "La Rate au court-bouillon", "Les Doigts dans le nez", "Le Coup du père François", "Le Secret de Polichinelle", "Ménage tes méninges"]),
+  branch("Robert Langdon", ["Angels & Demons", "The Da Vinci Code", "The Lost Symbol", "Inferno", "Origin"]),
+  branch("Geronimo Stilton", ["Lost Treasure of the Emerald Eye", "The Curse of the Cheese Pyramid", "Cat and Mouse in a Haunted House", "I'm Too Fond of My Fur", "Four Mice Deep in the Jungle", "Paws Off, Cheddarface!", "Attack of the Pirate Cats", "A Cheese-Colored Camper", "Down and Out Down Under", "The Peculiar Pumpkin Thief"]),
+  branch("Percy Jackson & the Olympians", ["The Lightning Thief", "The Sea of Monsters", "The Titan's Curse", "The Battle of the Labyrinth", "The Last Olympian"]),
+  branch("The Baby-Sitters Club", ["Kristy's Great Idea", "Claudia and Mean Janine", "The Truth About Stacey", "Mary Anne Saves the Day", "Dawn and the Impossible Three", "Kristy's Big Day", "Boy-Crazy Stacey", "Claudia and the Phantom Phone Calls", "The Ghost at Dawn's House", "Mary Anne and the Search for Tigger"]),
+  branch("American Girl", ["Meet Samantha", "Meet Molly", "Meet Felicity", "Meet Addy", "Meet Josefina", "Meet Kirsten", "Meet Kit", "Meet Ruthie", "Meet Nanea", "Meet Julie"]),
+  branch("Twilight", ["Twilight", "New Moon", "Eclipse", "Breaking Dawn"]),
+  branch("Star Wars", ["Heir to the Empire", "Dark Force Rising", "The Last Command", "The Truce at Bakura", "The Courtship of Princess Leia", "Darth Bane: Path of Destruction", "Lost Stars", "Bloodline", "Thrawn", "Shadow of the Sith"])
+]);
+
+/**
+ * Sales totals and ordering are reported worldwide estimates, not audited
+ * rankings. Keep the provenance with the catalog so both clients can explain
+ * what the series branch represents without putting source text into searches.
+ */
+export const BEST_SELLING_BOOK_SERIES_METADATA = {
+  sourceUrl: "https://en.wikipedia.org/wiki/List_of_best-selling_books#List_of_best-selling_book_series",
+  sourceLabel: "Wikipedia's List of best-selling book series",
+  verifiedAt: "2026-09-20",
+  note: "Worldwide sales and rank are reported estimates."
+} as const;
+
+const FAMOUS_AUTHORS: TopicSeed = branch("Famous Authors", [
+  branch("By Region and Country", [
+    branch("Africa", [branch("Nigeria", ["Chinua Achebe", "Wole Soyinka", "Chimamanda Ngozi Adichie", "Ben Okri", "Buchi Emecheta", "Teju Cole"]), branch("Kenya", ["Ngũgĩ wa Thiong'o", "Binyavanga Wainaina", "Yvonne Adhiambo Owuor", "Grace Ogot"]), branch("South Africa", ["Nadine Gordimer", "J.M. Coetzee", "Zakes Mda", "Damon Galgut", "Alan Paton"]), branch("Egypt", ["Naguib Mahfouz", "Ahdaf Soueif", "Alaa Al Aswany"]), branch("Ghana", ["Ama Ata Aidoo", "Kofi Awoonor"])]),
+    branch("Asia", [branch("India", ["Rabindranath Tagore", "R.K. Narayan", "Arundhati Roy", "Salman Rushdie", "Vikram Seth", "Amitav Ghosh", "Jhumpa Lahiri", "Mahasweta Devi", "Premchand", "Kiran Desai"]), branch("Japan", ["Murasaki Shikibu", "Haruki Murakami", "Yasunari Kawabata", "Yukio Mishima", "Natsume Soseki", "Banana Yoshimoto"]), branch("China", ["Lu Xun", "Mo Yan", "Cixin Liu", "Cao Xueqin", "Eileen Chang", "Can Xue"]), branch("Korea", ["Han Kang", "Yi Sang", "Hwang Sok-yong"]), branch("Iran", ["Forough Farrokhzad", "Marjane Satrapi"]), branch("Turkey", ["Orhan Pamuk", "Elif Shafak"])]),
+    branch("Europe", [branch("United Kingdom", ["William Shakespeare", "Jane Austen", "Charles Dickens", "Virginia Woolf", "George Orwell", "J.R.R. Tolkien", "Agatha Christie", "Kazuo Ishiguro", "Zadie Smith", "C.S. Lewis"]), branch("Ireland", ["James Joyce", "Oscar Wilde", "W.B. Yeats", "Samuel Beckett", "Sally Rooney"]), branch("France", ["Victor Hugo", "Marcel Proust", "Albert Camus", "Simone de Beauvoir", "Alexandre Dumas"]), branch("Germany", ["Johann Wolfgang von Goethe", "Thomas Mann", "Hermann Hesse", "Cornelia Funke"]), branch("Italy", ["Dante Alighieri", "Umberto Eco", "Elena Ferrante", "Italo Calvino"]), branch("Spain", ["Miguel de Cervantes", "Federico García Lorca", "Carlos Ruiz Zafón"]), branch("Russia", ["Leo Tolstoy", "Fyodor Dostoevsky", "Anton Chekhov", "Vladimir Nabokov", "Aleksandr Solzhenitsyn"]), branch("Nordic Countries", ["Hans Christian Andersen", "Henrik Ibsen", "Astrid Lindgren", "Sigrid Undset"])]),
+    branch("The Americas", [branch("United States", ["Mark Twain", "Toni Morrison", "F. Scott Fitzgerald", "Ernest Hemingway", "Harper Lee", "Maya Angelou", "Ursula K. Le Guin", "Octavia Butler", "Stephen King", "Ray Bradbury", "Isaac Asimov", "John Steinbeck", "Louisa May Alcott"]), branch("Canada", ["Margaret Atwood", "Alice Munro", "Lucy Maud Montgomery", "Yann Martel", "Michael Ondaatje"]), branch("Latin America", ["Jorge Luis Borges", "Gabriel García Márquez", "Isabel Allende", "Julio Cortázar", "Pablo Neruda", "Mario Vargas Llosa", "Clarice Lispector"])]),
+    branch("Oceania", [branch("Australia", ["Patrick White", "Peter Carey", "Tim Winton", "Alexis Wright"]), branch("New Zealand", ["Katherine Mansfield", "Witi Ihimaera", "Eleanor Catton"])]),
+    branch("Indigenous Traditions", ["Leslie Marmon Silko", "Louise Erdrich", "N. Scott Momaday", "Thomas King", "Lee Maracle"])
+  ]),
+  branch("By Genre", [branch("Literary Fiction", ["Jane Austen", "Toni Morrison", "Virginia Woolf", "Gabriel García Márquez", "Leo Tolstoy", "James Joyce"]), branch("Mystery and Thriller", ["Agatha Christie", "Robert Louis Stevenson", "Stephen King", "Gillian Flynn", "Patricia Highsmith"]), branch("Fantasy and Science Fiction", ["J.R.R. Tolkien", "C.S. Lewis", "Ursula K. Le Guin", "Octavia Butler", "Isaac Asimov", "Ray Bradbury"]), branch("Children and Young Adult", ["Louisa May Alcott", "Astrid Lindgren", "J.K. Rowling", "Roald Dahl", "E.B. White", "L. Frank Baum"]), branch("Poetry", ["Rabindranath Tagore", "Pablo Neruda", "W.B. Yeats", "Federico García Lorca", "Forough Farrokhzad"]), branch("Science and Ideas", ["Carl Sagan", "Stephen Hawking", "Rachel Carson", "Yuval Noah Harari", "Mary Roach"])]),
+  branch("By Literary Form", [branch("Novelists", ["Rabindranath Tagore", "Chinua Achebe", "Jane Austen", "Charles Dickens", "Haruki Murakami", "Toni Morrison"]), branch("Poets", ["Rabindranath Tagore", "Pablo Neruda", "Maya Angelou", "Emily Dickinson", "William Blake", "Homer"]), branch("Playwrights", ["William Shakespeare", "Henrik Ibsen", "Oscar Wilde", "Samuel Beckett", "Arthur Miller"]), branch("Essayists", ["Michel de Montaigne", "George Orwell", "James Baldwin", "Virginia Woolf", "Joan Didion"]), branch("Political Writers", ["Mary Wollstonecraft", "Thomas Paine", "Karl Marx", "Hannah Arendt", "Frantz Fanon"]), branch("Historians and Biographers", ["Herodotus", "Thucydides", "Ibn Khaldun", "Barbara Tuchman", "Robert Caro"])])
+]);
+
+const literatureChildren = (LITERATURE_SEED as { label: string; children: TopicSeed[] }).children;
+const booksBranch = literatureChildren.find((child): child is { label: string; children: TopicSeed[] } => typeof child !== "string" && child.label === "Books");
+booksBranch?.children.push(...BOOK_EXPANSION);
+literatureChildren.push(BEST_SELLING_BOOK_SERIES, FAMOUS_AUTHORS);
 
 const countries = [
   "United States", "Canada", "Mexico", "Guatemala", "Cuba", "Haiti", "Dominican Republic", "Jamaica",
@@ -227,12 +308,31 @@ function nodeId(path: string[]) {
   return `topic-${path.map(slug).join("--")}`;
 }
 
+const LOWERCASE_TOPIC_WORDS = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
+
+/** Title Case is for catalog labels only; book and video titles keep their original styling. */
+export function titleCaseTopicLabel(label: string) {
+  const words = label.split(/(\s+)/);
+  const wordIndexes = words.map((word, index) => (/^\s+$/.test(word) ? -1 : index)).filter((index) => index >= 0);
+  const first = wordIndexes[0];
+  const last = wordIndexes.at(-1);
+  return words.map((word, index) => {
+    if (!word.trim()) return word;
+    const isAcronymOrStyled = /^[A-Z0-9][A-Z0-9.+/#-]*$/.test(word) || /[a-z].*[A-Z]/.test(word);
+    if (isAcronymOrStyled) return word;
+    const lower = word.toLowerCase();
+    if (index === first || index === last) return lower.charAt(0).toUpperCase() + lower.slice(1);
+    if (LOWERCASE_TOPIC_WORDS.has(lower)) return lower;
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }).join("");
+}
+
 function buildNode(seed: TopicSeed, parentPath: string[], depth: number, rootIndex: number): TopicNode {
-  const label = typeof seed === "string" ? seed : seed.label;
+  const label = typeof seed === "string" ? seed : titleCaseTopicLabel(seed.label);
   const children = typeof seed === "string" ? undefined : seed.children;
   const path = [...parentPath, label];
   return {
-    id: nodeId(path), label, selected: false, expanded: depth === 0,
+    id: nodeId(path), label, selected: false, expanded: false,
     weight: depth === 0 ? ([30, 25, 20, 25][rootIndex] ?? 10) : 10,
     children: children?.map((child) => buildNode(child, path, depth + 1, rootIndex))
   };
@@ -322,7 +422,7 @@ function updateById(nodes: TopicNode[], id: string, update: (node: TopicNode) =>
     : node.children ? { ...node, children: updateById(node.children, id, update) } : node);
 }
 
-export function migrateTopicTree(saved: TopicNode[] | undefined): TopicNode[] {
+export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial = false): TopicNode[] {
   if (!saved?.length) return createCatalogTopics();
   let next = createCatalogTopics();
   const fresh = flattenTopics(next);
@@ -335,7 +435,7 @@ export function migrateTopicTree(saved: TopicNode[] | undefined): TopicNode[] {
     const key = oldTopic.path.join("\u0000").toLowerCase();
     const target = byPath.get(key) ?? (byLabel.get(oldTopic.label.toLowerCase())?.length === 1 ? byLabel.get(oldTopic.label.toLowerCase())?.[0] : undefined);
     if (target) {
-      next = updateById(next, target.id, (node) => ({ ...node, weight: oldTopic.weight || node.weight, expanded: oldTopic.expanded }));
+      next = updateById(next, target.id, (node) => ({ ...node, weight: oldTopic.weight || node.weight, expanded: collapseInitial ? false : oldTopic.expanded }));
       if (oldTopic.selected) selectedIds.add(target.id);
       return;
     }

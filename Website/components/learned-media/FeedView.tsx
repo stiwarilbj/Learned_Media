@@ -10,6 +10,7 @@ import { TopicTree } from "./TopicTree";
 
 type FeedViewProps = {
   cards: FactCardType[];
+  query?: string;
   settings: FeedSettings;
   topics: TopicNode[];
   customTopic: string;
@@ -39,7 +40,7 @@ function SkeletonCard() {
   return <div className="skeleton-card"><div className="skeleton-media shimmer" /><div className="skeleton-line wide shimmer" /><div className="skeleton-line shimmer" /><div className="skeleton-line short shimmer" /></div>;
 }
 
-function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onSettingsChange }: Pick<FeedViewProps, "topics" | "customTopic" | "settings" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onWeightTopic" | "onSettingsChange">) {
+function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onSettingsChange }: Pick<FeedViewProps, "topics" | "query" | "customTopic" | "settings" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onWeightTopic" | "onSettingsChange">) {
   const [topicsOpen, setTopicsOpen] = useState(true);
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
@@ -49,13 +50,13 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
     <aside className="feed-topics-panel surface-panel">
       <details className="topics-details" open={topicsOpen} onToggle={(event) => setTopicsOpen(event.currentTarget.open)}>
         <summary><span><Icon name="check" size={16} /> Your topics</span><strong>{selectedCount} selected</strong></summary>
-        <div className="feed-topic-copy">Keep the checklist close while you read. New choices shape the next batch.</div>
+        <div className="feed-topic-copy">Keep the checklist close while you read. New choices shape the next batch</div>
         <label className="topic-difficulty-control" htmlFor="feed-obscurity">
           <span className="control-label"><span>Fact Difficulty</span><strong>{normalizeDifficulty(settings.obscurity)}/10 · {DIFFICULTY_LABELS[normalizeDifficulty(settings.obscurity)]}</strong></span>
           <input id="feed-obscurity" className="feed-range" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
-          <span className="range-ends"><span>Approachable</span><span>Obscure</span></span>
+          <span className="range-ends"><span>Very Easy</span><span>Exceptionally Obscure</span></span>
         </label>
-        <TopicTree nodes={topics} onToggle={onToggleTopic} onExpand={onExpandTopic} onWeight={onWeightTopic} />
+        <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onWeight={onWeightTopic} />
         <div className="feed-custom-topic">
           <input value={customTopic} onChange={(event) => onCustomTopicChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onAddCustomTopic()} placeholder="Add a topic" aria-label="Add a custom topic" />
           <button type="button" onClick={onAddCustomTopic} aria-label="Add custom topic"><Icon name="plus" size={15} /></button>
@@ -77,19 +78,19 @@ function TopicSidebar({ topics, customTopic, settings, onCustomTopicChange, onAd
   );
 }
 
-export function FeedView({ cards, settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic }: FeedViewProps) {
+export function FeedView({ cards, query = "", settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic }: FeedViewProps) {
   return (
     <div className="feed-workspace">
       {rabbitHole && <div className="rabbit-banner"><div><Icon name="arrow" size={16} /><span>Rabbit Hole Mode <strong>→ {rabbitHole}</strong></span></div><button type="button" onClick={onReset}>Exit rabbit hole</button></div>}
       {toast && <div className="feed-toast"><Icon name="check" size={15} /> {toast}</div>}
       <div className="feed-layout">
-        <TopicSidebar topics={topics} customTopic={customTopic} settings={settings} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onWeightTopic={onWeightTopic} onSettingsChange={onSettingsChange} />
+          <TopicSidebar topics={topics} query={query} customTopic={customTopic} settings={settings} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onWeightTopic={onWeightTopic} onSettingsChange={onSettingsChange} />
         <section className="feed-content-column">
           <div className="feed-toolbar">
             <div className="active-topics"><span className="toolbar-label">Your feed</span><span className="topic-chip selected-chip">{cards.length} discoveries</span></div>
             <button type="button" className="toolbar-reset" onClick={onReset}><Icon name="reset" size={15} /> Reset feed</button>
           </div>
-          <div className="feed-intro"><div><h1>Keep going.</h1><p>One small idea at a time. Every card has a place to look next.</p></div><span className="feed-count">{cards.length} cards in this session</span></div>
+          <div className="feed-intro"><div><h1>Keep going</h1><p>One small idea at a time. Every card has a place to look next</p></div><span className="feed-count">{cards.length} cards in this session</span></div>
           <div className="fact-feed">
             {cards.map((card, index) => <Fragment key={card.id}>
               {canLoadMore && !loading && index === Math.max(cards.length - 3, 0) && <div className="feed-load-more-nearby"><button type="button" className="small-load-button" onClick={onLoadMore}>Generate 10 more</button></div>}

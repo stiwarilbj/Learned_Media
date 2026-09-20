@@ -11,7 +11,9 @@ import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { generateGeminiFacts, generateLearningResponse, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, flattenTopics, migrateTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
+import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
+import { rankSearchResults } from "@/lib/search";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_WORKSPACE, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, relatedYouTubeVideos, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
@@ -36,6 +38,7 @@ type PersistedState = {
   learningProfile: LearningProfile;
   feedStarted: boolean;
   theme: "light" | "dark";
+  topicCatalogVersion?: number;
 };
 
 function readWorkspaceState() {
@@ -108,7 +111,7 @@ function appendUniqueCards(current: FactCard[], next: FactCard[]) {
 
 function normalizeHook(value: string) {
   const clean = value.replace(/[.!?]+/g, "").replace(/\s+/g, " ").trim().split(" ").slice(0, 12).join(" ");
-  return clean.replace(/^(\s*[\"'“‘([{]*)([a-z])/, (_, prefix: string, letter: string) => prefix + letter.toUpperCase());
+  return titleCaseTopicLabel(clean);
 }
 
 function slugify(value: string) {
@@ -238,7 +241,7 @@ export default function HomePage() {
       const parsed = readWorkspaceState();
       if (parsed) {
         const migrateTenLevelDifficulty = window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1";
-        const restoredTopics = parsed.topics ? migrateTopicTree(parsed.topics) : createDefaultTopics();
+        const restoredTopics = parsed.topics ? migrateTopicTree(parsed.topics, (parsed.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION) : createDefaultTopics();
         const restoredSettings: FeedSettings = {
           ...DEFAULT_SETTINGS,
           ...parsed.settings,
@@ -287,7 +290,7 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const state: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topics, settings, cards, learningProfile, feedStarted, theme };
+    const state: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics, settings, cards, learningProfile, feedStarted, theme };
     persistedStateRef.current = state;
     writeWorkspaceState(state);
   }, [cards, feedStarted, hydrated, learningProfile, settings, theme, topics]);
@@ -960,15 +963,14 @@ export default function HomePage() {
   }, [youtubeSearchResults, youtubeSmartSearchRan, youtubeWorkspace]);
 
   const filteredCards = useMemo(() => {
-    const term = query.trim().toLowerCase();
-    if (!term) return cards;
-    return cards.filter((card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`.toLowerCase().includes(term));
+    if (!query.trim()) return cards;
+    return rankSearchResults(query, cards, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
   }, [cards, query]);
 
   const activeCollection = (kind: "saved" | "likes" | "history") => {
-    if (kind === "saved") return cards.filter((card) => card.saved);
-    if (kind === "likes") return cards.filter((card) => card.liked);
-    return cards;
+    const collection = kind === "saved" ? cards.filter((card) => card.saved) : kind === "likes" ? cards.filter((card) => card.liked) : cards;
+    if (!query.trim()) return collection;
+    return rankSearchResults(query, collection, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
   };
 
   const renderMain = () => {
@@ -977,11 +979,12 @@ export default function HomePage() {
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} />;
-    return <FeedView cards={filteredCards} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, 10)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
+    return <FeedView cards={filteredCards} query={query} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, 10)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
   };
 
-  const searchResults = query.trim() ? allTopicResults.filter((topic) => topic.label.toLowerCase().includes(query.toLowerCase())).slice(0, 4) : [];
-  const factResults = query.trim() ? cards.filter((card) => `${card.hook} ${card.title} ${card.body} ${card.sources.map((source) => source.title).join(" ")}`.toLowerCase().includes(query.toLowerCase())).slice(0, 3) : [];
+  const searchResults = query.trim() ? rankSearchResults(query, allTopicResults, (topic) => `${topic.path.join(" ")} ${topic.label}`, 6) : [];
+  const searchCollection = view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : cards;
+  const factResults = query.trim() ? rankSearchResults(query, searchCollection, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`, 6) : [];
 
   return (
     <div className={`app-frame theme-${theme}`}>

@@ -1,20 +1,20 @@
 import type { Difficulty, FactFeedback, LearningProfile, TopicLearningProfile } from "./types";
 
 export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
-  1: "Starter",
-  2: "Familiar",
-  3: "Curious",
-  4: "Unusual",
-  5: "Interesting",
-  6: "Challenging",
-  7: "Deep cut",
-  8: "Rare",
-  9: "Esoteric",
-  10: "Obscure"
+  1: "Very Easy",
+  2: "Easy",
+  3: "Moderate",
+  4: "Challenging",
+  5: "Hard",
+  6: "Very Hard",
+  7: "Expert",
+  8: "Specialist",
+  9: "Extremely Obscure",
+  10: "Exceptionally Obscure"
 };
 
 export const MAX_DIFFICULTY = 10;
-export const DEFAULT_DIFFICULTY: Difficulty = 10;
+export const DEFAULT_DIFFICULTY: Difficulty = 5;
 
 export function normalizeDifficulty(value: unknown, fallback: Difficulty = DEFAULT_DIFFICULTY): Difficulty {
   const numeric = typeof value === "number" ? value : Number(value);

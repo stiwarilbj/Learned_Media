@@ -459,10 +459,10 @@ function candidatePrompt(topicPaths: Array<{ path: string[]; weight: number }>, 
     const profile = getTopicLearningProfile(learningProfile, path, normalizeDifficulty(settings.obscurity));
     return path.join(" → ") + ": target difficulty " + profile.targetDifficulty + "/10 (" + DIFFICULTY_LABELS[profile.targetDifficulty] + "; " + profile.heard + " heard, " + profile.unknown + " unknown)";
   }).join("\n") : "Default target difficulty: " + settings.obscurity + "/10";
-  return "Create exactly one genuinely obscure, accurate, interesting fact for Learned Media. Avoid common sense, famous trivia, textbook definitions, and the first obvious examples. Prefer a specific forgotten event, unusual invention, counterintuitive scientific detail, hidden technical behavior, or precise geographic detail. Do not invent or speculate.\n\n" +
-    "Suggest one to three exact English Wikipedia article titles that can support the claim. Include the complete topicPath. Give the card a specific but broadly understandable title of about 3 to 9 words. Make the title and hook feel fresh and different from recent cards, without clickbait or vague phrases. Write a 4 to 12 word hook with its first word capitalized and no period, exclamation mark, or question mark. Difficulty is standardized from 1 to 10, where 10 is most obscure.\n\n" +
+  return "Create exactly one accurate, interesting fact for Learned Media. Avoid common sense, famous trivia, textbook definitions, and the first obvious examples. Prefer a specific forgotten event, unusual invention, counterintuitive scientific detail, hidden technical behavior, or precise geographic detail. Do not invent or speculate.\n\n" +
+    "Suggest one to three exact English Wikipedia article titles that can support the claim. Include the complete topicPath. Give the card a specific but broadly understandable title of about 3 to 9 words. Make the title and hook feel fresh and different from recent cards, without clickbait or vague phrases. Write a 4 to 12 word hook that introduces the subject and its interesting angle without packing in exact dates, numbers, or several obscure names. Capitalize its first word and use no terminal punctuation. Difficulty is standardized from 1 to 10: level 5 is unfamiliar information that takes some subject knowledge; level 10 is an exceptionally obscure detail that even enthusiasts are unlikely to know. Keep the wording at an eighth-grade reading level at every level.\n\n" +
     "Topics and relative weights:\n" + topicText + "\n\nLearning targets:\n" + targetText + "\n\n" +
-    "Baseline difficulty: " + settings.obscurity + "/10\nDesired sentence length: " + settings.sentenceLength + "\nSurprise Me: " + (settings.surpriseMe ? "enabled" : "disabled") +
+    "Baseline difficulty: " + settings.obscurity + "/10 (5 = unfamiliar information needing some subject knowledge; 10 = exceptionally obscure even for enthusiasts)\nDesired sentence length: " + settings.sentenceLength + "\nSurprise Me: " + (settings.surpriseMe ? "enabled" : "disabled") +
     "\nRabbit hole thread: " + (rabbitHole ?? "none") + "\nVariation: " + variation + "\nDo not repeat these recent cards:\n" + (avoid.slice(-16).join("\n") || "none") +
     "\nReturn structured JSON only with a facts array containing exactly one candidate.";
 }
@@ -476,7 +476,7 @@ async function generateFactJob(apiKey: string, sessionId: string, topicPaths: Ar
   const sources = await resolveWikipediaSources(candidate.wikipediaSearchTitles?.slice(0, 3) ?? [candidate.title ?? ""], 3, signal);
   if (!sources.length) throw new GeminiFailure("Wikipedia did not return supporting articles for this fact.", undefined, outcomes, undefined, true);
   const evidence = sources.map((source, index) => ({ index, title: source.title, url: source.url, extract: source.extract?.slice(0, 1100) ?? "" }));
-  const groundingPrompt = "Turn this candidate into one final Learned Media card using only the supplied Wikipedia evidence. Every claim in body must be supported by the excerpts. Use one to three sourceIndexes, but use one when sufficient. Keep the title specific but broadly understandable and different from recent cards. Write a 4 to 12 word hook with a capitalized first word and no terminal punctuation. Write the body in two or three short sentences using clear eighth-grade English, common words, and a brief explanation of any necessary technical term. Difficulty controls how obscure the fact is, not how hard the writing is. Do not invent citations or use sources not listed.\n\nCandidate:\n" +
+  const groundingPrompt = "Turn this candidate into one final Learned Media card using only the supplied Wikipedia evidence. Every claim in body must be supported by the excerpts. Use one to three sourceIndexes, but use one when sufficient. Keep the title specific but broadly understandable and different from recent cards. Write a 4 to 12 word hook that introduces the subject without revealing every exact date, number, or obscure name. Capitalize its first word and use no terminal punctuation. Write the body in two or three short sentences using clear eighth-grade English, common words, and a brief explanation of any necessary technical term. Difficulty controls how obscure the fact is, not how hard the writing is: level 5 needs some subject knowledge, while level 10 should be exceptionally obscure. Do not invent citations or use sources not listed.\n\nCandidate:\n" +
     JSON.stringify({ title: candidate.title, topicPath: candidate.topicPath, difficulty: candidate.difficulty }) + "\nEvidence:\n" + JSON.stringify(evidence) +
     "\nReturn structured JSON only with a facts array containing exactly one final card.";
   const groundedResult = await requestStructured<{ facts?: GroundedFact[] }>(apiKey, sessionId, groundingPrompt, groundedSchema(), "grounding", GENERATION_TIMEOUT_MS, signal, onProgress);
@@ -661,7 +661,10 @@ export async function rankVideoSearchCandidates({ apiKey, sessionId = "default-s
     const relevance = match.relevance === "direct" || match.relevance === "strong" ? match.relevance : undefined;
     const explanation = match.explanation?.trim().slice(0, 240) ?? "";
     const support = Array.from(new Set((match.support ?? []).filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean))).slice(0, 4);
-    if (!allowed.has(videoId) || seen.has(videoId) || !relevance || !support.length || !explanation) return [];
+    const candidate = boundedCandidates.find(({ video }) => video.id === videoId)?.video;
+    const metadata = candidate ? searchableVideoDescription([candidate.title, candidate.description, candidate.tags.join(" "), candidate.topics.join(" ")].join(" ")).toLowerCase() : "";
+    const supportedByMetadata = support.some((excerpt) => metadata.includes(excerpt.toLowerCase().replace(/\s+/g, " ")));
+    if (!allowed.has(videoId) || seen.has(videoId) || !relevance || !support.length || !supportedByMetadata || !explanation) return [];
     seen.add(videoId);
     return [{ videoId, relevance: relevance as "direct" | "strong", support, explanation }];
   });
@@ -669,7 +672,7 @@ export async function rankVideoSearchCandidates({ apiKey, sessionId = "default-s
 }
 
 function searchableVideoDescription(value: string) {
-  return value.replace(/(?:subscribe|like and subscribe|follow us|social media|patreon|sponsor(?:ed)? by|use code|affiliate|merch(?:andise)?|join the discord|business inquiries|check out my|support the channel)[^.!?]*(?:[.!?]|$)/gi, " ").replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim().slice(0, 480);
+  return value.replace(/(?:subscribe|like and subscribe|follow us|social media|patreon|sponsor(?:ed)? by|use code|affiliate|merch(?:andise)?|join the discord|business inquiries|check out my|support the channel)[^.!?]*(?:[.!?]|$)/gi, " ").replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim().slice(0, 2400);
 }
 
 async function checkOneModel(apiKey: string, model: string, signal?: AbortSignal): Promise<GeminiModelCheck> {

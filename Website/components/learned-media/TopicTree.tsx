@@ -3,6 +3,7 @@
 import type { TopicNode } from "@/lib/types";
 import type { CSSProperties } from "react";
 import { selectionState } from "@/lib/topic-tree";
+import { searchScore } from "@/lib/search";
 import { Icon } from "./icons";
 
 type TopicTreeProps = {
@@ -13,17 +14,17 @@ type TopicTreeProps = {
   onWeight: (id: string, delta: number) => void;
 };
 
-function matchesNode(node: TopicNode, query: string): boolean {
+function matchesNode(node: TopicNode, query: string, parentPath: string[] = []): boolean {
   if (!query) return true;
-  const term = query.toLowerCase();
-  return node.label.toLowerCase().includes(term) || Boolean(node.children?.some((child) => matchesNode(child, query)));
+  const path = [...parentPath, node.label];
+  return searchScore(query, path.join(" ")) > 0 || Boolean(node.children?.some((child) => matchesNode(child, query, path)));
 }
 
-function TopicRow({ node, depth, query, onToggle, onExpand, onWeight }: TopicTreeProps & { node: TopicNode; depth: number }) {
-  if (!matchesNode(node, query ?? "")) return null;
+function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onWeight }: TopicTreeProps & { node: TopicNode; depth: number; parentPath?: string[] }) {
+  if (!matchesNode(node, query ?? "", parentPath)) return null;
   const hasChildren = Boolean(node.children?.length);
   const state = selectionState(node);
-  const isSearchExpanded = Boolean(query && node.children?.some((child) => matchesNode(child, query)));
+  const isSearchExpanded = Boolean(query && node.children?.some((child) => matchesNode(child, query, [...parentPath, node.label])));
   const childrenVisible = hasChildren && (node.expanded || isSearchExpanded);
 
   return (
@@ -73,6 +74,7 @@ function TopicRow({ node, depth, query, onToggle, onExpand, onWeight }: TopicTre
               depth={depth + 1}
               nodes={[]}
               query={query}
+              parentPath={[...parentPath, node.label]}
               onToggle={onToggle}
               onExpand={onExpand}
               onWeight={onWeight}

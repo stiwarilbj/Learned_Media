@@ -52,8 +52,8 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
       <div className="view-heading">
         <div>
           <span className="eyebrow">Your workspace</span>
-          <h1>Make the feed feel like yours.</h1>
-          <p>Settings stay calm, clear, and close to the experience they shape.</p>
+          <h1>Make the feed feel like yours</h1>
+          <p>Settings stay calm, clear, and close to the experience they shape</p>
         </div>
         <div className="settings-avatar">S</div>
       </div>
@@ -65,7 +65,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
               <div className="settings-icon blue"><Icon name="key" size={19} /></div>
               <div>
                 <h2>Gemini API key</h2>
-                <p>Use Gemini for fresh facts, Learn more, and questions.</p>
+                <p>Use Gemini for fresh facts, Learn more, and questions</p>
               </div>
               <span className={`status-dot ${status}`}>{statusCopy[status]}</span>
             </div>
@@ -80,7 +80,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             </div>
             <div className="security-note" id="gemini-key-note">
               <Icon name="shield" size={16} />
-              <span>Your pasted key is held in memory for this session, sent only when Gemini is requested, and never saved to localStorage.</span>
+              <span>Your pasted key is held in memory for this session, sent only when Gemini is requested, and never saved to localStorage</span>
             </div>
             {feedback && <p className="settings-feedback" role="status">{feedback}</p>}
 
@@ -94,7 +94,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
               <div className="api-key-guide-icon"><Icon name="sparkles" size={16} /></div>
               <div className="api-key-guide-copy">
                 <strong>Need a key?</strong>
-                <p>Create or copy one in Google AI Studio, then paste it here.</p>
+                <p>Create or copy one in Google AI Studio, then paste it here</p>
               </div>
               <a className="api-key-link" href={AI_STUDIO_KEY_URL} target="_blank" rel="noreferrer">
                 Open AI Studio <Icon name="external" size={14} />
@@ -105,32 +105,32 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
           <section className="settings-card youtube-settings-card">
             <div className="settings-card-heading">
               <div className="settings-icon blue"><Icon name="image" size={19} /></div>
-              <div><h2>YouTube Videos</h2><p>Use your own YouTube Data API key for the approved video library.</p></div>
+              <div><h2>YouTube Videos</h2><p>Use your own YouTube Data API key for the approved video library</p></div>
               <span className={`status-dot ${youtubeStatus === "connected" || youtubeStatus === "refreshing" ? "connected" : youtubeStatus === "error" ? "unavailable" : ""}`}>{youtubeStatus === "connecting" ? "Connecting" : youtubeStatus === "refreshing" ? "Refreshing" : youtubeStatus === "connected" ? "Connected" : youtubeStatus === "error" ? "Needs attention" : "Not configured"}</span>
             </div>
             <label className="field-label" htmlFor="youtube-key">Paste your YouTube API key here</label>
             <div className="key-input-row"><input id="youtube-key" type="password" value={youtubeKey} onChange={(event) => onYoutubeKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onConnectYoutube(); } }} placeholder="Paste your YouTube API key here" autoComplete="new-password" /><div className="key-actions"><button type="button" className="primary-button small" onClick={onConnectYoutube} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}>{youtubeStatus === "connecting" ? "Connecting" : youtubeStatus === "refreshing" ? "Refreshing" : "Connect YouTube"}</button><button type="button" className="ghost-button" onClick={onRefreshYoutube} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}>Refresh videos</button><button type="button" className="ghost-button" onClick={onRemoveYoutubeKey}>Remove key</button></div></div>
-            <div className="security-note"><Icon name="shield" size={16} /><span>Your YouTube key stays in session memory and is never saved to local learning data.</span></div>
+            <div className="security-note"><Icon name="shield" size={16} /><span>Your YouTube key stays in session memory and is never saved to local learning data</span></div>
             <div className="api-key-guide youtube-guide"><div className="api-key-guide-icon"><Icon name="image" size={16} /></div><div className="api-key-guide-copy"><strong>Need a YouTube key?</strong><p>1. <a href={YOUTUBE_PROJECT_URL} target="_blank" rel="noreferrer">Create or select a Google Cloud project</a><br />2. <a href={YOUTUBE_LIBRARY_URL} target="_blank" rel="noreferrer">Enable YouTube Data API v3</a><br />3. Open <a href={YOUTUBE_CREDENTIALS_URL} target="_blank" rel="noreferrer">Credentials</a> → Create credentials → API key, then restrict it to YouTube Data API v3<br />4. Copy the key here and connect it</p></div></div>
-            <p className="youtube-restriction-note">Website keys may be restricted to this GitHub Pages site. The Mac app needs a key that also permits native requests. If a restriction blocks a request, Google will report it here.</p>
+            <p className="youtube-restriction-note">Website keys may be restricted to this GitHub Pages site. The Mac app needs a key that also permits native requests. If a restriction blocks a request, Google will report it here</p>
             {youtubeLastSyncAt && <p className="youtube-restriction-note">Last successful refresh: {new Date(youtubeLastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</p>}
             {youtubeProgress.phase !== "idle" && <div className="video-import-notice" role="status"><div><strong>{youtubeProgress.phase === "paused" ? "Import paused" : youtubeStatus === "refreshing" ? "Refreshing library" : "Library import"}</strong><span>{youtubeProgress.completedSources !== undefined ? `${youtubeProgress.completedSources}/${youtubeProgress.totalSources ?? 0} sources · ` : `${youtubeProgress.completedChannels}/${youtubeProgress.totalChannels} channels · `}{youtubeProgress.importedVideos.toLocaleString()} videos</span></div>{youtubeProgress.phase === "paused" ? <button type="button" className="ghost-button" onClick={onResumeYoutubeImport}>Resume</button> : youtubeProgress.phase === "complete" || youtubeProgress.phase === "error" ? <button type="button" className="ghost-button" onClick={onRetryYoutubeImport}>Retry</button> : <button type="button" className="ghost-button" onClick={onPauseYoutubeImport}>Pause</button>}</div>}
           </section>
 
           <section className="settings-card">
-            <div className="settings-card-heading"><div className="settings-icon lilac"><Icon name="user" size={19} /></div><div><h2>Account</h2><p>Google sign-in keeps your mix available across sessions.</p></div></div>
+            <div className="settings-card-heading"><div className="settings-icon lilac"><Icon name="user" size={19} /></div><div><h2>Account</h2><p>Google sign-in keeps your mix available across sessions</p></div></div>
             <div className="account-row"><div className="account-avatar">L</div><div><strong>Local workspace</strong><span>Not signed in</span></div><button type="button" className="secondary-button" onClick={onGoogleSignIn}><Icon name="login" size={15} /> Continue with Google</button></div>
           </section>
 
           <section className="settings-card">
-            <div className="settings-card-heading"><div className="settings-icon mint"><Icon name="sun" size={19} /></div><div><h2>Appearance</h2><p>Choose the atmosphere you want to return to.</p></div></div>
+            <div className="settings-card-heading"><div className="settings-icon mint"><Icon name="sun" size={19} /></div><div><h2>Appearance</h2><p>Choose the atmosphere you want to return to</p></div></div>
             <div className="theme-switcher"><button type="button" className={theme === "light" ? "selected" : ""} onClick={() => onThemeChange("light")}><Icon name="sun" size={16} /> Light</button><button type="button" className={theme === "dark" ? "selected" : ""} onClick={() => onThemeChange("dark")}><Icon name="moon" size={16} /> Dark</button></div>
           </section>
         </div>
 
         <aside className="settings-side">
-          <section className="danger-card"><span className="eyebrow">Advanced</span><h2>Clear the slate.</h2><p>Feed reset is gentle. These controls affect the rest of your saved workspace.</p><button type="button" className="ghost-button full" onClick={onResetAll}><Icon name="reset" size={15} /> Reset all preferences</button><button type="button" className="danger-button full" onClick={onDeleteLearningData}><Icon name="trash" size={15} /> Delete learning data</button></section>
-          <section className="settings-help"><Icon name="help" size={17} /><div><strong>Privacy by default</strong><p>Your Google profile and Gemini credential never belong in a prompt. The server only sends topic and preference signals.</p></div></section>
+          <section className="danger-card"><span className="eyebrow">Advanced</span><h2>Clear the slate</h2><p>Feed reset is gentle. These controls affect the rest of your saved workspace</p><button type="button" className="ghost-button full" onClick={onResetAll}><Icon name="reset" size={15} /> Reset all preferences</button><button type="button" className="danger-button full" onClick={onDeleteLearningData}><Icon name="trash" size={15} /> Delete learning data</button></section>
+          <section className="settings-help"><Icon name="help" size={17} /><div><strong>Privacy by default</strong><p>Your Google profile and Gemini credential never belong in a prompt. The server only sends topic and preference signals</p></div></section>
         </aside>
       </div>
     </section>

@@ -3,15 +3,15 @@
 
   const AI_STUDIO_URL = "https://aistudio.google.com/app/apikey";
   const DEFAULT_SETTINGS = {
-    obscurity: 10,
+    obscurity: 5,
     displayMode: "picture-text",
     sentenceLength: 2,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 3;
+  const TOPIC_CATALOG_VERSION = 4;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
-  const DIFFICULTY_LABELS = ["", "Approachable", "Familiar", "Curious", "Uncommon", "Niche", "Obscure", "Deep cut", "Rare", "Very rare", "Deepest cut"];
+  const DIFFICULTY_LABELS = ["", "Very Easy", "Easy", "Moderate", "Challenging", "Hard", "Very Hard", "Expert", "Specialist", "Extremely Obscure", "Exceptionally Obscure"];
   const PERSISTENCE_VERSION = 1;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const KNOWN_DEMO_IDS = new Set(["demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle", "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning"]);
@@ -33,7 +33,7 @@
     youtubeStatus: "not-configured",
     youtubeProgress: { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE ? window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length : 58, importedVideos: 0, completedSources: 0, totalSources: 0 },
     youtubeError: "",
-    youtube: { channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, smartReasons: {}, smartRan: false, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest", incomplete: false, catalogVersion: 3, sourceStates: {}, lastSyncAt: null },
+    youtube: { channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, smartReasons: {}, smartRan: false, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest", incomplete: false, catalogVersion: 4, sourceStates: {}, lastSyncAt: null },
     account: null,
     toast: "",
     loading: false,
@@ -67,10 +67,24 @@
     return TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
   }
   function buildTopicNode(seed, parentPath, depth, rootIndex) {
-    const label = typeof seed === "string" ? seed : seed.label;
+    const label = typeof seed === "string" ? seed : titleCaseCatalogLabel(seed.label);
     const path = parentPath.concat(label);
     const children = typeof seed === "string" ? undefined : (seed.children || []).map(function (child) { return buildTopicNode(child, path, depth + 1, rootIndex); });
-    return { id: "topic-" + path.map(slug).join("--"), label: label, selected: false, expanded: depth === 0, weight: depth === 0 ? [30, 25, 20, 25][rootIndex] || 10 : 10, children: children };
+    return { id: "topic-" + path.map(slug).join("--"), label: label, selected: false, expanded: false, weight: depth === 0 ? [30, 25, 20, 25][rootIndex] || 10 : 10, children: children };
+  }
+  function titleCaseCatalogLabel(label) {
+    const small = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
+    const words = String(label).split(/(\s+)/);
+    const indexes = words.map(function (word, index) { return /^\s+$/.test(word) ? -1 : index; }).filter(function (index) { return index >= 0; });
+    const first = indexes[0]; const last = indexes[indexes.length - 1];
+    return words.map(function (word, index) {
+      if (!word.trim()) return word;
+      if (/^[A-Z0-9][A-Z0-9.+/#-]*$/.test(word) || /[a-z].*[A-Z]/.test(word)) return word;
+      const lower = word.toLowerCase();
+      if (index === first || index === last) return lower.charAt(0).toUpperCase() + lower.slice(1);
+      if (small.has(lower)) return lower;
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    }).join("");
   }
   function slug(value) {
     return String(value).toLowerCase().trim()
@@ -122,7 +136,7 @@
       const value = attrs[key];
       if (value === null || value === undefined || value === false) return;
       if (key === "className") element.className = value;
-      else if (key === "text") element.textContent = value;
+      else if (key === "text") element.textContent = normalizeUiCopy(value);
       else if (key === "html") element.innerHTML = value;
       else if (key === "onClick") element.addEventListener("click", value);
       else if (key === "onInput") element.addEventListener("input", value);
@@ -140,12 +154,46 @@
     for (let index = 2; index < arguments.length; index += 1) {
       const child = arguments[index];
       if (child === null || child === undefined || child === false) continue;
-      element.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+      element.appendChild(typeof child === "string" ? document.createTextNode(normalizeUiCopy(child)) : child);
     }
     return element;
   }
   function svg(name, size) {
     return node("span", { className: "icon", html: icon(name, size) });
+  }
+  const PERIOD_FREE_UI_COPY = new Set([
+    "The metadata supports this search.",
+    "Try another phrase, topic, or channel. Search stays inside the approved collection.",
+    "A calmer way to find something good.",
+    "Discover approved creators, search their imported catalogs, and watch without leaving your workspace.",
+    "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos.",
+    "Pick the subjects you want to see. You can change them anytime.",
+    "New choices shape the next batch.",
+    "Choose at least one topic from the checklist to begin.",
+    "Add your API key in Settings to personalize the next batch.",
+    "One small idea at a time. Every card has a place to look next.",
+    "Keep going.",
+    "Make the feed feel like yours.",
+    "Settings stay calm, clear, and close to the experience they shape.",
+    "Use Gemini for fresh facts, Learn more, and questions.",
+    "Your key is held in memory for this session, sent only when Gemini is requested, and never saved to disk.",
+    "Create or copy one in Google AI Studio, then paste it here.",
+    "Use your own YouTube Data API key for the approved video library.",
+    "Your YouTube key stays in session memory and is never saved to learning data or GitHub.",
+    "Website keys may be restricted to the GitHub Pages site. The Mac app needs a key that permits native requests. Google will report restriction failures clearly.",
+    "Google sign-in keeps your account ready on this Mac.",
+    "Google sign-in is wired to the Learned Media Supabase project. Enable Google in its Auth provider settings to use it.",
+    "Choose the atmosphere you want to return to.",
+    "Clear the slate.",
+    "Feed reset is gentle. These controls affect the rest of your saved workspace.",
+    "Your Gemini credential is kept in memory only. Learning data stays on this Mac until you clear it.",
+    "Keep the ideas that made you pause.",
+    "Nothing here yet."
+  ]);
+  function normalizeUiCopy(value) {
+    if (typeof value !== "string" || !value.endsWith(".")) return value;
+    if (PERIOD_FREE_UI_COPY.has(value) || /^Your (saved|likes|history) discoveries\.$/.test(value) || /^As you explore, your (saved|likes|history) facts will appear here\.$/.test(value) || /^\d+ topics in your mix, sourced from Wikipedia and shaped by your curiosity\.$/.test(value)) return value.slice(0, -1);
+    return value;
   }
   function bridge(action, payload) {
     if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.native) {
@@ -252,7 +300,7 @@
   function updateTopicById(nodes, id, update) {
     return nodes.map(function (topic) { return topic.id === id ? update(topic) : topic.children ? Object.assign({}, topic, { children: updateTopicById(topic.children, id, update) }) : topic; });
   }
-  function migrateTopics(saved) {
+  function migrateTopics(saved, collapseInitial) {
     if (!Array.isArray(saved) || !saved.length) return makeTopics();
     let next = makeTopics();
     const fresh = flatTopics(next);
@@ -271,7 +319,7 @@
     oldFlat(saved).forEach(function (oldTopic) {
       const target = byPath.get(oldTopic.path.join("\u0000").toLowerCase()) || ((byLabel.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byLabel.get(oldTopic.label.toLowerCase())[0] : null);
       if (target) {
-        next = updateTopicById(next, target.id, function (topic) { return Object.assign({}, topic, { weight: oldTopic.weight || topic.weight, expanded: oldTopic.expanded }); });
+        next = updateTopicById(next, target.id, function (topic) { return Object.assign({}, topic, { weight: oldTopic.weight || topic.weight, expanded: collapseInitial ? false : oldTopic.expanded }); });
         if (oldTopic.selected) selectedIds.push(target.id);
       } else if (oldTopic.custom || oldTopic.selected) {
         const key = oldTopic.label.toLowerCase();
@@ -281,7 +329,7 @@
     selectedIds.forEach(function (id) { next = updateTopicById(next, id, function (topic) { return setBranchSelected(topic, true); }); });
     return next.concat(Array.from(customs.values()));
   }
-  function difficultyLabel(value) { return DIFFICULTY_LABELS[Math.max(1, Math.min(10, Number(value) || 10))]; }
+  function difficultyLabel(value) { return DIFFICULTY_LABELS[Math.max(1, Math.min(10, Number(value) || 5))]; }
   function wikiURL(title) { return "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(title).replace(/\s+/g, "_")); }
   function showToast(message) {
     state.toast = message || "";
@@ -323,7 +371,7 @@
     const first = card.sources && card.sources[0] ? card.sources[0] : { title: card.sourceTitle || "Wikipedia", url: card.sourceUrl || wikiURL(card.sourceTitle || card.title) };
     const sources = (card.sources && card.sources.length ? card.sources : [first]).slice(0, 3);
     const image = card.image || (card.imageUrl ? { url: card.imageUrl, alt: card.title, sourceTitle: first.title, sourceUrl: first.url, filePageUrl: first.url, credit: "Wikipedia image" } : null);
-    const hook = String(card.hook || card.title || "A small fact worth keeping").replace(/[.!?]+/g, "").split(/\s+/).slice(0, 12).join(" ").replace(/^(\s*[\"'“‘([{]*)([a-z])/, function (_, prefix, letter) { return prefix + letter.toUpperCase(); });
+    const hook = titleCaseCatalogLabel(String(card.hook || card.title || "A small fact worth keeping").replace(/[.!?]+/g, "").split(/\s+/).slice(0, 12).join(" "));
     return Object.assign({
       id: "card-" + Date.now() + "-" + index,
       title: "",
@@ -500,10 +548,33 @@
     else section.appendChild(node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("image", 24)), node("h2", { text: "Connect YouTube to start discovering" }), node("p", { text: "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos." }), node("button", { className: "primary-button", onClick: function () { state.view = "settings"; render(); } }, "Open video settings")));
     return section;
   }
+  function searchText(value) {
+    return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  }
+  function searchScore(query, text) {
+    const wanted = searchText(query); const haystack = searchText(text);
+    if (!wanted || !haystack) return 0;
+    if (haystack.indexOf(wanted) >= 0) return 100;
+    const tokens = wanted.split(" ").filter(function (word) { return word.length > 1; });
+    const words = haystack.split(" "); let matched = 0; let score = 0;
+    tokens.forEach(function (token) {
+      let best = 0;
+      words.forEach(function (word) {
+        if (token === word) best = Math.max(best, 20);
+        else if (word.indexOf(token) === 0 || token.indexOf(word) === 0) best = Math.max(best, 13);
+        else if (token.length >= 4 && word.length >= 4) {
+          let previous = Array.from({ length: word.length + 1 }, function (_, index) { return index; });
+          for (let row = 1; row <= token.length; row += 1) { const current = [row]; for (let column = 1; column <= word.length; column += 1) current[column] = Math.min(current[column - 1] + 1, previous[column] + 1, previous[column - 1] + (token[row - 1] === word[column - 1] ? 0 : 1)); previous = current; }
+          if (previous[word.length] <= (token.length >= 8 ? 2 : 1)) best = Math.max(best, 7);
+        }
+      });
+      if (best) { matched += 1; score += best; }
+    });
+    return matched && matched / tokens.length >= (tokens.length > 1 ? 0.5 : 1) ? score + (matched === tokens.length ? 12 : 0) : 0;
+  }
   function topicMatches(topic, query) {
     if (!query) return true;
-    const term = query.toLowerCase();
-    return topic.label.toLowerCase().includes(term) || Boolean(topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
+    return searchScore(query, topic.label) > 0 || Boolean(topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
   }
   function topicRow(topic, depth, query) {
     if (query && !topicMatches(topic, query)) return null;
@@ -550,7 +621,7 @@
     const searchWrap = node("div", { className: "top-nav-search" });
     const search = node("div", { className: "global-search-wrap" });
     search.appendChild(svg("search", 17));
-    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts...", ariaLabel: "Search topics or facts", onInput: function (event) { state.query = event.target.value.toLowerCase(); document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || card.textContent.toLowerCase().includes(state.query) ? "" : "none"; }); } }));
+    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts...", ariaLabel: "Search topics or facts", onInput: function (event) { state.query = event.target.value; document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); } }));
     searchWrap.appendChild(search);
     header.appendChild(searchWrap);
     const accountName = state.account ? state.account.name || "Google learner" : "Local workspace";
@@ -575,7 +646,7 @@
     const difficulty = node("label", { className: "topic-difficulty-control", for: setup ? "setup-difficulty" : "feed-difficulty" });
     difficulty.appendChild(node("span", { className: "control-label" }, node("span", { text: "Fact Difficulty" }), node("strong", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
     difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
-    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "Approachable" }), node("span", { text: "Obscure" })));
+    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "Very Easy" }), node("span", { text: "Exceptionally Obscure" })));
     details.appendChild(difficulty);
     details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; render(); } })));
     details.appendChild(topicTree());
@@ -840,12 +911,12 @@
       candidates.sort(function (left, right) { return String(right.savedAt || "").localeCompare(String(left.savedAt || "")); });
       const parsed = candidates[0];
       if (parsed) {
-        if (parsed.topics) state.topics = migrateTopics(parsed.topics);
+        if (parsed.topics) state.topics = migrateTopics(parsed.topics, Number(parsed.catalogVersion || 0) < TOPIC_CATALOG_VERSION);
         if (parsed.settings) state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings);
         if (parsed.cards) state.cards = parsed.cards.filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
         if (parsed.profile) state.profile = parsed.profile;
         if (parsed.youtube) {
-          state.youtube = Object.assign({}, state.youtube, parsed.youtube, { catalogVersion: 3, sourceStates: Object.assign({}, parsed.youtube.sourceStates || {}) });
+          state.youtube = Object.assign({}, state.youtube, parsed.youtube, { catalogVersion: 4, sourceStates: Object.assign({}, parsed.youtube.sourceStates || {}) });
           state.youtube.videos = window.LEARNED_MEDIA_YOUTUBE.filter(state.youtube.videos || [], "", "All");
         }
         if (parsed.started && state.cards.length) state.started = true;
@@ -854,7 +925,7 @@
       }
       const catalog = await bridge("loadVideoCatalog", {});
       if (catalog && catalog.videos) {
-        state.youtube = Object.assign({}, state.youtube, catalog, { catalogVersion: 3, sourceStates: Object.assign({}, catalog.sourceStates || {}) });
+        state.youtube = Object.assign({}, state.youtube, catalog, { catalogVersion: 4, sourceStates: Object.assign({}, catalog.sourceStates || {}) });
         state.youtube.videos = window.LEARNED_MEDIA_YOUTUBE.filter(state.youtube.videos || [], "", "All");
       }
     } catch (error) {

@@ -547,7 +547,9 @@ export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclud
 const SEARCH_BOILERPLATE = /(?:subscribe|like and subscribe|follow us|social media|patreon|sponsor(?:ed)? by|use code|affiliate|merch(?:andise)?|join the discord|business inquiries|check out my|support the channel|all links? in the description)[^.!?]*(?:[.!?]|$)/gi;
 
 function searchableDescription(video: YouTubeVideo) {
-  return video.description.replace(SEARCH_BOILERPLATE, " ").replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim().slice(0, 1800);
+  // Keep meaningful passages from the whole description. A beginning-only
+  // excerpt misses the subject when creators put their useful notes later.
+  return video.description.replace(SEARCH_BOILERPLATE, " ").replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim().slice(0, 6000);
 }
 
 function editDistance(left: string, right: string) {
@@ -647,15 +649,8 @@ export function searchYouTubeCandidates(videos: YouTubeVideo[], plan: YouTubeSea
 
 export function filterYouTubeVideos(videos: YouTubeVideo[], searchText: string, topic: YouTubeTopic | "All", channelId?: string) {
   const term = normalized(searchText);
-  return videos.filter((video) => {
-    if (!isApprovedYouTubeVideo(video)) return false;
-    if (channelId && video.channelId !== channelId) return false;
-    if (topic !== "All" && !video.topics.includes(topic)) return false;
-    if (!term) return true;
-    const haystack = normalized([video.title, video.description, video.channelName, video.tags.join(" "), video.topics.join(" ")].join(" "));
-    const words = term.split(" ").filter((word) => word.length > 1);
-    return words.every((word) => haystack.includes(word));
-  });
+  if (!term) return videos.filter((video) => isApprovedYouTubeVideo(video) && (!channelId || video.channelId === channelId) && (topic === "All" || video.topics.includes(topic)));
+  return searchYouTubeCandidates(videos, { terms: [searchText] }, topic, channelId, Math.min(80, videos.length)).map((candidate) => candidate.video);
 }
 
 export function relatedYouTubeVideos(videos: YouTubeVideo[], current: YouTubeVideo, count = 6) {

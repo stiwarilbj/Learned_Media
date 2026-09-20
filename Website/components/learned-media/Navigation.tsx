@@ -45,7 +45,7 @@ export function Navigation({ view, onNavigate, onReset, query, onQueryChange, to
             {query && <button type="button" className="clear-search" onClick={() => onQueryChange("")} aria-label="Clear search"><Icon name="x" size={15} /></button>}
             {query && (topicResults.length > 0 || factResults.length > 0) && <div className="search-popover">
               {topicResults.length > 0 && <><span className="search-group-label">Topics</span>{topicResults.map((topic) => <button type="button" key={topic.id} onClick={() => onChooseTopic(topic.label)}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}</>}
-              {factResults.length > 0 && <><span className="search-group-label">Past facts</span>{factResults.map((card) => <button type="button" key={card.id} onClick={() => onChooseFact(card.title)}><span>{card.title}</span><Icon name="arrow" size={14} /></button>)}</>}
+              {factResults.length > 0 && <><span className="search-group-label">Facts</span>{factResults.map((card) => <button type="button" key={card.id} onClick={() => onChooseFact(card.title)}><span>{card.title}</span><Icon name="arrow" size={14} /></button>)}</>}
             </div>}
           </div>
         </div>
