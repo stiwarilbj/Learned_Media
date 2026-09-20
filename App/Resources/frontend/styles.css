@@ -558,6 +558,11 @@ a { color: inherit; }
   .setup-layout, .feed-layout { grid-template-columns: minmax(350px, 390px) minmax(0, 1fr); }
 }
 
+@media (max-width: 820px) {
+  .settings-main { order: 0; }
+  .settings-side { order: 1; }
+}
+
 /* Nested topic browser: keep every control light, legible, and inside its row. */
 .topic-row { align-items: flex-start; min-height: 50px; padding-top: 6px; padding-bottom: 6px; }
 .topic-row:hover { background: rgba(226, 240, 255, .5); }
