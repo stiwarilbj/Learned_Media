@@ -177,7 +177,7 @@ export default function HomePage() {
   const [questionLoading, setQuestionLoading] = useState<string | null>(null);
   const [learningErrors, setLearningErrors] = useState<Record<string, string | undefined>>({});
   const [youtubeKey, setYoutubeKey] = useState("");
-  const [youtubeStatus, setYoutubeStatus] = useState<"not-configured" | "connecting" | "connected" | "error">("not-configured");
+  const [youtubeStatus, setYoutubeStatus] = useState<"not-configured" | "connecting" | "refreshing" | "connected" | "error">("not-configured");
   const [youtubeProgress, setYoutubeProgress] = useState<YouTubeImportProgress>({ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0 });
   const [youtubeWorkspace, setYoutubeWorkspace] = useState<YouTubeWorkspaceState>(DEFAULT_YOUTUBE_WORKSPACE);
   const [youtubeSearchResults, setYoutubeSearchResults] = useState<YouTubeVideo[]>([]);
@@ -742,25 +742,31 @@ export default function HomePage() {
     });
   }, []);
 
-  const connectYouTube = useCallback(async () => {
+  const connectYouTube = useCallback(async (force = false) => {
     const keyAtStart = youtubeKey.trim();
     if (!keyAtStart) {
       setYoutubeStatus("not-configured");
       setYoutubeError("Paste your YouTube API key first.");
       setToast("Paste your YouTube API key first.");
+      setView("settings");
       return;
     }
-    youtubeAbortController.current?.abort();
+    if (youtubeAbortController.current) return;
     const controller = new AbortController();
     youtubeAbortController.current = controller;
-    setYoutubeStatus("connecting");
+    setYoutubeStatus(youtubeWorkspaceRef.current.videos.length ? "refreshing" : "connecting");
     setYoutubeError("");
-    setYoutubeProgress({ phase: "resolving", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0 });
+    setYoutubeProgress({ phase: "resolving", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0, completedSources: 0 });
     try {
       const client = new YouTubeClient(keyAtStart);
-      const result = await client.syncApprovedCatalog(youtubeWorkspaceRef.current.channels, controller.signal, setYoutubeProgress);
+      const snapshot = youtubeWorkspaceRef.current;
+      const result = await client.syncApprovedCatalog(snapshot.channels, controller.signal, (progress) => { if (!controller.signal.aborted && youtubeKey.trim() === keyAtStart) setYoutubeProgress(progress); }, { existingVideos: snapshot.videos, sourceStates: snapshot.sourceStates, force });
       if (controller.signal.aborted || youtubeKey.trim() !== keyAtStart) return;
-      updateYouTubeWorkspace((current) => ({ ...current, channels: result.channels, videos: result.videos, libraryIncomplete: result.incomplete, lastSyncAt: new Date().toISOString(), discoverIds: selectRandomVideos(result.videos, 24).map((video) => video.id) }));
+      updateYouTubeWorkspace((current) => {
+        const available = new Set(result.videos.map((video) => video.id));
+        const preservedDiscoverIds = current.discoverIds.filter((id) => available.has(id));
+        return { ...current, channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: 2, libraryIncomplete: result.incomplete, lastSyncAt: result.incomplete ? current.lastSyncAt : new Date().toISOString(), discoverIds: preservedDiscoverIds.length ? preservedDiscoverIds : selectRandomVideos(result.videos, 24).map((video) => video.id) };
+      });
       setYoutubeStatus(result.incomplete ? "error" : "connected");
       setYoutubeError(result.progress.error ?? "");
       setToast(result.incomplete ? "YouTube connected, but some approved channels still need a retry." : "YouTube connected. Your approved video library is ready.");
@@ -776,12 +782,24 @@ export default function HomePage() {
     }
   }, [updateYouTubeWorkspace, youtubeKey]);
 
+  useEffect(() => {
+    if (!youtubeKey.trim() || !["connected", "error"].includes(youtubeStatus)) return;
+    const checkForDueSources = () => {
+      if (document.visibilityState === "hidden" || youtubeAbortController.current) return;
+      const lastSync = youtubeWorkspaceRef.current.lastSyncAt ? new Date(youtubeWorkspaceRef.current.lastSyncAt).getTime() : 0;
+      if (!lastSync || Date.now() - lastSync >= 24 * 60 * 60 * 1000) void connectYouTube(false);
+    };
+    const timer = window.setInterval(checkForDueSources, 60 * 60 * 1000);
+    document.addEventListener("visibilitychange", checkForDueSources);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", checkForDueSources); };
+  }, [connectYouTube, youtubeKey, youtubeStatus]);
+
   const handleYouTubeKeyChange = useCallback((value: string) => {
     youtubeAbortController.current?.abort();
     setYoutubeKey(value);
     setYoutubeStatus("not-configured");
     setYoutubeError("");
-    setYoutubeProgress({ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0 });
+    setYoutubeProgress({ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0, completedSources: 0 });
   }, []);
 
   const removeYouTubeKey = useCallback(() => {
@@ -880,9 +898,9 @@ export default function HomePage() {
 
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={(topic) => { if (topic === "Custom topic") { setView("feed"); setToast("Add a custom topic from your learning mix."); } else { setQuery(topic); setView("feed"); } }} />;
-    if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} smartSearchLoading={youtubeSmartSearchLoading} onOpenSettings={() => setView("settings")} onTabChange={(tab) => updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined }))} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onTopicChange={(topic) => { setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(filterYouTubeVideos(current.videos, "", topic), 24).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined }))} onSaveVideo={saveVideo} onPlaybackPosition={(id, seconds) => updateYouTubeWorkspace((current) => ({ ...current, playbackPositions: { ...current.playbackPositions, [id]: seconds } }))} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
+    if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} smartSearchLoading={youtubeSmartSearchLoading} onOpenSettings={() => setView("settings")} onTabChange={(tab) => updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined }))} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onTopicChange={(topic) => { setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(filterYouTubeVideos(current.videos, "", topic), 24).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined }))} onSaveVideo={saveVideo} onPlaybackPosition={(id, seconds) => updateYouTubeWorkspace((current) => ({ ...current, playbackPositions: { ...current.playbackPositions, [id]: seconds } }))} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} />;
     return <FeedView cards={filteredCards} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, 10)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} />;
   };

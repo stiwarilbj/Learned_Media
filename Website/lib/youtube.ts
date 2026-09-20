@@ -3,6 +3,8 @@ export type YouTubeTopic = "History" | "Politics" | "Geography" | "Science" | "N
 export type ApprovedChannelSeed = {
   name: string;
   handle?: string;
+  channelId?: string;
+  playlistIds?: string[];
 };
 
 export type ApprovedVideoSeed = {
@@ -20,6 +22,8 @@ export type YouTubeChannelRecord = {
   videoCount: number;
   approved: true;
   lastImportedAt?: string;
+  sourceKind?: "uploads" | "playlists";
+  approvedPlaylistIds?: string[];
 };
 
 export type YouTubeVideo = {
@@ -37,6 +41,19 @@ export type YouTubeVideo = {
   topics: YouTubeTopic[];
   approved: true;
   special?: boolean;
+  sourceIds?: string[];
+  metadataRefreshedAt?: string;
+};
+
+export type YouTubeSourceState = {
+  sourceId: string;
+  label: string;
+  kind: "uploads" | "playlist" | "individual";
+  status: "ready" | "error";
+  lastSuccessfulSyncAt?: string;
+  lastAttemptedSyncAt?: string;
+  importedVideoCount?: number;
+  error?: string;
 };
 
 export type YouTubeWorkspaceState = {
@@ -54,6 +71,8 @@ export type YouTubeWorkspaceState = {
   channelOrder: "newest" | "oldest" | "random";
   libraryIncomplete: boolean;
   lastSyncAt?: string;
+  catalogVersion: number;
+  sourceStates: Record<string, YouTubeSourceState>;
 };
 
 export type YouTubeImportProgress = {
@@ -61,6 +80,9 @@ export type YouTubeImportProgress = {
   completedChannels: number;
   totalChannels: number;
   importedVideos: number;
+  completedSources?: number;
+  totalSources?: number;
+  currentSource?: string;
   error?: string;
   paused?: boolean;
 };
@@ -103,7 +125,7 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
   { name: "OverSimplified" },
   { name: "vlogbrothers" },
   { name: "Sam O’Nella Academy" },
-  { name: "3Blue1Brown" },
+  { name: "3Blue1Brown", channelId: "UCYO_jab_esuFRV4b17AJtAw", playlistIds: ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi", "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"] },
   { name: "Shawn Grows" },
   { name: "General Knowledge" },
   { name: "Jay Hona" },
@@ -121,7 +143,14 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
   { name: "minutephysics" },
   { name: "Brailor" },
   { name: "hydn" },
-  { name: "ExtinctZoo", handle: "@ExtinctZoo" }
+  { name: "ExtinctZoo", handle: "@ExtinctZoo" },
+  { name: "PBS Terra", handle: "@pbsterra", channelId: "UCpxYSWgxVt3Pyn1ovXsGQ0g" },
+  { name: "PolyMatter", handle: "@PolyMatter", channelId: "UCgNg3vwj3xt7QOrcIDaHdDQ" },
+  { name: "AlternateHistoryHub", handle: "@AlternateHistoryHub", channelId: "UClfEht64_NrzHf8Y0slKEjw" },
+  { name: "J.J. McCullough", handle: "@JJMcCullough", channelId: "UCyhOl6uRlxryALlT5yifldw" },
+  { name: "Primer", handle: "@primerlearning", channelId: "UCKzJFdi57J53Vr_BkTfN3uQ" },
+  { name: "Primal Space", handle: "@primalspace", channelId: "UClZbmi9JzfnB2CEb0fG8iew" },
+  { name: "Mitsi Studio", handle: "@mitsistudio", channelId: "UCuXCgyOCMXic7j0_wghXnRA" }
 ];
 
 // Individual videos are intentionally separate from the channel catalog.
@@ -136,8 +165,10 @@ export const APPROVED_INDIVIDUAL_VIDEOS: ApprovedVideoSeed[] = [
   { creator: "American Museum of Natural History", title: "Human Population Through Time (Updated in 2023)", videoId: "vJ5p3pZlBi4" }
 ];
 
+const APPROVED_3BLUE_PLAYLIST_SOURCE_IDS = new Set((APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown")?.playlistIds ?? []).map((id) => `playlist:${id}`));
+
 export const DEFAULT_YOUTUBE_WORKSPACE: YouTubeWorkspaceState = {
-  channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", channelOrder: "newest", discoverIds: [], libraryIncomplete: false
+  channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", channelOrder: "newest", discoverIds: [], libraryIncomplete: false, catalogVersion: 2, sourceStates: {}
 };
 
 const YOUTUBE_API_ROOT = "https://www.googleapis.com/youtube/v3";
@@ -275,9 +306,10 @@ function classifyTopics(channelName: string, title: string, description: string,
 }
 
 type ChannelApiResponse = { items?: Array<{ id?: string; snippet?: { title?: string; customUrl?: string; thumbnails?: { default?: { url?: string } } }; contentDetails?: { relatedPlaylists?: { uploads?: string } } }> };
-type PlaylistApiResponse = { nextPageToken?: string; items?: Array<{ contentDetails?: { videoId?: string }; snippet?: { title?: string; publishedAt?: string } }> };
+type PlaylistApiResponse = { nextPageToken?: string; items?: Array<{ contentDetails?: { videoId?: string }; snippet?: { title?: string; publishedAt?: string; channelId?: string } }> };
 type VideoApiResponse = { items?: Array<{ id?: string; snippet?: { title?: string; description?: string; publishedAt?: string; channelId?: string; channelTitle?: string; tags?: string[]; thumbnails?: { high?: { url?: string }; medium?: { url?: string }; default?: { url?: string } } }; contentDetails?: { duration?: string }; status?: { privacyStatus?: string; embeddable?: boolean } }> };
 type SearchApiResponse = { items?: Array<{ id?: { channelId?: string; videoId?: string }; snippet?: { title?: string; channelTitle?: string; channelId?: string } }> };
+type CatalogJob = { sourceId: string; label: string; kind: "uploads" | "playlist" | "individual"; channel?: YouTubeChannelRecord; playlistId?: string; seed?: ApprovedVideoSeed };
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>) {
   const result = new Array<R>(items.length);
@@ -307,7 +339,9 @@ export class YouTubeClient {
 
   async resolveChannel(seed: ApprovedChannelSeed, signal?: AbortSignal): Promise<YouTubeChannelRecord> {
     let payload: ChannelApiResponse;
-    if (seed.handle) {
+    if (seed.channelId) {
+      payload = await this.request<ChannelApiResponse>("channels", { part: "snippet,contentDetails", id: seed.channelId }, signal);
+    } else if (seed.handle) {
       payload = await this.request<ChannelApiResponse>("channels", { part: "snippet,contentDetails", forHandle: seed.handle.replace(/^@/, "") }, signal);
     } else {
       const search = await this.request<SearchApiResponse>("search", { part: "snippet", q: seed.name, type: "channel", maxResults: "8" }, signal);
@@ -316,16 +350,15 @@ export class YouTubeClient {
       payload = await this.request<ChannelApiResponse>("channels", { part: "snippet,contentDetails", id: candidate.id.channelId }, signal);
     }
     const item = payload.items?.[0];
-    if (!item?.id || normalized(item.snippet?.title ?? "") !== normalized(seed.name)) throw new YouTubeApiError(`YouTube returned a different channel for “${seed.name}”.`, undefined, "channel-mismatch", false);
-    return { id: item.id, name: item.snippet?.title ?? seed.name, handle: item.snippet?.customUrl, thumbnailUrl: item.snippet?.thumbnails?.default?.url, uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads, videoCount: 0, approved: true };
+    if (!item?.id || (seed.channelId && item.id !== seed.channelId) || normalized(item.snippet?.title ?? "") !== normalized(seed.name)) throw new YouTubeApiError(`YouTube returned a different channel for “${seed.name}”.`, undefined, "channel-mismatch", false);
+    return { id: item.id, name: item.snippet?.title ?? seed.name, handle: item.snippet?.customUrl ?? seed.handle, thumbnailUrl: item.snippet?.thumbnails?.default?.url, uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads, videoCount: 0, approved: true, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds };
   }
 
-  private async importChannel(channel: YouTubeChannelRecord, signal?: AbortSignal, onPage?: (count: number) => void) {
-    if (!channel.uploadsPlaylistId) throw new YouTubeApiError(`The approved channel “${channel.name}” has no uploads playlist.`, undefined, "uploads-playlist-missing", false);
+  private async importPlaylist(channel: YouTubeChannelRecord, playlistId: string, sourceId: string, signal?: AbortSignal, onPage?: (count: number) => void) {
     const ids: string[] = [];
     let pageToken = "";
     do {
-      const payload = await this.request<PlaylistApiResponse>("playlistItems", { part: "snippet,contentDetails", playlistId: channel.uploadsPlaylistId, maxResults: "50", ...(pageToken ? { pageToken } : {}) }, signal);
+      const payload = await this.request<PlaylistApiResponse>("playlistItems", { part: "snippet,contentDetails", playlistId, maxResults: "50", ...(pageToken ? { pageToken } : {}) }, signal);
       for (const item of payload.items ?? []) if (item.contentDetails?.videoId) ids.push(item.contentDetails.videoId);
       onPage?.(ids.length);
       pageToken = payload.nextPageToken ?? "";
@@ -333,14 +366,19 @@ export class YouTubeClient {
     const videos = await mapWithConcurrency(Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50)), 4, async (batch) => this.request<VideoApiResponse>("videos", { part: "snippet,contentDetails,status", id: batch.join(",") }, signal));
     const mapped: YouTubeVideo[] = [];
     videos.flatMap((payload) => payload.items ?? []).forEach((item) => {
-      if (!item.id || item.status?.privacyStatus && item.status.privacyStatus !== "public") return;
+      if (!item.id || item.status?.privacyStatus && item.status.privacyStatus !== "public" || item.snippet?.channelId && item.snippet.channelId !== channel.id) return;
       const snippet = item.snippet;
       const durationSeconds = parseDuration(item.contentDetails?.duration);
       const title = snippet?.title?.trim();
       if (!title || !snippet?.publishedAt) return;
-      mapped.push({ id: item.id, channelId: channel.id, channelName: snippet.channelTitle ?? channel.name, title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, durationLabel: formatDuration(durationSeconds), thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url, embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(channel.name, title, snippet.description ?? "", snippet.tags ?? []), approved: true });
+      mapped.push({ id: item.id, channelId: channel.id, channelName: snippet.channelTitle ?? channel.name, title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, durationLabel: formatDuration(durationSeconds), thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url, embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(channel.name, title, snippet.description ?? "", snippet.tags ?? []), approved: true, sourceIds: [sourceId], metadataRefreshedAt: new Date().toISOString() });
     });
     return mapped;
+  }
+
+  private async importChannel(channel: YouTubeChannelRecord, signal?: AbortSignal, onPage?: (count: number) => void) {
+    if (!channel.uploadsPlaylistId) throw new YouTubeApiError(`The approved channel “${channel.name}” has no uploads playlist.`, undefined, "uploads-playlist-missing", false);
+    return this.importPlaylist(channel, channel.uploadsPlaylistId, `channel:${channel.id}`, signal, onPage);
   }
 
   private async resolveSpecial(seed: ApprovedVideoSeed, channels: YouTubeChannelRecord[], signal?: AbortSignal) {
@@ -357,52 +395,100 @@ export class YouTubeClient {
     if (!item?.id || normalized(item.snippet?.title ?? "") !== normalized(seed.title) || normalized(item.snippet?.channelTitle ?? "") !== normalized(seed.creator)) throw new YouTubeApiError(`The approved video “${seed.title}” did not match its creator and title.`, undefined, "video-mismatch", false);
     const snippet = item.snippet!;
     const durationSeconds = parseDuration(item.contentDetails?.duration);
-    return { id: item.id, channelId: snippet.channelId ?? `special-${normalized(seed.creator).replace(/ /g, "-")}`, channelName: snippet.channelTitle ?? seed.creator, title: snippet.title!, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt ?? new Date().toISOString(), durationSeconds, durationLabel: formatDuration(durationSeconds), ...(snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url ? { thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url } : {}), embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(seed.creator, snippet.title!, snippet.description ?? "", snippet.tags ?? []), approved: true, special: true } as YouTubeVideo;
+    return { id: item.id, channelId: snippet.channelId ?? `special-${normalized(seed.creator).replace(/ /g, "-")}`, channelName: snippet.channelTitle ?? seed.creator, title: snippet.title!, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt ?? new Date().toISOString(), durationSeconds, durationLabel: formatDuration(durationSeconds), ...(snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url ? { thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url } : {}), embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(seed.creator, snippet.title!, snippet.description ?? "", snippet.tags ?? []), approved: true, special: true, sourceIds: [`individual:${item.id}`], metadataRefreshedAt: new Date().toISOString() } as YouTubeVideo;
   }
 
-  async syncApprovedCatalog(existingChannels: YouTubeChannelRecord[] = [], signal?: AbortSignal, onProgress?: (progress: YouTubeImportProgress) => void) {
-    const progress: YouTubeImportProgress = { phase: "resolving", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0 };
+  async syncApprovedCatalog(existingChannels: YouTubeChannelRecord[] = [], signal?: AbortSignal, onProgress?: (progress: YouTubeImportProgress) => void, options: { existingVideos?: YouTubeVideo[]; sourceStates?: Record<string, YouTubeSourceState>; force?: boolean } = {}) {
+    const existingVideos = options.existingVideos ?? [];
+    const sourceStates: Record<string, YouTubeSourceState> = { ...(options.sourceStates ?? {}) };
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    const errors: string[] = [];
+    const progress: YouTubeImportProgress = { phase: "resolving", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 };
     onProgress?.({ ...progress });
     const channels = await mapWithConcurrency(APPROVED_YOUTUBE_CHANNELS, 4, async (seed, index) => {
       const previous = existingChannels.find((item) => normalized(item.name) === normalized(seed.name));
       try {
-        const channel = previous?.id ? previous : await this.resolveChannel(seed, signal);
+        const needsPinnedResolution = Boolean(seed.channelId && previous?.id !== seed.channelId);
+        const channel = previous?.id && !needsPinnedResolution ? { ...previous, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds } : await this.resolveChannel(seed, signal);
         progress.completedChannels = index + 1;
         onProgress?.({ ...progress });
-        return channel;
+        return { seed, channel };
       } catch (error) {
         progress.completedChannels = index + 1;
-        progress.error = error instanceof Error ? error.message : `Could not verify ${seed.name}.`;
+        const message = error instanceof Error ? error.message : `Could not verify ${seed.name}.`;
+        errors.push(message);
+        progress.error = errors.slice(0, 3).join(" · ");
         onProgress?.({ ...progress });
-        return null;
+        return { seed, channel: previous?.id ? previous : null };
       }
     });
-    const verified = channels.filter((channel): channel is YouTubeChannelRecord => Boolean(channel));
+    const verified = channels.filter((entry): entry is { seed: ApprovedChannelSeed; channel: YouTubeChannelRecord } => Boolean(entry.channel));
+    const jobs: CatalogJob[] = [];
+    verified.forEach(({ seed, channel }) => {
+      if (seed.playlistIds?.length) seed.playlistIds.forEach((playlistId) => jobs.push({ sourceId: `playlist:${playlistId}`, label: `${channel.name} · approved playlist`, kind: "playlist", channel, playlistId }));
+      else jobs.push({ sourceId: `channel:${channel.id}`, label: channel.name, kind: "uploads", channel });
+    });
+    jobs.push(...APPROVED_INDIVIDUAL_VIDEOS.map((seed) => ({ sourceId: `individual:${seed.videoId ?? normalized(seed.title)}`, label: seed.title, kind: "individual" as const, seed })));
+    progress.totalSources = jobs.length;
     progress.phase = "importing";
-    progress.error = undefined;
     onProgress?.({ ...progress });
-    const imported = await mapWithConcurrency(verified, 4, async (channel) => {
+    const imported = await mapWithConcurrency(jobs, 4, async (job) => {
+      progress.currentSource = job.label;
+      const prior = sourceStates[job.sourceId];
+      const due = Boolean(options.force || !prior?.lastSuccessfulSyncAt || now - new Date(prior.lastSuccessfulSyncAt).getTime() >= day);
+      if (!due) {
+        progress.completedSources = (progress.completedSources ?? 0) + 1;
+        onProgress?.({ ...progress });
+        return { job, videos: [] as YouTubeVideo[], scanned: false, ok: true };
+      }
       try {
-        const videos = await this.importChannel(channel, signal);
+        const videos = job.kind === "uploads"
+          ? await this.importChannel(job.channel!, signal)
+          : job.kind === "playlist"
+            ? await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, signal)
+            : [await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), signal)];
         progress.importedVideos += videos.length;
+        progress.completedSources = (progress.completedSources ?? 0) + 1;
+        sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "ready", lastSuccessfulSyncAt: new Date().toISOString(), lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: videos.length };
         onProgress?.({ ...progress });
-        return { channel: { ...channel, videoCount: videos.length, lastImportedAt: new Date().toISOString() }, videos };
+        return { job, videos, scanned: true, ok: true };
       } catch (error) {
-        progress.error = error instanceof Error ? error.message : `Could not import ${channel.name}.`;
+        const message = error instanceof Error ? error.message : `Could not import ${job.label}.`;
+        errors.push(message);
+        progress.error = errors.slice(0, 3).join(" · ");
+        progress.completedSources = (progress.completedSources ?? 0) + 1;
+        sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "error", lastSuccessfulSyncAt: prior?.lastSuccessfulSyncAt, lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: prior?.importedVideoCount, error: message };
         onProgress?.({ ...progress });
-        return { channel, videos: [] as YouTubeVideo[] };
+        return { job, videos: [] as YouTubeVideo[], scanned: false, ok: false };
       }
     });
-    const special = await mapWithConcurrency(APPROVED_INDIVIDUAL_VIDEOS, 4, async (seed) => {
-      try { return await this.resolveSpecial(seed, imported.map((item) => item.channel), signal); } catch { return null; }
+    const merged = new Map(existingVideos.map((video) => [video.id, { ...video }]));
+    imported.filter((result) => result.scanned && result.ok).forEach((result) => {
+      merged.forEach((video, id) => {
+        if (video.sourceIds?.includes(result.job.sourceId)) {
+          const sourceIds = video.sourceIds.filter((sourceId) => sourceId !== result.job.sourceId);
+          if (sourceIds.length) merged.set(id, { ...video, sourceIds }); else merged.delete(id);
+        }
+      });
+      result.videos.forEach((video) => {
+        const previous = merged.get(video.id);
+        merged.set(video.id, { ...previous, ...video, sourceIds: Array.from(new Set([...(previous?.sourceIds ?? []), result.job.sourceId])) });
+      });
     });
-    const verifiedSpecial = special.filter((video): video is YouTubeVideo => video !== null);
-    const videos = [...imported.flatMap((item) => item.videos), ...verifiedSpecial];
-    const unique = Array.from(new Map(videos.map((video) => [video.id, video])).values());
+    const playlistSourceIds = new Set(APPROVED_YOUTUBE_CHANNELS.flatMap((seed) => seed.playlistIds ?? []).map((id) => `playlist:${id}`));
+    const threeBlue = APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown");
+    const unique = Array.from(merged.values()).filter((video) => {
+      if (threeBlue && (normalized(video.channelName) === normalized(threeBlue.name) || video.channelId === threeBlue.channelId)) return video.special === true || video.sourceIds?.some((sourceId) => playlistSourceIds.has(sourceId));
+      return video.approved;
+    });
+    const channelsWithCounts = verified.map(({ channel }) => ({ ...channel, videoCount: unique.filter((video) => video.channelId === channel.id).length, lastImportedAt: new Date().toISOString() }));
+    const complete = errors.length === 0 && verified.length === APPROVED_YOUTUBE_CHANNELS.length;
     progress.phase = "complete";
-    progress.error = verified.length < APPROVED_YOUTUBE_CHANNELS.length ? "Some approved channels could not be verified. Retry to finish the library." : undefined;
+    progress.currentSource = undefined;
+    progress.error = complete ? undefined : (progress.error ?? "Some approved video sources need a retry.");
     onProgress?.({ ...progress });
-    return { channels: imported.map((item) => item.channel), videos: unique, incomplete: verified.length < APPROVED_YOUTUBE_CHANNELS.length, progress };
+    return { channels: channelsWithCounts, videos: unique, sourceStates, incomplete: !complete, progress };
   }
 }
 
@@ -431,6 +517,7 @@ export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclud
 export function filterYouTubeVideos(videos: YouTubeVideo[], searchText: string, topic: YouTubeTopic | "All", channelId?: string) {
   const term = normalized(searchText);
   return videos.filter((video) => {
+    if (!isApprovedYouTubeVideo(video)) return false;
     if (channelId && video.channelId !== channelId) return false;
     if (topic !== "All" && !video.topics.includes(topic)) return false;
     if (!term) return true;
@@ -441,8 +528,14 @@ export function filterYouTubeVideos(videos: YouTubeVideo[], searchText: string, 
 }
 
 export function relatedYouTubeVideos(videos: YouTubeVideo[], current: YouTubeVideo, count = 6) {
-  const shared = videos.filter((video) => video.id !== current.id && video.approved && video.topics.some((topic) => current.topics.includes(topic)));
+  const shared = videos.filter((video) => video.id !== current.id && isApprovedYouTubeVideo(video) && video.topics.some((topic) => current.topics.includes(topic)));
   return selectRandomVideos(shared, count, [current.id]);
+}
+
+export function isApprovedYouTubeVideo(video: YouTubeVideo) {
+  if (!video.approved) return false;
+  if (normalized(video.channelName) === normalized("3Blue1Brown") || video.channelId === "UCYO_jab_esuFRV4b17AJtAw") return video.special === true || Boolean(video.sourceIds?.some((sourceId) => APPROVED_3BLUE_PLAYLIST_SOURCE_IDS.has(sourceId)));
+  return true;
 }
 
 const DB_NAME = "learned-media-youtube";
@@ -463,7 +556,12 @@ export async function loadYouTubeWorkspace() {
     const db = await openYouTubeDb();
     return await new Promise<YouTubeWorkspaceState>((resolve, reject) => {
       const request = db.transaction("workspace", "readonly").objectStore("workspace").get("state");
-      request.onsuccess = () => resolve({ ...DEFAULT_YOUTUBE_WORKSPACE, ...(request.result ?? {}) });
+      request.onsuccess = () => {
+        const raw = request.result ?? {};
+        const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: 2, sourceStates: { ...(raw.sourceStates ?? {}) } } as YouTubeWorkspaceState;
+        workspace.videos = (workspace.videos ?? []).filter(isApprovedYouTubeVideo).map((video) => ({ ...video, sourceIds: video.sourceIds ?? [] }));
+        resolve(workspace);
+      };
       request.onerror = () => reject(request.error);
     });
   } catch { return { ...DEFAULT_YOUTUBE_WORKSPACE }; }

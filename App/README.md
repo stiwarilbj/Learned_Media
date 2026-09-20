@@ -12,3 +12,5 @@ The included scripts rebuild the app from source:
     ./script/build_universal.sh
 
 The first release is ad-hoc signed because no Developer ID certificate is included. macOS may show a first-launch security warning for downloaded builds; Developer ID signing and notarization remove that warning.
+
+In Videos, connect a YouTube Data API v3 key to import the approved creator library. While connected, overdue sources refresh daily; use **Refresh videos** for an immediate scan. 3Blue1Brown uses only the approved Neural Networks and Statistics playlists.

@@ -7,7 +7,7 @@ import { Icon } from "./icons";
 
 type VideoWorkspaceProps = {
   workspace: YouTubeWorkspaceState;
-  youtubeStatus: "not-configured" | "connecting" | "connected" | "error";
+  youtubeStatus: "not-configured" | "connecting" | "refreshing" | "connected" | "error";
   progress: YouTubeImportProgress;
   error?: string;
   searchResults: YouTubeVideo[];
@@ -28,6 +28,7 @@ type VideoWorkspaceProps = {
   onPauseImport: () => void;
   onResumeImport: () => void;
   onRetryImport: () => void;
+  onRefreshVideos: () => void;
 };
 
 function formatDate(value: string) {
@@ -52,7 +53,7 @@ function VideoList({ videos, workspace, onOpenVideo, onSaveVideo }: { videos: Yo
   return <div className="video-grid">{videos.map((video) => <VideoCard key={video.id} video={video} saved={workspace.savedIds.includes(video.id)} onOpen={() => onOpenVideo(video.id)} onSave={() => onSaveVideo(video.id)} />)}</div>;
 }
 
-export function VideoWorkspace({ workspace, youtubeStatus, progress, error, searchResults, smartSearchLoading, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, onChannelOrder, onPauseImport, onResumeImport, onRetryImport }: VideoWorkspaceProps) {
+export function VideoWorkspace({ workspace, youtubeStatus, progress, error, searchResults, smartSearchLoading, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
   const [ended, setEnded] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const activeVideo = workspace.selectedVideoId ? workspace.videos.find((video) => video.id === workspace.selectedVideoId) : undefined;
@@ -106,10 +107,10 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
   if (workspace.activeTab === "history") videos = historyVideos;
   const title = workspace.activeTab === "saved" ? "Saved videos" : workspace.activeTab === "history" ? "Watch history" : "A calmer way to find something good.";
   return <section className="content-view video-workspace">
-    <div className="view-heading video-heading"><div><span className="eyebrow">Learned Media Videos</span><h1>{title}</h1><p>Discover approved creators, search their full imported catalogs, and watch without leaving your workspace.</p></div><div className="video-heading-actions"><button type="button" className="secondary-button" onClick={onShuffle} disabled={!workspace.videos.length}><Icon name="reset" size={15} /> Shuffle</button><button type="button" className="primary-button small" onClick={onShowMore} disabled={!workspace.videos.length}><Icon name="plus" size={15} /> Show more</button></div></div>
-    {youtubeStatus === "connecting" && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
+    <div className="view-heading video-heading"><div><span className="eyebrow">Learned Media Videos</span><h1>{title}</h1><p>Discover approved creators, search their full imported catalogs, and watch without leaving your workspace.</p></div><div className="video-heading-actions"><button type="button" className="secondary-button" onClick={onRefreshVideos} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}><Icon name="reset" size={15} /> Refresh videos</button><button type="button" className="secondary-button" onClick={onShuffle} disabled={!workspace.videos.length}><Icon name="reset" size={15} /> Shuffle</button><button type="button" className="primary-button small" onClick={onShowMore} disabled={!workspace.videos.length}><Icon name="plus" size={15} /> Show more</button></div></div>
+    {(youtubeStatus === "connecting" || youtubeStatus === "refreshing") && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
     {youtubeStatus === "error" && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
-    {workspace.libraryIncomplete && youtubeStatus !== "connecting" && <div className="video-incomplete"><Icon name="help" size={15} /> This library is still incomplete. You can browse now and resume importing from Settings.</div>}
+    {workspace.libraryIncomplete && youtubeStatus !== "connecting" && youtubeStatus !== "refreshing" && <div className="video-incomplete"><Icon name="help" size={15} /> This library is still incomplete. You can browse now and resume importing from Settings.</div>}
     <div className="video-tabs" role="tablist" aria-label="Video views">{([["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]] as const).map(([tab, label]) => <button type="button" role="tab" aria-selected={workspace.activeTab === tab} className={workspace.activeTab === tab ? "active" : ""} key={tab} onClick={() => onTabChange(tab)}>{label}{tab === "saved" && workspace.savedIds.length ? <small>{workspace.savedIds.length}</small> : null}</button>)}</div>
     {workspace.activeTab === "discover" && <>
       <div className="video-controls"><label className="video-search"><Icon name="search" size={16} /><input value={workspace.searchText} onChange={(event) => onSearchChange(event.target.value)} placeholder="Search approved videos" aria-label="Search approved videos" /></label><button type="button" className="ghost-button" onClick={onSmartSearch} disabled={smartSearchLoading || !workspace.searchText.trim()}>{smartSearchLoading ? "Searching" : "Smart search"}</button></div>
@@ -117,7 +118,7 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
     </>}
     {workspace.videos.length ? <VideoList videos={videos} workspace={workspace} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /> : <EmptyVideoSetup onOpenSettings={onOpenSettings} />}
     {workspace.activeTab === "discover" && workspace.videos.length > 0 && <div className="video-show-more"><button type="button" className="small-load-button" onClick={onShowMore}>Show more approved videos</button></div>}
-    {workspace.videos.length > 0 && <p className="video-library-note">{workspace.videos.length.toLocaleString()} approved videos available · No view, like, or comment counts are shown</p>}
+    {workspace.videos.length > 0 && <p className="video-library-note">{workspace.videos.length.toLocaleString()} approved videos available · No view, like, or comment counts are shown{workspace.lastSyncAt ? ` · Last refresh ${new Date(workspace.lastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : ""}</p>}
     {void onPlaybackPosition}
   </section>;
 }
