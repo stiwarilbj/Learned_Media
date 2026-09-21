@@ -16,21 +16,21 @@ Learned Media is a learning workspace available as a Next.js website and a nativ
 
 ### Run locally
 
-\`\`\`bash
+```bash
 cd Website
 npm install
 npm run dev
-\`\`\`
+```
 
 Open [http://localhost:3000](http://localhost:3000).
 
 To build the static GitHub Pages site locally:
 
-\`\`\`bash
+```bash
 npm run build:github-pages
-\`\`\`
+```
 
-The generated site is written to \`Website/out/\`. Pushes to \`main\` deploy automatically through [\`.github/workflows/pages.yml\`](.github/workflows/pages.yml).
+The generated site is written to `Website/out/`. Pushes to `main` deploy automatically through [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
 
 ### API keys and privacy
 
@@ -54,9 +54,9 @@ The Videos workspace stays inside the approved catalog. It supports:
 
 ## macOS app
 
-Open [\`App/Learned Media.app\`](App/Learned%20Media.app) to launch the bundled app, or rebuild it from source:
+Open [`App/Learned Media.app`](App/Learned%20Media.app) to launch the bundled app, or rebuild it from source:
 
-\`\`\`bash
+```bash
 cd App
 
 # Build for the current Mac
@@ -64,7 +64,7 @@ cd App
 
 # Build a universal arm64 + x86_64 app
 ./script/build_universal.sh
-\`\`\`
+```
 
 The build scripts create an ad-hoc signed app bundle and require macOS 13 or later. The app stores learning data in macOS Application Support and keeps API keys in the Mac’s Keychain. Google sign-in is available when the Supabase provider is configured; Gemini generation works without sign-in.
 
