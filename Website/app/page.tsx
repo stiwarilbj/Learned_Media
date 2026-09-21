@@ -1395,23 +1395,26 @@ export default function HomePage() {
     const controller = new AbortController();
     youtubeSearchAbortController.current = controller;
     setYoutubeSmartSearchLoading(true);
-    setYoutubeSmartSearchRan(true);
+    setYoutubeSmartSearchRan(false);
+    setYoutubeSearchResults([]);
     setYoutubeSearchPhase("interpreting");
     setYoutubeError("");
     setYoutubeSearchReasons({});
     try {
-      const interpreted = await interpretVideoSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: queryText, signal: controller.signal });
-      if (controller.signal.aborted) return;
-      const workspace = youtubeWorkspaceRef.current;
-      const cacheKey = [queryText.toLocaleLowerCase(), workspace.selectedTopic, workspace.selectedChannelId ?? "all", workspace.catalogVersion].join("|");
+      const workspaceBeforeInterpretation = youtubeWorkspaceRef.current;
+      const cacheKey = [queryText.toLocaleLowerCase().replace(/\s+/g, " "), workspaceBeforeInterpretation.selectedTopic, workspaceBeforeInterpretation.selectedChannelId ?? "all", workspaceBeforeInterpretation.catalogVersion].join("|");
       const cached = youtubeSearchCache.current.get(cacheKey);
       if (cached) {
         setYoutubeSearchResults(cached.results);
         setYoutubeSearchReasons(cached.reasons);
+        setYoutubeSmartSearchRan(true);
         setYoutubeSearchPhase("idle");
         setToast(`${cached.results.length} relevant approved video${cached.results.length === 1 ? "" : "s"} matched your search.`);
         return;
       }
+      const interpreted = await interpretVideoSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: queryText, signal: controller.signal });
+      if (controller.signal.aborted) return;
+      const workspace = youtubeWorkspaceRef.current;
       const namedChannel = interpreted.plan.channelId
         ? workspace.channels.find((channel) => channel.id === interpreted.plan.channelId)
         : interpreted.plan.channel
@@ -1419,6 +1422,7 @@ export default function HomePage() {
           : undefined;
       if ((interpreted.plan.channel || interpreted.plan.channelId) && !namedChannel) {
         setYoutubeSearchResults([]);
+        setYoutubeSmartSearchRan(false);
         setYoutubeSearchPhase("idle");
         setYoutubeSmartSearchLoading(false);
         setToast("That channel is not in the approved catalog.");
@@ -1432,10 +1436,12 @@ export default function HomePage() {
         return ranked.flatMap((batch) => batch.results);
       };
       const initialCandidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80);
+      const candidateScores = new Map(initialCandidates.map((candidate) => [candidate.video.id, candidate.score]));
       let ranked = await rankPass(initialCandidates);
       if (ranked.length < 6 && !controller.signal.aborted) {
         setYoutubeSearchPhase("expanding");
         const expandedCandidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80, initialCandidates.map(({ video }) => video.id), true);
+        expandedCandidates.forEach((candidate) => candidateScores.set(candidate.video.id, candidate.score));
         const expanded = await rankPass(expandedCandidates);
         const seen = new Set(ranked.map((match) => match.videoId));
         ranked = ranked.concat(expanded.filter((match) => !seen.has(match.videoId)));
@@ -1443,7 +1449,10 @@ export default function HomePage() {
       if (controller.signal.aborted) return;
       const byId = new Map(workspace.videos.map((video) => [video.id, video]));
       const accepted = ranked.filter((match) => byId.has(match.videoId) && !match.videoId.startsWith("demo-"));
-      const orderedMatches = [...accepted].sort((left, right) => (left.relevance === right.relevance ? 0 : left.relevance === "direct" ? -1 : 1));
+      const orderedMatches = [...accepted].sort((left, right) => {
+        if (left.relevance !== right.relevance) return left.relevance === "direct" ? -1 : 1;
+        return (candidateScores.get(right.videoId) ?? right.localScore) - (candidateScores.get(left.videoId) ?? left.localScore) || right.support.length - left.support.length;
+      });
       let orderedVideos = orderedMatches.map((match) => byId.get(match.videoId)).filter((video): video is YouTubeVideo => Boolean(video));
       if (plan.sort === "newest") orderedVideos = [...orderedVideos].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
       if (plan.sort === "oldest") orderedVideos = [...orderedVideos].sort((a, b) => a.publishedAt.localeCompare(b.publishedAt));
@@ -1451,11 +1460,14 @@ export default function HomePage() {
       setYoutubeSearchResults(orderedVideos);
       setYoutubeSearchReasons(Object.fromEntries(accepted.map((match) => [match.videoId, match])));
       youtubeSearchCache.current.set(cacheKey, { results: orderedVideos, reasons: Object.fromEntries(accepted.map((match) => [match.videoId, match])) });
+      setYoutubeSmartSearchRan(true);
       setYoutubeSearchPhase("idle");
       setYoutubeStatus((current) => current === "not-configured" ? "connected" : current);
       setToast(`${orderedVideos.length} relevant approved video${orderedVideos.length === 1 ? "" : "s"} matched your search.`);
     } catch (error) {
       if (controller.signal.aborted) return;
+      setYoutubeSmartSearchRan(false);
+      setYoutubeSearchResults([]);
       setYoutubeError(error instanceof Error ? error.message : "Smart video search could not complete.");
       setYoutubeSearchPhase("error");
       setToast(error instanceof Error ? error.message : "Smart video search could not complete.");
@@ -1471,6 +1483,9 @@ export default function HomePage() {
     youtubeSearchAbortController.current?.abort();
     youtubeSearchAbortController.current = null;
     setYoutubeSmartSearchLoading(false);
+    setYoutubeSmartSearchRan(false);
+    setYoutubeSearchResults([]);
+    setYoutubeSearchReasons({});
     setYoutubeSearchPhase("idle");
   }, []);
 
@@ -1542,7 +1557,11 @@ export default function HomePage() {
   const factResults = searchResults.filter((entry): entry is { kind: "fact"; item: FactCard; text: string } => entry.kind === "fact").map(({ item }) => item);
 
   return (
-    <div className={`app-frame theme-${theme}`}>
+    <div
+      className={`app-frame theme-${theme}`}
+      onPointerDownCapture={() => { document.documentElement.dataset.inputModality = "pointer"; }}
+      onKeyDownCapture={() => { document.documentElement.dataset.inputModality = "keyboard"; }}
+    >
       <Navigation
         view={view}
         onNavigate={(nextView) => { setView(nextView); if (nextView !== "feed") setQuery(""); }}
