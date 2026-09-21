@@ -68,19 +68,19 @@ export function FactCard({ card, displayMode, learnLoading, questionLoading, lea
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
               onKeyDown={(event) => event.key === "Enter" && submitQuestion()}
-              placeholder="Ask a question about this fact…"
+              placeholder="Ask a question about this fact"
               aria-label={`Ask a question about ${card.title}`}
             />
             <button type="button" className={`details-toggle ${detailed ? "selected" : ""}`} onClick={() => setDetailed((value) => !value)} aria-pressed={detailed}>More Details</button>
             <button type="button" className="question-send" onClick={submitQuestion} disabled={!question.trim() || questionLoading} aria-label="Send question"><Icon name="arrow" size={16} /></button>
           </div>
           {card.answer && <div className="learning-answer question-answer"><span className="answer-label"><Icon name="message" size={14} /> {card.answerDetailed ? "Detailed answer" : "Answer"}</span><p>{card.answer}</p><div className="answer-sources">{card.answerSources?.map((source) => <a href={source.url} key={source.url} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={11} /></a>)}</div></div>}
-          {questionLoading && <div className="learning-loading"><span className="loading-dot" /> Gemini is reading the cited Wikipedia pages…</div>}
+          {questionLoading && <div className="learning-loading"><span className="loading-dot" /> Gemini is reading the cited Wikipedia pages</div>}
           {questionError && <p className="learning-error">{questionError}</p>}
         </div>
       </div>
       <div className="fact-actions">
-        <button type="button" className="learn-more-button" onClick={() => onLearnMore(card.id)} disabled={learnLoading || Boolean(card.learnMore)}><Icon name="sparkles" size={16} /> <span>{learnLoading ? "Reading…" : card.learnMore ? "Learned" : "Learn more"}</span></button>
+        <button type="button" className="learn-more-button" onClick={() => onLearnMore(card.id)} disabled={learnLoading || Boolean(card.learnMore)}><Icon name="sparkles" size={16} /> <span>{learnLoading ? "Reading" : card.learnMore ? "Learned" : "Learn more"}</span></button>
         <button type="button" className={`feedback-button heard ${card.feedback === "heard" ? "selected" : ""}`} onClick={() => onAction(card.id, "heard")} aria-pressed={card.feedback === "heard"}><Icon name="check" size={15} /> <span>Heard</span></button>
         <button type="button" className={`feedback-button unknown ${card.feedback === "unknown" ? "selected" : ""}`} onClick={() => onAction(card.id, "unknown")} aria-pressed={card.feedback === "unknown"}><Icon name="help" size={15} /> <span>Unknown</span></button>
         <button type="button" className={card.liked ? "active-like" : ""} onClick={() => onAction(card.id, "like")} aria-label={card.liked ? "Unlike fact" : "Like fact"}><Icon name="heart" size={16} fill={card.liked ? "currentColor" : "none"} /> <span>Like</span></button>

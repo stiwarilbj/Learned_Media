@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
+import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
 import type { DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, TopicNode } from "@/lib/types";
 import { selectedLeafCount } from "@/lib/topic-tree";
 import { FactCard } from "./FactCard";
@@ -72,7 +73,7 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
           </div>
           <span className="control-label">Description length</span>
           <div className="feed-length-options" role="group" aria-label="Description length">
-            {[1, 2, 3, 4, 5].map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length as FeedSettings["sentenceLength"] })}>{length}</button>)}
+            {SENTENCE_LENGTH_OPTIONS.map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} disabled={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length })}>{length}</button>)}
           </div>
           <p className="sentence-length-note">{settings.sentenceLength} specific sentence{settings.sentenceLength === 1 ? "" : "s"} per fact</p>
           <button type="button" className={`feed-surprise-toggle ${settings.surpriseMe ? "selected" : ""}`} onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={14} /> Surprise Me <span>{settings.surpriseMe ? "On" : "Off"}</span></button>
@@ -100,7 +101,7 @@ export function FeedView({ cards, query = "", settings, topics, customTopic, loa
               {canLoadMore && !loading && index === Math.max(cards.length - 3, 0) && <div className="feed-load-more-nearby"><button type="button" className="small-load-button" onClick={onLoadMore}>Generate 10 more</button></div>}
               <FactCard card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} />
             </Fragment>)}
-            {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> Gemini is building the next facts…</div>}
+            {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> Gemini is building the next facts</div>}
             {generationError && !loading && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry}>Retry missing facts</button></div>}
             {canLoadMore && !loading && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore}>Generate 10 more</button></div>}
           </div>

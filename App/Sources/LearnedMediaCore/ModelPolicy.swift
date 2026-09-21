@@ -1,6 +1,7 @@
 import Foundation
 
 public enum GeminiModelPolicy {
+    public static let requiredWorkingModels = 3
     public static let allowedModels: [String] = [
         "gemini-3.7-flash",
         "gemini-3.6-flash",

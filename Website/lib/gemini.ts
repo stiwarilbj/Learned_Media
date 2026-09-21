@@ -1,7 +1,7 @@
 import type { FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, WikipediaSource } from "./types";
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
-import { resolveWikipediaSources, type ResolvedWikipediaSource } from "./wikipedia";
+import { resolveWikipediaSources, wikipediaEvidenceLink, type ResolvedWikipediaSource } from "./wikipedia";
 import { factWritingRules, difficultyRubric, selectEvidence, validateDraft, normalizeSentenceLength, rememberFact, nearestMemories, isRepeatedFact, type FactMemory, type GroundedDraft } from "./fact-quality";
 import type { YouTubeSearchCandidate } from "./youtube";
 
@@ -13,6 +13,7 @@ const OUTAGE_COOLDOWN_MS = 60_000;
 const MAX_FACTS_PER_BATCH = 10;
 const MAX_CONCURRENT_GEMINI_REQUESTS = 5;
 const MAX_CANDIDATE_RETRIES = 3;
+export const REQUIRED_WORKING_MODELS = 3;
 
 export const ALLOWED_GEMINI_MODELS = [
   "gemini-3.7-flash",
@@ -421,7 +422,7 @@ export function describeGeminiError(error: unknown) {
   if (failure.status === 401 || failure.status === 403 || /API key|permission|unauthorized|forbidden/i.test(failure.message)) return "Gemini rejected this API key. Check that it is active in Google AI Studio, then paste it again.";
   if (failure.status === 429 || /quota|rate.?limit|resource exhausted/i.test(failure.message)) return "Gemini is rate-limited or out of quota. The app will retry after its cooldown.";
   if (failure.status === 404 || /not found|unsupported model/i.test(failure.message)) return "This requested Gemini model is unavailable for the key. It was skipped without using an unrequested model.";
-  if (/no eligible|verify at least five/i.test(failure.message)) return "Connect Gemini and wait until at least five allowed models pass their structured-output checks.";
+  if (/no eligible|verify at least (?:five|three)/i.test(failure.message)) return "Connect Gemini and wait until at least three allowed models pass their structured-output checks.";
   if (/timed out|timeout/i.test(failure.message)) return "Gemini timed out. The scheduler is trying another allowed model.";
   if (/Wikipedia/i.test(failure.message)) return failure.message;
   if (/malformed|structured/i.test(failure.message)) return "Gemini returned invalid structured output. The scheduler will try another allowed model.";
@@ -492,6 +493,11 @@ async function generateFactJob(apiKey: string, sessionId: string, topicPaths: Ar
   try { validateDraft(fact!, sources, sentenceCount); } catch (error) { throw new GeminiFailure(error instanceof Error ? error.message : "Unsupported fact.", undefined, outcomes); }
   const chosenIndexes = Array.from(new Set(fact!.evidence.map(item => item.sourceIndex)));
   const chosenSources = chosenIndexes.map(index => sources[index]);
+  const linkedSources = chosenSources.map((source, selectedIndex) => {
+    const originalIndex = chosenIndexes[selectedIndex];
+    const quote = fact!.evidence.find(item => item.sourceIndex === originalIndex)?.quote;
+    return quote ? { ...source, canonicalUrl: source.canonicalUrl ?? source.url, url: wikipediaEvidenceLink(source.url, quote) } : source;
+  });
   const imageSource = chosenSources.find(source => source.image);
   const difficulty = target;
   const generatedAt = new Date().toISOString();
@@ -504,7 +510,7 @@ async function generateFactJob(apiKey: string, sessionId: string, topicPaths: Ar
     claim: fact!.claim.trim(),
     evidence: fact!.evidence.map(item => ({...item, sourceIndex: chosenIndexes.indexOf(item.sourceIndex)})),
     topicPath: assignedPath,
-    sources: cardSources(chosenSources),
+    sources: cardSources(linkedSources),
     image: imageSource?.image,
     difficulty,
     obscurity: difficulty,
@@ -602,11 +608,11 @@ export async function generateLearningResponse({ apiKey, sessionId = "default-se
     resolveWikipediaSources(card.sources.map((source) => source.title), 3, signal),
     action === "question" && question ? resolveWikipediaSources([question], 2, signal) : Promise.resolve([])
   ]);
-  const originalUrls = new Set(originalSources.map((source) => source.url));
-  const sources = Array.from(new Map([...originalSources, ...questionSources].map((source) => [source.url, source])).values()).slice(0, 5);
+  const originalUrls = new Set(originalSources.map((source) => source.canonicalUrl ?? source.url));
+  const sources = Array.from(new Map([...originalSources, ...questionSources].map((source) => [source.canonicalUrl ?? source.url, source])).values()).slice(0, 5);
   if (!sources.length) throw new GeminiFailure("Wikipedia did not return the cited pages for this fact.", undefined, [], undefined, true);
   sources.forEach(source => { source.extract = selectEvidence(source.extract ?? "", card.title + " " + card.body + " " + (question ?? ""), 5); });
-  const context = sources.map((source, index) => index + ". " + (originalUrls.has(source.url) ? "[Original card source]" : "[Supplemental question lookup — not proof of the card's claim]") + " " + source.title + "\nURL: " + source.url + "\nExcerpt: " + (source.extract ?? "No extract returned")).join("\n\n");
+  const context = sources.map((source, index) => index + ". " + (originalUrls.has(source.canonicalUrl ?? source.url) ? "[Original card source]" : "[Supplemental question lookup — not proof of the card's claim]") + " " + source.title + "\nURL: " + (source.canonicalUrl ?? source.url) + "\nExcerpt: " + (source.extract ?? "No extract returned")).join("\n\n");
   const cardIdentity = "Topic path: " + card.topicPath.join(" → ") + "\nCard hook: " + card.hook + "\nCard title: " + card.title + "\nCard body: " + card.body;
   const prompt = action === "learn"
     ? "Explain this one card in one useful paragraph of approximately 100 to 160 words. Use the topic path, hook, title, body, and original card sources to stay on the same subject. Add context rather than repeating the card body. Supplemental lookups are only leads and cannot replace the original card evidence. Return citationIndexes for supporting sources.\n\n" + cardIdentity + "\n\nWikipedia evidence:\n" + context
@@ -727,7 +733,7 @@ async function checkOneModel(apiKey: string, model: string, signal?: AbortSignal
 }
 
 export async function testGeminiKey(apiKey: string, signal?: AbortSignal, sessionId = "default-session", onCheck?: (check: GeminiModelCheck, readyCount: number) => void) {
-  if (!apiKey.trim()) return { ok: false as const, status: "not-configured" as const, models: [] as GeminiModelCheck[], eligibleModelCount: 0, requiredWorkingModels: 5 };
+  if (!apiKey.trim()) return { ok: false as const, status: "not-configured" as const, models: [] as GeminiModelCheck[], eligibleModelCount: 0, requiredWorkingModels: REQUIRED_WORKING_MODELS };
   const { pool } = await refreshPool(apiKey, sessionId, signal, true);
   const checks: GeminiModelCheck[] = new Array(ALLOWED_GEMINI_MODELS.length);
   let nextIndex = 0;
@@ -747,6 +753,6 @@ export async function testGeminiKey(apiKey: string, signal?: AbortSignal, sessio
   const working = checks.filter((check) => check.status === "working");
   const distinctWorking = new Set(working.map((check) => check.resolvedModel ?? check.model));
   const firstFailure = checks.find((check) => check.status !== "working");
-  const status: GeminiStatus = distinctWorking.size >= 5 ? "connected" : firstFailure?.error && /401|403|key|permission/i.test(firstFailure.error) ? "invalid" : checks.some((check) => check.status === "cooldown") ? "rate-limited" : "unavailable";
-  return { ok: distinctWorking.size >= 5, status, models: checks, eligibleModelCount: ALLOWED_GEMINI_MODELS.length, requiredWorkingModels: 5 };
+  const status: GeminiStatus = distinctWorking.size >= REQUIRED_WORKING_MODELS ? "connected" : firstFailure?.error && /401|403|key|permission/i.test(firstFailure.error) ? "invalid" : checks.some((check) => check.status === "cooldown") ? "rate-limited" : "unavailable";
+  return { ok: distinctWorking.size >= REQUIRED_WORKING_MODELS, status, models: checks, eligibleModelCount: ALLOWED_GEMINI_MODELS.length, requiredWorkingModels: REQUIRED_WORKING_MODELS };
 }

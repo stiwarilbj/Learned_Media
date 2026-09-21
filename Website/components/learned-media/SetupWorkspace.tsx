@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
+import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
 import type { DisplayMode, FeedSettings, TopicNode } from "@/lib/types";
 import { selectedLeafCount, summarizeSelection } from "@/lib/topic-tree";
 import { Icon } from "./icons";
@@ -68,7 +69,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
           <div className="start-panel-copy"><span className="eyebrow">Your next feed</span><h1>Ready to learn something unexpected?</h1><p>{hasSelection ? `${selectedCount} topic${selectedCount === 1 ? "" : "s"} in your mix, sourced from Wikipedia and shaped by your curiosity` : "Choose at least one topic from the checklist to begin"}</p></div>
           <div className="start-orbit"><Icon name="sparkles" size={24} /><span>Every card has a source</span></div>
           <button type="button" className="start-button" onClick={onStart} disabled={!hasSelection || !canStart}><span>{!hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first"}</span><Icon name="arrow" size={21} /></button>
-          <p className="panel-footnote"><Icon name={hasSelection && canStart ? "shield" : "help"} size={13} /> {!hasSelection ? "Select a topic to unlock your feed" : canStart ? "Your mix stays yours" : "Connect at least five Gemini models in Settings to begin"}</p>
+          <p className="panel-footnote"><Icon name={hasSelection && canStart ? "shield" : "help"} size={13} /> {!hasSelection ? "Select a topic to unlock your feed" : canStart ? "Your mix stays yours" : "Connect at least three Gemini models in Settings to begin"}</p>
 
           <div className="setup-key-callout">
             <div className="setup-key-callout-icon"><Icon name="key" size={16} /></div>
@@ -83,7 +84,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
               <div className="option-grid two">{modeCopy.map((mode) => <button type="button" key={mode.id} className={`option-card ${settings.displayMode === mode.id ? "selected" : ""}`} onClick={() => onSettingsChange({ displayMode: mode.id })}><Icon name={mode.icon} size={16} /><span>{mode.label}</span></button>)}</div>
               <span className="control-label">Description length</span>
               <div className="feed-length-options" role="group" aria-label="Description length">
-                {[1, 2, 3, 4, 5].map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length as FeedSettings["sentenceLength"] })}>{length}</button>)}
+                {SENTENCE_LENGTH_OPTIONS.map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} disabled={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length })}>{length}</button>)}
               </div>
               <p className="sentence-length-note">{settings.sentenceLength} specific sentence{settings.sentenceLength === 1 ? "" : "s"} per fact</p>
               <button type="button" className={`setup-surprise ${settings.surpriseMe ? "selected" : ""}`} onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={14} /> Surprise Me <span>{settings.surpriseMe ? "On" : "Off"}</span></button>

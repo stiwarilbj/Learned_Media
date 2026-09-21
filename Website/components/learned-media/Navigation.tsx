@@ -49,7 +49,7 @@ export function Navigation({ view, onNavigate, onReset, query, onQueryChange, to
         <div className="top-nav-search">
           <div className="global-search-wrap">
             <Icon name="search" size={17} />
-            <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search topics or facts..." aria-label="Search topics or facts" />
+            <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search topics or facts" aria-label="Search topics or facts" />
             {query && <button type="button" className="clear-search" onClick={() => onQueryChange("")} aria-label="Clear search"><Icon name="x" size={15} /></button>}
             {query && (topicResults.length > 0 || factResults.length > 0) && <div className="search-popover">
               {topicResults.length > 0 && <><span className="search-group-label">Topics</span>{topicResults.map((topic) => <button type="button" key={topic.id} onClick={() => onChooseTopic(topic.label)}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}</>}

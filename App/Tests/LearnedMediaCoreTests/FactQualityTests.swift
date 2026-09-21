@@ -3,7 +3,7 @@ import XCTest
 
 final class FactQualityTests: XCTestCase {
     private let source: [[String: Any]] = [[
-        "extract": "The 1847 Relief Act created soup kitchens in Ireland. The kitchens served millions of meals during the famine. Parliament later replaced the program with a revised poor-law system. The revised system changed how relief was administered. The policy left a documented mark on Ireland’s relief institutions."
+        "extract": "The 1847 Relief Act created soup kitchens in Ireland. The kitchens served millions of meals during the famine. Parliament later replaced the program with a revised poor-law system. The revised system changed how relief was administered. The policy left a documented mark on Ireland’s relief institutions. County inspectors recorded the kitchens’ daily operations in detailed reports. Local committees purchased food through a centralized relief network. The program connected emergency meals with the broader poor-law administration. Historians use the surviving records to compare relief across counties. The legislation changed how officials measured hunger during the crisis."
     ]]
 
     func testAcceptsOneSupportedThreeSentenceFact() {
@@ -67,9 +67,14 @@ final class FactQualityTests: XCTestCase {
             "The kitchens served millions of meals during the famine.",
             "Parliament later replaced the program with a revised poor-law system.",
             "The revised system changed how relief was administered.",
-            "The policy left a documented mark on Ireland’s relief institutions."
+            "The policy left a documented mark on Ireland’s relief institutions.",
+            "County inspectors recorded the kitchens’ daily operations in detailed reports.",
+            "Local committees purchased food through a centralized relief network.",
+            "The program connected emergency meals with the broader poor-law administration.",
+            "Historians use the surviving records to compare relief across counties.",
+            "The legislation changed how officials measured hunger during the crisis."
         ]
-        for count in 1...5 {
+        for count in [1, 2, 3, 4, 6, 8, 10] {
             let selected = Array(sentences.prefix(count))
             let evidence = selected.enumerated().map { index, sentence in
                 ["sentence": index, "sourceIndex": 0, "quote": sentence] as [String: Any]

@@ -11,7 +11,7 @@ import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
 import { rememberFact, mergeFactMemory, isRepeatedFact, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
-import { generateGeminiFacts, generateLearningResponse, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
+import { generateGeminiFacts, generateLearningResponse, interpretVideoSearch, rankVideoSearchCandidates, REQUIRED_WORKING_MODELS, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
@@ -1052,12 +1052,12 @@ export default function HomePage() {
             else next.push(check);
             return next;
           });
-          if (readyCount >= 5) setGeminiStatus("connected");
+          if (readyCount >= REQUIRED_WORKING_MODELS) setGeminiStatus("connected");
         });
         if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
         setModelChecks(result.models);
         setGeminiStatus(result.status);
-        setToast(result.status === "connected" ? "Gemini connected. At least five allowed models passed." : "Fewer than five allowed models passed. Fix the key or retry the checks.");
+        setToast(result.status === "connected" ? "Gemini connected. At least three allowed models passed." : "Fewer than three allowed models passed. Fix the key or retry the checks.");
         return;
       }
       const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": keyAtStart, "x-learned-media-session": sessionIdRef.current }, signal: controller.signal });
@@ -1078,7 +1078,7 @@ export default function HomePage() {
             else next.push(check);
             return next;
           });
-          if (Number(message.readyCount) >= 5) setGeminiStatus("connected");
+          if (Number(message.readyCount) >= REQUIRED_WORKING_MODELS) setGeminiStatus("connected");
         } else if (message.type === "complete") {
           finalStatus = message.status as GeminiStatus;
           finalModels = message.models as GeminiModelCheck[];
@@ -1090,7 +1090,7 @@ export default function HomePage() {
       if (streamError) throw new Error(streamError);
       if (finalModels) setModelChecks(finalModels);
       setGeminiStatus(finalStatus ?? "unavailable");
-      setToast(finalStatus === "connected" ? "Gemini connected. At least five allowed models passed." : "Fewer than five allowed models passed. Fix the key or retry the checks.");
+      setToast(finalStatus === "connected" ? "Gemini connected. At least three allowed models passed." : "Fewer than three allowed models passed. Fix the key or retry the checks.");
     } catch (error) {
       if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
       setGeminiStatus("unavailable");

@@ -69,6 +69,18 @@ type SummaryResponse = {
 
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
 
+/**
+ * Point a citation at the accepted evidence instead of the top of the article.
+ * Text fragments are supported by current Safari, Chrome, and WebKit builds;
+ * the plain article URL remains the fallback when a quote is unavailable.
+ */
+export function wikipediaEvidenceLink(url: string, quote?: string) {
+  const text = quote?.replace(/^\[Section:[^\]]+\]\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 180);
+  if (!text || text.length < 30) return url;
+  const base = url.split("#", 1)[0];
+  return `${base}#:~:text=${encodeURIComponent(text)}`;
+}
+
 function apiUrl(params: Record<string, string>) {
   const url = new URL(WIKIPEDIA_API);
   url.searchParams.set("format", "json");
@@ -229,6 +241,7 @@ export async function resolveWikipediaSources(queries: string[], limit = 3, sign
   const resolved = await Promise.all((orderedPages.length ? orderedPages : pages).map(async (page) => ({
     title: page.title as string,
     url: page.fullurl as string,
+    canonicalUrl: page.fullurl as string,
     extract: page.extract?.trim() || undefined,
     image: await resolveImage({
       title: page.title as string,

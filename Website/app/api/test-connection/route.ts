@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { describeGeminiError, testGeminiKey } from "@/lib/gemini";
+import { describeGeminiError, REQUIRED_WORKING_MODELS, testGeminiKey } from "@/lib/gemini";
 
 function streamResponse(request: Request, apiKey: string, sessionId: string) {
   const encoder = new TextEncoder();
@@ -20,7 +20,7 @@ function streamResponse(request: Request, apiKey: string, sessionId: string) {
         controller.close();
       }, { once: true });
       void testGeminiKey(apiKey, request.signal, sessionId, (check, readyCount) => {
-        send({ type: "model", check, readyCount, requiredWorkingModels: 5 });
+        send({ type: "model", check, readyCount, requiredWorkingModels: REQUIRED_WORKING_MODELS });
       }).then((result) => {
         send({ type: "complete", ...result });
       }).catch((error) => {

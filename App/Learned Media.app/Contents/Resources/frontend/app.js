@@ -9,6 +9,7 @@
     surpriseMe: true
   };
   const TOPIC_CATALOG_VERSION = 13;
+  const REQUIRED_WORKING_MODELS = 3;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Super Duper Hard"];
@@ -73,7 +74,7 @@
   };
   function normalizeSentenceLength(value) {
     const number = Number(value);
-    return Number.isInteger(number) && number >= 1 && number <= 5 ? number : 3;
+    return [1, 2, 3, 4, 6, 8, 10].includes(number) ? number : 3;
   }
   function factFingerprint(item) {
     function normalized(value) { return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
@@ -287,7 +288,7 @@
         next.sort(function (left, right) { return ALLOWED_GEMINI_MODELS.indexOf(left.model) - ALLOWED_GEMINI_MODELS.indexOf(right.model); });
         state.modelChecks = next;
       }
-      if (Number(message.readyCount) >= 5) state.geminiStatus = "connected";
+      if (Number(message.readyCount) >= REQUIRED_WORKING_MODELS) state.geminiStatus = "connected";
       render();
       return;
     }
@@ -920,7 +921,7 @@
     const searchWrap = node("div", { className: "top-nav-search" });
     const search = node("div", { className: "global-search-wrap" });
     search.appendChild(svg("search", 17));
-    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts...", ariaLabel: "Search topics or facts", onInput: function (event) { state.query = event.target.value; document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); } }));
+    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts", ariaLabel: "Search topics or facts", onInput: function (event) { state.query = event.target.value; document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); } }));
     searchWrap.appendChild(search);
     header.appendChild(searchWrap);
     const accountName = state.workspaceName;
@@ -970,8 +971,8 @@
     body.appendChild(display);
     body.appendChild(node("span", { className: "control-label", text: "Description length" }));
     const lengths = node("div", { className: "feed-length-options", role: "group", ariaLabel: "Description length" });
-    [1, 2, 3, 4, 5].forEach(function (length) {
-      lengths.appendChild(node("button", { className: state.settings.sentenceLength === length ? "selected" : "", ariaPressed: state.settings.sentenceLength === length, onClick: function () { state.settings.sentenceLength = length; saveState(); render(); } }, String(length)));
+    [1, 2, 3, 4, 6, 8, 10].forEach(function (length) {
+      lengths.appendChild(node("button", { className: state.settings.sentenceLength === length ? "selected" : "", ariaPressed: state.settings.sentenceLength === length, disabled: state.settings.sentenceLength === length, onClick: function () { state.settings.sentenceLength = length; saveState(); render(); } }, String(length)));
     });
     body.appendChild(lengths);
     body.appendChild(node("p", { className: "sentence-length-note", text: state.settings.sentenceLength + " specific sentence" + (state.settings.sentenceLength === 1 ? "" : "s") + " per fact" }));
@@ -986,7 +987,7 @@
     panel.appendChild(node("div", { className: "start-panel-copy" }, node("span", { className: "eyebrow", text: "Your next feed" }), node("h1", { text: "Ready to learn something unexpected?" }), node("p", { text: hasSelection ? selectedCount() + " topics in your mix, sourced from Wikipedia and shaped by your curiosity." : "Choose at least one topic from the checklist to begin." })));
     panel.appendChild(node("div", { className: "start-orbit" }, svg("sparkles", 24), node("span", { text: "Every card has a source" })));
     panel.appendChild(node("button", { className: "start-button", disabled: !hasSelection || !canStart, onClick: startFeed }, node("span", { text: !hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first" }), svg("arrow", 21)));
-    panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection && canStart ? "shield" : "help", 13), " ", !hasSelection ? "Select a topic to unlock your feed." : canStart ? "Your mix stays yours." : "Connect at least five Gemini models in Settings to begin."));
+    panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection && canStart ? "shield" : "help", 13), " ", !hasSelection ? "Select a topic to unlock your feed." : canStart ? "Your mix stays yours." : "Connect at least three Gemini models in Settings to begin."));
     const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings for the next batch" })));
     keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Add key ", svg("arrow", 14)));
     panel.appendChild(keyCallout);
@@ -1017,13 +1018,13 @@
   function questionArea(card) {
     const box = node("div", { className: "question-box" });
     const row = node("div", { className: "question-row" });
-    const input = node("input", { value: card.question || "", placeholder: "Ask a question about this fact…", ariaLabel: "Ask a question about this fact", dataset: { cardId: card.id }, onInput: function (event) { card.question = event.target.value; } });
+    const input = node("input", { value: card.question || "", placeholder: "Ask a question about this fact", ariaLabel: "Ask a question about this fact", dataset: { cardId: card.id }, onInput: function (event) { card.question = event.target.value; } });
     row.appendChild(input);
     row.appendChild(node("button", { className: "details-toggle" + (card.answerDetailed ? " selected" : ""), onClick: function () { card.answerDetailed = !card.answerDetailed; render(); } }, "More Details"));
     row.appendChild(node("button", { className: "question-send", ariaLabel: "Send question", onClick: function () { askQuestion(card.id, input.value); } }, svg("arrow", 16)));
     box.appendChild(row);
     if (card.answer) box.appendChild(node("div", { className: "learning-answer question-answer" }, node("span", { className: "answer-label" }, svg("message", 14), " ", card.answerDetailed ? "Detailed answer" : "Answer"), node("p", { text: card.answer }), sourceList(card, true)));
-    if (state.loadingCard === card.id) box.appendChild(node("div", { className: "learning-loading" }, node("span", { className: "loading-dot" }), " Gemini is reading the cited Wikipedia pages…"));
+    if (state.loadingCard === card.id) box.appendChild(node("div", { className: "learning-loading" }, node("span", { className: "loading-dot" }), " Gemini is reading the cited Wikipedia pages"));
     return box;
   }
   function cardElement(card) {
@@ -1046,7 +1047,7 @@
     content.appendChild(questionArea(card));
     article.appendChild(content);
     const actions = node("div", { className: "fact-actions" });
-    actions.appendChild(node("button", { className: "learn-more-button", disabled: Boolean(card.learnMore || state.loadingCard === card.id), onClick: function () { learnMore(card.id); } }, svg("sparkles", 16), node("span", { text: state.loadingCard === card.id ? "Reading…" : card.learnMore ? "Learned" : "Learn more" })));
+    actions.appendChild(node("button", { className: "learn-more-button", disabled: Boolean(card.learnMore || state.loadingCard === card.id), onClick: function () { learnMore(card.id); } }, svg("sparkles", 16), node("span", { text: state.loadingCard === card.id ? "Reading" : card.learnMore ? "Learned" : "Learn more" })));
     actions.appendChild(node("button", { className: "feedback-button heard" + (card.feedback === "heard" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "heard"); } }, svg("check", 15), node("span", { text: "Heard" })));
     actions.appendChild(node("button", { className: "feedback-button unknown" + (card.feedback === "unknown" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "unknown"); } }, svg("help", 15), node("span", { text: "Unknown" })));
     actions.appendChild(node("button", { className: card.liked ? "active-like" : "", onClick: function () { toggleCard(card.id, "liked"); } }, svg("heart", 16), node("span", { text: "Like" })));
@@ -1067,7 +1068,7 @@
       if (!state.loading && !state.generationError && index === Math.max(state.cards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { className: "small-load-button", onClick: function () { generateBatch(generationToken, 10); } }, "Generate 10 more")));
       list.appendChild(cardElement(card));
     });
-    if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), " Gemini is building the next facts…"));
+    if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), " Gemini is building the next facts"));
     if (!state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { className: "small-load-button", onClick: function () { generateBatch(generationToken, 10); } }, "Generate 10 more")));
     column.appendChild(list);
     layout.appendChild(column);
@@ -1135,7 +1136,7 @@
     exportRow.appendChild(exportButtons); exports.appendChild(exportRow); main.appendChild(exports);
     const accountCard = node("section", { className: "settings-card" });
     accountCard.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("user", 19)), node("div", {}, node("h2", { text: "Account" }), node("p", { text: "Google sign-in keeps your account ready on this Mac." }))));
-    const syncLabel = state.syncStatus === "syncing" ? "Syncing your workspace…" : state.syncStatus === "offline" ? "Offline; local changes are safe" : state.syncStatus === "error" ? "Sync needs attention" : "Synced to your Google account";
+    const syncLabel = state.syncStatus === "syncing" ? "Syncing your workspace" : state.syncStatus === "offline" ? "Offline; local changes are safe" : state.syncStatus === "error" ? "Sync needs attention" : "Synced to your Google account";
     const accountRow = node("div", { className: "account-row" }, node("div", { className: "account-avatar", text: state.account ? (state.account.name || "G").slice(0, 1).toUpperCase() : "L" }), node("div", {}, node("strong", { text: state.account ? state.account.name : "Local workspace" }), node("span", { text: state.account ? syncLabel : "Not signed in · saved locally" })));
     accountRow.appendChild(node("button", { className: "secondary-button", onClick: state.account ? signOut : signIn }, svg("login", 15), state.account ? " Sign out" : " Continue with Google"));
     accountCard.appendChild(accountRow);

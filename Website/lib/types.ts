@@ -2,7 +2,7 @@ export type View = "feed" | "explore" | "videos" | "saved" | "likes" | "history"
 
 export type DisplayMode = "picture-text" | "text";
 
-export type SentenceLength = 1 | 2 | 3 | 4 | 5;
+export type SentenceLength = 1 | 2 | 3 | 4 | 6 | 8 | 10;
 
 export type Difficulty = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
@@ -40,6 +40,8 @@ export type FeedSettings = {
 export type WikipediaSource = {
   title: string;
   url: string;
+  /** The stable article URL, without the evidence text fragment used by the UI link. */
+  canonicalUrl?: string;
   extract?: string;
 };
 

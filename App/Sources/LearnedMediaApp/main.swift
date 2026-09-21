@@ -298,6 +298,17 @@ private final class WikipediaClient {
         let encoded = title.replacingOccurrences(of: " ", with: "_").addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? title
         return "https://en.wikipedia.org/wiki/\(encoded)"
     }
+    fileprivate static func evidenceLink(_ url: String, quote: String?) -> String {
+        let cleaned = quote?
+            .replacingOccurrences(of: "^\\[Section:[^\\]]+\\]\\s*", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let text = cleaned, text.count >= 30 else { return url }
+        let shortened = String(text.prefix(180))
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        let encoded = shortened.addingPercentEncoding(withAllowedCharacters: allowed) ?? shortened
+        return "\(url.components(separatedBy: "#").first ?? url)#:~:text=\(encoded)"
+    }
     func resolve(title: String, searchTitles: [String]) async -> (sources: [[String: Any]], image: [String: Any]?) {
         // Always try the requested candidate title first. Search titles are helpful
         // fallbacks, not replacements for the fact the model actually proposed.
@@ -319,7 +330,7 @@ private final class WikipediaClient {
         guard !pages.isEmpty else { return ([], nil) }
         let sources: [[String: Any]] = pages.compactMap { page in
             guard let title = page.title, let url = page.fullurl, let extract = page.extract else { return nil }
-            return ["title": title, "url": url, "extract": extract]
+            return ["title": title, "url": url, "canonicalUrl": url, "extract": extract]
         }
         var image: [String: Any]?
         if let wikipediaPage = pages.first(where: { $0.pageimage != nil }) ?? pages.first {
@@ -677,8 +688,8 @@ private final class GeminiClient {
             let dictionaries = checks.map(\.dictionary)
             let workingResolved = Set(checks.filter { $0.status == "working" }.map { $0.resolvedModel ?? $0.model })
             let invalid = checks.contains { $0.error?.contains("401") == true || $0.error?.contains("403") == true }
-            let ready = workingResolved.count >= 5
-            return ["status": ready ? "connected" : invalid ? "invalid" : checks.contains(where: { $0.status == "cooldown" }) ? "rate-limited" : "unavailable", "message": ready ? "Gemini connection verified with five allowed models." : "Fewer than five distinct allowed models passed the structured-output check.", "models": dictionaries, "eligibleModelCount": GeminiModelPolicy.allowedModels.count, "requiredWorkingModels": 5]
+            let ready = workingResolved.count >= GeminiModelPolicy.requiredWorkingModels
+            return ["status": ready ? "connected" : invalid ? "invalid" : checks.contains(where: { $0.status == "cooldown" }) ? "rate-limited" : "unavailable", "message": ready ? "Gemini connection verified with three allowed models." : "Fewer than three distinct allowed models passed the structured-output check.", "models": dictionaries, "eligibleModelCount": GeminiModelPolicy.allowedModels.count, "requiredWorkingModels": GeminiModelPolicy.requiredWorkingModels]
         } catch let error as NativeError {
             let invalid = error.message.contains("401") || error.message.contains("403") || error.message.lowercased().contains("api key")
             return ["status": invalid ? "invalid" : "unavailable", "message": invalid ? "Gemini rejected this API key. Check it in Google AI Studio and paste it again." : error.message, "models": []]
@@ -740,11 +751,20 @@ private final class GeminiClient {
         }
         let indexes = Array(Set(quotes.map { $0.sourceIndex })).sorted()
         let selectedSources = indexes.map { sources[$0] }
+        let linkedSources = selectedSources.enumerated().map { selectedIndex, original -> [String: Any] in
+            var source = original
+            let quote = quotes.first(where: { $0.sourceIndex == indexes[selectedIndex] })?.quote
+            if let url = source["url"] as? String, let quote {
+                source["canonicalUrl"] = source["canonicalUrl"] as? String ?? url
+                source["url"] = WikipediaClient.evidenceLink(url, quote: quote)
+            }
+            return source
+        }
         let remappedQuotes = quotes.map { quote -> [String: Any] in
             ["sentence": quote.sentence, "sourceIndex": indexes.firstIndex(of: quote.sourceIndex)!, "quote": quote.quote]
         }
         let generatedAt = isoNow()
-        var card: [String: Any] = ["id": "gemini-\(UUID().uuidString)", "title": factTitle, "hook": hook, "body": sentences.joined(separator: " "), "sentenceCount": sentenceCount, "claim": finalClaim, "evidence": remappedQuotes, "topicPath": path, "sources": selectedSources, "difficulty": level, "accent": ["blue", "lilac", "mint", "sand", "coral"][jobIndex % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": groundedResult.resolvedModel ?? groundedResult.model, "generatedAt": generatedAt]]
+        var card: [String: Any] = ["id": "gemini-\(UUID().uuidString)", "title": factTitle, "hook": hook, "body": sentences.joined(separator: " "), "sentenceCount": sentenceCount, "claim": finalClaim, "evidence": remappedQuotes, "topicPath": path, "sources": linkedSources, "difficulty": level, "accent": ["blue", "lilac", "mint", "sand", "coral"][jobIndex % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": groundedResult.resolvedModel ?? groundedResult.model, "generatedAt": generatedAt]]
         if let image = grounding.image, selectedSources.contains(where: { ($0["url"] as? String) == image["sourceUrl"] as? String }) { card["image"] = image }
         // Review only this newly generated card and its public evidence, never accumulated learning history.
         let reviewJSON = String(data: try JSONSerialization.data(withJSONObject: card), encoding: .utf8) ?? "{}"
@@ -753,7 +773,7 @@ private final class GeminiClient {
         sameFact: do the hook, heading, claim, and ALL sentences describe the same specific fact?
         allClaimsSupported: does the evidence support every assertion, including the named event and consequence?
         specificEnough: does it meet this rubric: \(FactQuality.rubric(level))?
-        sentenceCount: is the body exactly \(sentenceCount) short complete sentences?
+        sentenceCount: is the body exactly \(sentenceCount) complete, useful sentences with enough detail?
         Reject generic biographies, childhood/plot summaries, mismatched headings, and unsupported implications. Return four booleans and a reason.
         \(reviewJSON)
         """, schema: ["type": "OBJECT", "properties": ["sameFact": ["type": "BOOLEAN"], "allClaimsSupported": ["type": "BOOLEAN"], "specificEnough": ["type": "BOOLEAN"], "sentenceCount": ["type": "BOOLEAN"], "reason": ["type": "STRING"]], "required": ["sameFact", "allClaimsSupported", "specificEnough", "sentenceCount", "reason"]], stage: "grounding")
@@ -1000,7 +1020,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 guard let self else { return }
                 let token = payload["token"] as? Int ?? 0
                 let result = await gemini.test(key: payload["key"] as? String ?? geminiKey) { [weak self] check, readyCount in
-                    self?.respondEvent(id: id, payload: ["type": "modelCheck", "token": token, "check": check, "readyCount": readyCount, "requiredWorkingModels": 5])
+                    self?.respondEvent(id: id, payload: ["type": "modelCheck", "token": token, "check": check, "readyCount": readyCount, "requiredWorkingModels": GeminiModelPolicy.requiredWorkingModels])
                 }
                 respond(id: id, result: result)
                 activeTasks[id] = nil
