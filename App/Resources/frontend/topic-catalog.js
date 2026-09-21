@@ -70,6 +70,27 @@
       branch("Other Fields", ["Distributed Systems", "Compilers", "Programming Language Design", "Computer Graphics", "Game Development", "Human-Computer Interaction", "Mobile Development", "Embedded Systems", "Internet of Things", "Robotics", "Data Engineering", "Data Science", "Parallel Computing", "Quantum Computing", "Theory of Computation", "Information Theory", "Computer History", "Famous Computer Scientists", "Famous Software Bugs", "Early Internet History", "Computing Oddities"])
     ])
   ];
+  // Keep the native bundle aligned with the website's catalog. These additions
+  // are appended by stable labels so existing path-based topic IDs remain intact.
+  const nativeScience = window.LEARNED_MEDIA_TOPIC_CATALOG.find(function (item) { return item.label === "Science"; });
+  if (nativeScience) nativeScience.children.push(branch("Famous Scientists", [
+    branch("Physics and Astronomy", ["Galileo Galilei", "Isaac Newton", "Michael Faraday", "James Clerk Maxwell", "Marie Curie", "Albert Einstein", "Max Planck", "Niels Bohr", "Ernest Rutherford", "Emmy Noether", "Lise Meitner", "Richard Feynman", "Vera Rubin", "Stephen Hawking", "Jocelyn Bell Burnell", "Chien-Shiung Wu", "Abdus Salam", "Subrahmanyan Chandrasekhar", "Katherine Johnson"]),
+    branch("Biology and Medicine", ["William Harvey", "Andreas Vesalius", "Antonie van Leeuwenhoek", "Carl Linnaeus", "Charles Darwin", "Gregor Mendel", "Louis Pasteur", "Robert Koch", "Edward Jenner", "Alexander Fleming", "Florence Nightingale", "Rosalind Franklin", "Barbara McClintock", "Jane Goodall", "E.O. Wilson", "Rachel Carson", "Tu Youyou", "Katalin Karikó", "Jonas Salk", "Elizabeth Blackburn"]),
+    branch("Chemistry and Earth Science", ["Antoine Lavoisier", "Dmitri Mendeleev", "Linus Pauling", "Dorothy Hodgkin", "Ahmed Zewail", "Svante Arrhenius", "Fritz Haber", "Percy Julian", "Charles Lyell", "Alfred Wegener", "Inge Lehmann", "Milutin Milanković", "Charles David Keeling", "Susan Solomon", "Wangari Maathai"]),
+    branch("Mathematics and Computer Science", ["Euclid", "Archimedes", "Al-Khwarizmi", "Ada Lovelace", "George Boole", "Alan Turing", "John von Neumann", "Srinivasa Ramanujan", "Grace Hopper", "Donald Knuth", "Maryam Mirzakhani", "Fei-Fei Li"]),
+    branch("Science Communication", ["Carl Sagan", "David Attenborough", "Stephen Jay Gould", "Neil deGrasse Tyson", "David Suzuki", "Brian Cox", "Mary Anning"])
+  ]));
+  window.LEARNED_MEDIA_TOPIC_CATALOG.push(branch("Philosophy", [
+    branch("Famous Philosophers", [
+      branch("Ancient Mediterranean", ["Socrates", "Plato", "Aristotle", "Pythagoras", "Epicurus", "Zeno of Citium", "Diogenes", "Heraclitus", "Parmenides", "Plotinus", "Cicero", "Seneca", "Epictetus", "Marcus Aurelius"]),
+      branch("Medieval and Islamic Philosophy", ["Augustine of Hippo", "Boethius", "Anselm of Canterbury", "Thomas Aquinas", "Duns Scotus", "William of Ockham", "Al-Farabi", "Avicenna", "Al-Ghazali", "Averroes", "Maimonides"]),
+      branch("Asian Philosophers", ["Confucius", "Laozi", "Zhuangzi", "Mozi", "Han Feizi", "Nagarjuna", "Adi Shankara", "Gautama Buddha", "Mahavira", "Zhu Xi", "Wang Yangming", "Dogen", "Kukai"]),
+      branch("Early Modern Philosophy", ["Niccolo Machiavelli", "René Descartes", "Baruch Spinoza", "Thomas Hobbes", "John Locke", "George Berkeley", "David Hume", "Jean-Jacques Rousseau", "Immanuel Kant", "Mary Wollstonecraft", "Adam Smith", "Edmund Burke"]),
+      branch("Modern Philosophy", ["Georg Wilhelm Friedrich Hegel", "Arthur Schopenhauer", "Søren Kierkegaard", "Karl Marx", "Friedrich Nietzsche", "William James", "John Dewey", "Charles Sanders Peirce", "Edmund Husserl", "Martin Heidegger", "Bertrand Russell", "Ludwig Wittgenstein", "Jean-Paul Sartre", "Simone de Beauvoir", "Albert Camus", "Hannah Arendt", "John Rawls", "Robert Nozick", "Michel Foucault", "Jacques Derrida", "Frantz Fanon", "Bell Hooks", "Judith Butler", "Martha Nussbaum", "Peter Singer"])
+    ]),
+    branch("Philosophical Traditions", ["Stoicism", "Epicureanism", "Platonism", "Aristotelianism", "Confucianism", "Daoism", "Buddhist Philosophy", "Hindu Philosophy", "Islamic Philosophy", "Scholasticism", "Rationalism", "Empiricism", "Existentialism", "Phenomenology", "Pragmatism", "Analytic Philosophy", "Marxist Philosophy", "Feminist Philosophy", "African Philosophy", "Indigenous Philosophies"]),
+    branch("Ethics and Political Philosophy", ["Virtue Ethics", "Deontological Ethics", "Consequentialism", "Social Contract", "Natural Rights", "Justice", "Free Will", "Philosophy of Mind", "Philosophy of Science", "Philosophy of Language", "Political Legitimacy", "Civil Disobedience", "Human Rights", "Bioethics", "Environmental Ethics", "Aesthetics"])
+  ]));
   window.LEARNED_MEDIA_TOPIC_CATALOG.push(branch("Literature", [
     branch("Books", [
       branch("By time period", [branch("Ancient", ["The Epic of Gilgamesh", "The Iliad", "The Odyssey", "The Art of War"]), branch("Medieval", ["The Canterbury Tales", "The Divine Comedy", "Le Morte d'Arthur", "The Tale of Genji"]), branch("Renaissance", ["Don Quixote", "The Prince", "Utopia", "The Decameron"]), branch("Eighteenth century", ["Gulliver's Travels", "Candide", "Pamela", "The Sorrows of Young Werther"]), branch("Nineteenth century", ["Pride and Prejudice", "Jane Eyre", "Moby-Dick", "Middlemarch"]), branch("Modern", ["Mrs Dalloway", "The Great Gatsby", "One Hundred Years of Solitude", "Beloved"])]),
@@ -145,7 +166,7 @@
     nativeLiterature.children.push(branch("Best-Selling Book Series", seriesNames.map(function (label) { return { label: label, children: [], aliases: seriesAliases[label] || [] }; })));
   }
   window.LEARNED_MEDIA_TOPIC_METADATA = {
-    catalogVersion: 13,
+    catalogVersion: 14,
     bestSellingBookSeries: {
       sourceUrl: "https://en.wikipedia.org/wiki/List_of_best-selling_books#List_of_best-selling_book_series",
       sourceLabel: "Wikipedia's List of best-selling book series",

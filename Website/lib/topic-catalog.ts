@@ -5,7 +5,7 @@ import { buildComputerScienceTopic } from "./computer-science-catalog";
 import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
 import { buildWarHistoryTopic } from "./war-history-catalog";
 
-export const TOPIC_CATALOG_VERSION = 13;
+export const TOPIC_CATALOG_VERSION = 14;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -156,6 +156,36 @@ const FAMOUS_AUTHORS: TopicSeed = branch("Famous Authors", [
   branch("By Literary Form", [branch("Novelists", ["Rabindranath Tagore", "Chinua Achebe", "Jane Austen", "Charles Dickens", "Haruki Murakami", "Toni Morrison"]), branch("Poets", ["Rabindranath Tagore", "Pablo Neruda", "Maya Angelou", "Emily Dickinson", "William Blake", "Homer"]), branch("Playwrights", ["William Shakespeare", "Henrik Ibsen", "Oscar Wilde", "Samuel Beckett", "Arthur Miller"]), branch("Essayists", ["Michel de Montaigne", "George Orwell", "James Baldwin", "Virginia Woolf", "Joan Didion"]), branch("Political Writers", ["Mary Wollstonecraft", "Thomas Paine", "Karl Marx", "Hannah Arendt", "Frantz Fanon"]), branch("Historians and Biographers", ["Herodotus", "Thucydides", "Ibn Khaldun", "Barbara Tuchman", "Robert Caro"])])
 ]);
 
+const FAMOUS_SCIENTISTS: TopicSeed = branch("Famous Scientists", [
+  branch("Physics and Astronomy", [
+    "Galileo Galilei", "Isaac Newton", "Michael Faraday", "James Clerk Maxwell", "Marie Curie", "Albert Einstein", "Max Planck", "Niels Bohr", "Ernest Rutherford", "Emmy Noether", "Lise Meitner", "Richard Feynman", "Vera Rubin", "Stephen Hawking", "Jocelyn Bell Burnell", "Chien-Shiung Wu", "Abdus Salam", "Subrahmanyan Chandrasekhar", "Katherine Johnson"
+  ]),
+  branch("Biology and Medicine", [
+    "William Harvey", "Andreas Vesalius", "Antonie van Leeuwenhoek", "Carl Linnaeus", "Charles Darwin", "Gregor Mendel", "Louis Pasteur", "Robert Koch", "Edward Jenner", "Alexander Fleming", "Florence Nightingale", "Rosalind Franklin", "Barbara McClintock", "Jane Goodall", "E.O. Wilson", "Rachel Carson", "Tu Youyou", "Katalin Karikó", "Jonas Salk", "Elizabeth Blackburn"
+  ]),
+  branch("Chemistry and Earth Science", [
+    "Antoine Lavoisier", "Dmitri Mendeleev", "Linus Pauling", "Dorothy Hodgkin", "Ahmed Zewail", "Svante Arrhenius", "Fritz Haber", "Percy Julian", "Charles Lyell", "Alfred Wegener", "Inge Lehmann", "Milutin Milanković", "Charles David Keeling", "Susan Solomon", "Wangari Maathai"
+  ]),
+  branch("Mathematics and Computer Science", [
+    "Euclid", "Archimedes", "Al-Khwarizmi", "Ada Lovelace", "George Boole", "Alan Turing", "John von Neumann", "Srinivasa Ramanujan", "Grace Hopper", "Donald Knuth", "Maryam Mirzakhani", "Fei-Fei Li"
+  ]),
+  branch("Science Communication", [
+    "Carl Sagan", "David Attenborough", "Stephen Jay Gould", "Neil deGrasse Tyson", "David Suzuki", "Brian Cox", "Mary Anning"
+  ])
+]);
+
+const PHILOSOPHY_SEED: TopicSeed = branch("Philosophy", [
+  branch("Famous Philosophers", [
+    branch("Ancient Mediterranean", ["Socrates", "Plato", "Aristotle", "Pythagoras", "Epicurus", "Zeno of Citium", "Diogenes", "Heraclitus", "Parmenides", "Plotinus", "Cicero", "Seneca", "Epictetus", "Marcus Aurelius"]),
+    branch("Medieval and Islamic Philosophy", ["Augustine of Hippo", "Boethius", "Anselm of Canterbury", "Thomas Aquinas", "Duns Scotus", "William of Ockham", "Al-Farabi", "Avicenna", "Al-Ghazali", "Averroes", "Maimonides"]),
+    branch("Asian Philosophers", ["Confucius", "Laozi", "Zhuangzi", "Mozi", "Han Feizi", "Nagarjuna", "Adi Shankara", "Gautama Buddha", "Mahavira", "Zhu Xi", "Wang Yangming", "Dogen", "Kukai"]),
+    branch("Early Modern Philosophy", ["Niccolo Machiavelli", "René Descartes", "Baruch Spinoza", "Thomas Hobbes", "John Locke", "George Berkeley", "David Hume", "Jean-Jacques Rousseau", "Immanuel Kant", "Mary Wollstonecraft", "Adam Smith", "Edmund Burke"]),
+    branch("Modern Philosophy", ["Georg Wilhelm Friedrich Hegel", "Arthur Schopenhauer", "Søren Kierkegaard", "Karl Marx", "Friedrich Nietzsche", "William James", "John Dewey", "Charles Sanders Peirce", "Edmund Husserl", "Martin Heidegger", "Bertrand Russell", "Ludwig Wittgenstein", "Jean-Paul Sartre", "Simone de Beauvoir", "Albert Camus", "Hannah Arendt", "John Rawls", "Robert Nozick", "Michel Foucault", "Jacques Derrida", "Frantz Fanon", "Bell Hooks", "Judith Butler", "Martha Nussbaum", "Peter Singer"])
+  ]),
+  branch("Philosophical Traditions", ["Stoicism", "Epicureanism", "Platonism", "Aristotelianism", "Confucianism", "Daoism", "Buddhist Philosophy", "Hindu Philosophy", "Islamic Philosophy", "Scholasticism", "Rationalism", "Empiricism", "Existentialism", "Phenomenology", "Pragmatism", "Analytic Philosophy", "Marxist Philosophy", "Feminist Philosophy", "African Philosophy", "Indigenous Philosophies"]),
+  branch("Ethics and Political Philosophy", ["Virtue Ethics", "Deontological Ethics", "Consequentialism", "Social Contract", "Natural Rights", "Justice", "Free Will", "Philosophy of Mind", "Philosophy of Science", "Philosophy of Language", "Political Legitimacy", "Civil Disobedience", "Human Rights", "Bioethics", "Environmental Ethics", "Aesthetics"])
+]);
+
 const literatureChildren = (LITERATURE_SEED as { label: string; children: TopicSeed[] }).children;
 const booksBranch = literatureChildren.find((child): child is { label: string; children: TopicSeed[] } => typeof child !== "string" && child.label === "Books");
 booksBranch?.children.unshift(BOOK_EXPANSION[BOOK_EXPANSION.length - 1]);
@@ -273,8 +303,10 @@ const TOPIC_SEEDS: TopicSeed[] = [
     branch("Space", [
       branch("Solar System", ["Sun", "Mercury", "Venus", branch("Earth", ["Moon"]), "Mars", "Jupiter", "Saturn", "Uranus", "Neptune", "Dwarf Planets", "Asteroids", "Comets"]),
       "Stars", "Black Holes", "Neutron Stars", "Exoplanets", "Nebulae", "Galaxies", "Milky Way", "Cosmology", "Early Universe", "Space Telescopes", "Spacecraft", "Rockets", "Human Spaceflight", "Space Stations", "Strange Space Objects"
-    ])
+    ]),
+    FAMOUS_SCIENTISTS
   ]),
+  PHILOSOPHY_SEED,
   branch("Geography", [
     branch("Africa", [branch("North Africa", ["Egypt", "Morocco", "Algeria", "Tunisia", "Libya"]), branch("West Africa", ["Nigeria", "Ghana", "Senegal", "Mali", "Ivory Coast"]), branch("Central Africa", ["Cameroon", "Gabon", "Central African Republic", "Democratic Republic of the Congo"]), branch("East Africa", ["Kenya", "Ethiopia", "Tanzania", "Uganda", "Somalia"]), branch("Southern Africa", ["South Africa", "Namibia", "Botswana", "Zimbabwe", "Mozambique", "Madagascar"])]),
     branch("North America", ["Canada", "United States", "Mexico", "Central America", "Caribbean", "Greenland"]),
