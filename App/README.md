@@ -1,6 +1,6 @@
 # Learned Media for Mac
 
-Download the repository ZIP, unzip it, open App, and double-click Learned Media.app. The app stores learning data in your normal macOS Application Support folder and never saves the Gemini key.
+Download the repository ZIP, unzip it, open App, and double-click Learned Media.app. The app stores learning data in your normal macOS Application Support folder and remembers API keys securely in this Mac’s Keychain.
 
 Open Settings, paste your Gemini key, and press Connect Gemini. The AI Studio link is built into the app. No facts are shown until Gemini successfully generates them.
 

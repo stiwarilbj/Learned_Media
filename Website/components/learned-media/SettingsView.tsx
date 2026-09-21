@@ -98,7 +98,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             </div>
             <div className="security-note" id="gemini-key-note">
               <Icon name="shield" size={16} />
-              <span>Your pasted key is held in memory for this session, sent only when Gemini is requested, and never saved to localStorage</span>
+              <span>Your key is remembered on this device in encrypted browser storage, separate from workspaces. It is never synced to your account. Use Remove on a shared device</span>
             </div>
             {feedback && <p className="settings-feedback" role="status">{feedback}</p>}
 
@@ -128,7 +128,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             </div>
             <label className="field-label" htmlFor="youtube-key">Paste your YouTube API key here</label>
             <div className="key-input-row"><input id="youtube-key" type="password" value={youtubeKey} onChange={(event) => onYoutubeKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onConnectYoutube(); } }} placeholder="Paste your YouTube API key here" autoComplete="new-password" /><div className="key-actions"><button type="button" className="primary-button small" onClick={onConnectYoutube} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}>{youtubeStatus === "connecting" ? "Connecting" : youtubeStatus === "refreshing" ? "Refreshing" : "Connect YouTube"}</button><button type="button" className="ghost-button" onClick={onRefreshYoutube} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}>Refresh videos</button><button type="button" className="ghost-button" onClick={onRemoveYoutubeKey}>Remove key</button></div></div>
-            <div className="security-note"><Icon name="shield" size={16} /><span>Your YouTube key stays in session memory and is never saved to local learning data</span></div>
+            <div className="security-note"><Icon name="shield" size={16} /><span>Your YouTube key is remembered on this device in encrypted browser storage, separate from workspaces and account sync</span></div>
             <div className="api-key-guide youtube-guide"><div className="api-key-guide-icon"><Icon name="image" size={16} /></div><div className="api-key-guide-copy"><strong>Need a YouTube key?</strong><p>1. <a href={YOUTUBE_PROJECT_URL} target="_blank" rel="noreferrer">Create or select a Google Cloud project</a><br />2. <a href={YOUTUBE_LIBRARY_URL} target="_blank" rel="noreferrer">Enable YouTube Data API v3</a><br />3. Open <a href={YOUTUBE_CREDENTIALS_URL} target="_blank" rel="noreferrer">Credentials</a> → Create credentials → API key, then restrict it to YouTube Data API v3<br />4. Copy the key here and connect it</p></div></div>
             <p className="youtube-restriction-note">Website keys may be restricted to this GitHub Pages site. The Mac app needs a key that also permits native requests. If a restriction blocks a request, Google will report it here</p>
             {youtubeLastSyncAt && <p className="youtube-restriction-note">Last successful refresh: {new Date(youtubeLastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</p>}

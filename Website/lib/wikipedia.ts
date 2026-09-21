@@ -112,15 +112,18 @@ export async function searchWikipedia(query: string, limit = 3, signal?: AbortSi
   return payload?.query?.search?.map((result) => result.title?.trim()).filter(Boolean) as string[] ?? [];
 }
 
-async function fetchPages(titles: string[], signal?: AbortSignal) {
+async function fetchPages(titles: string[], signal?: AbortSignal): Promise<Array<NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string]>> {
   if (!titles.length) return [];
+  // TextExtracts only returns full articles one at a time. All requests share the limiter.
+  if (titles.length > 1) return (await Promise.all(titles.map(title => fetchPages([title], signal)))).flat();
   const payload = await getJson<PageResponse>(apiUrl({
     action: "query",
     titles: titles.join("|"),
     prop: "info|extracts|pageimages",
     inprop: "url",
-    exintro: "1",
+    redirects: "1",
     explaintext: "1",
+    exsectionformat: "wiki",
     piprop: "thumbnail|name|original",
     pilicense: "free",
     pithumbsize: "1000"
@@ -217,9 +220,10 @@ async function resolveImage(page: {
 export async function resolveWikipediaSources(queries: string[], limit = 3, signal?: AbortSignal): Promise<ResolvedWikipediaSource[]> {
   const cleanQueries = Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(0, 5);
   if (!cleanQueries.length) return [];
-  const searchedTitles = await Promise.all(cleanQueries.map((query) => searchWikipedia(query, 1, signal)));
-  const titles = Array.from(new Set(searchedTitles.flat().filter(Boolean))).slice(0, limit);
-  const pages = await fetchPages(titles, signal);
+  const exact = await fetchPages(cleanQueries.slice(0, limit), signal);
+  const searchedTitles = exact.length ? [] : await Promise.all(cleanQueries.map((query) => searchWikipedia(query, 1, signal)));
+  const titles = Array.from(new Set(exact.length ? exact.map(page => page.title!) : searchedTitles.flat().filter(Boolean))).slice(0, limit);
+  const pages = exact.length ? exact : await fetchPages(titles, signal);
   const pagesByTitle = new Map(pages.map((page) => [page.title?.toLowerCase(), page]));
   const orderedPages = titles.map((title) => pagesByTitle.get(title.toLowerCase())).filter(Boolean) as typeof pages;
   const resolved = await Promise.all((orderedPages.length ? orderedPages : pages).map(async (page) => ({

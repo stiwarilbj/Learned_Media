@@ -5,10 +5,10 @@
   const DEFAULT_SETTINGS = {
     obscurity: 5,
     displayMode: "picture-text",
-    sentenceLength: 2,
+    sentenceLength: 3,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 11;
+  const TOPIC_CATALOG_VERSION = 12;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Super Duper Hard"];
@@ -19,6 +19,9 @@
     workspaceId: "local-workspace",
     workspaceName: "Local Workspace",
     workspaces: [],
+    factMemory: [],
+    batchAccepted: 0,
+    keyEditEpoch: 0,
     view: "feed",
     started: false,
     topics: makeTopics(),
@@ -67,7 +70,25 @@
   let youtubeSearchToken = 0;
 
   function makeTopics() {
-    return TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
+    const tree = TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
+    function english(topic) {
+      const original = topic.label;
+      const replacements = { "Paul et Virginie": "Paul and Virginia", "Rokusei Senjutsu (Six-Star Astrology) Tells Your Fortune": "Six-Star Astrology Tells Your Fortune" };
+      topic.label = (replacements[original] || original).replace(/\s*\([^)]*\)/g, "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\x20-\x7E’‘–—]/g, "").replace(/\s+/g, " ").trim() || original;
+      if (topic.label !== original) topic.aliases = Array.from(new Set((topic.aliases || []).concat(original)));
+      (topic.children || []).forEach(english);
+    }
+    const literature = tree.find(function (topic) { return topic.label === "Literature"; });
+    if (literature) {
+      english(literature);
+      const books = (literature.children || []).find(function (topic) { return topic.label === "Books"; });
+      if (books) {
+        literature.children = [books].concat(literature.children.filter(function (topic) { return topic !== books; }));
+        const list = (books.children || []).find(function (topic) { return topic.label === "Books from Your List"; });
+        if (list) books.children = [list].concat(books.children.filter(function (topic) { return topic !== list; }));
+      }
+    }
+    return tree;
   }
   function buildTopicNode(seed, parentPath, depth, rootIndex) {
     const label = typeof seed === "string" ? seed : titleCaseCatalogLabel(seed.label);
@@ -175,23 +196,23 @@
     "Pick the subjects you want to see. You can change them anytime.",
     "New choices shape the next batch.",
     "Choose at least one topic from the checklist to begin.",
-    "Add your API key in Settings to personalize the next batch.",
+    "Add your API key in Settings for the next batch",
     "One small idea at a time. Every card has a place to look next.",
     "Keep going.",
     "Make the feed feel like yours.",
     "Settings stay calm, clear, and close to the experience they shape.",
     "Use Gemini for fresh facts, Learn more, and questions.",
-    "Your key is held in memory for this session, sent only when Gemini is requested, and never saved to disk.",
+    "Your key is remembered in this Mac’s Keychain, separate from workspaces, and sent only when Gemini is requested.",
     "Create or copy one in Google AI Studio, then paste it here.",
     "Use your own YouTube Data API key for the approved video library.",
-    "Your YouTube key stays in session memory and is never saved to learning data or GitHub.",
+    "Your YouTube key is remembered in this Mac’s Keychain, separate from workspaces, and never synced to your account.",
     "Website keys may be restricted to the GitHub Pages site. The Mac app needs a key that permits native requests. Google will report restriction failures clearly.",
     "Google sign-in keeps your account ready on this Mac.",
     "Google sign-in is wired to the Learned Media Supabase project. Enable Google in its Auth provider settings to use it.",
     "Choose the atmosphere you want to return to.",
     "Clear the slate.",
     "Feed reset is gentle. These controls affect the rest of your saved workspace.",
-    "Your Gemini credential is kept in memory only. Learning data stays on this Mac until you clear it.",
+    "Your Gemini credential is stored in this Mac’s Keychain. Learning data stays on this Mac until you clear it.",
     "Keep the ideas that made you pause.",
     "Nothing here yet."
   ]);
@@ -234,8 +255,7 @@
     }
     if (message.type === "generationCard" && message.token === state.generationRequestToken && state.started) {
       const raw = message.card;
-      if (!raw || !raw.id || state.cards.some(function (card) { return card.id === raw.id || card.title === raw.title; })) return;
-      state.cards.push(normalizeCard(raw));
+      if (!acceptNewFact(raw)) return;
       saveState();
       render();
     }
@@ -290,7 +310,7 @@
         const parent = flatTopics().find(function (candidate) { return candidate.path.slice(0, index + 1).join("\u0000") === topic.path.slice(0, index + 1).join("\u0000"); });
         return total * ((parent ? parent.weight : 10) / 10);
       }, 10);
-      return { path: topic.path, weight: Math.max(1, Math.round(pathWeight)) };
+      return { path: topic.path, weight: Math.max(1, Math.round(pathWeight)), difficulty: (state.profile[topic.path.join(" / ")] || {}).targetDifficulty || state.settings.obscurity };
     });
     const result = [];
     while (pool.length && result.length < (limit || 10)) {
@@ -312,6 +332,7 @@
     if (!Array.isArray(saved) || !saved.length) return makeTopics();
     let next = makeTopics();
     const fresh = flatTopics(next);
+    const byId = new Map(fresh.map(function (topic) { return [topic.id, topic]; }));
     const byPath = new Map(fresh.map(function (topic) { return [topic.path.join("\u0000").toLowerCase(), topic]; }));
     const byLabel = new Map();
     const byAlias = new Map();
@@ -328,7 +349,7 @@
       }, []);
     }
     oldFlat(saved).forEach(function (oldTopic) {
-      const target = byPath.get(oldTopic.path.join("\u0000").toLowerCase())
+      const target = byId.get(oldTopic.id) || byPath.get(oldTopic.path.join("\u0000").toLowerCase())
         || ((byLabel.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byLabel.get(oldTopic.label.toLowerCase())[0] : null)
         || ((byAlias.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byAlias.get(oldTopic.label.toLowerCase())[0] : null);
       if (target) {
@@ -380,13 +401,43 @@
     state.workspaces.push(created);
     return created;
   }
+  function memoryOf(card) {
+    return { id: card.id, title: card.title, hook: card.hook, body: card.body, claim: card.claim, topicPath: card.topicPath || [], sourceUrls: (card.sources || []).map(function (source) { return source.url; }), evidence: (card.evidence || []).map(function (item) { return item.quote; }), known: Boolean(card.known || card.feedback === "heard") };
+  }
+  function archiveFacts(cards) {
+    const map = new Map(state.factMemory.map(function (item) { return [item.id, item]; }));
+    cards.forEach(function (card) { const item = memoryOf(card); item.known = item.known || Boolean(map.get(item.id) && map.get(item.id).known); map.set(item.id, item); });
+    state.factMemory = Array.from(map.values());
+  }
+  function repeatedFact(card) {
+    function normalized(text) { return String(text || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
+    const stop = new Set("a an the of in on at to for from by with and or but is was were are be been this that it its as his her their had has have who which they he she into through about also one two three".split(" "));
+    function words(text) { return new Set(normalized(text).split(" ").filter(function (word) { return word.length > 2 && !stop.has(word); })); }
+    function overlap(a,b) { return Array.from(a).filter(function (word) { return b.has(word); }).length / Math.max(1,Math.min(a.size,b.size)); }
+    const item = memoryOf(card);
+    return state.factMemory.some(function (old) {
+      if (old.id === item.id || normalized(old.title) === normalized(item.title) || normalized(old.body) === normalized(item.body)) return true;
+      if (item.claim && old.claim && normalized(item.claim) === normalized(old.claim)) return true;
+      if (item.evidence.some(function (quote) { return (old.evidence || []).some(function (other) { return normalized(quote) === normalized(other); }); })) return true;
+      return overlap(words(item.body),words(old.body)) >= .78 && (overlap(words(item.title),words(old.title)) >= .5 || item.sourceUrls.some(function (url) { return (old.sourceUrls || []).indexOf(url) >= 0; }));
+    });
+  }
+  function acceptNewFact(raw) {
+    if (!raw || !raw.id || !raw.body || repeatedFact(raw)) return false;
+    const card = normalizeCard(raw);
+    archiveFacts([card]);
+    state.cards.push(card);
+    state.batchAccepted += 1;
+    return true;
+  }
   function saveState() {
+    archiveFacts(state.cards);
     const snapshot = currentWorkspaceSnapshot();
     const record = activeWorkspaceRecord();
     record.name = state.workspaceName;
     record.updatedAt = snapshot.savedAt;
     record.state = snapshot;
-    const envelope = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: snapshot.savedAt, activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, account: state.account, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" };
+    const envelope = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: snapshot.savedAt, activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: state.factMemory, account: state.account, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" };
     queuedWorkspaceState = envelope;
     try { window.localStorage.setItem(LOCAL_WORKSPACE_KEY, JSON.stringify(envelope)); } catch (_) {}
     bridge("saveVideoCatalog", { catalog: state.youtube }).catch(function () {});
@@ -408,7 +459,7 @@
     const first = card.sources && card.sources[0] ? card.sources[0] : { title: card.sourceTitle || "Wikipedia", url: card.sourceUrl || wikiURL(card.sourceTitle || card.title) };
     const sources = (card.sources && card.sources.length ? card.sources : [first]).slice(0, 3);
     const image = card.image || (card.imageUrl ? { url: card.imageUrl, alt: card.title, sourceTitle: first.title, sourceUrl: first.url, filePageUrl: first.url, credit: "Wikipedia image" } : null);
-    const hook = titleCaseCatalogLabel(String(card.hook || card.title || "A small fact worth keeping").replace(/[.!?]+/g, "").split(/\s+/).slice(0, 12).join(" "));
+    const hook = titleCaseCatalogLabel(String(card.hook || card.title || "A small fact worth keeping").trim().replace(/\.+$/, ""));
     return Object.assign({
       id: "card-" + Date.now() + "-" + index,
       title: "",
@@ -669,8 +720,8 @@
     const snapshot = record.state || record;
     state.workspaceId = record.id || "local-workspace";
     state.workspaceName = record.name || "Local Workspace";
-    state.topics = migrateTopics(snapshot.topics || makeTopics(), Number(snapshot.catalogVersion || 0) < TOPIC_CATALOG_VERSION, Number(snapshot.catalogVersion || 0) < TOPIC_CATALOG_VERSION);
-    state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {});
+    state.topics = migrateTopics(snapshot.topics || makeTopics(), Number(snapshot.catalogVersion || 0) < 11, Number(snapshot.catalogVersion || 0) < 11);
+    state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: 3 });
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
     state.profile = snapshot.profile || {};
     state.started = Boolean(snapshot.started && state.cards.length);
@@ -802,7 +853,7 @@
     panel.appendChild(node("div", { className: "start-orbit" }, svg("sparkles", 24), node("span", { text: "Every card has a source" })));
     panel.appendChild(node("button", { className: "start-button", disabled: !hasSelection || !canStart, onClick: startFeed }, node("span", { text: !hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first" }), svg("arrow", 21)));
     panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection && canStart ? "shield" : "help", 13), " ", !hasSelection ? "Select a topic to unlock your feed." : canStart ? "Your mix stays yours." : "Connect at least five Gemini models in Settings to begin."));
-    const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings to personalize the next batch." })));
+    const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings for the next batch" })));
     keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Add key ", svg("arrow", 14)));
     panel.appendChild(keyCallout);
     panel.appendChild(feedCustomize(true));
@@ -900,13 +951,13 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Session key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Remembered key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
-    gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is held in memory for this session, sent only when Gemini is requested, and never saved to disk." })));
+    gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain, separate from workspaces, and sent only when Gemini is requested." })));
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
     const workingModels = {};
     state.modelChecks.forEach(function (model) { if (model.status === "working") workingModels[model.resolvedModel || model.model] = true; });
@@ -924,13 +975,13 @@
     youtube.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("image", 19)), node("div", {}, node("h2", { text: "YouTube Videos" }), node("p", { text: "Use your own YouTube Data API key for the approved video library." })), node("span", { className: "status-dot " + (state.youtubeStatus === "connected" || state.youtubeStatus === "refreshing" ? "connected" : state.youtubeStatus === "error" ? "unavailable" : ""), text: state.youtubeStatus === "connecting" ? "Connecting" : state.youtubeStatus === "refreshing" ? "Refreshing" : state.youtubeStatus === "connected" ? "Connected" : state.youtubeStatus === "error" ? "Needs attention" : "Not configured" })));
     youtube.appendChild(node("label", { className: "field-label", text: "Paste your YouTube API key here" }));
     const youtubeRow = node("div", { className: "key-input-row" });
-    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.youtubeKey = event.target.value; state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; state.youtubeProgress = { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }; bridge("cancelAll", {}).catch(function () {}); render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
+    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.youtubeKey = event.target.value; bridge("setYouTubeKey", { key: state.youtubeKey }).catch(function (error) { showToast(error.message); }); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; state.youtubeProgress = { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }; bridge("cancelAll", {}).catch(function () {}); render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
     const youtubeActions = node("div", { className: "key-actions" });
     youtubeActions.appendChild(node("button", { className: "primary-button small", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: youtubeConnect }, state.youtubeStatus === "connecting" ? " Connecting" : state.youtubeStatus === "refreshing" ? " Refreshing" : " Connect YouTube"));
     youtubeActions.appendChild(node("button", { className: "ghost-button", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: function () { youtubeConnect(true); } }, "Refresh videos"));
-    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.youtubeKey = ""; state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; bridge("cancelAll", {}).catch(function () {}); showToast("YouTube session key removed."); } }, "Remove key"));
+    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.keyEditEpoch += 1; state.youtubeKey = ""; bridge("setYouTubeKey", { key: "" }).catch(function (error) { showToast(error.message); }); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; bridge("cancelAll", {}).catch(function () {}); showToast("Remembered YouTube key removed."); } }, "Remove key"));
     youtubeRow.appendChild(youtubeActions); youtube.appendChild(youtubeRow);
-    youtube.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your YouTube key stays in session memory and is never saved to learning data or GitHub." })));
+    youtube.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your YouTube key is remembered in this Mac’s Keychain, separate from workspaces, and never synced to your account." })));
     const guideCopy = node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a YouTube key?" }), node("p", { html: "1. <a href=\"https://console.cloud.google.com/projectcreate\" target=\"_blank\">Create or select a Google Cloud project</a><br>2. <a href=\"https://console.cloud.google.com/apis/library/youtube.googleapis.com\" target=\"_blank\">Enable YouTube Data API v3</a><br>3. Open <a href=\"https://console.cloud.google.com/apis/credentials\" target=\"_blank\">Credentials</a> → Create credentials → API key and restrict it to YouTube Data API v3<br>4. Copy the key into Learned Media and connect" }));
     guideCopy.querySelectorAll("a").forEach(function (link) { link.addEventListener("click", function (event) { event.preventDefault(); bridge("openURL", { url: link.href }).catch(function (error) { showToast(error.message); }); }); });
     youtube.appendChild(node("div", { className: "api-key-guide youtube-guide" }, node("div", { className: "api-key-guide-icon" }, svg("image", 16)), guideCopy));
@@ -969,7 +1020,7 @@
     danger.appendChild(node("button", { className: "danger-button full", onClick: deleteData }, svg("reset", 15), " Delete learning data"));
     side.appendChild(danger);
     side.appendChild(node("section", { className: "settings-help mobile-use-help" }, svg("smartphone", 17), node("div", {}, node("strong", { text: "Use Learned Media on mobile" }), node("p", { text: "Open the site in Safari or Chrome on your iPhone. In Safari, tap Share → Add to Home Screen to keep it beside your other apps. The layout adapts to narrow screens without horizontal scrolling." }))));
-    side.appendChild(node("section", { className: "settings-help" }, svg("help", 17), node("div", {}, node("strong", { text: "Privacy by default" }), node("p", { text: "Your Gemini credential is kept in memory only. Learning data stays on this Mac until you clear it." }))));
+    side.appendChild(node("section", { className: "settings-help" }, svg("help", 17), node("div", {}, node("strong", { text: "Privacy by default" }), node("p", { text: "Your Gemini credential is stored in this Mac’s Keychain. Learning data stays on this Mac until you clear it." }))));
     grid.appendChild(side);
     section.appendChild(grid);
     return section;
@@ -1053,6 +1104,8 @@
       candidates.sort(function (left, right) { return String(right.savedAt || "").localeCompare(String(left.savedAt || "")); });
       const parsed = candidates[0];
       if (parsed) {
+        state.factMemory = parsed.factMemory || [];
+        (parsed.workspaces || []).forEach(function (record) { archiveFacts((record.state || {}).cards || []); });
         if (Array.isArray(parsed.workspaces) && parsed.workspaces.length) {
           state.workspaces = parsed.workspaces;
           const active = state.workspaces.find(function (workspace) { return workspace.id === parsed.activeWorkspaceId; }) || state.workspaces[0];
@@ -1067,6 +1120,9 @@
       } else {
         state.workspaces = [{ id: state.workspaceId, name: state.workspaceName, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: currentWorkspaceSnapshot() }];
       }
+      const epoch = state.keyEditEpoch;
+      const keys = await bridge("loadKeys", {});
+      if (epoch === state.keyEditEpoch) { state.key = keys.gemini || ""; state.youtubeKey = keys.youtube || ""; }
       const catalog = await bridge("loadVideoCatalog", {});
       if (catalog && catalog.videos) {
         const activity = youtubeActivity();
@@ -1163,17 +1219,19 @@
     state.loading = true;
     state.generationError = "";
     const count = Math.max(1, Math.min(10, Number(requestedCount) || 10));
+    state.batchAccepted = 0;
     render();
     try {
-      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: state.settings, avoid: state.cards.map(function (card) { return card.title; }), token: state.generationRequestToken });
+      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: state.settings, avoid: [], token: state.generationRequestToken });
       if (activeToken !== generationToken) return;
-      const fresh = (result.cards || []).filter(function (card) { return card && card.id && card.title && card.body && card.hook && card.topicPath && card.topicPath.length && card.sources && card.sources.length; }).map(normalizeCard).filter(function (card) { return !state.cards.some(function (existing) { return existing.id === card.id; }); });
-      state.cards = state.cards.concat(fresh);
-      if (!fresh.length) { state.pendingSlots = count; state.generationError = "Gemini returned no complete new cards. Retry when you are ready."; showToast("No new complete facts arrived. Retry when you are ready."); }
-      else if (result.partial) { state.pendingSlots = Math.max(1, count - fresh.length); state.generationError = result.retryGuidance || "Some work failed. Retry to fill the remaining batch."; showToast(fresh.length + " facts arrived. Retry to fill the remaining batch."); }
-      else { state.pendingSlots = 10; }
+      (result.cards || []).forEach(function (card) { acceptNewFact(card); });
+      const completed = state.batchAccepted;
+      state.pendingSlots = Math.max(0, count - completed);
+      if (state.pendingSlots) { state.generationError = completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."; }
+      else state.pendingSlots = 10;
     } catch (error) {
       if (activeToken !== generationToken) return;
+      state.pendingSlots = Math.max(1, count - state.batchAccepted);
       state.generationError = error.message || "Could not generate a new batch.";
       showToast(state.generationError);
     } finally {

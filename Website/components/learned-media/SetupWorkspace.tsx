@@ -72,7 +72,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
 
           <div className="setup-key-callout">
             <div className="setup-key-callout-icon"><Icon name="key" size={16} /></div>
-            <div><strong>Want Gemini-generated facts?</strong><span>Add your API key in Settings to personalize the next batch</span></div>
+            <div><strong>Want Gemini-generated facts?</strong><span>Add your API key in Settings for the next batch</span></div>
             <button type="button" className="text-button" onClick={onOpenSettings}>Add key <Icon name="arrow" size={14} /></button>
           </div>
 
@@ -82,7 +82,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
               <span className="control-label">Display style</span>
               <div className="option-grid two">{modeCopy.map((mode) => <button type="button" key={mode.id} className={`option-card ${settings.displayMode === mode.id ? "selected" : ""}`} onClick={() => onSettingsChange({ displayMode: mode.id })}><Icon name={mode.icon} size={16} /><span>{mode.label}</span></button>)}</div>
               <span className="control-label">Description length</span>
-              <div className="length-options">{[1, 2, 3, 4].map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} onClick={() => onSettingsChange({ sentenceLength: length as FeedSettings["sentenceLength"] })}>{length}</button>)}</div>
+              <p className="sentence-length-note">3 clear, specific sentences per fact</p>
               <button type="button" className={`setup-surprise ${settings.surpriseMe ? "selected" : ""}`} onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={14} /> Surprise Me <span>{settings.surpriseMe ? "On" : "Off"}</span></button>
             </div>
           </details>

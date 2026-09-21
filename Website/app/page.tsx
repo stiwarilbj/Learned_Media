@@ -8,6 +8,8 @@ import { Navigation } from "@/components/learned-media/Navigation";
 import { SettingsView } from "@/components/learned-media/SettingsView";
 import { VideoWorkspace } from "@/components/learned-media/VideoWorkspace";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
+import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
+import { rememberFact, mergeFactMemory, isRepeatedFact, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { generateGeminiFacts, generateLearningResponse, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
@@ -141,7 +143,7 @@ function appendUniqueCards(current: FactCard[], next: FactCard[]) {
 }
 
 function normalizeHook(value: string) {
-  const clean = value.replace(/[.!?]+/g, "").replace(/\s+/g, " ").trim().split(" ").slice(0, 12).join(" ");
+  const clean = value.replace(/[.]+$/, "").replace(/\s+/g, " ").trim();
   return titleCaseTopicLabel(clean);
 }
 
@@ -161,6 +163,12 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     title: raw.title?.trim() ?? "",
     hook: normalizeHook(raw.hook?.trim() || body.split(/[.!?]/)[0]?.split(" ").slice(0, 10).join(" ") || ""),
     body,
+    claim: raw.claim,
+    evidence: raw.evidence,
+    liked: raw.liked,
+    saved: raw.saved,
+    moreLike: raw.moreLike,
+    lessLike: raw.lessLike,
     topicPath: raw.topicPath?.length ? raw.topicPath : ["Surprise topic"],
     sources: sources.length ? sources : [{ title: sourceTitle, url: sourceUrl }],
     image: raw.image?.url.startsWith("/") ? undefined : raw.image,
@@ -239,6 +247,20 @@ export default function HomePage() {
   const workspaceIdRef = useRef("local-workspace");
   const workspaceNameRef = useRef("Local Workspace");
   const workspaceEpochRef = useRef(0);
+  const keyEditEpoch = useRef(0);
+  const factMemoryRef = useRef<FactMemory[]>([]);
+  // This history is used only on this device. It is never supplied to Gemini.
+  const archiveFacts = useCallback((incoming: FactCard[]) => {
+    factMemoryRef.current = mergeFactMemory(factMemoryRef.current, incoming.map(rememberFact));
+    if (workspaceStoreRef.current) workspaceStoreRef.current.factMemory = factMemoryRef.current;
+  }, []);
+  const acceptFact = useCallback((card: FactCard) => {
+    const next = rememberFact(card);
+    if (factMemoryRef.current.some(old => isRepeatedFact(next, old))) return false;
+    archiveFacts([card]);
+    setCards(current => appendUniqueCards(current, [card]));
+    return true;
+  }, [archiveFacts]);
 
   const cancelGeneration = useCallback(() => {
     generationAbortController.current?.abort();
@@ -405,12 +427,12 @@ export default function HomePage() {
   useEffect(() => {
     let active = true;
     const normalizeSavedState = (parsed: Partial<PersistedState> | null, collapseInitial: boolean): PersistedState => {
-      const restoredTopics = parsed?.topics ? migrateTopicTree(parsed.topics, collapseInitial, (parsed?.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION) : createDefaultTopics();
+      const restoredTopics = parsed?.topics ? migrateTopicTree(parsed.topics, collapseInitial, (parsed?.topicCatalogVersion ?? 0) < 11) : createDefaultTopics();
       const restoredSettings: FeedSettings = { ...DEFAULT_SETTINGS, ...parsed?.settings, displayMode: parsed?.settings?.displayMode === "text" ? "text" : "picture-text" };
-      if (collapseInitial && parsed?.settings?.obscurity !== undefined) restoredSettings.obscurity = migrateLegacyDifficulty(parsed.settings.obscurity);
+      restoredSettings.sentenceLength = 3;
       const realCards = (parsed?.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));
-      const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index, collapseInitial)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
-      const restoredProfile = parsed?.learningProfile ? (collapseInitial ? migrateLearningProfile(parsed.learningProfile) : parsed.learningProfile) : {};
+      const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
+      const restoredProfile = parsed?.learningProfile ? (parsed.learningProfile) : {};
       const restoredTheme = parsed?.theme === "dark" ? "dark" : "light";
       return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
     };
@@ -418,20 +440,22 @@ export default function HomePage() {
       let legacy: Partial<PersistedState> | null = null;
       try { legacy = readWorkspaceState(); } catch { legacy = null; }
       const shouldMigrate = typeof window !== "undefined" && window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1";
-      const legacyState = normalizeSavedState(legacy, shouldMigrate || (legacy?.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION);
+      const legacyState = normalizeSavedState(legacy, shouldMigrate || (legacy?.topicCatalogVersion ?? 0) < 11);
       const fallback: AppWorkspaceStore = { version: 1, activeId: "local-workspace", records: [makeLocalWorkspace(legacyState)], theme: legacyState.theme };
       const loaded = await readWorkspaceStore<PersistedState>(fallback);
       if (!active) return;
       const store = loaded ?? fallback;
       if (!store.records.length) store.records = fallback.records;
       const activeRecord = store.records.find((record) => record.id === store.activeId) ?? store.records[0];
+      factMemoryRef.current = mergeFactMemory(store.factMemory ?? [], store.records.flatMap(record => (record.state.cards ?? []).map(rememberFact)));
+      store.factMemory = factMemoryRef.current;
       workspaceStoreRef.current = store;
       workspaceIdRef.current = activeRecord.id;
       workspaceNameRef.current = activeRecord.name;
       setWorkspaceId(activeRecord.id);
       setWorkspaceName(activeRecord.name);
       setWorkspaceSummaries(store.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
-      const restored = normalizeSavedState(activeRecord.state, shouldMigrate || (activeRecord.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION);
+      const restored = normalizeSavedState(activeRecord.state, shouldMigrate || (activeRecord.state.topicCatalogVersion ?? 0) < 11);
       persistedStateRef.current = restored;
       setTopics(restored.topics);
       setSettings(restored.settings);
@@ -445,6 +469,8 @@ export default function HomePage() {
       if (window.localStorage.getItem(THEME_MIGRATION_KEY) !== "1") window.localStorage.setItem(THEME_MIGRATION_KEY, "1");
       await writeWorkspaceStore(store).catch(() => undefined);
       setHydrated(true);
+      const epoch = keyEditEpoch.current;
+      void Promise.all([readRememberedKey("gemini"), readRememberedKey("youtube")]).then(([gemini, youtube]) => { if (!active || keyEditEpoch.current !== epoch) return; apiKeyRef.current = gemini; setApiKey(gemini); setYoutubeKey(youtube); }).catch(() => setToast("Remembered keys could not be restored. Your workspaces are still available."));
     };
     void restore();
     if (isGitHubPagesRuntime()) setSupabaseConfigured(false);
@@ -466,6 +492,8 @@ export default function HomePage() {
       else currentStore.records.push(record);
       currentStore.activeId = workspaceIdRef.current;
       currentStore.theme = theme;
+      archiveFacts(cards);
+      currentStore.factMemory = factMemoryRef.current;
       setWorkspaceSummaries(currentStore.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
       void writeWorkspaceStore(currentStore).catch(() => setToast("Your workspace could not be saved. A local recovery copy was kept."));
     }
@@ -542,7 +570,7 @@ export default function HomePage() {
   }, [topics]);
 
   const startFeed = useCallback(async (rabbitHoleOverride?: string | null, requestedCount = pendingSlots) => {
-    if (loading) return;
+    if (loading || generationAbortController.current) return;
     if (!selectedCount) {
       setToast("Choose at least one topic before generating more facts.");
       return;
@@ -552,7 +580,6 @@ export default function HomePage() {
       setView("settings");
       return;
     }
-    generationAbortController.current?.abort();
     const controller = new AbortController();
     const requestId = requestGeneration.current;
     generationAbortController.current = controller;
@@ -576,25 +603,24 @@ export default function HomePage() {
           settings,
           learningProfile,
           rabbitHole: activeRabbitHole,
-          avoid: cards.map((card) => card.title),
+          avoid: [],
           signal: controller.signal,
           onProgress: (event) => {
-            if (event.type !== "card") return;
+            if (controller.signal.aborted || requestGeneration.current !== requestId || event.type !== "card") return;
             const card = normalizeFact(event.card, receivedIds.size);
-            receivedIds.add(card.id);
-            setCards((current) => appendUniqueCards(current, [card]));
+            if (acceptFact(card)) receivedIds.add(card.id);
           }
         });
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-        setCards((current) => appendUniqueCards(current, result.cards.map((card, index) => normalizeFact(card, index))));
+        result.cards.forEach((card, index) => { const normalized = normalizeFact(card, index); if (!receivedIds.has(normalized.id) && acceptFact(normalized)) receivedIds.add(normalized.id); });
         if (!result.completedCount) {
           setFeedHasMore(false);
           setPendingSlots(count);
           setGenerationError("Gemini returned no new complete cards. Retry when you are ready.");
           setToast("No new complete facts arrived. Retry when you are ready.");
-        } else if (result.partial) {
+        } else if (result.partial || receivedIds.size < count) {
           setFeedHasMore(false);
-          setPendingSlots(Math.max(1, count - result.completedCount));
+          setPendingSlots(Math.max(1, count - receivedIds.size));
           setGenerationError(result.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards.");
           setToast(result.completedCount + " facts arrived. Retry to fill the remaining slots.");
         } else {
@@ -607,7 +633,7 @@ export default function HomePage() {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
-        body: JSON.stringify({ topics: selectWeightedTopicPaths(topics, count), requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: cards.map((card) => card.title) }),
+        body: JSON.stringify({ topics: selectWeightedTopicPaths(topics, count), requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: [] }),
         signal: controller.signal
       });
       if (!response.ok) {
@@ -615,12 +641,12 @@ export default function HomePage() {
         throw new Error(payload.error ?? "Gemini could not generate this batch. Check the key in Settings and try again.");
       }
       await readNdjson(response, (message) => {
+        if (controller.signal.aborted || requestGeneration.current !== requestId) return;
         if (message.type === "progress") {
           const event = message.event as { type?: string; card?: Partial<FactCard> };
           if (event.type === "card" && event.card?.id && event.card.title && event.card.body && event.card.hook && event.card.topicPath?.length && event.card.sources?.length) {
             const card = normalizeFact(event.card, receivedIds.size);
-            receivedIds.add(card.id);
-            setCards((current) => appendUniqueCards(current, [card]));
+            if (acceptFact(card)) receivedIds.add(card.id);
           }
         } else if (message.type === "complete") {
           finalPayload = message as typeof finalPayload;
@@ -631,17 +657,16 @@ export default function HomePage() {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       if (streamError) throw new Error(streamError);
       const generated = (finalPayload?.cards ?? []).filter((card) => Boolean(card.id && card.title?.trim() && card.body?.trim() && card.hook?.trim() && card.topicPath?.length && card.sources?.length)).map((card, index) => normalizeFact(card, index));
-      generated.forEach((card) => receivedIds.add(card.id));
-      setCards((current) => appendUniqueCards(current, generated));
+      generated.forEach((card) => { if (!receivedIds.has(card.id) && acceptFact(card)) receivedIds.add(card.id); });
       if (!receivedIds.size) {
         setFeedHasMore(false);
         setPendingSlots(count);
         setGenerationError("Gemini returned no new complete cards. Retry when you are ready.");
         setToast("No new complete facts arrived. Retry when you are ready.");
-      } else if (finalPayload?.partial) {
+      } else if (finalPayload?.partial || receivedIds.size < count) {
         setFeedHasMore(false);
         setPendingSlots(Math.max(1, count - receivedIds.size));
-        setGenerationError(finalPayload.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards.");
+        setGenerationError(finalPayload?.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards.");
         setToast(receivedIds.size + " facts arrived. Retry to fill the remaining slots.");
       } else {
         setFeedHasMore(true);
@@ -651,7 +676,7 @@ export default function HomePage() {
     } catch (error) {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       setFeedHasMore(false);
-      setPendingSlots(count);
+      setPendingSlots(Math.max(1, count - receivedIds.size));
       const message = error instanceof Error ? error.message : "Gemini could not generate this batch. Check the key in Settings and try again.";
       setGenerationError(message);
       setToast(message);
@@ -664,6 +689,7 @@ export default function HomePage() {
   }, [apiKey, cards, geminiStatus, learningProfile, loading, pendingSlots, rabbitHole, selectedCount, settings, topics]);
 
   const resetFeed = useCallback(() => {
+    archiveFacts(cards);
     cancelGeneration();
     learningAbortController.current?.abort();
     questionAbortController.current?.abort();
@@ -835,6 +861,8 @@ export default function HomePage() {
   }, [cancelGeneration]);
 
   const handleApiKeyChange = useCallback((value: string) => {
+    keyEditEpoch.current += 1;
+    void saveRememberedKey("gemini", value).catch(() => setToast("This key could not be remembered on this device."));
     apiKeyRef.current = value;
     connectionAbortController.current?.abort();
     generationAbortController.current?.abort();
@@ -990,6 +1018,8 @@ export default function HomePage() {
   }, [connectYouTube, youtubeKey, youtubeStatus]);
 
   const handleYouTubeKeyChange = useCallback((value: string) => {
+    keyEditEpoch.current += 1;
+    void saveRememberedKey("youtube", value).catch(() => setToast("This key could not be remembered on this device."));
     youtubeAbortController.current?.abort();
     youtubeSearchAbortController.current?.abort();
     youtubeSearchCache.current.clear();
@@ -1000,8 +1030,10 @@ export default function HomePage() {
   }, []);
 
   const removeYouTubeKey = useCallback(() => {
+    keyEditEpoch.current += 1;
+    void saveRememberedKey("youtube", "").catch(() => setToast("The remembered YouTube key could not be removed."));
     handleYouTubeKeyChange("");
-    setToast("YouTube session key removed. Your imported catalog remains local.");
+    setToast("Remembered YouTube key removed. Your imported catalog remains local.");
   }, [handleYouTubeKeyChange]);
 
   const shuffleYouTube = useCallback(() => {
@@ -1161,7 +1193,7 @@ export default function HomePage() {
     if (view === "explore") return <ExploreView onChoose={(topic) => { if (topic === "Custom topic") { setView("feed"); setToast("Add a custom topic from your learning mix."); } else { setQuery(topic); setView("feed"); } }} />;
     if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(filterYouTubeVideos(current.videos, "", topic), 24).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={(id, seconds) => updateYouTubeWorkspace((current) => ({ ...current, playbackPositions: { ...current.playbackPositions, [id]: seconds } }))} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Session key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} />;
     return <FeedView cards={filteredCards} query={query} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, 10)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };

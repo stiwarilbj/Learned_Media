@@ -5,7 +5,7 @@ import { buildComputerScienceTopic } from "./computer-science-catalog";
 import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
 import { buildWarHistoryTopic } from "./war-history-catalog";
 
-export const TOPIC_CATALOG_VERSION = 11;
+export const TOPIC_CATALOG_VERSION = 12;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -130,7 +130,8 @@ const FAMOUS_AUTHORS: TopicSeed = branch("Famous Authors", [
 
 const literatureChildren = (LITERATURE_SEED as { label: string; children: TopicSeed[] }).children;
 const booksBranch = literatureChildren.find((child): child is { label: string; children: TopicSeed[] } => typeof child !== "string" && child.label === "Books");
-booksBranch?.children.push(...BOOK_EXPANSION);
+booksBranch?.children.unshift(BOOK_EXPANSION[BOOK_EXPANSION.length - 1]);
+booksBranch?.children.push(...BOOK_EXPANSION.slice(0, -1));
 literatureChildren.push(BEST_SELLING_BOOK_SERIES, FAMOUS_AUTHORS);
 
 const countries = [
@@ -307,8 +308,18 @@ function buildNode(seed: TopicSeed, parentPath: string[], depth: number, rootInd
   };
 }
 
+export function englishLiteratureLabel(label: string) {
+  const translated: Record<string,string> = {
+    "Paul et Virginie": "Paul and Virginia",
+    "Rokusei Senjutsu (Six-Star Astrology) Tells Your Fortune": "Six-Star Astrology Tells Your Fortune"
+  };
+  return (translated[label] ?? label.replace(/\s*\([^)]*\)/g, "")).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^\x00-\x7F’—–]/g, "").replace(/\s+/g, " ").trim();
+}
+
 export function createCatalogTopics(): TopicNode[] {
-  return TOPIC_SEEDS.map((seed, index) => buildNode(seed, [], 0, index));
+  // Keep original IDs and aliases while presenting English-only Literature labels.
+  const clean = (node: TopicNode): TopicNode => ({...node, label: englishLiteratureLabel(node.label), aliases: [...(node.aliases ?? []), node.label], children: node.children?.map(clean)});
+  return TOPIC_SEEDS.map((seed, index) => buildNode(seed, [], 0, index)).map(node => node.label === "Literature" ? clean(node) : node);
 }
 
 export function flattenTopics(nodes: TopicNode[], parentPath: string[] = []): Array<TopicNode & { path: string[] }> {
@@ -395,6 +406,7 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
   if (!saved?.length) return createCatalogTopics();
   let next = createCatalogTopics();
   const fresh = flattenTopics(next);
+  const byId = new Map(fresh.map(topic => [topic.id, topic]));
   const byPath = new Map(fresh.map((topic) => [topic.path.join("\u0000").toLowerCase(), topic]));
   const byLabel = new Map<string, typeof fresh>();
   const byAlias = new Map<string, typeof fresh>();
@@ -405,7 +417,7 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
   const legacySeriesParents = new Map<string, { selected: boolean; weight?: number }>();
   flattenTopics(saved).forEach((oldTopic) => {
     const key = oldTopic.path.join("\u0000").toLowerCase();
-    const target = byPath.get(key)
+    const target = byId.get(oldTopic.id) ?? byPath.get(key)
       ?? (byLabel.get(oldTopic.label.toLowerCase())?.length === 1 ? byLabel.get(oldTopic.label.toLowerCase())?.[0] : undefined)
       ?? (byAlias.get(oldTopic.label.toLowerCase())?.length === 1 ? byAlias.get(oldTopic.label.toLowerCase())?.[0] : undefined);
     if (target) {

@@ -4,7 +4,7 @@ import { createCatalogTopics } from "./topic-catalog";
 export const DEFAULT_SETTINGS: FeedSettings = {
   obscurity: 5,
   displayMode: "picture-text",
-  sentenceLength: 2,
+  sentenceLength: 3,
   surpriseMe: true
 };
 
