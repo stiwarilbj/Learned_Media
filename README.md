@@ -1,31 +1,71 @@
 # Learned Media
 
-Learned Media is available as both a website and a standalone macOS application.
+Learned Media is a learning workspace available as a Next.js website and a native macOS app. It creates Wikipedia-grounded learning cards with Gemini and includes a curated YouTube video workspace.
+
+## What it includes
+
+- Topic-based learning with generated facts, sources, and follow-up explanations
+- Questions and “Learn more” prompts for each fact card
+- A Videos workspace with approved creators and individually approved videos
+- Search, topic filters, saved videos, history, playback, and Gemini-powered smart search
+- Optional Google sign-in through Supabase for syncing workspace data
 
 ## Website
 
-Live site: [stiwarilbj.github.io/Learned_Media](https://stiwarilbj.github.io/Learned_Media/)
+[Open Learned Media on GitHub Pages](https://stiwarilbj.github.io/Learned_Media/)
 
-```bash
+### Run locally
+
+\`\`\`bash
 cd Website
 npm install
 npm run dev
-```
+\`\`\`
 
-Open http://localhost:3000, go to Settings, paste a Gemini API key, connect it, choose topics, and press Start. For Videos, add your own YouTube Data API v3 key in the separate YouTube settings panel. The key fields are entered in the app; no Gemini or YouTube environment file is needed.
+Open [http://localhost:3000](http://localhost:3000).
 
-GitHub Pages deploys automatically from `main` through the workflow in `.github/workflows/pages.yml`. The hosted build makes Gemini and Wikipedia requests directly in your browser, so you do not need to run a server.
+To build the static GitHub Pages site locally:
 
-## Mac application
+\`\`\`bash
+npm run build:github-pages
+\`\`\`
 
-Download the repository ZIP, unzip it, open App, and double-click Learned Media.app. Open Settings to paste a Gemini key. The app stores learning data in macOS Application Support and remembers API keys securely in this Mac’s Keychain.
+The generated site is written to \`Website/out/\`. Pushes to \`main\` deploy automatically through [\`.github/workflows/pages.yml\`](.github/workflows/pages.yml).
 
-The App folder includes source and rebuild scripts. Google sign-in remains available when the dedicated Supabase provider is configured; Gemini generation works locally without sign-in.
+### API keys and privacy
+
+Open **Settings** to connect the services you want to use:
+
+- **Gemini** is required for fresh facts, explanations, questions, and smart search.
+- **YouTube Data API v3** is required to import or refresh the approved video catalog.
+
+On the website, API keys are remembered in encrypted, device-local browser storage. They are not synced to your Google account or committed to GitHub. Workspace data can sync only after you sign in; keys and the YouTube catalog remain on the device.
+
+On GitHub Pages, requests to Gemini, Wikipedia, and YouTube run directly from your browser.
 
 ## Videos
 
-Videos is a separate workspace limited to the approved creator and individual-video catalog. Ordinary search, topic filters, saved videos, history, and playback work from the imported local catalog. Smart search uses the Gemini key. A YouTube key is required to import the catalog; Settings links to Google Cloud project creation, YouTube Data API v3, and Credentials with the exact setup steps.
+The Videos workspace stays inside the approved catalog. It supports:
 
-While connected, overdue creator sources refresh once a day and **Refresh videos** starts an immediate scan. 3Blue1Brown is limited to the two approved Neural Networks and Statistics playlists; new playlist additions are picked up automatically.
+- Ordinary search, channel and topic filters, saved videos, history, and playback
+- Gemini-powered smart search that ranks approved videos by meaning and explains each match
+- Daily refreshes for overdue creator sources, plus an immediate **Refresh videos** action
+- 3Blue1Brown videos from the approved Neural Networks and Statistics playlists, including future additions
 
-Smart video search first retrieves weighted matches from titles, descriptions, tags, and topic metadata, then asks Gemini to verify relevance. It can expand the search once when the first pass is too small, keeps channel/topic filters active, and explains why each accepted result matches. The approved catalog includes Jabroni Baseball (`UCfBXZotQqPlpDWXTbRbi2qA`).
+## macOS app
+
+Open [\`App/Learned Media.app\`](App/Learned%20Media.app) to launch the bundled app, or rebuild it from source:
+
+\`\`\`bash
+cd App
+
+# Build for the current Mac
+./script/build_app.sh
+
+# Build a universal arm64 + x86_64 app
+./script/build_universal.sh
+\`\`\`
+
+The build scripts create an ad-hoc signed app bundle and require macOS 13 or later. The app stores learning data in macOS Application Support and keeps API keys in the Mac’s Keychain. Google sign-in is available when the Supabase provider is configured; Gemini generation works without sign-in.
+
+See the [website README](Website/README.md) and [macOS app README](App/README.md) for client-specific details.
