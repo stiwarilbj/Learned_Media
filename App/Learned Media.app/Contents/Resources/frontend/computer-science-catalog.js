@@ -136,7 +136,8 @@
   ];
 
   var catalog = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
-  var computerScience = catalog.filter(function (item) { return item && item.label === "Computer Science"; })[0];
+  var science = catalog.filter(function (item) { return item && item.label === "Science"; })[0];
+  var computerScience = science && (science.children || []).filter(function (item) { return item && item.label === "Computer Science"; })[0];
   if (!computerScience) return;
 
   computerScience.children = [

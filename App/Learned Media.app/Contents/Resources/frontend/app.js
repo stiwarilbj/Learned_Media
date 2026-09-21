@@ -8,7 +8,7 @@
     sentenceLength: 3,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 19;
+  const TOPIC_CATALOG_VERSION = 20;
   const REQUIRED_WORKING_MODELS = 3;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
@@ -754,7 +754,9 @@
     if (state.youtube.selectedChannelId && !state.youtube.smartRan) return window.LEARNED_MEDIA_YOUTUBE.filter(all, state.youtube.searchText, state.youtube.topic, state.youtube.selectedChannelId).sort(function (a, b) { return state.youtube.order === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : state.youtube.order === "random" ? Math.random() - .5 : b.publishedAt.localeCompare(a.publishedAt); });
     if (state.youtube.smartRan && Array.isArray(state.youtube.smartIds)) return state.youtube.smartIds.map(function (id) { return all.find(function (video) { return video.id === id; }); }).filter(Boolean);
     if (state.youtube.searchText) return window.LEARNED_MEDIA_YOUTUBE.filter(all, state.youtube.searchText, state.youtube.topic);
-    const byId = {}; all.forEach(function (video) { byId[video.id] = video; }); return (state.youtube.discoverIds || []).map(function (id) { return byId[id]; }).filter(Boolean);
+    const byId = {}; all.forEach(function (video) { byId[video.id] = video; });
+    const recommendationIds = (state.youtube.discoverIds || []).length ? state.youtube.discoverIds : window.LEARNED_MEDIA_YOUTUBE.filter(all, "", state.youtube.topic).slice(0, 24).map(function (video) { return video.id; });
+    return recommendationIds.map(function (id) { return byId[id]; }).filter(Boolean);
   }
   function youtubeDetail(video) {
     const section = node("section", { className: "content-view video-workspace" });
@@ -1160,7 +1162,6 @@
     });
     body.appendChild(lengths);
     body.appendChild(node("button", { className: "feed-surprise-toggle" + (state.settings.surpriseMe ? " selected" : ""), onClick: function () { state.settings.surpriseMe = !state.settings.surpriseMe; saveState(); render(); } }, svg("sparkles", 14), " Surprise Me ", node("span", { text: state.settings.surpriseMe ? "On" : "Off" })));
-    body.appendChild(node("p", { className: "surprise-note", text: "When on, the next batch can include a less predictable topic from your chosen mix." }));
     details.appendChild(body);
     return details;
   }
@@ -1455,7 +1456,13 @@
         state.youtube = Object.assign({}, state.youtube, catalog, { catalogVersion: 3, sourceStates: Object.assign({}, catalog.sourceStates || {}) });
         state.youtube.videos = window.LEARNED_MEDIA_YOUTUBE.filter(state.youtube.videos || [], "", "All");
         applyYoutubeActivity(activity);
+        if (state.youtube.videos.length && !state.youtube.discoverIds.length) {
+          state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; });
+          saveState();
+        }
       }
+      if (state.youtubeKey.trim() && state.youtube.videos.length) state.youtubeStatus = "connected";
+      else if (state.youtubeKey.trim()) youtubeConnect(false);
       if (state.account && state.account.id) await syncCloudAccount();
     } catch (error) {
       state.toast = error.message;

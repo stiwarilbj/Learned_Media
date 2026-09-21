@@ -255,6 +255,7 @@ export default function HomePage() {
   const youtubeSearchAbortController = useRef<AbortController | null>(null);
   const globalSearchAbortController = useRef<AbortController | null>(null);
   const youtubeSearchCache = useRef(new Map<string, { results: YouTubeVideo[]; reasons: Record<string, RankedVideoSearchResult> }>());
+  const youtubeCatalogLoadedRef = useRef(false);
   const apiKeyRef = useRef("");
   const sessionIdRef = useRef("browser-" + Math.random().toString(36).slice(2));
   const persistedStateRef = useRef<PersistedState | null>(null);
@@ -525,6 +526,7 @@ export default function HomePage() {
       const activeRecord = workspaceStoreRef.current?.records.find((record) => record.id === workspaceIdRef.current);
       const restored = applyYouTubeActivity(workspace, activeRecord?.state.youtubeActivity);
       youtubeWorkspaceRef.current = restored;
+      youtubeCatalogLoadedRef.current = true;
       setYoutubeWorkspace(restored);
       if (restored.videos.length) setYoutubeStatus("connected");
     });
@@ -1301,6 +1303,22 @@ export default function HomePage() {
   }, [updateYouTubeWorkspace, youtubeKey]);
 
   useEffect(() => {
+    if (!hydrated || !youtubeCatalogLoadedRef.current || !youtubeKey.trim() || youtubeStatus !== "not-configured") return;
+    if (youtubeWorkspace.videos.length) {
+      setYoutubeStatus("connected");
+      return;
+    }
+    void connectYouTube(false);
+  }, [connectYouTube, hydrated, youtubeKey, youtubeStatus, youtubeWorkspace]);
+
+  useEffect(() => {
+    if (!hydrated || !youtubeWorkspace.videos.length || youtubeWorkspace.discoverIds.length) return;
+    const pool = filterYouTubeVideos(youtubeWorkspace.videos, "", youtubeWorkspace.selectedTopic);
+    const ids = selectRandomVideos(pool, 24).map((video) => video.id);
+    if (ids.length) updateYouTubeWorkspace((current) => current.discoverIds.length ? current : { ...current, discoverIds: ids });
+  }, [hydrated, updateYouTubeWorkspace, youtubeWorkspace]);
+
+  useEffect(() => {
     if (!youtubeKey.trim() || !["connected", "error"].includes(youtubeStatus)) return;
     const checkForDueSources = () => {
       if (document.visibilityState === "hidden" || youtubeAbortController.current) return;
@@ -1470,7 +1488,8 @@ export default function HomePage() {
     if (workspace.searchText.trim()) return youtubeSmartSearchRan ? youtubeSearchResults : filterYouTubeVideos(workspace.videos, workspace.searchText, workspace.selectedTopic, workspace.selectedChannelId);
     const pool = filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic);
     const byId = new Map(pool.map((video) => [video.id, video]));
-    return workspace.discoverIds.map((id) => byId.get(id)).filter((video): video is YouTubeVideo => Boolean(video));
+    const recommendationIds = workspace.discoverIds.length ? workspace.discoverIds : pool.slice(0, 24).map((video) => video.id);
+    return recommendationIds.map((id) => byId.get(id)).filter((video): video is YouTubeVideo => Boolean(video));
   }, [youtubeSearchResults, youtubeSmartSearchRan, youtubeWorkspace]);
 
   const filteredCards = useMemo(() => {
