@@ -3,6 +3,44 @@ import type { TopicSeed } from "./topic-catalog";
 type BranchSeed = { label: string; children: TopicSeed[]; aliases?: string[] };
 
 const branch = (label: string, children: TopicSeed[], aliases: string[] = []): BranchSeed => ({ label, children, aliases });
+const person = (label: string, aliases: string[] = []): TopicSeed => ({ label, children: [], aliases });
+
+const politicalPath = (...parts: string[]): string => parts.join("\u0000").toLowerCase();
+
+/** Explicitly preserves selections when a verified office or identity correction changes a path. */
+export const POLITICAL_TOPIC_MIGRATIONS: Record<string, string[]> = {
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Famous Senators", "Thaddeus Stevens")]: ["History", "United States", "U.S. Political History", "House", "Notable House Members", "Thaddeus Stevens"],
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Famous Senators", "John Lewis")]: ["History", "United States", "U.S. Political History", "House", "Notable House Members", "John Lewis"],
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Famous Senators", "Ronald Reagan")]: ["History", "United States", "U.S. Political History", "Presidents", "Ronald Reagan (1981–1989)"],
+  [politicalPath("History", "United States", "U.S. Political History", "House", "Famous House Members", "Robert La Follette Jr.")]: ["History", "United States", "U.S. Political History", "Senate", "Notable Senators", "Robert M. La Follette Jr."],
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Famous Senators", "Idaho William Borah")]: ["History", "United States", "U.S. Political History", "Senate", "Notable Senators", "William E. Borah"],
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Famous Senators", "Ted Kennedy")]: ["History", "United States", "U.S. Political History", "Senate", "Notable Senators", "Edward M. Kennedy"],
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Famous Senators", "Pat Moynihan")]: ["History", "United States", "U.S. Political History", "Senate", "Notable Senators", "Daniel Patrick Moynihan"],
+  [politicalPath("History", "United States", "U.S. Political History", "House", "Famous House Members", "Thomas P. O'Neill Jr.")]: ["History", "United States", "U.S. Political History", "House", "Notable House Members", "Tip O'Neill"],
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Inner Workings", "Named Legislative Stories", "Strom Thurmond's 1998 Stem-Cell Research Testimony")]: ["History", "United States", "U.S. Political History", "Senate", "Inner Workings", "Named Legislative Stories", "Strom Thurmond's 1999 Stem-Cell Research Testimony"],
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Inner Workings", "Named Legislative Stories", "Ted Kennedy, Strom Thurmond, and Stem-Cell Research")]: ["History", "United States", "U.S. Political History", "Senate", "Inner Workings", "Named Legislative Stories", "Ted Kennedy and Strom Thurmond Co-Sponsor Stem-Cell Research Protections (2002)"],
+  [politicalPath("History", "United States", "U.S. Political History", "Senate", "Inner Workings", "Named Legislative Stories", "Ted Kennedy's 2006 Stem-Cell Research Floor Push")]: ["History", "United States", "U.S. Political History", "Senate", "Inner Workings", "Named Legislative Stories", "Ted Kennedy and Strom Thurmond Co-Sponsor Stem-Cell Research Protections (2002)"]
+};
+
+/** Handles legacy custom-topic records whose old path was not retained by an earlier catalog. */
+export const POLITICAL_TOPIC_LABEL_MIGRATIONS: Record<string, string[]> = {
+  ["Strom Thurmond's 1998 Stem-Cell Research Testimony".toLowerCase()]: ["Strom Thurmond's 1999 Stem-Cell Research Testimony"],
+  ["Ted Kennedy, Strom Thurmond, and Stem-Cell Research".toLowerCase()]: ["Ted Kennedy and Strom Thurmond Co-Sponsor Stem-Cell Research Protections (2002)"],
+  ["Ted Kennedy's 2006 Stem-Cell Research Floor Push".toLowerCase()]: ["Ted Kennedy and Strom Thurmond Co-Sponsor Stem-Cell Research Protections (2002)"]
+};
+
+export const POLITICAL_HISTORY_AUDIT_CORRECTIONS = [
+  { subject: "Thaddeus Stevens", correction: "House, not Senate", sourceUrl: "https://history.house.gov/People/Detail/22236" },
+  { subject: "John Lewis", correction: "House, not Senate", sourceUrl: "https://history.house.gov/People/Detail/16948" },
+  { subject: "Robert M. La Follette Jr.", correction: "Senate, not House", sourceUrl: "https://www.senate.gov/senators/FeaturedBios/Featured_Bio_LaFollette.htm" },
+  { subject: "Theodore Roosevelt", correction: "Vice president term ends in 1901 when he succeeds to the presidency", sourceUrl: "https://www.senate.gov/about/officers-staff/vice-presidents.htm" },
+  { subject: "George Mifflin Dallas", correction: "Add vice-president term 1845–1849", sourceUrl: "https://www.senate.gov/about/officers-staff/vice-presidents.htm" },
+  { subject: "Birch Bayh", correction: "Add to Senate list; served Indiana 1963–1981", sourceUrl: "https://www.senate.gov/states/IN/senators.htm" },
+  { subject: "Constance Baker Motley", correction: "Retain in House list; verified U.S. Representative", sourceUrl: "https://history.house.gov/People/Detail/18324" },
+  { subject: "Strom Thurmond's 1998 Stem-Cell Research Testimony", correction: "Relabel as the verified November 4, 1999 hearing testimony", sourceUrl: "https://www.govinfo.gov/content/pkg/CHRG-106shrg61422/pdf/CHRG-106shrg61422.pdf" },
+  { subject: "Ted Kennedy, Strom Thurmond, and Stem-Cell Research", correction: "Replace the broad label with the source-supported 2002 co-sponsorship record", sourceUrl: "https://www.govinfo.gov/content/pkg/CREC-2002-05-01/pdf/CREC-2002-05-01-pt1-PgS3631.pdf" },
+  { subject: "Ted Kennedy's 2006 Stem-Cell Research Floor Push", correction: "Relabel to the source-supported 2002 co-sponsorship record", sourceUrl: "https://www.govinfo.gov/content/pkg/CREC-2002-05-01/pdf/CREC-2002-05-01-pt1-PgS3631.pdf" }
+] as const;
 
 const ordinal = (value: number): string => {
   const suffix = value % 100 >= 11 && value % 100 <= 13 ? "th" : (["th", "st", "nd", "rd"][value % 10] || "th");
@@ -69,11 +107,11 @@ const VICE_PRESIDENT_TERMS = [
   "John Adams (1789–1797)", "Thomas Jefferson (1797–1801)", "Aaron Burr (1801–1805)",
   "George Clinton (1805–1812)", "Elbridge Gerry (1813–1814)", "Daniel D. Tompkins (1817–1825)",
   "John C. Calhoun (1825–1832)", "Martin Van Buren (1833–1837)", "Richard Mentor Johnson (1837–1841)",
-  "John Tyler (1841)", "Millard Fillmore (1849–1850)", "William R. King (1853)",
+  "John Tyler (1841)", "George Mifflin Dallas (1845–1849)", "Millard Fillmore (1849–1850)", "William R. King (1853)",
   "John C. Breckinridge (1857–1861)", "Hannibal Hamlin (1861–1865)", "Andrew Johnson (1865)",
   "Schuyler Colfax (1869–1873)", "Henry Wilson (1873–1875)", "William A. Wheeler (1877–1881)",
   "Chester A. Arthur (1881)", "Thomas A. Hendricks (1885)", "Levi P. Morton (1889–1893)",
-  "Adlai E. Stevenson I (1893–1897)", "Garret Hobart (1897–1899)", "Theodore Roosevelt (1901–1909)",
+  "Adlai E. Stevenson I (1893–1897)", "Garret Hobart (1897–1899)", "Theodore Roosevelt (1901)",
   "Charles W. Fairbanks (1905–1909)", "James S. Sherman (1909–1912)", "Thomas R. Marshall (1913–1921)",
   "Calvin Coolidge (1921–1923)", "Charles G. Dawes (1925–1929)", "Charles Curtis (1929–1933)",
   "John Nance Garner (1933–1941)", "Henry A. Wallace (1941–1945)", "Harry S. Truman (1945)",
@@ -86,24 +124,25 @@ const VICE_PRESIDENT_TERMS = [
 ];
 
 const FAMOUS_SENATORS = [
-  "Daniel Webster", "Henry Clay", "John C. Calhoun", "Charles Sumner", "Thaddeus Stevens", "Stephen A. Douglas",
-  "Jefferson Davis", "Robert M. La Follette", "Hiram Johnson", "Idaho William Borah", "George Norris", "Huey Long",
-  "Robert A. Taft", "Arthur Vandenberg", "Margaret Chase Smith", "Estes Kefauver", "Richard Russell Jr.",
-  "Lyndon B. Johnson", "Hubert Humphrey", "Everett Dirksen", "Mike Mansfield", "Jacob K. Javits", "Edward M. Kennedy",
-  "Barry Goldwater", "Daniel Patrick Moynihan", "Howard Baker", "George Mitchell", "Robert C. Byrd", "Sam Nunn",
-  "John McCain", "Ted Kennedy", "Dianne Feinstein", "Barbara Mikulski", "John Lewis", "Bernie Sanders",
-  "Elizabeth Warren", "John F. Kerry", "Cory Booker", "Tammy Duckworth", "Lisa Murkowski", "Susan Collins",
-  "Ronald Reagan", "Richard Nixon", "Joe Biden", "Kamala Harris", "Daniel Inouye", "Pat Moynihan"
+  "Daniel Webster", "Henry Clay", "John C. Calhoun", "Charles Sumner", "Stephen A. Douglas", "Jefferson Davis",
+  "Robert M. La Follette", "Robert M. La Follette Jr.", "Hiram Johnson", person("William E. Borah", ["Idaho William Borah", "William Borah"]), "George Norris", "Huey Long",
+  "Robert A. Taft", "Arthur Vandenberg", "Margaret Chase Smith", "Estes Kefauver", "Richard Russell Jr.", "Lyndon B. Johnson",
+  "Hubert Humphrey", "Everett Dirksen", "Mike Mansfield", "Jacob K. Javits", person("Edward M. Kennedy", ["Ted Kennedy"]),
+  "Barry Goldwater", person("Daniel Patrick Moynihan", ["Pat Moynihan", "Daniel P. Moynihan"]), "Howard Baker", "George Mitchell", "Robert C. Byrd", "Sam Nunn",
+  "John McCain", "Dianne Feinstein", "Barbara Mikulski", "Bernie Sanders", "Elizabeth Warren", "John F. Kerry", "Cory Booker",
+  "Tammy Duckworth", "Lisa Murkowski", "Susan Collins", "Richard Nixon", "Joe Biden", "Kamala Harris", "Daniel Inouye",
+  "Birch Bayh", "Frank Church", "J. William Fulbright", "Edmund Muskie", "Robert F. Kennedy", "Bob Dole", "Richard Lugar",
+  "Claiborne Pell", "Lowell Weicker"
 ];
 
 const FAMOUS_HOUSE_MEMBERS = [
   "Frederick A. C. Muhlenberg", "Jonathan Dayton", "Nathaniel Macon", "Henry Clay", "John Quincy Adams", "Davy Crockett",
   "Thaddeus Stevens", "James G. Blaine", "Thomas Brackett Reed", "William Jennings Bryan", "Joseph Gurney Cannon",
   "Jeannette Rankin", "Fiorello La Guardia", "Sam Rayburn", "Joseph Martin Jr.", "John W. McCormack", "Gerald Ford",
-  "Tip O'Neill", "Jim Wright", "Thomas P. O'Neill Jr.", "Newt Gingrich", "Nancy Pelosi", "John Boehner", "Paul Ryan",
+  person("Tip O'Neill", ["Thomas P. O'Neill Jr."]), "Jim Wright", "Newt Gingrich", "Nancy Pelosi", "John Boehner", "Paul Ryan",
   "Steny Hoyer", "Barbara Jordan", "Shirley Chisholm", "John Lewis", "Constance Baker Motley", "Bella Abzug",
   "Alexandria Ocasio-Cortez", "Cynthia McKinney", "Adam Clayton Powell Jr.", "Elijah Cummings", "John Dingell",
-  "Henry Waxman", "Ronald Dellums", "Robert La Follette Jr.", "Emanuel Celler", "Hakeem Jeffries"
+  "Henry Waxman", "Ronald Dellums", "Emanuel Celler", "Hakeem Jeffries"
 ];
 
 const POLITICAL_PARTIES = [
@@ -266,8 +305,8 @@ const SENATE_INNER_WORKINGS: TopicSeed[] = [
     "Conference Committees and Bicameral Bargaining"
   ]),
   branch("Named Legislative Stories", [
-    "Everett Dirksen and the 1964 Civil Rights Act Cloture Vote", "Strom Thurmond's 1998 Stem-Cell Research Testimony",
-    "Ted Kennedy, Strom Thurmond, and Stem-Cell Research", "Ted Kennedy's 2006 Stem-Cell Research Floor Push",
+    "Everett Dirksen and the 1964 Civil Rights Act Cloture Vote", "Strom Thurmond's 1999 Stem-Cell Research Testimony",
+    "Strom Thurmond's Fetal-Tissue Research Position", "Ted Kennedy and Strom Thurmond Co-Sponsor Stem-Cell Research Protections (2002)",
     "Stem Cell Research Enhancement Act of 2005", "John McCain and Russ Feingold's Bipartisan Campaign Reform Act",
     "Army–McCarthy Hearings and Senate Investigation", "Keating Five Ethics Investigation", "ABSCAM Senate Investigation",
     "Robert Byrd and Senate Control of the Floor", "Margaret Chase Smith's Declaration of Conscience"
@@ -331,7 +370,7 @@ export function buildUnitedStatesPoliticalHistory(): TopicSeed {
     branch("Senate", [
       branch("Senate Eras", ["Early Senate", "Antebellum Senate", "Civil War and Reconstruction Senate", "Progressive Era Senate", "New Deal Senate", "Cold War Senate", "Modern Senate"]),
       branch("Inner Workings", SENATE_INNER_WORKINGS),
-      branch("Famous Senators", FAMOUS_SENATORS),
+      branch("Notable Senators", FAMOUS_SENATORS, ["Famous Senators"]),
       branch("Senate Elections and Representation", ELECTION_CYCLES.map((cycle) => `Senate ${cycle}`)),
       branch("Senate Committees and Leadership", ["Party Leaders", "Committee Chairs", "Filibuster and Cloture", "Advice and Consent"]),
       branch("Senate Corruption Scandals", CONGRESSIONAL_SCANDALS),
@@ -342,7 +381,7 @@ export function buildUnitedStatesPoliticalHistory(): TopicSeed {
       branch("House Eras", ["Early House", "Antebellum House", "Civil War and Reconstruction House", "Progressive Era House", "New Deal House", "Civil Rights Era House", "Modern House"]),
       branch("Inner Workings", HOUSE_INNER_WORKINGS),
       branch("Congresses During Each Speakership", CONGRESS_LABELS.map((label, index) => `${label} — ${HOUSE_SPEAKERS_BY_CONGRESS[index] ?? "Speakership"} Tenure`)),
-      branch("Famous House Members", FAMOUS_HOUSE_MEMBERS),
+      branch("Notable House Members", FAMOUS_HOUSE_MEMBERS, ["Famous House Members"]),
       branch("House Elections and Representation", ELECTION_CYCLES.map((cycle) => `House ${cycle}`)),
       branch("House Corruption Scandals", CONGRESSIONAL_SCANDALS),
       branch("Other House Scandals", ["House Ethics Investigations", "Lobbying and Influence", "Campaign Finance", "Other House Scandals"]),
@@ -392,7 +431,10 @@ export const POLITICAL_HISTORY_CATALOG_SOURCES = [
   "https://www.govinfo.gov/content/pkg/CHRG-106shrg61422/pdf/CHRG-106shrg61422.pdf",
   "https://www.govinfo.gov/content/pkg/GPO-CRECB-1998-pt1/pdf/GPO-CRECB-1998-pt1-10-1.pdf",
   "https://history.house.gov/Blog/2023/July/7-20-Discharge-Petitions/",
-  "https://history.house.gov/People/Office/Speakers/",
+  "https://history.house.gov/People/Office/Speakers_Numerical_Order/",
+  "https://history.house.gov/People/Detail/16948",
+  "https://history.house.gov/People/Detail/18324",
+  "https://history.house.gov/People/Detail/22236",
   "https://www.senate.gov/artandhistory/history/resources/pdf/chronlist.pdf",
   "https://www.supremecourt.gov/visiting/highlightsbrochure_may2026.pdf"
 ] as const;

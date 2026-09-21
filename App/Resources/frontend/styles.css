@@ -1381,3 +1381,45 @@ body { background: var(--page-gradient); }
   .setup-topics-details { display: block; }
   .setup-topics-panel .custom-topic-form { position: static; margin-left: -20px; margin-right: -20px; }
 }
+
+/* Authoritative responsive/menu layer. Keep overlays in the header stacking
+   context and let setup panels size from their contents instead of a fixed
+   viewport-height assumption. */
+html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
+.app-frame, .main-column, .main-scroll, .setup-stack, .setup-layout, .surface-panel { min-width: 0; max-width: 100%; }
+.top-navigation { position: sticky; top: 0; z-index: 500; isolation: isolate; border-bottom: 1px solid var(--border); box-shadow: none; }
+.top-nav-search, .top-nav-account, .workspace-switcher, .global-search-wrap { position: relative; z-index: 501; }
+.workspace-menu, .search-popover { z-index: 1000; pointer-events: auto; }
+.workspace-menu { width: min(300px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: min(70vh, 520px); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+.workspace-menu-row > button, .workspace-menu-actions button { overflow-wrap: anywhere; }
+.workspace-menu-row-actions { flex-wrap: wrap; }
+.workspace-menu-row > button:hover, .workspace-menu-row > button.active, .workspace-menu-actions button:hover, .workspace-menu-row-actions button:hover { background: rgba(224, 246, 255, .72); color: var(--primary); box-shadow: none; }
+.top-nav-link.active, .mobile-nav-link.active, .rail-link.active { background: rgba(224, 246, 255, .72); color: var(--primary); box-shadow: none; }
+.top-navigation input:focus, .global-search-wrap input:focus { box-shadow: none; border-color: var(--primary); }
+button:focus:not(:focus-visible), input:focus:not(:focus-visible), summary:focus:not(:focus-visible) { outline: none; }
+button:focus-visible, summary:focus-visible, select:focus-visible { outline: 2px solid rgba(76, 143, 247, .5); outline-offset: 2px; box-shadow: none; }
+input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset: 2px; box-shadow: none; }
+.start-orbit { box-shadow: 0 18px 35px rgba(70, 120, 165, .08); }
+.topic-difficulty-control input[type="range"], .feed-range { height: 26px; border: 0; background: transparent; box-shadow: none; }
+.topic-difficulty-control input[type="range"]:focus-visible, .feed-range:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset: 3px; border-radius: 999px; box-shadow: none; }
+.topic-difficulty-control input[type="range"]::-webkit-slider-runnable-track, .feed-range::-webkit-slider-runnable-track { height: 6px; border: 0; border-radius: 999px; background: #c9e2f8; }
+.topic-difficulty-control input[type="range"]::-webkit-slider-thumb, .feed-range::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -6px; border: 0; border-radius: 50%; background: #4d91e8; box-shadow: none; }
+.topic-difficulty-control input[type="range"]::-moz-range-track, .feed-range::-moz-range-track { height: 6px; border: 0; border-radius: 999px; background: #c9e2f8; }
+.topic-difficulty-control input[type="range"]::-moz-range-progress, .feed-range::-moz-range-progress { height: 6px; border: 0; border-radius: 999px; background: #c9e2f8; }
+.topic-difficulty-control input[type="range"]::-moz-range-thumb, .feed-range::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: #4d91e8; box-shadow: none; }
+@media (min-width: 821px) {
+  .main-scroll:has(.setup-stack) { overflow-y: auto; }
+  .setup-layout { align-items: stretch; }
+  .setup-topics-panel, .setup-start-panel { min-height: 0; height: auto; }
+  .setup-topics-panel { display: flex; flex-direction: column; }
+  .setup-topics-details { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+  .setup-topics-details .topic-tree { flex: 1 1 auto; min-height: 0; max-height: min(44vh, 430px); overflow-y: auto; }
+  .setup-topics-panel .custom-topic-form { position: static; left: auto; right: auto; bottom: auto; margin: auto -20px 0; padding-top: 14px; padding-bottom: 16px; }
+  .setup-start-panel { display: flex; flex-direction: column; }
+  .setup-customize { min-height: clamp(250px, 31vh, 300px); margin-top: auto; margin-bottom: 2px; }
+}
+@media (max-width: 820px) {
+  .setup-topics-details .topic-tree { max-height: min(48vh, 380px); overflow-y: auto; }
+  .setup-customize { min-height: 0; }
+  .workspace-menu { right: 0; }
+}

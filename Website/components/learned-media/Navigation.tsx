@@ -48,8 +48,18 @@ export function Navigation({ view, onNavigate, onReset, query, onQueryChange, to
         setSearchOpen(false);
       }
     };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setWorkspaceOpen(false);
+        setSearchOpen(false);
+      }
+    };
     document.addEventListener("pointerdown", closePopovers);
-    return () => document.removeEventListener("pointerdown", closePopovers);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closePopovers);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
   }, []);
   const chooseTopic = (label: string) => {
     setSearchOpen(false);

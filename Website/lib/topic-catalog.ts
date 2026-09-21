@@ -1,5 +1,5 @@
 import type { TopicNode } from "./types";
-import { buildUnitedStatesPoliticalHistory, buildWorldPoliticalHistory } from "./political-history-catalog";
+import { buildUnitedStatesPoliticalHistory, buildWorldPoliticalHistory, POLITICAL_TOPIC_LABEL_MIGRATIONS, POLITICAL_TOPIC_MIGRATIONS } from "./political-history-catalog";
 import { buildDiseasesTopic } from "./disease-catalog";
 import { buildComputerScienceTopic } from "./computer-science-catalog";
 import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
@@ -8,7 +8,7 @@ import { buildCompaniesTopic } from "./company-history-catalog";
 import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 
-export const TOPIC_CATALOG_VERSION = 20;
+export const TOPIC_CATALOG_VERSION = 21;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -496,9 +496,15 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
   const missingCustom = new Map<string, TopicNode>();
   const selectedIds = new Set<string>();
   const legacySeriesParents = new Map<string, { selected: boolean; weight?: number }>();
+  const resolveMigratedPath = (path: string[]): (typeof fresh)[number] | undefined => {
+    const key = path.join("\u0000").toLowerCase();
+    return byPath.get(key) ?? fresh.find((topic) => topic.path.slice(-path.length).join("\u0000").toLowerCase() === key);
+  };
   flattenTopics(saved).forEach((oldTopic) => {
     const key = oldTopic.path.join("\u0000").toLowerCase();
-    const target = byId.get(oldTopic.id) ?? byPath.get(key)
+    const migratedPath = POLITICAL_TOPIC_MIGRATIONS[key] ?? POLITICAL_TOPIC_LABEL_MIGRATIONS[oldTopic.label.toLowerCase()];
+    const target = (migratedPath ? resolveMigratedPath(migratedPath) : undefined)
+      ?? byId.get(oldTopic.id) ?? byPath.get(key)
       ?? (byLabel.get(oldTopic.label.toLowerCase())?.length === 1 ? byLabel.get(oldTopic.label.toLowerCase())?.[0] : undefined)
       ?? (byAlias.get(oldTopic.label.toLowerCase())?.length === 1 ? byAlias.get(oldTopic.label.toLowerCase())?.[0] : undefined);
     if (target) {
@@ -509,6 +515,7 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
     }
     const seriesParentPath = oldTopic.path.length > 3 && oldTopic.path[0] === "Literature" && oldTopic.path[1] === "Best-Selling Book Series" ? oldTopic.path.slice(0, 3).join("\u0000").toLowerCase() : undefined;
     if (seriesParentPath && !legacySeriesParents.has(seriesParentPath)) legacySeriesParents.set(seriesParentPath, { selected: Boolean(oldTopic.selected), weight: oldTopic.weight });
+    if (migratedPath) return;
     if (oldTopic.custom || oldTopic.selected) {
       const customKey = oldTopic.label.toLowerCase();
       if (!missingCustom.has(customKey)) missingCustom.set(customKey, { id: `custom-${slug(oldTopic.label)}`, label: oldTopic.label, selected: oldTopic.selected, expanded: false, weight: oldTopic.weight || 10, custom: true });

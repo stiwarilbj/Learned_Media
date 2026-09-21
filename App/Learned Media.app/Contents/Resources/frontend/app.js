@@ -8,7 +8,7 @@
     sentenceLength: 3,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 20;
+  const TOPIC_CATALOG_VERSION = 21;
   const REQUIRED_WORKING_MODELS = 3;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
@@ -421,6 +421,10 @@
     const selectedIds = [];
     const legacySeriesParents = new Map();
     const customs = new Map();
+    function resolveMigratedPath(pathParts) {
+      var key = pathParts.join("\u0000").toLowerCase();
+      return byPath.get(key) || fresh.find(function (topic) { return topic.path.slice(-pathParts.length).join("\u0000").toLowerCase() === key; });
+    }
     function oldFlat(nodes, parentPath) {
       const prefix = parentPath || [];
       return nodes.reduce(function (all, topic) {
@@ -429,7 +433,10 @@
       }, []);
     }
     oldFlat(saved).forEach(function (oldTopic) {
-      const target = byId.get(oldTopic.id) || byPath.get(oldTopic.path.join("\u0000").toLowerCase())
+      const oldPathKey = oldTopic.path.join("\u0000").toLowerCase();
+      const migratedPath = window.LEARNED_MEDIA_POLITICAL_AUDIT && window.LEARNED_MEDIA_POLITICAL_AUDIT.migrations && window.LEARNED_MEDIA_POLITICAL_AUDIT.migrations[oldPathKey];
+      const labelMigratedPath = window.LEARNED_MEDIA_POLITICAL_AUDIT && window.LEARNED_MEDIA_POLITICAL_AUDIT.labelMigrations && window.LEARNED_MEDIA_POLITICAL_AUDIT.labelMigrations[oldTopic.label.toLowerCase()];
+      const target = ((migratedPath || labelMigratedPath) ? resolveMigratedPath(migratedPath || labelMigratedPath) : null) || byId.get(oldTopic.id) || byPath.get(oldPathKey)
         || ((byLabel.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byLabel.get(oldTopic.label.toLowerCase())[0] : null)
         || ((byAlias.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byAlias.get(oldTopic.label.toLowerCase())[0] : null);
       if (target) {
@@ -441,6 +448,7 @@
           const parentPath = oldTopic.path.slice(0, 3).join("\u0000").toLowerCase();
           if (!legacySeriesParents.has(parentPath)) legacySeriesParents.set(parentPath, { selected: Boolean(oldTopic.selected), weight: oldTopic.weight });
         }
+        if (migratedPath) return;
         if (!(oldTopic.custom || oldTopic.selected)) return;
         const key = oldTopic.label.toLowerCase();
         if (!customs.has(key)) customs.set(key, { id: "custom-" + slug(oldTopic.label), label: oldTopic.label, selected: Boolean(oldTopic.selected), expanded: false, weight: oldTopic.weight || 10, custom: true });
@@ -1085,6 +1093,12 @@
       const target = event.target;
       if (target && target.closest && (target.closest(".workspace-switcher") || target.closest(".global-search-wrap"))) return;
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape") return;
+      document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
+      const active = document.activeElement;
+      if (active && active.blur) active.blur();
     });
   }
   function navigation() {
