@@ -15,8 +15,8 @@ create table if not exists public.profiles (
 create table if not exists public.user_settings (
   user_id uuid primary key references auth.users(id) on delete cascade,
   display_mode text not null default 'picture-text',
-  sentence_length numeric not null default 2,
-  obscurity_level smallint not null default 10 check (obscurity_level between 1 and 10),
+  sentence_length numeric not null default 3,
+  obscurity_level smallint not null default 5 check (obscurity_level between 1 and 10),
   surprise_me boolean not null default true,
   theme text not null default 'light',
   created_at timestamptz not null default now(),

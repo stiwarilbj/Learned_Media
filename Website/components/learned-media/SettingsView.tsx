@@ -6,6 +6,8 @@ import { buildFactExport, downloadBlob, type FactExportFormat } from "@/lib/expo
 import type { YouTubeImportProgress } from "@/lib/youtube";
 import { Icon } from "./icons";
 
+type SyncStatus = "signed-out" | "syncing" | "synced" | "offline" | "error";
+
 type SettingsViewProps = {
   apiKey: string;
   onApiKeyChange: (value: string) => void;
@@ -20,6 +22,10 @@ type SettingsViewProps = {
   onResetAll: () => void;
   onDeleteLearningData: () => void;
   onGoogleSignIn: () => void;
+  onGoogleSignOut: () => void;
+  account?: { id: string; email?: string; user_metadata?: Record<string, unknown> | null } | null;
+  syncStatus: SyncStatus;
+  syncError?: string;
   youtubeKey: string;
   youtubeStatus: "not-configured" | "connecting" | "refreshing" | "connected" | "error";
   youtubeProgress: YouTubeImportProgress;
@@ -49,7 +55,7 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, onYoutubeKeyChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn, onGoogleSignOut, account, syncStatus, syncError, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, onYoutubeKeyChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
   const workingModelCount = new Set(modelChecks.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
   const [exportCollection, setExportCollection] = useState<"all" | "saved">("all");
   const [exporting, setExporting] = useState<FactExportFormat | null>(null);
@@ -143,7 +149,9 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
 
           <section className="settings-card">
             <div className="settings-card-heading"><div className="settings-icon lilac"><Icon name="user" size={19} /></div><div><h2>Account</h2><p>Google sign-in keeps your mix available across sessions</p></div></div>
-            <div className="account-row"><div className="account-avatar">L</div><div><strong>Local workspace</strong><span>Not signed in</span></div><button type="button" className="secondary-button" onClick={onGoogleSignIn}><Icon name="login" size={15} /> Continue with Google</button></div>
+            <div className="account-row"><div className="account-avatar">{account ? (String(account.user_metadata?.full_name ?? account.user_metadata?.name ?? account.email ?? "G").slice(0, 1).toUpperCase()) : "L"}</div><div><strong>{account ? String(account.user_metadata?.full_name ?? account.user_metadata?.name ?? account.email ?? "Google account") : "Local workspace"}</strong><span>{account ? (syncStatus === "syncing" ? "Syncing your workspace…" : syncStatus === "offline" ? "Offline; local changes are safe" : syncStatus === "error" ? "Sync needs attention" : "Synced to your Google account") : "Not signed in · saved locally"}</span></div><button type="button" className="secondary-button" onClick={account ? onGoogleSignOut : onGoogleSignIn}><Icon name="login" size={15} /> {account ? "Sign out" : "Continue with Google"}</button></div>
+            {syncError && <p className="settings-feedback" role="alert">{syncError}</p>}
+            <p className="youtube-restriction-note">Workspace cards, saved state, learning history, questions, explanations, topic settings, and fact memory sync when you sign in. Gemini keys, YouTube keys, OAuth credentials, and the YouTube catalog stay on this device</p>
           </section>
 
           <section className="settings-card">

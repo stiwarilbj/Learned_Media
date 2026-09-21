@@ -2,7 +2,7 @@ export type View = "feed" | "explore" | "videos" | "saved" | "likes" | "history"
 
 export type DisplayMode = "picture-text" | "text";
 
-export type SentenceLength = 0.5 | 1 | 2 | 3 | 4;
+export type SentenceLength = 1 | 2 | 3 | 4 | 5;
 
 export type Difficulty = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
@@ -84,6 +84,7 @@ export type FactCard = {
   hook: string;
   title: string;
   body: string;
+  sentenceCount?: SentenceLength;
   claim?: string;
   evidence?: Array<{ sentence: number; sourceIndex: number; quote: string }>;
   topicPath: string[];

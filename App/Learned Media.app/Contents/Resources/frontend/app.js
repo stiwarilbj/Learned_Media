@@ -41,6 +41,10 @@
     youtubeError: "",
     youtube: { channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, smartReasons: {}, smartRan: false, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest", incomplete: false, catalogVersion: 4, sourceStates: {}, lastSyncAt: null },
     account: null,
+    cloudOwnerId: null,
+    cloudSyncReady: false,
+    syncStatus: "signed-out",
+    syncError: "",
     toast: "",
     loading: false,
     loadingCard: null,
@@ -52,6 +56,10 @@
     connectionToken: 0,
     generationRequestToken: 0
   };
+  function normalizeSentenceLength(value) {
+    const number = Number(value);
+    return Number.isInteger(number) && number >= 1 && number <= 5 ? number : 3;
+  }
   const app = document.getElementById("app");
   const pending = new Map();
   let requestID = 0;
@@ -64,6 +72,10 @@
   let focusedQuestionCardId = null;
   let focusedQuestionSelection = null;
   let saveInFlight = false;
+  let cloudSaveTimer = null;
+  let cloudSaveInFlight = false;
+  let cloudSaveQueued = false;
+  let cloudSyncToken = 0;
   let queuedWorkspaceState = null;
   let stopYoutubePlayback = null;
   let youtubeSyncActive = false;
@@ -388,10 +400,11 @@
   }
   function applyYoutubeActivity(activity) {
     if (!activity) return;
-    state.youtube = Object.assign({}, state.youtube, activity, { savedIds: activity.savedIds || [], history: activity.history || [], playbackPositions: activity.playbackPositions || {} });
+    const mapped = Object.assign({}, activity, { topic: activity.topic || activity.selectedTopic || "All", tab: activity.tab || activity.activeTab || "discover", order: activity.order || activity.channelOrder || "newest" });
+    state.youtube = Object.assign({}, state.youtube, mapped, { savedIds: mapped.savedIds || [], history: mapped.history || [], playbackPositions: mapped.playbackPositions || {} });
   }
   function currentWorkspaceSnapshot() {
-    return { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), topics: state.topics, settings: state.settings, cards: state.cards, profile: state.profile, started: state.started, youtubeActivity: youtubeActivity() };
+    return { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), topics: state.topics, settings: Object.assign({}, state.settings, { sentenceLength: normalizeSentenceLength(state.settings.sentenceLength) }), cards: state.cards, profile: state.profile, started: state.started, youtubeActivity: youtubeActivity() };
   }
   function activeWorkspaceRecord() {
     const existing = state.workspaces.find(function (item) { return item.id === state.workspaceId; });
@@ -402,11 +415,13 @@
     return created;
   }
   function memoryOf(card) {
-    return { id: card.id, title: card.title, hook: card.hook, body: card.body, claim: card.claim, topicPath: card.topicPath || [], sourceUrls: (card.sources || []).map(function (source) { return source.url; }), evidence: (card.evidence || []).map(function (item) { return item.quote; }), known: Boolean(card.known || card.feedback === "heard") };
+    const normalized = function (value) { return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); };
+    return { id: card.id, title: card.title, hook: card.hook, body: card.body, claim: card.claim, fingerprint: normalized((card.claim || card.title) + " " + card.body), topicPath: card.topicPath || [], sourceUrls: (card.sources || []).map(function (source) { return source.url; }), evidence: (card.evidence || []).map(function (item) { return item.quote; }), known: Boolean(card.known || card.feedback === "heard") };
   }
   function archiveFacts(cards) {
-    const map = new Map(state.factMemory.map(function (item) { return [item.id, item]; }));
-    cards.forEach(function (card) { const item = memoryOf(card); item.known = item.known || Boolean(map.get(item.id) && map.get(item.id).known); map.set(item.id, item); });
+    const map = new Map();
+    state.factMemory.forEach(function (item) { const key = item.fingerprint || item.id; map.set(key, item); });
+    cards.forEach(function (card) { const item = memoryOf(card); const key = item.fingerprint || item.id; const previous = map.get(key); item.known = item.known || Boolean(previous && previous.known); map.set(key, Object.assign({}, previous || {}, item)); });
     state.factMemory = Array.from(map.values());
   }
   function repeatedFact(card) {
@@ -417,6 +432,7 @@
     const item = memoryOf(card);
     return state.factMemory.some(function (old) {
       if (old.id === item.id || normalized(old.title) === normalized(item.title) || normalized(old.body) === normalized(item.body)) return true;
+      if (item.fingerprint && old.fingerprint && item.fingerprint === old.fingerprint) return true;
       if (item.claim && old.claim && normalized(item.claim) === normalized(old.claim)) return true;
       if (item.evidence.some(function (quote) { return (old.evidence || []).some(function (other) { return normalized(quote) === normalized(other); }); })) return true;
       return overlap(words(item.body),words(old.body)) >= .78 && (overlap(words(item.title),words(old.title)) >= .5 || item.sourceUrls.some(function (url) { return (old.sourceUrls || []).indexOf(url) >= 0; }));
@@ -437,11 +453,12 @@
     record.name = state.workspaceName;
     record.updatedAt = snapshot.savedAt;
     record.state = snapshot;
-    const envelope = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: snapshot.savedAt, activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: state.factMemory, account: state.account, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" };
+    const envelope = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: snapshot.savedAt, activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: state.factMemory, account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" };
     queuedWorkspaceState = envelope;
     try { window.localStorage.setItem(LOCAL_WORKSPACE_KEY, JSON.stringify(envelope)); } catch (_) {}
     bridge("saveVideoCatalog", { catalog: state.youtube }).catch(function () {});
     flushWorkspaceSave();
+    scheduleCloudSave();
   }
   function flushWorkspaceSave() {
     if (saveInFlight || !queuedWorkspaceState) return;
@@ -455,6 +472,85 @@
       if (queuedWorkspaceState) flushWorkspaceSave();
     });
   }
+  function mergeWorkspaceRecords(local, remote) {
+    const map = new Map((local || []).map(function (record) { return [record.id, record]; }));
+    (remote || []).forEach(function (record) {
+      const previous = map.get(record.id);
+      if (!previous || String(record.updatedAt || "") > String(previous.updatedAt || "")) map.set(record.id, record);
+    });
+    return Array.from(map.values());
+  }
+  function mergeFactMemories(local, remote) {
+    const map = new Map();
+    (local || []).concat(remote || []).forEach(function (item) {
+      const key = item.fingerprint || item.id;
+      const previous = map.get(key);
+      map.set(key, Object.assign({}, previous || {}, item, { fingerprint: item.fingerprint || (previous && previous.fingerprint) || key, known: Boolean((previous && previous.known) || item.known) }));
+    });
+    return Array.from(map.values());
+  }
+  function emptyCloudWorkspace() {
+    const now = new Date().toISOString();
+    return { id: "local-workspace", name: "Local Workspace", createdAt: now, updatedAt: now, state: { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: now, topics: makeTopics(), settings: Object.assign({}, DEFAULT_SETTINGS), cards: [], profile: {}, started: false, youtubeActivity: youtubeActivity({ savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, smartReasons: {}, smartRan: false, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest" }) } };
+  }
+  function scheduleCloudSave() {
+    if (!state.account || !state.cloudSyncReady) return;
+    if (cloudSaveInFlight) { cloudSaveQueued = true; return; }
+    if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = window.setTimeout(function () {
+      cloudSaveTimer = null;
+      if (cloudSaveInFlight || !state.account || !state.cloudSyncReady) return;
+      const token = cloudSyncToken;
+      cloudSaveInFlight = true;
+      state.syncStatus = "syncing";
+      state.syncError = "";
+      bridge("cloudSave", { state: { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: state.factMemory, account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" } }).then(function () {
+        if (token !== cloudSyncToken) return;
+        state.syncStatus = "synced";
+        state.syncError = "";
+        render();
+      }).catch(function (error) {
+        if (token !== cloudSyncToken) return;
+        state.syncStatus = navigator.onLine === false ? "offline" : "error";
+        state.syncError = error.message || "Cloud sync could not save this Mac.";
+        render();
+      }).then(function () {
+        cloudSaveInFlight = false;
+        if (cloudSaveQueued) { cloudSaveQueued = false; scheduleCloudSave(); }
+      });
+    }, 700);
+  }
+  async function syncCloudAccount() {
+    if (!state.account || !state.account.id) return;
+    const token = ++cloudSyncToken;
+    state.cloudSyncReady = false;
+    state.syncStatus = "syncing";
+    state.syncError = "";
+    render();
+    try {
+      const remote = await bridge("cloudLoad", {});
+      if (token !== cloudSyncToken || !state.account) return;
+      const compatible = !state.cloudOwnerId || state.cloudOwnerId === state.account.id;
+      const localWorkspaces = compatible ? state.workspaces : [];
+      const localMemory = compatible ? state.factMemory : [];
+      state.workspaces = mergeWorkspaceRecords(localWorkspaces, remote.records || []);
+      if (!state.workspaces.length) state.workspaces = [emptyCloudWorkspace()];
+      state.factMemory = mergeFactMemories(localMemory, remote.factMemory || []);
+      state.cloudOwnerId = state.account.id;
+      const active = state.workspaces.find(function (record) { return record.id === state.workspaceId; }) || state.workspaces[0];
+      applyWorkspaceSnapshot(active);
+      state.workspaces = state.workspaces.map(function (record) { return record.id === active.id ? Object.assign({}, record, { state: currentWorkspaceSnapshot() }) : record; });
+      state.cloudSyncReady = true;
+      state.syncStatus = "synced";
+      saveState();
+      render();
+    } catch (error) {
+      if (token !== cloudSyncToken) return;
+      state.syncStatus = navigator.onLine === false ? "offline" : "error";
+      state.syncError = error.message || "Cloud sync could not load this account.";
+      render();
+    }
+  }
   function normalizeCard(card, index) {
     const first = card.sources && card.sources[0] ? card.sources[0] : { title: card.sourceTitle || "Wikipedia", url: card.sourceUrl || wikiURL(card.sourceTitle || card.title) };
     const sources = (card.sources && card.sources.length ? card.sources : [first]).slice(0, 3);
@@ -467,6 +563,7 @@
       body: "",
       topicPath: [],
       difficulty: 5,
+      sentenceCount: normalizeSentenceLength(card.sentenceCount),
       accent: ["blue", "lilac", "mint", "sand", "coral"][index % 5],
       createdAt: new Date().toISOString()
     }, card, { sources: sources, image: image, hook: hook });
@@ -713,6 +810,9 @@
     state.loading = false;
     state.loadingCard = null;
     state.youtubeSmartLoading = false;
+    cloudSyncToken += 1;
+    cloudSaveQueued = false;
+    if (cloudSaveTimer) { window.clearTimeout(cloudSaveTimer); cloudSaveTimer = null; }
     if (stopYoutubePlayback) stopYoutubePlayback();
     bridge("cancelAll", {}).catch(function () {});
   }
@@ -720,11 +820,12 @@
     const snapshot = record.state || record;
     state.workspaceId = record.id || "local-workspace";
     state.workspaceName = record.name || "Local Workspace";
-    state.topics = migrateTopics(snapshot.topics || makeTopics(), Number(snapshot.catalogVersion || 0) < 11, Number(snapshot.catalogVersion || 0) < 11);
-    state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: 3 });
+    const catalogVersion = Number(snapshot.catalogVersion || snapshot.topicCatalogVersion || 0);
+    state.topics = migrateTopics(snapshot.topics || makeTopics(), catalogVersion < 11, catalogVersion < 11);
+    state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: normalizeSentenceLength(snapshot.settings && snapshot.settings.sentenceLength) });
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
-    state.profile = snapshot.profile || {};
-    state.started = Boolean(snapshot.started && state.cards.length);
+    state.profile = snapshot.profile || snapshot.learningProfile || {};
+    state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.length);
     applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube);
   }
   function workspaceMenu() {
@@ -841,6 +942,13 @@
     display.appendChild(node("button", { className: state.settings.displayMode === "picture-text" ? "selected" : "", onClick: function () { state.settings.displayMode = "picture-text"; saveState(); render(); } }, "Image + text"));
     display.appendChild(node("button", { className: state.settings.displayMode === "text" ? "selected" : "", onClick: function () { state.settings.displayMode = "text"; saveState(); render(); } }, "Text only"));
     body.appendChild(display);
+    body.appendChild(node("span", { className: "control-label", text: "Description length" }));
+    const lengths = node("div", { className: "feed-length-options", role: "group", ariaLabel: "Description length" });
+    [1, 2, 3, 4, 5].forEach(function (length) {
+      lengths.appendChild(node("button", { className: state.settings.sentenceLength === length ? "selected" : "", ariaPressed: state.settings.sentenceLength === length, onClick: function () { state.settings.sentenceLength = length; saveState(); render(); } }, String(length)));
+    });
+    body.appendChild(lengths);
+    body.appendChild(node("p", { className: "sentence-length-note", text: state.settings.sentenceLength + " specific sentence" + (state.settings.sentenceLength === 1 ? "" : "s") + " per fact" }));
     body.appendChild(node("button", { className: "feed-surprise-toggle" + (state.settings.surpriseMe ? " selected" : ""), onClick: function () { state.settings.surpriseMe = !state.settings.surpriseMe; saveState(); render(); } }, svg("sparkles", 14), " Surprise Me ", node("span", { text: state.settings.surpriseMe ? "On" : "Off" })));
     details.appendChild(body);
     return details;
@@ -1001,9 +1109,11 @@
     exportRow.appendChild(exportButtons); exports.appendChild(exportRow); main.appendChild(exports);
     const accountCard = node("section", { className: "settings-card" });
     accountCard.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("user", 19)), node("div", {}, node("h2", { text: "Account" }), node("p", { text: "Google sign-in keeps your account ready on this Mac." }))));
-    const accountRow = node("div", { className: "account-row" }, node("div", { className: "account-avatar", text: state.account ? (state.account.name || "G").slice(0, 1).toUpperCase() : "L" }), node("div", {}, node("strong", { text: state.account ? state.account.name : "Local workspace" }), node("span", { text: state.account ? state.account.email || "Google account" : "Not signed in" })));
+    const syncLabel = state.syncStatus === "syncing" ? "Syncing your workspace…" : state.syncStatus === "offline" ? "Offline; local changes are safe" : state.syncStatus === "error" ? "Sync needs attention" : "Synced to your Google account";
+    const accountRow = node("div", { className: "account-row" }, node("div", { className: "account-avatar", text: state.account ? (state.account.name || "G").slice(0, 1).toUpperCase() : "L" }), node("div", {}, node("strong", { text: state.account ? state.account.name : "Local workspace" }), node("span", { text: state.account ? syncLabel : "Not signed in · saved locally" })));
     accountRow.appendChild(node("button", { className: "secondary-button", onClick: state.account ? signOut : signIn }, svg("login", 15), state.account ? " Sign out" : " Continue with Google"));
     accountCard.appendChild(accountRow);
+    if (state.syncError) accountCard.appendChild(node("p", { className: "settings-feedback", text: state.syncError }));
     if (!state.account) accountCard.appendChild(node("p", { className: "settings-feedback", text: "Google sign-in is wired to the Learned Media Supabase project. Enable Google in its Auth provider settings to use it." }));
     main.appendChild(accountCard);
     const appearance = node("section", { className: "settings-card" });
@@ -1020,7 +1130,7 @@
     danger.appendChild(node("button", { className: "danger-button full", onClick: deleteData }, svg("reset", 15), " Delete learning data"));
     side.appendChild(danger);
     side.appendChild(node("section", { className: "settings-help mobile-use-help" }, svg("smartphone", 17), node("div", {}, node("strong", { text: "Use Learned Media on mobile" }), node("p", { text: "Open the site in Safari or Chrome on your iPhone. In Safari, tap Share → Add to Home Screen to keep it beside your other apps. The layout adapts to narrow screens without horizontal scrolling." }))));
-    side.appendChild(node("section", { className: "settings-help" }, svg("help", 17), node("div", {}, node("strong", { text: "Privacy by default" }), node("p", { text: "Your Gemini credential is stored in this Mac’s Keychain. Learning data stays on this Mac until you clear it." }))));
+    side.appendChild(node("section", { className: "settings-help" }, svg("help", 17), node("div", {}, node("strong", { text: "Privacy by default" }), node("p", { text: "Gemini and YouTube credentials stay in this Mac’s Keychain. When you sign in, workspace cards and learning history sync; credentials and the YouTube catalog never leave this Mac." }))));
     grid.appendChild(side);
     section.appendChild(grid);
     return section;
@@ -1105,6 +1215,7 @@
       const parsed = candidates[0];
       if (parsed) {
         state.factMemory = parsed.factMemory || [];
+        state.cloudOwnerId = parsed.cloudOwnerId || (parsed.account && parsed.account.id) || null;
         (parsed.workspaces || []).forEach(function (record) { archiveFacts((record.state || {}).cards || []); });
         if (Array.isArray(parsed.workspaces) && parsed.workspaces.length) {
           state.workspaces = parsed.workspaces;
@@ -1115,7 +1226,7 @@
           state.workspaces = [legacy];
           applyWorkspaceSnapshot(legacy);
         }
-        if (parsed.account) state.account = parsed.account;
+        if (parsed.account) { state.account = parsed.account; state.syncStatus = "syncing"; }
         document.body.classList.toggle("theme-dark", parsed.theme === "dark");
       } else {
         state.workspaces = [{ id: state.workspaceId, name: state.workspaceName, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: currentWorkspaceSnapshot() }];
@@ -1130,6 +1241,7 @@
         state.youtube.videos = window.LEARNED_MEDIA_YOUTUBE.filter(state.youtube.videos || [], "", "All");
         applyYoutubeActivity(activity);
       }
+      if (state.account && state.account.id) await syncCloudAccount();
     } catch (error) {
       state.toast = error.message;
     }
@@ -1349,22 +1461,38 @@
   async function signIn() {
     try {
       const result = await bridge("signIn", {});
+      const previousOwner = state.cloudOwnerId;
       state.account = result.account;
+      state.cloudOwnerId = previousOwner && previousOwner !== result.account?.id ? "account-switch" : previousOwner;
+      state.cloudSyncReady = false;
+      state.syncStatus = "syncing";
+      state.syncError = "";
       saveState();
       render();
-      showToast("Signed in with Google.");
+      await syncCloudAccount();
+      showToast("Signed in with Google. Your local workspaces are being merged safely.");
     } catch (error) {
+      state.syncStatus = "error";
+      state.syncError = error.message || "Google sign-in could not complete.";
+      render();
       showToast(error.message);
     }
   }
   async function signOut() {
     try {
+      cancelWorkspaceOperations();
       await bridge("signOut", {});
       state.account = null;
+      state.cloudSyncReady = false;
+      state.syncStatus = "signed-out";
+      state.syncError = "";
       saveState();
       render();
-      showToast("Signed out.");
+      showToast("Signed out. Your local workspace is still available.");
     } catch (error) {
+      state.syncStatus = "error";
+      state.syncError = error.message || "Could not sign out.";
+      render();
       showToast(error.message);
     }
   }

@@ -71,7 +71,10 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
             {(["picture-text", "text"] as DisplayMode[]).map((mode) => <button type="button" key={mode} className={settings.displayMode === mode ? "selected" : ""} onClick={() => onSettingsChange({ displayMode: mode })}>{mode === "picture-text" ? "Image + text" : "Text only"}</button>)}
           </div>
           <span className="control-label">Description length</span>
-          <p className="sentence-length-note">3 clear, specific sentences per fact</p>
+          <div className="feed-length-options" role="group" aria-label="Description length">
+            {[1, 2, 3, 4, 5].map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length as FeedSettings["sentenceLength"] })}>{length}</button>)}
+          </div>
+          <p className="sentence-length-note">{settings.sentenceLength} specific sentence{settings.sentenceLength === 1 ? "" : "s"} per fact</p>
           <button type="button" className={`feed-surprise-toggle ${settings.surpriseMe ? "selected" : ""}`} onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={14} /> Surprise Me <span>{settings.surpriseMe ? "On" : "Off"}</span></button>
         </div>
       </details>

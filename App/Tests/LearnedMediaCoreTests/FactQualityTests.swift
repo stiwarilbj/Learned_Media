@@ -3,7 +3,7 @@ import XCTest
 
 final class FactQualityTests: XCTestCase {
     private let source: [[String: Any]] = [[
-        "extract": "The 1847 Relief Act created soup kitchens in Ireland. The kitchens served millions of meals during the famine. Parliament later replaced the program with a revised poor-law system."
+        "extract": "The 1847 Relief Act created soup kitchens in Ireland. The kitchens served millions of meals during the famine. Parliament later replaced the program with a revised poor-law system. The revised system changed how relief was administered. The policy left a documented mark on Ireland’s relief institutions."
     ]]
 
     func testAcceptsOneSupportedThreeSentenceFact() {
@@ -59,5 +59,34 @@ final class FactQualityTests: XCTestCase {
             ],
             sources: source
         ))
+    }
+
+    func testSupportsEverySavedSentenceLength() {
+        let sentences = [
+            "The 1847 Relief Act created soup kitchens in Ireland.",
+            "The kitchens served millions of meals during the famine.",
+            "Parliament later replaced the program with a revised poor-law system.",
+            "The revised system changed how relief was administered.",
+            "The policy left a documented mark on Ireland’s relief institutions."
+        ]
+        for count in 1...5 {
+            let selected = Array(sentences.prefix(count))
+            let evidence = selected.enumerated().map { index, sentence in
+                ["sentence": index, "sourceIndex": 0, "quote": sentence] as [String: Any]
+            }
+            XCTAssertTrue(FactQuality.validate(title: "Ireland’s Named Relief Program", hook: "A National Soup Kitchen Law", claim: "The 1847 Relief Act created a specific relief program.", sentences: selected, evidence: evidence, sources: source, expectedSentences: count), "length \(count) should validate")
+        }
+    }
+
+    func testInvalidSavedSentenceLengthClampsToThree() {
+        let sentences = [
+            "The 1847 Relief Act created soup kitchens in Ireland.",
+            "The kitchens served millions of meals during the famine.",
+            "Parliament later replaced the program with a revised poor-law system."
+        ]
+        let evidence = sentences.enumerated().map { index, sentence in
+            ["sentence": index, "sourceIndex": 0, "quote": sentence] as [String: Any]
+        }
+        XCTAssertTrue(FactQuality.validate(title: "Ireland’s Named Relief Program", hook: "A National Soup Kitchen Law", claim: "The 1847 Relief Act created a specific relief program.", sentences: sentences, evidence: evidence, sources: source, expectedSentences: 99))
     }
 }

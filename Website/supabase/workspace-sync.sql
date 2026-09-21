@@ -20,7 +20,9 @@ create table if not exists public.fact_memory (
   fact_id text not null,
   content jsonb not null check (jsonb_typeof(content) = 'object'),
   known boolean not null default false,
-  primary key (user_id, fact_id)
+  fingerprint text not null,
+  primary key (user_id, fact_id),
+  unique (user_id, fingerprint)
 );
 alter table public.fact_memory enable row level security;
 revoke all on public.fact_memory from anon, authenticated;
@@ -43,10 +45,16 @@ returns void language plpgsql security invoker set search_path = '' as $$
 begin
   if auth.uid() is null then raise exception 'Sign in before syncing'; end if;
   if jsonb_typeof(items) <> 'array' or jsonb_array_length(items) > 100 then raise exception 'Invalid fact batch'; end if;
-  insert into public.fact_memory (user_id, fact_id, content, known)
-  select auth.uid(), value->>'id', value - 'known', coalesce((value->>'known')::boolean, false)
-  from jsonb_array_elements(items) where length(value->>'id') > 0
-  on conflict (user_id, fact_id) do update set
+  insert into public.fact_memory (user_id, fact_id, content, fingerprint, known)
+  select auth.uid(),
+         value->>'id',
+         value - 'known' - 'fingerprint',
+         coalesce(nullif(value->>'fingerprint', ''), value->>'id'),
+         coalesce((value->>'known')::boolean, false)
+  from jsonb_array_elements(items)
+  where length(value->>'id') > 0
+    and length(coalesce(nullif(value->>'fingerprint', ''), value->>'id')) > 0
+  on conflict (user_id, fingerprint) do update set
     content = excluded.content,
     known = public.fact_memory.known or excluded.known;
 end;

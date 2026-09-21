@@ -29,5 +29,9 @@ export function mergeRecords(local: CloudRecord[], remote: CloudRecord[]) {
   return Array.from(records.values());
 }
 export function safeMemory(item: any) {
-  return clean({ id: item.id, title: item.title, hook: item.hook, body: item.body, claim: item.claim, topicPath: item.topicPath || [], sourceUrls: item.sourceUrls || [], evidence: item.evidence || [], known: Boolean(item.known) });
+  return clean({ id: item.id, title: item.title, hook: item.hook, body: item.body, claim: item.claim, fingerprint: item.fingerprint || normalizedFingerprint(item), topicPath: item.topicPath || [], sourceUrls: item.sourceUrls || [], evidence: item.evidence || [], known: Boolean(item.known) });
+}
+
+function normalizedFingerprint(item: any) {
+  return String(item.claim || item.title || "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " " + String(item.body || "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }

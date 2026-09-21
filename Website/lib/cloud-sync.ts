@@ -27,13 +27,13 @@ export class WorkspaceCloudSync {
     const records = (data || []).map((row: any) => canonicalRecord(row.record)) as CloudRecord[];
     const factMemory: FactMemory[] = [];
     for (let from = 0; ; from += 500) {
-      const result = await api.from('fact_memory').select('content,known').eq('user_id', this.userId).order('fact_id').range(from, from + 499).abortSignal(signal) as { data: Array<{ content: Record<string, any>; known: boolean }> | null; error: any };
+      const result = await api.from('fact_memory').select('content,known,fingerprint').eq('user_id', this.userId).order('fact_id').range(from, from + 499).abortSignal(signal) as { data: Array<{ content: Record<string, any>; known: boolean; fingerprint?: string }> | null; error: any };
       if (result.error) throw result.error;
-      factMemory.push(...(result.data || []).map(row => ({ ...row.content, known: row.known }) as FactMemory));
+      factMemory.push(...(result.data || []).map(row => ({ ...row.content, fingerprint: row.fingerprint || row.content.fingerprint, known: row.known }) as FactMemory));
       if ((result.data || []).length < 500) break;
     }
     for (const record of records) this.sent.set(record.id, JSON.stringify(record));
-    for (const memory of factMemory) this.memories.set(memory.id, JSON.stringify(safeMemory(memory)));
+    for (const memory of factMemory) this.memories.set(memory.fingerprint || memory.id, JSON.stringify(safeMemory(memory)));
     return { records, factMemory };
   }
   async save(store: { ownerId?: string; records: CloudRecord[]; factMemory?: FactMemory[] }, signal: AbortSignal) {
@@ -46,12 +46,12 @@ export class WorkspaceCloudSync {
       if (error) throw error;
       this.sent.set(record.id, serialized);
     }
-    const changed = (store.factMemory || []).map(safeMemory).filter(item => this.memories.get(item.id) !== JSON.stringify(item));
+    const changed = (store.factMemory || []).map(safeMemory).filter(item => this.memories.get(item.fingerprint || item.id) !== JSON.stringify(item));
     for (let offset = 0; offset < changed.length; offset += 100) {
       const batch = changed.slice(offset, offset + 100);
       const { error } = await api.rpc('remember_facts', { items: batch }).abortSignal(signal);
       if (error) throw error;
-      batch.forEach(item => this.memories.set(item.id, JSON.stringify(item)));
+      batch.forEach(item => this.memories.set(item.fingerprint || item.id, JSON.stringify(item)));
     }
   }
 }

@@ -82,7 +82,10 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
               <span className="control-label">Display style</span>
               <div className="option-grid two">{modeCopy.map((mode) => <button type="button" key={mode.id} className={`option-card ${settings.displayMode === mode.id ? "selected" : ""}`} onClick={() => onSettingsChange({ displayMode: mode.id })}><Icon name={mode.icon} size={16} /><span>{mode.label}</span></button>)}</div>
               <span className="control-label">Description length</span>
-              <p className="sentence-length-note">3 clear, specific sentences per fact</p>
+              <div className="feed-length-options" role="group" aria-label="Description length">
+                {[1, 2, 3, 4, 5].map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length as FeedSettings["sentenceLength"] })}>{length}</button>)}
+              </div>
+              <p className="sentence-length-note">{settings.sentenceLength} specific sentence{settings.sentenceLength === 1 ? "" : "s"} per fact</p>
               <button type="button" className={`setup-surprise ${settings.surpriseMe ? "selected" : ""}`} onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={14} /> Surprise Me <span>{settings.surpriseMe ? "On" : "Off"}</span></button>
             </div>
           </details>

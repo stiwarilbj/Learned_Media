@@ -9,7 +9,7 @@ import { SettingsView } from "@/components/learned-media/SettingsView";
 import { VideoWorkspace } from "@/components/learned-media/VideoWorkspace";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
-import { rememberFact, mergeFactMemory, isRepeatedFact, type FactMemory } from "@/lib/fact-quality";
+import { rememberFact, mergeFactMemory, isRepeatedFact, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { generateGeminiFacts, generateLearningResponse, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
@@ -17,7 +17,9 @@ import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog"
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
 import { rankSearchResults } from "@/lib/search";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
-import { makeWorkspaceId, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
+import { accountWorkspaceBackup, makeWorkspaceId, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
+import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
+import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_WORKSPACE, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, relatedYouTubeVideos, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -163,6 +165,7 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     title: raw.title?.trim() ?? "",
     hook: normalizeHook(raw.hook?.trim() || body.split(/[.!?]/)[0]?.split(" ").slice(0, 10).join(" ") || ""),
     body,
+    sentenceCount: normalizeSentenceLength(raw.sentenceCount),
     claim: raw.claim,
     evidence: raw.evidence,
     liked: raw.liked,
@@ -214,6 +217,9 @@ export default function HomePage() {
   const [apiKey, setApiKey] = useState("");
   const [geminiStatus, setGeminiStatus] = useState<GeminiStatus>("not-configured");
   const [supabaseConfigured, setSupabaseConfigured] = useState(false);
+  const [account, setAccount] = useState<CloudAccount | null>(null);
+  const [syncStatus, setSyncStatus] = useState<"signed-out" | "syncing" | "synced" | "offline" | "error">("signed-out");
+  const [syncError, setSyncError] = useState("");
   const [modelChecks, setModelChecks] = useState<GeminiModelCheck[]>([]);
   const [modelChecking, setModelChecking] = useState(false);
   const [generationError, setGenerationError] = useState("");
@@ -249,6 +255,11 @@ export default function HomePage() {
   const workspaceEpochRef = useRef(0);
   const keyEditEpoch = useRef(0);
   const factMemoryRef = useRef<FactMemory[]>([]);
+  const cloudSyncRef = useRef<WorkspaceCloudSync | null>(null);
+  const cloudAbortController = useRef<AbortController | null>(null);
+  const cloudSaveTimer = useRef<number | null>(null);
+  const cloudEpoch = useRef(0);
+  const cloudUserId = useRef<string | null>(null);
   // This history is used only on this device. It is never supplied to Gemini.
   const archiveFacts = useCallback((incoming: FactCard[]) => {
     factMemoryRef.current = mergeFactMemory(factMemoryRef.current, incoming.map(rememberFact));
@@ -275,6 +286,9 @@ export default function HomePage() {
     questionAbortController.current?.abort();
     youtubeAbortController.current?.abort();
     youtubeSearchAbortController.current?.abort();
+    cloudAbortController.current?.abort();
+    if (cloudSaveTimer.current !== null) window.clearTimeout(cloudSaveTimer.current);
+    cloudSaveTimer.current = null;
     requestGeneration.current += 1;
     workspaceEpochRef.current += 1;
     setLoading(false);
@@ -282,6 +296,30 @@ export default function HomePage() {
     setQuestionLoading(null);
     setYoutubeSmartSearchLoading(false);
   }, []);
+
+  const scheduleCloudSave = useCallback(() => {
+    if (!hydrated || !cloudSyncRef.current || !workspaceStoreRef.current || !cloudUserId.current) return;
+    if (cloudSaveTimer.current !== null) window.clearTimeout(cloudSaveTimer.current);
+    cloudSaveTimer.current = window.setTimeout(() => {
+      cloudSaveTimer.current = null;
+      const sync = cloudSyncRef.current;
+      const store = workspaceStoreRef.current;
+      const userId = cloudUserId.current;
+      if (!sync || !store || !userId || store.ownerId !== userId) return;
+      const epoch = cloudEpoch.current;
+      const controller = new AbortController();
+      cloudAbortController.current?.abort();
+      cloudAbortController.current = controller;
+      setSyncStatus("syncing");
+      void sync.save(store, controller.signal).then(() => {
+        if (cloudEpoch.current === epoch && cloudUserId.current === userId) { setSyncStatus("synced"); setSyncError(""); }
+      }).catch((error) => {
+        if (controller.signal.aborted || cloudEpoch.current !== epoch) return;
+        setSyncStatus(navigator.onLine === false ? "offline" : "error");
+        setSyncError(error instanceof Error ? error.message : "Cloud sync could not save this workspace.");
+      });
+    }, 650);
+  }, [hydrated]);
 
   const makeCurrentSnapshot = useCallback((): PersistedState => ({
     persistenceVersion: PERSISTENCE_VERSION,
@@ -327,7 +365,7 @@ export default function HomePage() {
     setWorkspaceName(target.name);
     const restoredTopics = migrateTopicTree(target.state.topics, false, (target.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION);
     setTopics(restoredTopics);
-    setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings });
+    setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings, sentenceLength: normalizeSentenceLength(target.state.settings?.sentenceLength) });
     setCards(uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body)));
     setLearningProfile(target.state.learningProfile ?? {});
     setFeedStarted(Boolean(target.state.feedStarted && target.state.cards?.length));
@@ -429,7 +467,7 @@ export default function HomePage() {
     const normalizeSavedState = (parsed: Partial<PersistedState> | null, collapseInitial: boolean): PersistedState => {
       const restoredTopics = parsed?.topics ? migrateTopicTree(parsed.topics, collapseInitial, (parsed?.topicCatalogVersion ?? 0) < 11) : createDefaultTopics();
       const restoredSettings: FeedSettings = { ...DEFAULT_SETTINGS, ...parsed?.settings, displayMode: parsed?.settings?.displayMode === "text" ? "text" : "picture-text" };
-      restoredSettings.sentenceLength = 3;
+      restoredSettings.sentenceLength = normalizeSentenceLength(parsed?.settings?.sentenceLength);
       const realCards = (parsed?.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));
       const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
       const restoredProfile = parsed?.learningProfile ? (parsed.learningProfile) : {};
@@ -473,10 +511,77 @@ export default function HomePage() {
       void Promise.all([readRememberedKey("gemini"), readRememberedKey("youtube")]).then(([gemini, youtube]) => { if (!active || keyEditEpoch.current !== epoch) return; apiKeyRef.current = gemini; setApiKey(gemini); setYoutubeKey(youtube); }).catch(() => setToast("Remembered keys could not be restored. Your workspaces are still available."));
     };
     void restore();
-    if (isGitHubPagesRuntime()) setSupabaseConfigured(false);
-    else void fetch("/api/status").then((response) => response.json()).then((data: { supabaseConfigured?: boolean }) => setSupabaseConfigured(Boolean(data.supabaseConfigured))).catch(() => undefined);
+    setSupabaseConfigured(Boolean(CLOUD_URL && CLOUD_PUBLIC_KEY));
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    let active = true;
+    const auth = cloudClient().auth;
+    const loadAccount = async (session: { user: CloudAccount } | null) => {
+      const user = session?.user;
+      if (!user) {
+        cloudEpoch.current += 1;
+        cloudAbortController.current?.abort();
+        cloudSyncRef.current = null;
+        cloudUserId.current = null;
+        setAccount(null);
+        setSyncStatus("signed-out");
+        setSyncError("");
+        return;
+      }
+      if (!active || cloudUserId.current === user.id && cloudSyncRef.current) return;
+      const epoch = ++cloudEpoch.current;
+      cloudAbortController.current?.abort();
+      const controller = new AbortController();
+      cloudAbortController.current = controller;
+      cloudUserId.current = user.id;
+      cloudSyncRef.current = new WorkspaceCloudSync(user.id);
+      setAccount(user);
+      setSyncStatus("syncing");
+      setSyncError("");
+      try {
+        const currentStore = workspaceStoreRef.current;
+        const compatible = Boolean(currentStore && (!currentStore.ownerId || currentStore.ownerId === user.id));
+        if (currentStore) await accountWorkspaceBackup(currentStore.ownerId ?? user.id, structuredClone(currentStore));
+        const remote = await cloudSyncRef.current.load(controller.signal);
+        if (!active || controller.signal.aborted || cloudEpoch.current !== epoch) return;
+        const localStore = compatible ? currentStore : null;
+        const localRecords = (localStore?.records ?? []) as unknown as CloudRecord[];
+        const mergedRecords = mergeRecords(localRecords, remote.records);
+        const fallbackState: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: createDefaultTopics(), settings: DEFAULT_SETTINGS, cards: [], learningProfile: {}, feedStarted: false, theme: theme };
+        const records = mergedRecords.length ? mergedRecords as AppWorkspaceRecord[] : [makeLocalWorkspace(fallbackState)];
+        const preferredId = localStore?.activeId && records.some((record) => record.id === localStore.activeId) ? localStore.activeId : records[0].id;
+        const mergedStore: AppWorkspaceStore = { version: 1, ownerId: user.id, activeId: preferredId, records, theme: localStore?.theme ?? records[0].state.theme ?? theme, factMemory: mergeFactMemory(compatible ? (localStore?.factMemory ?? []) : [], remote.factMemory) };
+        workspaceStoreRef.current = mergedStore;
+        factMemoryRef.current = mergedStore.factMemory ?? [];
+        const target = records.find((record) => record.id === preferredId) ?? records[0];
+        workspaceIdRef.current = target.id;
+        workspaceNameRef.current = target.name;
+        setWorkspaceId(target.id);
+        setWorkspaceName(target.name);
+        setWorkspaceSummaries(records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+        setTopics(migrateTopicTree(target.state.topics ?? createDefaultTopics(), false, (target.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION));
+        setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings, sentenceLength: normalizeSentenceLength(target.state.settings?.sentenceLength) });
+        setCards(uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body)));
+        setLearningProfile(target.state.learningProfile ?? {});
+        setFeedStarted(Boolean(target.state.feedStarted && target.state.cards?.length));
+        setTheme(mergedStore.theme ?? "light");
+        persistedStateRef.current = target.state;
+        await writeWorkspaceStore(mergedStore);
+        setSyncStatus("synced");
+        scheduleCloudSave();
+      } catch (error) {
+        if (!active || controller.signal.aborted || cloudEpoch.current !== epoch) return;
+        setSyncStatus(navigator.onLine === false ? "offline" : "error");
+        setSyncError(error instanceof Error ? error.message : "Cloud sync could not load your account.");
+      }
+    };
+    void auth.getSession().then(({ data }) => loadAccount(data.session as { user: CloudAccount } | null));
+    const { data: listener } = auth.onAuthStateChange((_event, session) => { void loadAccount(session as { user: CloudAccount } | null); });
+    return () => { active = false; listener.subscription.unsubscribe(); cloudAbortController.current?.abort(); };
+  }, [hydrated, scheduleCloudSave]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -496,8 +601,9 @@ export default function HomePage() {
       currentStore.factMemory = factMemoryRef.current;
       setWorkspaceSummaries(currentStore.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
       void writeWorkspaceStore(currentStore).catch(() => setToast("Your workspace could not be saved. A local recovery copy was kept."));
+      scheduleCloudSave();
     }
-  }, [cards, feedStarted, hydrated, learningProfile, settings, theme, topics]);
+  }, [cards, feedStarted, hydrated, learningProfile, scheduleCloudSave, settings, theme, topics]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -532,6 +638,41 @@ export default function HomePage() {
       const difficulty = normalizeDifficulty(next.obscurity);
       setLearningProfile((current) => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, { ...value, unknownStreak: 0, targetDifficulty: difficulty }])) as LearningProfile);
     }
+  }, []);
+
+  const handleGoogleSignIn = useCallback(() => {
+    if (!supabaseConfigured) {
+      setSyncStatus("error");
+      setSyncError("Cloud sync is not configured for this build. Your workspace remains saved locally.");
+      return;
+    }
+    void googleSignIn().catch((error) => {
+      const message = error instanceof Error ? error.message : "Google sign-in could not start.";
+      setSyncStatus("error");
+      setSyncError(message);
+      setToast(message);
+    });
+  }, [supabaseConfigured]);
+
+  const handleGoogleSignOut = useCallback(() => {
+    cloudEpoch.current += 1;
+    cloudAbortController.current?.abort();
+    if (cloudSaveTimer.current !== null) window.clearTimeout(cloudSaveTimer.current);
+    cloudSaveTimer.current = null;
+    cloudSyncRef.current = null;
+    cloudUserId.current = null;
+    void cloudClient().auth.signOut().then(({ error }) => {
+      if (error) throw error;
+      setAccount(null);
+      setSyncStatus("signed-out");
+      setSyncError("");
+      setToast("Signed out. Your local workspace is still available.");
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : "Could not sign out.";
+      setSyncStatus("error");
+      setSyncError(message);
+      setToast(message);
+    });
   }, []);
 
   const handleToggleTopic = useCallback((id: string) => {
@@ -1193,7 +1334,7 @@ export default function HomePage() {
     if (view === "explore") return <ExploreView onChoose={(topic) => { if (topic === "Custom topic") { setView("feed"); setToast("Add a custom topic from your learning mix."); } else { setQuery(topic); setView("feed"); } }} />;
     if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(filterYouTubeVideos(current.videos, "", topic), 24).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={(id, seconds) => updateYouTubeWorkspace((current) => ({ ...current, playbackPositions: { ...current.playbackPositions, [id]: seconds } }))} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={() => { if (supabaseConfigured) window.location.href = "/auth/sign-in"; else setToast("Add Supabase environment variables to enable Google sign-in."); }} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus} syncError={syncError} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} />;
     return <FeedView cards={filteredCards} query={query} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, 10)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
