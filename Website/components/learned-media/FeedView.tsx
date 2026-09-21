@@ -98,12 +98,12 @@ export function FeedView({ cards, query = "", settings, topics, customTopic, loa
           <div className="feed-intro"><div><h1>Keep going</h1><p>One small idea at a time. Every card has a place to look next</p></div><span className="feed-count">{cards.length} cards in this session</span></div>
           <div className="fact-feed">
             {cards.map((card, index) => <Fragment key={card.id}>
-              {canLoadMore && !loading && index === Math.max(cards.length - 3, 0) && <div className="feed-load-more-nearby"><button type="button" className="small-load-button" onClick={onLoadMore}>Generate 10 more</button></div>}
+              {canLoadMore && index === Math.max(cards.length - 3, 0) && <div className="feed-load-more-nearby"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 10 more</button></div>}
               <FactCard card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} />
             </Fragment>)}
             {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> Gemini is building the next facts</div>}
-            {generationError && !loading && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry}>Retry missing facts</button></div>}
-            {canLoadMore && !loading && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore}>Generate 10 more</button></div>}
+            {generationError && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry} disabled={loading} aria-busy={loading}>Retry missing facts</button></div>}
+            {canLoadMore && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 10 more</button></div>}
           </div>
         </section>
       </div>

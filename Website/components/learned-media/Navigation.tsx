@@ -17,11 +17,14 @@ type NavigationProps = {
   factResults: Array<Pick<FactCard, "id" | "title">>;
   onChooseTopic: (label: string) => void;
   onChooseFact: (title: string) => void;
+  workspaceId: string;
   workspaceName: string;
   workspaces: WorkspaceSummary[];
   onSwitchWorkspace: (id: string) => void;
   onCreateWorkspace: () => void;
-  onRenameWorkspace: () => void;
+  onRenameWorkspace: (id: string) => void;
+  onDeleteWorkspace: (id: string) => void;
+  onMoveWorkspace: (id: string, direction: "up" | "down") => void;
 };
 
 const items: Array<{ id: View; label: string; icon: IconName }> = [
@@ -34,7 +37,7 @@ const items: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "settings", label: "Settings", icon: "settings" }
 ];
 
-export function Navigation({ view, onNavigate, onReset, query, onQueryChange, topicResults, factResults, onChooseTopic, onChooseFact, workspaceName, workspaces, onSwitchWorkspace, onCreateWorkspace, onRenameWorkspace }: NavigationProps) {
+export function Navigation({ view, onNavigate, onReset, query, onQueryChange, topicResults, factResults, onChooseTopic, onChooseFact, workspaceId, workspaceName, workspaces, onSwitchWorkspace, onCreateWorkspace, onRenameWorkspace, onDeleteWorkspace, onMoveWorkspace }: NavigationProps) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   return (
     <>
@@ -57,7 +60,7 @@ export function Navigation({ view, onNavigate, onReset, query, onQueryChange, to
             </div>}
           </div>
         </div>
-        <div className="top-nav-account"><button type="button" className="nav-reset" onClick={onReset}><Icon name="reset" size={15} /> Reset feed</button><div className="workspace-switcher"><button type="button" className="profile-chip" onClick={() => setWorkspaceOpen((open) => !open)} aria-expanded={workspaceOpen}><span className="profile-avatar">{workspaceName.slice(0, 1).toUpperCase()}</span><span className="profile-copy"><strong>{workspaceName}</strong><small>{workspaces.length} {workspaces.length === 1 ? "workspace" : "workspaces"}</small></span><Icon name="chevronDown" size={15} /></button>{workspaceOpen && <div className="workspace-menu" role="menu"><span className="workspace-menu-label">Workspaces</span>{workspaces.map((workspace) => <button type="button" role="menuitem" className={workspace.id === workspaces.find((item) => item.name === workspaceName)?.id ? "active" : ""} key={workspace.id} onClick={() => { onSwitchWorkspace(workspace.id); setWorkspaceOpen(false); }}>{workspace.name}</button>)}<div className="workspace-menu-actions"><button type="button" onClick={() => { onCreateWorkspace(); setWorkspaceOpen(false); }}>Create Workspace</button><button type="button" onClick={() => { onRenameWorkspace(); setWorkspaceOpen(false); }}>Rename</button></div></div>}</div></div>
+        <div className="top-nav-account"><button type="button" className="nav-reset" onClick={onReset}><Icon name="reset" size={15} /> Reset feed</button><div className="workspace-switcher"><button type="button" className="profile-chip" onClick={() => setWorkspaceOpen((open) => !open)} aria-expanded={workspaceOpen} aria-label="Open workspace manager"><span className="profile-avatar">{workspaceName.slice(0, 1).toUpperCase()}</span><span className="profile-copy"><strong>{workspaceName}</strong><small>{workspaces.length} {workspaces.length === 1 ? "workspace" : "workspaces"}</small></span><Icon name="chevronDown" size={15} /></button>{workspaceOpen && <div className="workspace-menu" role="menu"><span className="workspace-menu-label">All workspaces</span>{workspaces.map((workspace, index) => <div className="workspace-menu-row" key={workspace.id}><button type="button" role="menuitem" className={workspace.id === workspaceId ? "active" : ""} onClick={() => { onSwitchWorkspace(workspace.id); setWorkspaceOpen(false); }}>{workspace.name}</button><div className="workspace-menu-row-actions"><button type="button" onClick={() => onMoveWorkspace(workspace.id, "up")} disabled={index === 0} aria-label={`Move ${workspace.name} up`}>↑</button><button type="button" onClick={() => onMoveWorkspace(workspace.id, "down")} disabled={index === workspaces.length - 1} aria-label={`Move ${workspace.name} down`}>↓</button><button type="button" onClick={() => onRenameWorkspace(workspace.id)} aria-label={`Rename ${workspace.name}`}>Rename</button><button type="button" onClick={() => onDeleteWorkspace(workspace.id)} aria-label={`Delete ${workspace.name}`}>Delete</button></div></div>)}<div className="workspace-menu-actions"><button type="button" onClick={() => { onCreateWorkspace(); setWorkspaceOpen(false); }}>Create workspace</button></div></div>}</div></div>
       </header>
       <nav className="mobile-nav" aria-label="Mobile navigation">
         {items.filter((item) => item.id !== "likes").map((item) => <button type="button" key={item.id} className={`mobile-nav-link ${view === item.id ? "active" : ""}`} onClick={() => onNavigate(item.id)} aria-current={view === item.id ? "page" : undefined}><Icon name={item.icon} size={19} strokeWidth={1.8} /><span>{item.label}</span></button>)}

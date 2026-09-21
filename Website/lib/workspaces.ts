@@ -46,6 +46,19 @@ export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null):
       request.onerror = () => reject(request.error);
     });
     database.close();
+    // IndexedDB writes are asynchronous while the localStorage recovery copy is
+    // synchronous.  During a reload the older transactional record can win a
+    // race with a newer recovery snapshot, which makes cards or the active
+    // workspace appear to disappear.  Prefer whichever complete store carries
+    // the newest workspace revision.
+    const revision = (store: WorkspaceStore<T> | null) => Math.max(
+      0,
+      ...(store?.records ?? []).map((record) => {
+        const stateSavedAt = (record.state as { savedAt?: string } | undefined)?.savedAt;
+        return Math.max(Date.parse(record.updatedAt || "") || 0, Date.parse(stateSavedAt || "") || 0);
+      })
+    );
+    if (stored && recovery) return revision(recovery) >= revision(stored) ? recovery : stored;
     return stored ?? recovery ?? fallback;
   } catch {
     return recovery ?? fallback;

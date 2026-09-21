@@ -732,7 +732,7 @@
       if (plan.sort === "newest") ids.sort(function (a, b) { return byId[b].publishedAt.localeCompare(byId[a].publishedAt); });
       if (plan.sort === "oldest") ids.sort(function (a, b) { return byId[a].publishedAt.localeCompare(byId[b].publishedAt); });
       if (plan.sort === "random") ids = window.LEARNED_MEDIA_YOUTUBE.shuffle(ids.map(function (id) { return byId[id]; }), ids.length, []).map(function (video) { return video.id; });
-      const reasons = {}; valid.forEach(function (item) { reasons[item.videoId] = item; }); state.youtube.smartIds = ids; state.youtube.smartReasons = reasons; state.youtube.smartRan = true; state.youtubeSearchPhase = "idle"; showToast(ids.length + " relevant approved video" + (ids.length === 1 ? "" : "s") + " matched your search.");
+      const reasons = {}; valid.forEach(function (item) { reasons[item.videoId] = item; }); state.youtube.smartIds = ids; state.youtube.smartReasons = reasons; state.youtube.smartRan = true; state.youtubeSearchPhase = "idle"; saveState(); showToast(ids.length + " relevant approved video" + (ids.length === 1 ? "" : "s") + " matched your search.");
     } catch (error) { if (token === youtubeSearchToken) { state.youtubeSearchPhase = "error"; state.youtubeSearchError = error.message || "Smart video search could not complete."; showToast(state.youtubeSearchError); } }
     if (token === youtubeSearchToken) { state.youtubeSmartLoading = false; render(); }
   }
@@ -899,13 +899,20 @@
   }
   function workspaceMenu() {
     const menu = node("div", { className: "workspace-menu", role: "menu" });
-    menu.appendChild(node("span", { className: "workspace-menu-label", text: "Workspaces" }));
-    state.workspaces.forEach(function (workspace) {
-      menu.appendChild(node("button", { role: "menuitem", className: workspace.id === state.workspaceId ? "active" : "", onClick: function () { switchWorkspace(workspace.id); } }, workspace.name));
+    menu.appendChild(node("span", { className: "workspace-menu-label", text: "All workspaces" }));
+    state.workspaces.forEach(function (workspace, index) {
+      const row = node("div", { className: "workspace-menu-row" });
+      row.appendChild(node("button", { role: "menuitem", className: workspace.id === state.workspaceId ? "active" : "", onClick: function () { switchWorkspace(workspace.id); } }, workspace.name));
+      const actions = node("div", { className: "workspace-menu-row-actions" });
+      actions.appendChild(node("button", { type: "button", disabled: index === 0, ariaLabel: "Move " + workspace.name + " up", onClick: function () { moveWorkspace(workspace.id, "up"); } }, "↑"));
+      actions.appendChild(node("button", { type: "button", disabled: index === state.workspaces.length - 1, ariaLabel: "Move " + workspace.name + " down", onClick: function () { moveWorkspace(workspace.id, "down"); } }, "↓"));
+      actions.appendChild(node("button", { type: "button", ariaLabel: "Rename " + workspace.name, onClick: function () { renameWorkspace(workspace.id); } }, "Rename"));
+      actions.appendChild(node("button", { type: "button", ariaLabel: "Delete " + workspace.name, onClick: function () { deleteWorkspace(workspace.id); } }, "Delete"));
+      row.appendChild(actions);
+      menu.appendChild(row);
     });
     const actions = node("div", { className: "workspace-menu-actions" });
-    actions.appendChild(node("button", { onClick: createWorkspace }, "Create Workspace"));
-    actions.appendChild(node("button", { onClick: renameWorkspace }, "Rename"));
+    actions.appendChild(node("button", { type: "button", onClick: createWorkspace }, "Create workspace"));
     menu.appendChild(actions);
     return menu;
   }
@@ -926,11 +933,15 @@
     render();
   }
   function createWorkspace() {
+    const suggested = "Workspace " + (state.workspaces.length + 1);
+    const requested = window.prompt("Name this workspace", suggested);
+    const name = requested && requested.trim();
+    if (!name) return;
+    if (state.workspaces.some(function (workspace) { return workspace.name.toLowerCase() === name.toLowerCase(); })) return showToast("A workspace with that name already exists.");
     cancelWorkspaceOperations();
     saveState();
     const now = new Date().toISOString();
     const id = "workspace-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-    const name = "Workspace " + (state.workspaces.length + 1);
     const snapshot = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: now, topics: makeTopics(), settings: Object.assign({}, DEFAULT_SETTINGS, { obscurity: 5 }), cards: [], profile: {}, started: false, youtubeActivity: youtubeActivity({ savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, smartReasons: {}, smartRan: false, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest" }) };
     const record = { id: id, name: name, createdAt: now, updatedAt: now, state: snapshot };
     state.workspaces.push(record);
@@ -943,15 +954,43 @@
     render();
     showToast(name + " created.");
   }
-  function renameWorkspace() {
-    const name = window.prompt("Name this workspace", state.workspaceName);
+  function renameWorkspace(targetId) {
+    const target = state.workspaces.find(function (workspace) { return workspace.id === (targetId || state.workspaceId); });
+    if (!target) return;
+    const name = window.prompt("Name this workspace", target.name);
     const trimmed = name && name.trim();
-    if (!trimmed || trimmed === state.workspaceName) return;
-    if (state.workspaces.some(function (workspace) { return workspace.id !== state.workspaceId && workspace.name.toLowerCase() === trimmed.toLowerCase(); })) return showToast("A workspace with that name already exists.");
-    state.workspaceName = trimmed;
-    activeWorkspaceRecord().name = trimmed;
+    if (!trimmed || trimmed === target.name) return;
+    if (state.workspaces.some(function (workspace) { return workspace.id !== target.id && workspace.name.toLowerCase() === trimmed.toLowerCase(); })) return showToast("A workspace with that name already exists.");
+    target.name = trimmed;
+    target.updatedAt = new Date().toISOString();
+    if (target.id === state.workspaceId) state.workspaceName = trimmed;
     saveState();
     render();
+  }
+  function moveWorkspace(id, direction) {
+    const index = state.workspaces.findIndex(function (workspace) { return workspace.id === id; });
+    const nextIndex = direction === "up" ? index - 1 : index + 1;
+    if (index < 0 || nextIndex < 0 || nextIndex >= state.workspaces.length) return;
+    const moved = state.workspaces[index]; state.workspaces[index] = state.workspaces[nextIndex]; state.workspaces[nextIndex] = moved;
+    saveState();
+    render();
+  }
+  function deleteWorkspace(id) {
+    if (state.workspaces.length <= 1) return showToast("Keep at least one workspace so your local data always has a home.");
+    const index = state.workspaces.findIndex(function (workspace) { return workspace.id === id; });
+    if (index < 0) return;
+    const target = state.workspaces[index];
+    if (!window.confirm("Delete workspace “" + target.name + "”? Its cards and local history will be removed from this Mac.")) return;
+    if (id === state.workspaceId) {
+      cancelWorkspaceOperations();
+      const replacement = state.workspaces[index === 0 ? 1 : index - 1];
+      state.workspaces.splice(index, 1);
+      applyWorkspaceSnapshot(replacement);
+      state.view = "feed"; state.query = ""; state.topicQuery = ""; state.customTopic = ""; state.generationError = ""; state.errorByCard = {};
+    } else state.workspaces.splice(index, 1);
+    saveState();
+    render();
+    showToast(target.name + " deleted.");
   }
   function navigation() {
     const items = [["feed", "Feed", "home"], ["videos", "Videos", "image"], ["saved", "Saved", "bookmark"], ["likes", "Likes", "heart"], ["history", "History", "history"], ["settings", "Settings", "settings"]];
@@ -1107,15 +1146,15 @@
     const list = node("div", { className: "fact-feed" });
     state.cards.forEach(function (card, index) {
       if (state.query && !(card.title + " " + card.body).toLowerCase().includes(state.query)) return;
-      if (!state.loading && !state.generationError && index === Math.max(state.cards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { className: "small-load-button", onClick: function () { generateBatch(generationToken, 10); } }, "Generate 10 more")));
+      if (!state.loading && !state.generationError && index === Math.max(state.cards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 10); } }, "Generate 10 more")));
       list.appendChild(cardElement(card));
     });
     if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), " Gemini is building the next facts"));
-    if (!state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { className: "small-load-button", onClick: function () { generateBatch(generationToken, 10); } }, "Generate 10 more")));
+    if (!state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 10); } }, "Generate 10 more")));
     column.appendChild(list);
     layout.appendChild(column);
     if (state.generationError && !state.loading) {
-      list.appendChild(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { className: "secondary-button", onClick: function () { state.generationError = ""; generateBatch(generationToken, state.pendingSlots); } }, "Retry missing facts")));
+      list.appendChild(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { type: "button", className: "secondary-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); state.generationError = ""; generateBatch(generationToken, state.pendingSlots); } }, "Retry missing facts")));
     }
     return node("div", { className: "feed-workspace" }, state.toast ? node("div", { className: "feed-toast" }, svg("check", 15), " ", state.toast) : null, layout);
   }
@@ -1241,6 +1280,7 @@
     const main = node("main", { className: "main-column" });
     const scroll = node("div", { className: "main-scroll" });
     scroll.appendChild(state.view === "settings" ? settingsView() : state.view === "videos" ? videosView() : state.view === "feed" && !state.started ? setupView() : state.view === "feed" ? feedView() : collectionView(state.view));
+    scroll.appendChild(node("button", { type: "button", className: "go-to-top", onClick: function () { const target = document.querySelector(".main-scroll"); if (target) target.scrollTo({ top: 0, behavior: "smooth" }); } }, "Go to top"));
     main.appendChild(scroll);
     app.appendChild(main);
     window.requestAnimationFrame(function () {

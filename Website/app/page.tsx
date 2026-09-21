@@ -244,6 +244,7 @@ export default function HomePage() {
   const [youtubeSearchReasons, setYoutubeSearchReasons] = useState<Record<string, RankedVideoSearchResult>>({});
   const [youtubeError, setYoutubeError] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [showGoToTop, setShowGoToTop] = useState(false);
   const requestGeneration = useRef(0);
   const generationAbortController = useRef<AbortController | null>(null);
   const connectionAbortController = useRef<AbortController | null>(null);
@@ -267,6 +268,7 @@ export default function HomePage() {
   const cloudSaveTimer = useRef<number | null>(null);
   const cloudEpoch = useRef(0);
   const cloudUserId = useRef<string | null>(null);
+  const mainScrollRef = useRef<HTMLDivElement>(null);
   // This history is used only on this device. It is never supplied to Gemini.
   const archiveFacts = useCallback((incoming: FactCard[]) => {
     factMemoryRef.current = mergeFactMemory(factMemoryRef.current, incoming.map(rememberFact));
@@ -391,10 +393,17 @@ export default function HomePage() {
 
   const createWorkspace = useCallback(async () => {
     if (!workspaceStoreRef.current) return;
+    const suggestedName = `Workspace ${workspaceStoreRef.current.records.length + 1}`;
+    const requestedName = window.prompt("Name this workspace", suggestedName)?.trim();
+    if (!requestedName) return;
+    if (workspaceStoreRef.current.records.some((record) => record.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase())) {
+      setToast("A workspace with that name already exists.");
+      return;
+    }
     cancelWorkspaceRequests();
     await saveWorkspaceRecordNow(workspaceIdRef.current, workspaceNameRef.current, makeCurrentSnapshot());
     const now = new Date().toISOString();
-    const record: AppWorkspaceRecord = { id: makeWorkspaceId(), name: `Workspace ${workspaceStoreRef.current.records.length + 1}`, createdAt: now, updatedAt: now, state: { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: createDefaultTopics(), settings: { ...DEFAULT_SETTINGS, obscurity: 5 }, cards: [], learningProfile: {}, feedStarted: false, theme } };
+    const record: AppWorkspaceRecord = { id: makeWorkspaceId(), name: requestedName, createdAt: now, updatedAt: now, state: { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: createDefaultTopics(), settings: { ...DEFAULT_SETTINGS, obscurity: 5 }, cards: [], learningProfile: {}, feedStarted: false, theme } };
     workspaceStoreRef.current.records.push(record);
     workspaceStoreRef.current.activeId = record.id;
     workspaceIdRef.current = record.id;
@@ -416,20 +425,79 @@ export default function HomePage() {
     setToast(`${record.name} created.`);
   }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow, theme]);
 
-  const renameWorkspace = useCallback(() => {
-    const nextName = window.prompt("Name this workspace", workspaceNameRef.current)?.trim();
-    if (!nextName || nextName === workspaceNameRef.current || !workspaceStoreRef.current) return;
-    if (workspaceStoreRef.current.records.some((record) => record.id !== workspaceIdRef.current && record.name.toLocaleLowerCase() === nextName.toLocaleLowerCase())) {
+  const renameWorkspace = useCallback((targetId = workspaceIdRef.current) => {
+    const target = workspaceStoreRef.current?.records.find((record) => record.id === targetId);
+    if (!target) return;
+    const nextName = window.prompt("Name this workspace", target.name)?.trim();
+    if (!nextName || nextName === target.name || !workspaceStoreRef.current) return;
+    if (workspaceStoreRef.current.records.some((record) => record.id !== targetId && record.name.toLocaleLowerCase() === nextName.toLocaleLowerCase())) {
       setToast("A workspace with that name already exists.");
       return;
     }
-    workspaceNameRef.current = nextName;
-    setWorkspaceName(nextName);
-    const record = workspaceStoreRef.current.records.find((item) => item.id === workspaceIdRef.current);
-    if (record) record.name = nextName;
+    target.name = nextName;
+    target.updatedAt = new Date().toISOString();
+    if (targetId === workspaceIdRef.current) {
+      workspaceNameRef.current = nextName;
+      setWorkspaceName(nextName);
+    }
     setWorkspaceSummaries(workspaceStoreRef.current.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
     void writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The new name could not be saved."));
   }, []);
+
+  const moveWorkspace = useCallback((targetId: string, direction: "up" | "down") => {
+    const store = workspaceStoreRef.current;
+    if (!store) return;
+    const index = store.records.findIndex((record) => record.id === targetId);
+    const nextIndex = direction === "up" ? index - 1 : index + 1;
+    if (index < 0 || nextIndex < 0 || nextIndex >= store.records.length) return;
+    [store.records[index], store.records[nextIndex]] = [store.records[nextIndex], store.records[index]];
+    setWorkspaceSummaries(store.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+    void writeWorkspaceStore(store).catch(() => setToast("The workspace order could not be saved."));
+  }, []);
+
+  const deleteWorkspace = useCallback(async (targetId: string) => {
+    const store = workspaceStoreRef.current;
+    if (!store) return;
+    if (store.records.length <= 1) {
+      setToast("Keep at least one workspace so your local data always has a home.");
+      return;
+    }
+    const index = store.records.findIndex((record) => record.id === targetId);
+    if (index < 0) return;
+    const target = store.records[index];
+    if (!window.confirm(`Delete workspace “${target.name}”? Its cards and local history will be removed from this device.`)) return;
+    if (targetId === workspaceIdRef.current) {
+      cancelWorkspaceRequests();
+      await saveWorkspaceRecordNow(workspaceIdRef.current, workspaceNameRef.current, makeCurrentSnapshot());
+    }
+    store.records.splice(index, 1);
+    const replacement = store.records.find((record) => record.id === store.activeId) ?? store.records[0];
+    store.activeId = replacement.id;
+    if (targetId === workspaceIdRef.current) {
+      workspaceIdRef.current = replacement.id;
+      workspaceNameRef.current = replacement.name;
+      setWorkspaceId(replacement.id);
+      setWorkspaceName(replacement.name);
+      setTopics(migrateTopicTree(replacement.state.topics, false, (replacement.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION));
+      setSettings({ ...DEFAULT_SETTINGS, ...replacement.state.settings, sentenceLength: normalizeSentenceLength(replacement.state.settings?.sentenceLength) });
+      setCards(uniqueCards((replacement.state.cards ?? []).map((card, cardIndex) => normalizeFact(card, cardIndex)).filter((card) => card.title && card.body)));
+      setLearningProfile(replacement.state.learningProfile ?? {});
+      setFeedStarted(Boolean(replacement.state.feedStarted && replacement.state.cards?.length));
+      setFeedHasMore(true);
+      setPendingSlots(10);
+      setQuery("");
+      setCustomTopic("");
+      setRabbitHole(null);
+      setGenerationError("");
+      setLearningErrors({});
+      setView("feed");
+      setYoutubeWorkspace((current) => applyYouTubeActivity(current, replacement.state.youtubeActivity));
+      persistedStateRef.current = replacement.state;
+    }
+    setWorkspaceSummaries(store.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+    await writeWorkspaceStore(store).catch(() => setToast("The workspace was removed locally, but the new order could not be saved."));
+    setToast(`${target.name} deleted.`);
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow]);
 
   useEffect(() => () => {
     generationAbortController.current?.abort();
@@ -623,7 +691,23 @@ export default function HomePage() {
   useEffect(() => {
     if (!hydrated) return;
     const flushWorkspace = () => {
-      if (persistedStateRef.current) writeWorkspaceState(persistedStateRef.current);
+      const state = persistedStateRef.current;
+      const store = workspaceStoreRef.current;
+      if (!state || !store) return;
+      const snapshot = { ...state, savedAt: new Date().toISOString() };
+      const record = store.records.find((item) => item.id === workspaceIdRef.current);
+      if (record) {
+        record.state = snapshot;
+        record.updatedAt = snapshot.savedAt ?? record.updatedAt;
+      }
+      store.activeId = workspaceIdRef.current;
+      store.theme = theme;
+      writeWorkspaceState(snapshot);
+      // writeWorkspaceStore writes localStorage before opening IndexedDB, so
+      // the recovery copy survives a pagehide even when the transaction cannot
+      // finish before the browser closes the document.
+      try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(store)); } catch { /* Recovery is best effort. */ }
+      void writeWorkspaceStore(store).catch(() => undefined);
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") flushWorkspace();
@@ -636,7 +720,16 @@ export default function HomePage() {
       window.removeEventListener("beforeunload", flushWorkspace);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [hydrated]);
+  }, [hydrated, theme]);
+
+  useEffect(() => {
+    const element = mainScrollRef.current;
+    if (!element) return;
+    const update = () => setShowGoToTop(element.scrollTop > 420);
+    update();
+    element.addEventListener("scroll", update, { passive: true });
+    return () => element.removeEventListener("scroll", update);
+  }, [hydrated, view]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1370,14 +1463,17 @@ export default function HomePage() {
         factResults={factResults}
         onChooseTopic={(label) => { setView("feed"); setQuery(label); }}
         onChooseFact={(title) => { setView("history"); setQuery(title); }}
+        workspaceId={workspaceId}
         workspaceName={workspaceName}
         workspaces={workspaceSummaries}
         onSwitchWorkspace={(id) => void switchWorkspace(id)}
         onCreateWorkspace={() => void createWorkspace()}
         onRenameWorkspace={renameWorkspace}
+        onDeleteWorkspace={(id) => void deleteWorkspace(id)}
+        onMoveWorkspace={moveWorkspace}
       />
       <main className="main-column">
-        <div className="main-scroll">{renderMain()}</div>
+        <div className="main-scroll" ref={mainScrollRef}>{renderMain()}{showGoToTop && <button type="button" className="go-to-top" onClick={() => mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" })}>Go to top</button>}</div>
       </main>
     </div>
   );
