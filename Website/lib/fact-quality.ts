@@ -9,6 +9,15 @@ export function normalizeSentenceLength(value: unknown): SentenceLength {
   return SENTENCE_LENGTH_OPTIONS.includes(number as (typeof SENTENCE_LENGTH_OPTIONS)[number]) ? number as SentenceLength : 3;
 }
 
+/** Count the sentence endings that a reader will see in a rendered card. */
+export function countSentences(text: string) {
+  return (text.trim().match(/[.!?](?=(?:["'”’»)]|\s|$))/g) ?? []).length;
+}
+
+export function hasExactSentenceCount(text: string, expected: SentenceLength | number) {
+  return countSentences(text) === normalizeSentenceLength(expected);
+}
+
 export function factWritingRules(sentenceCount: SentenceLength | number = 3) {
   const count = normalizeSentenceLength(sentenceCount);
   const structure = {

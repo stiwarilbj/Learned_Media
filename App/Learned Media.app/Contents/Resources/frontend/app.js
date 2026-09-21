@@ -8,7 +8,7 @@
     sentenceLength: 3,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 18;
+  const TOPIC_CATALOG_VERSION = 19;
   const REQUIRED_WORKING_MODELS = 3;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
@@ -76,6 +76,12 @@
   function normalizeSentenceLength(value) {
     const number = Number(value);
     return [1, 2, 3, 4, 6, 8, 10].includes(number) ? number : 3;
+  }
+  function countSentences(text) {
+    return (String(text || "").trim().match(/[.!?](?=(?:["'”’»)]|\s|$))/g) || []).length;
+  }
+  function hasExactSentenceCount(text, expected) {
+    return countSentences(text) === normalizeSentenceLength(expected);
   }
   function factFingerprint(item) {
     function normalized(value) { return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
@@ -500,7 +506,7 @@
     });
   }
   function acceptNewFact(raw) {
-    if (!raw || !raw.id || !raw.body || repeatedFact(raw)) return false;
+    if (!raw || !raw.id || !raw.body || !hasExactSentenceCount(raw.body, state.settings.sentenceLength) || repeatedFact(raw)) return false;
     const card = normalizeCard(raw);
     archiveFacts([card]);
     state.cards.push(card);
@@ -898,7 +904,7 @@
     state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: normalizeSentenceLength(snapshot.settings && snapshot.settings.sentenceLength) });
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
     state.profile = snapshot.profile || snapshot.learningProfile || {};
-    state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.length);
+    state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.some(function (card) { return hasExactSentenceCount(card.body, state.settings.sentenceLength); }));
     applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube);
   }
   function workspaceMenu() {
@@ -1142,7 +1148,15 @@
     body.appendChild(node("span", { className: "control-label", text: "Description length (sentences):" }));
     const lengths = node("div", { className: "feed-length-options", role: "group", ariaLabel: "Description length in sentences" });
     [1, 2, 3, 4, 6, 8, 10].forEach(function (length) {
-      lengths.appendChild(node("button", { className: state.settings.sentenceLength === length ? "selected" : "", ariaPressed: state.settings.sentenceLength === length, disabled: state.settings.sentenceLength === length, onClick: function () { state.settings.sentenceLength = length; saveState(); render(); } }, String(length)));
+      lengths.appendChild(node("button", { className: state.settings.sentenceLength === length ? "selected" : "", ariaPressed: state.settings.sentenceLength === length, disabled: state.settings.sentenceLength === length, onClick: function () {
+        if (state.settings.sentenceLength === length) return;
+        state.settings.sentenceLength = length;
+        state.started = false;
+        state.pendingSlots = 10;
+        state.generationError = "";
+        saveState();
+        render();
+      } }, String(length)));
     });
     body.appendChild(lengths);
     body.appendChild(node("button", { className: "feed-surprise-toggle" + (state.settings.surpriseMe ? " selected" : ""), onClick: function () { state.settings.surpriseMe = !state.settings.surpriseMe; saveState(); render(); } }, svg("sparkles", 14), " Surprise Me ", node("span", { text: state.settings.surpriseMe ? "On" : "Off" })));
@@ -1233,11 +1247,12 @@
     layout.appendChild(topicPanel(false));
     const column = node("section", { className: "feed-content-column" });
     column.appendChild(node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" })), node("button", { className: "toolbar-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed")));
-    column.appendChild(node("div", { className: "feed-intro" }, node("div", {}, node("h1", { text: "Keep going." }), node("p", { text: "One small idea at a time. Every card has a place to look next." })), node("span", { className: "feed-count", text: state.cards.length + " cards in this session" })));
+    const feedCards = state.cards.filter(function (card) { return hasExactSentenceCount(card.body, state.settings.sentenceLength); });
+    column.appendChild(node("div", { className: "feed-intro" }, node("div", {}, node("h1", { text: "Keep going." }), node("p", { text: "One small idea at a time. Every card has a place to look next." })), node("span", { className: "feed-count", text: feedCards.length + " cards in this session" })));
     const list = node("div", { className: "fact-feed" });
-    state.cards.forEach(function (card, index) {
+    feedCards.forEach(function (card, index) {
       if (state.query && !(card.title + " " + card.body).toLowerCase().includes(state.query)) return;
-      if (!state.loading && !state.generationError && index === Math.max(state.cards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 10); } }, "Generate 10 more")));
+      if (!state.loading && !state.generationError && index === Math.max(feedCards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 10); } }, "Generate 10 more")));
       list.appendChild(cardElement(card));
     });
     if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), " Gemini is building the next facts"));

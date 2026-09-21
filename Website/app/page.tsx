@@ -9,7 +9,7 @@ import { SettingsView } from "@/components/learned-media/SettingsView";
 import { VideoWorkspace } from "@/components/learned-media/VideoWorkspace";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
-import { rememberFact, mergeFactMemory, isRepeatedFact, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
+import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, REQUIRED_WORKING_MODELS, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
@@ -172,7 +172,7 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     title: raw.title?.trim() ?? "",
     hook: normalizeHook(raw.hook?.trim() || body.split(/[.!?]/)[0]?.split(" ").slice(0, 10).join(" ") || ""),
     body,
-    sentenceCount: normalizeSentenceLength(raw.sentenceCount),
+    sentenceCount: normalizeSentenceLength(raw.sentenceCount ?? body.match(/[.!?](?=(?:["'”’»)]|\s|$))/g)?.length),
     claim: raw.claim,
     evidence: raw.evidence,
     liked: raw.liked,
@@ -277,12 +277,13 @@ export default function HomePage() {
     if (workspaceStoreRef.current) workspaceStoreRef.current.factMemory = factMemoryRef.current;
   }, []);
   const acceptFact = useCallback((card: FactCard) => {
+    if (!hasExactSentenceCount(card.body, settings.sentenceLength)) return false;
     const next = rememberFact(card);
     if (factMemoryRef.current.some(old => isRepeatedFact(next, old))) return false;
     archiveFacts([card]);
     setCards(current => appendUniqueCards(current, [card]));
     return true;
-  }, [archiveFacts]);
+  }, [archiveFacts, settings.sentenceLength]);
 
   const cancelGeneration = useCallback(() => {
     generationAbortController.current?.abort();
@@ -378,9 +379,10 @@ export default function HomePage() {
     const restoredTopics = migrateTopicTree(target.state.topics, false, (target.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION);
     setTopics(restoredTopics);
     setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings, sentenceLength: normalizeSentenceLength(target.state.settings?.sentenceLength) });
-    setCards(uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body)));
+    const restoredCards = uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body));
+    setCards(restoredCards);
     setLearningProfile(target.state.learningProfile ?? {});
-    setFeedStarted(Boolean(target.state.feedStarted && target.state.cards?.length));
+    setFeedStarted(Boolean(target.state.feedStarted && restoredCards.some((card) => hasExactSentenceCount(card.body, target.state.settings?.sentenceLength))));
     setFeedHasMore(true);
     setPendingSlots(10);
     setQuery("");
@@ -483,9 +485,10 @@ export default function HomePage() {
       setWorkspaceName(replacement.name);
       setTopics(migrateTopicTree(replacement.state.topics, false, (replacement.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION));
       setSettings({ ...DEFAULT_SETTINGS, ...replacement.state.settings, sentenceLength: normalizeSentenceLength(replacement.state.settings?.sentenceLength) });
-      setCards(uniqueCards((replacement.state.cards ?? []).map((card, cardIndex) => normalizeFact(card, cardIndex)).filter((card) => card.title && card.body)));
+      const replacementCards = uniqueCards((replacement.state.cards ?? []).map((card, cardIndex) => normalizeFact(card, cardIndex)).filter((card) => card.title && card.body));
+      setCards(replacementCards);
       setLearningProfile(replacement.state.learningProfile ?? {});
-      setFeedStarted(Boolean(replacement.state.feedStarted && replacement.state.cards?.length));
+      setFeedStarted(Boolean(replacement.state.feedStarted && replacementCards.some((card) => hasExactSentenceCount(card.body, replacement.state.settings?.sentenceLength))));
       setFeedHasMore(true);
       setPendingSlots(10);
       setQuery("");
@@ -551,7 +554,7 @@ export default function HomePage() {
       const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
       const restoredProfile = parsed?.learningProfile ? (parsed.learningProfile) : {};
       const restoredTheme = parsed?.theme === "dark" ? "dark" : "light";
-      return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
+      return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.some((card) => hasExactSentenceCount(card.body, restoredSettings.sentenceLength))), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
     };
     const restore = async () => {
       let legacy: Partial<PersistedState> | null = null;
@@ -650,9 +653,10 @@ export default function HomePage() {
         setWorkspaceSummaries(records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
         setTopics(migrateTopicTree(target.state.topics ?? createDefaultTopics(), false, (target.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION));
         setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings, sentenceLength: normalizeSentenceLength(target.state.settings?.sentenceLength) });
-        setCards(uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body)));
+        const targetCards = uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body));
+        setCards(targetCards);
         setLearningProfile(target.state.learningProfile ?? {});
-        setFeedStarted(Boolean(target.state.feedStarted && target.state.cards?.length));
+        setFeedStarted(Boolean(target.state.feedStarted && targetCards.some((card) => hasExactSentenceCount(card.body, target.state.settings?.sentenceLength))));
         setTheme(mergedStore.theme ?? "light");
         persistedStateRef.current = target.state;
         await writeWorkspaceStore(mergedStore);
@@ -770,12 +774,25 @@ export default function HomePage() {
   const allTopicResults = useMemo(() => flattenTopics(topics), [topics]);
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => {
-    setSettings((current) => ({ ...current, ...next }));
+    const nextSentenceLength = next.sentenceLength === undefined ? settings.sentenceLength : normalizeSentenceLength(next.sentenceLength);
+    if (nextSentenceLength !== settings.sentenceLength) {
+      // A feed may contain cards from an older setting. Keep those cards in
+      // saved history, but require a fresh feed before showing a new length.
+      cancelGeneration();
+      requestGeneration.current += 1;
+      setFeedStarted(false);
+      setFeedHasMore(true);
+      setPendingSlots(10);
+      setRabbitHole(null);
+      setGenerationError("");
+      setToast(`Next feed cards will use exactly ${nextSentenceLength} sentence${nextSentenceLength === 1 ? "" : "s"}.`);
+    }
+    setSettings((current) => ({ ...current, ...next, sentenceLength: nextSentenceLength }));
     if (next.obscurity !== undefined) {
       const difficulty = normalizeDifficulty(next.obscurity);
       setLearningProfile((current) => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, { ...value, unknownStreak: 0, targetDifficulty: difficulty }])) as LearningProfile);
     }
-  }, []);
+  }, [cancelGeneration, settings.sentenceLength]);
 
   const handleGoogleSignIn = useCallback(() => {
     if (!supabaseConfigured) {
@@ -1457,9 +1474,10 @@ export default function HomePage() {
   }, [youtubeSearchResults, youtubeSmartSearchRan, youtubeWorkspace]);
 
   const filteredCards = useMemo(() => {
-    if (!query.trim()) return cards;
-    return rankSearchResults(query, cards, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
-  }, [cards, query]);
+    const exactCards = cards.filter((card) => hasExactSentenceCount(card.body, settings.sentenceLength));
+    if (!query.trim()) return exactCards;
+    return rankSearchResults(query, exactCards, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
+  }, [cards, query, settings.sentenceLength]);
 
   const activeCollection = (kind: "saved" | "likes" | "history") => {
     const collection = kind === "saved" ? cards.filter((card) => card.saved) : kind === "likes" ? cards.filter((card) => card.liked) : cards;

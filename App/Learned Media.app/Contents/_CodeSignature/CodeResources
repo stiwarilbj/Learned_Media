@@ -10,7 +10,11 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		82H0OE4KML+vK0FXJbxv7D/Bv84=
+		qaAv+dMYn8f0viZeSYmorMjRWD4=
+		</data>
+		<key>Resources/frontend/companies-catalog.js</key>
+		<data>
+		KxkEoFjmTKbgundr68TkBSXV6Zk=
 		</data>
 		<key>Resources/frontend/computer-science-catalog.js</key>
 		<data>
@@ -30,7 +34,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		HqFeFlM86xcjgSl1FKDJnWOjIs8=
+		5F6CVmGlSx99mCpEkXhmTMh/9/c=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
@@ -58,11 +62,11 @@
 		</data>
 		<key>Resources/frontend/topic-catalog.js</key>
 		<data>
-		3Z+Xw389gt4VVtjmeWatjrSrHCM=
+		LeRWadv+ee6fOqJoJviITfvCv28=
 		</data>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<data>
-		YDqcEBOQSNBwGcm7RILBkfMXKC8=
+		GM2RjOwRAPzfdzfkTvifh/QRgRI=
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
@@ -82,7 +86,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			V/IZMMcoWU8euU8Z9mjzS8GUyeNqyBtKeL55RrDtHtQ=
+			sPEddhIdTzUiVBdr5T5loW+i0r37F3cza4A2LTA5n5Y=
+			</data>
+		</dict>
+		<key>Resources/frontend/companies-catalog.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			P1IpEW/eJXPttZanG5VWLpCVcKvwMC1zvfP3NPvL4GI=
 			</data>
 		</dict>
 		<key>Resources/frontend/computer-science-catalog.js</key>
@@ -117,7 +128,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			9HOlhH7v5nMd8AgxZq5ymjt+1kraBBxMn0LWIWlZp90=
+			DfpmrJ9yLs9LyYtCfms+yqCnxPYQC7YQ3lwpapj1j1k=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>
@@ -166,14 +177,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			E3xsIEoLd6sWOeMUb1dGXPDAnm6lynC2NubiVeAcW6E=
+			E1QHQuKuAAaAgWLrjAyDtpzPHEx+46Eod/abi8hToEw=
 			</data>
 		</dict>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			mfbeIpKq/BCixtr/F6eThhLhuQYEzvTGEtu8Z+U6MtU=
+			YKMA3+8VopAfIgarj/tUCjq4tRkHzUcqzlXkgeezWcE=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-catalog.js</key>

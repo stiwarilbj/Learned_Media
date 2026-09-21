@@ -92,7 +92,7 @@ export function FeedView({ cards, query = "", settings, topics, customTopic, loa
           <TopicSidebar topics={topics} query={query} customTopic={customTopic} settings={settings} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onWeightTopic={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} onSettingsChange={onSettingsChange} />
         <section className="feed-content-column">
           <div className="feed-toolbar">
-            <div className="active-topics"><span className="toolbar-label">Your feed</span><span className="topic-chip selected-chip">{cards.length} discoveries</span></div>
+            <div className="active-topics"><span className="toolbar-label">Your feed</span></div>
             <button type="button" className="toolbar-reset" onClick={onReset}><Icon name="reset" size={15} /> Reset feed</button>
           </div>
           <div className="feed-intro"><div><h1>Keep going</h1><p>One small idea at a time. Every card has a place to look next</p></div><span className="feed-count">{cards.length} cards in this session</span></div>

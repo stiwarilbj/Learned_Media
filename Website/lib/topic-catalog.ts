@@ -4,10 +4,11 @@ import { buildDiseasesTopic } from "./disease-catalog";
 import { buildComputerScienceTopic } from "./computer-science-catalog";
 import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
 import { buildWarHistoryTopic } from "./war-history-catalog";
+import { buildCompaniesTopic } from "./company-history-catalog";
 import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 
-export const TOPIC_CATALOG_VERSION = 18;
+export const TOPIC_CATALOG_VERSION = 19;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -301,9 +302,10 @@ const TOPIC_SEEDS: TopicSeed[] = [
       "Archaeology", "Lost Civilizations", "History of Medicine", "History of Money", "History of Food", "History of Transportation",
       "History of Warfare", "History of Espionage", "History of Exploration", "Maritime History", "Political History", "Economic History",
       "History of Cities", "Everyday Life in the Past", "Historical Mysteries", "Forgotten People", "Forgotten Events"
-    ])
+    ]),
+    buildWarHistoryTopic(),
+    buildCompaniesTopic()
   ]),
-  buildWarHistoryTopic(),
   branch("Science", [
     branch("Chemistry", ["Atoms", "Elements", "Periodic Table", "Chemical Bonds", "Reactions", "Organic Chemistry", "Inorganic Chemistry", "Physical Chemistry", "Analytical Chemistry", "Biochemistry", "Materials Chemistry", "Electrochemistry", "Nuclear Chemistry", "Strange Chemical Properties", "Everyday Chemistry"]),
     branch("Biology", ["Evolution", "Genetics", "DNA", "Cells", "Microbiology", "Bacteria", "Viruses", "Fungi", "Plants", "Animals", "Zoology", "Ecology", "Marine Biology", "Human Biology", "Anatomy", "Neuroscience", "Immunology", "Animal Behavior", "Extreme Organisms", "Symbiosis"]),

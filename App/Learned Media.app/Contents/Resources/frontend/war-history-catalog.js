@@ -170,8 +170,6 @@
     "Other Wars and Conflicts"
   ]);
   var catalog = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
-  if (!catalog.some(function (item) { return item && item.label === "War History"; })) {
-    var historyIndex = catalog.findIndex(function (item) { return item && item.label === "History"; });
-    catalog.splice(historyIndex < 0 ? catalog.length : historyIndex + 1, 0, warHistory);
-  }
+  var history = catalog.find(function (item) { return item && item.label === "History"; });
+  if (history && history.children && !history.children.some(function (item) { return item && item.label === "War History"; })) history.children.push(warHistory);
 })();
