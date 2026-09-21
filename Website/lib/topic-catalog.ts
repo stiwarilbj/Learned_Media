@@ -2,8 +2,9 @@ import type { TopicNode } from "./types";
 import { buildUnitedStatesPoliticalHistory, buildWorldPoliticalHistory } from "./political-history-catalog";
 import { buildDiseasesTopic } from "./disease-catalog";
 import { buildComputerScienceTopic } from "./computer-science-catalog";
+import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
 
-export const TOPIC_CATALOG_VERSION = 9;
+export const TOPIC_CATALOG_VERSION = 10;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -234,6 +235,7 @@ const TOPIC_SEEDS: TopicSeed[] = [
     branch("Chemistry", ["Atoms", "Elements", "Periodic Table", "Chemical Bonds", "Reactions", "Organic Chemistry", "Inorganic Chemistry", "Physical Chemistry", "Analytical Chemistry", "Biochemistry", "Materials Chemistry", "Electrochemistry", "Nuclear Chemistry", "Strange Chemical Properties", "Everyday Chemistry"]),
     branch("Biology", ["Evolution", "Genetics", "DNA", "Cells", "Microbiology", "Bacteria", "Viruses", "Fungi", "Plants", "Animals", "Zoology", "Ecology", "Marine Biology", "Human Biology", "Anatomy", "Neuroscience", "Immunology", "Animal Behavior", "Extreme Organisms", "Symbiosis"]),
     buildDiseasesTopic(),
+    ...buildNaturalDisasterAndExtinctionTopics(),
     branch("Physics", ["Mechanics", "Motion", "Gravity", "Electricity", "Magnetism", "Waves", "Sound", "Light", "Thermodynamics", "Fluid Mechanics", "Quantum Physics", "Particle Physics", "Nuclear Physics", "Relativity", "Strange Physical Phenomena"]),
     branch("Earth Science", ["Geology", "Plate Tectonics", "Volcanoes", "Earthquakes", "Minerals", "Rocks", "Oceans", "Atmosphere", "Weather", "Climate", "Paleontology", "Earth's Interior"]),
     branch("Technology", ["Electronics", "Computing", "Semiconductors", "Robotics", "Telecommunications", "Energy", "Transportation", "Manufacturing", "Materials", "Batteries", "Sensors", "Medical Technology", "Emerging Technology"]),
