@@ -8,7 +8,7 @@ import { buildCompaniesTopic } from "./company-history-catalog";
 import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 
-export const TOPIC_CATALOG_VERSION = 21;
+export const TOPIC_CATALOG_VERSION = 22;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 

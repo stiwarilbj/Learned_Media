@@ -170,7 +170,7 @@ const EXTINCT_INVERTEBRATES: TopicSeed[] = [
   branch("Trilobites", ["Olenellus", "Paradoxides", "Asaphus", "Isotelus", "Calymene", "Other Trilobite Groups"]),
   branch("Ammonites and Belemnites", ["Ammonites", "Goniatites", "Baculites", "Scaphites", "Belemnites", "Other Extinct Cephalopods"]),
   branch("Eurypterids and Sea Scorpions", ["Jaekelopterus", "Pterygotus", "Eurypterus", "Megalograptus", "Other Eurypterids"]),
-  branch("Other Extinct Invertebrates", ["Graptolites", "Rugose Corals", "Tabulate Corals", "Archaeocyathids", "Anomalocaris", "Opabinia", "Hallucigenia", "Other Extinct Invertebrates"])
+  branch("Other Extinct Invertebrates", ["Graptolites", "Rugose Corals", "Tabulate Corals", "Archaeocyathids", "Anomalocaris", "Opabinia", "Hallucigenia"])
 ];
 
 const RECENT_EXTINCTIONS: TopicSeed[] = [

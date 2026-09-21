@@ -351,7 +351,7 @@ export function buildUnitedStatesPoliticalHistory(): TopicSeed {
       branch("Presidential Slogans and Campaigns", ["Campaign Slogans", "Inaugural Themes", "Reelection Campaigns", "Third-Party Presidential Campaigns"]),
       branch("Presidential Records", ["Longest Presidency", "Shortest Presidency", "Youngest and Oldest Presidents", "Presidential Elections and Popular Vote", "Presidential Firsts", "Presidential Libraries"]),
       branch("Presidential Corruption Scandals", PRESIDENTIAL_SCANDALS),
-      branch("Other Presidential Scandals", ["Personal and Ethical Controversies", "Pardon and Patronage Controversies", "Executive Conflict of Interest", "Presidential Records and Transparency", "Other Presidential Scandals"])
+      branch("Other Presidential Scandals", ["Personal and Ethical Controversies", "Pardon and Patronage Controversies", "Executive Conflict of Interest", "Presidential Records and Transparency"])
     ]),
     branch("Vice Presidents", vicePresidents),
     branch("Elections", [
@@ -374,7 +374,7 @@ export function buildUnitedStatesPoliticalHistory(): TopicSeed {
       branch("Senate Elections and Representation", ELECTION_CYCLES.map((cycle) => `Senate ${cycle}`)),
       branch("Senate Committees and Leadership", ["Party Leaders", "Committee Chairs", "Filibuster and Cloture", "Advice and Consent"]),
       branch("Senate Corruption Scandals", CONGRESSIONAL_SCANDALS),
-      branch("Other Senate Scandals", ["Personal Misconduct and Ethics Cases", "Lobbying and Influence", "Campaign Finance", "Other Senate Scandals"]),
+      branch("Other Senate Scandals", ["Personal Misconduct and Ethics Cases", "Lobbying and Influence", "Campaign Finance"]),
       branch("Senate Records", ["Longest-Serving Senators", "Youngest Senators", "Senate Firsts", "Record Votes and Debates", "Historic Confirmations"])
     ]),
     branch("House", [
@@ -384,14 +384,14 @@ export function buildUnitedStatesPoliticalHistory(): TopicSeed {
       branch("Notable House Members", FAMOUS_HOUSE_MEMBERS, ["Famous House Members"]),
       branch("House Elections and Representation", ELECTION_CYCLES.map((cycle) => `House ${cycle}`)),
       branch("House Corruption Scandals", CONGRESSIONAL_SCANDALS),
-      branch("Other House Scandals", ["House Ethics Investigations", "Lobbying and Influence", "Campaign Finance", "Other House Scandals"]),
+      branch("Other House Scandals", ["House Ethics Investigations", "Lobbying and Influence", "Campaign Finance"]),
       branch("House Records", ["Longest-Serving Representatives", "Youngest Representatives", "House Firsts", "Historic Impeachments", "Historic Speeches"])
     ]),
     branch("Cabinet", [
       branch("History of the Cabinet", ["Washington's Cabinet", "Growth of the Executive Departments", "Cabinet Government and the Presidency", "Cabinet-Level Offices", "Modern Cabinet Appointments"]),
       ...CABINET_POSITIONS.map((position) => branch(position, ["Institutional History", "Secretaries and Leadership", "Major Decisions and Controversies"])),
       branch("Cabinet Corruption Scandals", CABINET_SCANDALS),
-      branch("Other Cabinet Scandals", ["Conflicts of Interest", "Patronage and Appointments", "Procurement and Contracting", "Other Cabinet Scandals"]),
+      branch("Other Cabinet Scandals", ["Conflicts of Interest", "Patronage and Appointments", "Procurement and Contracting"]),
       branch("Cabinet Records", ["Longest-Serving Secretaries", "First Cabinet Officers", "Cabinet Vacancies and Succession", "Historic Cabinet Meetings"])
     ]),
     branch("Governors", stateBranches),

@@ -38,8 +38,8 @@ const LANGUAGE_DETAILS: TopicSeed[] = [
 const DATA_STRUCTURES: TopicSeed[] = [
   branch("Linear Structures", ["Arrays", "Dynamic Arrays", "Linked Lists", "Doubly Linked Lists", "Stacks", "Queues", "Deques", "Circular Buffers", "Priority Queues"]),
   branch("Hashing", ["Hash Tables", "Hash Functions", "Collision Resolution", "Bloom Filters", "Count-Min Sketches", "Consistent Hashing"]),
-  branch("Trees", ["Trees", "Binary Trees", "Binary Search Trees", "AVL Trees", "Red-Black Trees", "B-Trees", "B+ Trees", "Heaps", "Tries", "Radix Trees", "Segment Trees", "Fenwick Trees", "Merkle Trees"]),
-  branch("Graphs", ["Graphs", "Directed Graphs", "Weighted Graphs", "Adjacency Lists", "Adjacency Matrices", "Disjoint Sets", "Union-Find", "Graph Traversal", "Topological Ordering"]),
+  branch("Trees", ["Binary Trees", "Binary Search Trees", "AVL Trees", "Red-Black Trees", "B-Trees", "B+ Trees", "Heaps", "Tries", "Radix Trees", "Segment Trees", "Fenwick Trees", "Merkle Trees"]),
+  branch("Graphs", ["Directed Graphs", "Weighted Graphs", "Adjacency Lists", "Adjacency Matrices", "Disjoint Sets", "Union-Find", "Graph Traversal", "Topological Ordering"]),
   branch("Probabilistic and Spatial Structures", ["Skip Lists", "Suffix Arrays", "Suffix Trees", "K-D Trees", "R-Trees", "Quadtrees", "HyperLogLog", "Locality-Sensitive Hashing"])
 ];
 
@@ -56,8 +56,8 @@ const ARTIFICIAL_INTELLIGENCE: TopicSeed[] = [
   branch("Machine Learning", ["Supervised Learning", "Unsupervised Learning", "Semi-Supervised Learning", "Self-Supervised Learning", "Reinforcement Learning", "Classification", "Regression", "Clustering", "Dimensionality Reduction", "Feature Engineering", "Model Evaluation", "Cross-Validation", "Hyperparameter Tuning", "Model Explainability"]),
   branch("Deep Learning", ["Neural Networks", "Backpropagation", "Activation Functions", "Optimization", "Convolutional Neural Networks", "Recurrent Neural Networks", "Long Short-Term Memory", "Transformers", "Attention", "Embeddings", "Autoencoders", "Generative Adversarial Networks", "Diffusion Models"]),
   branch("Generative AI", ["Large Language Models", "Tokens", "Context Windows", "Prompt Engineering", "Structured Outputs", "Function Calling", "Fine-Tuning", "Retrieval-Augmented Generation", "Vector Databases", "Embeddings", "Multimodal AI", "Image Generation", "Video Generation", "Evaluation and Grounding"]),
-  branch("Agentic AI", ["Agentic AI", "AI Agents", "Agent Planning", "Tool Use", "Tool Calling", "Memory for Agents", "Agent Workflows", "Multi-Agent Orchestration", "Human-in-the-Loop Agents", "Agent Evaluation", "Agent Safety", "Google Agent Development Kit (ADK)", "OpenClaw", "Model Context Protocol (MCP)", "MCP Servers", "MCP Tools", "MCP Resources", "MCP Client Design"]),
-  branch("Computer Vision", ["Computer Vision", "Image Classification", "Object Detection", "Image Segmentation", "Pose Estimation", "Optical Flow", "OCR", "Image Embeddings", "OpenCV", "Ultralytics", "YOLO", "Camera Calibration", "Video Tracking"]),
+  branch("Agentic AI", ["AI Agents", "Agent Planning", "Tool Use", "Tool Calling", "Memory for Agents", "Agent Workflows", "Multi-Agent Orchestration", "Human-in-the-Loop Agents", "Agent Evaluation", "Agent Safety", "Google Agent Development Kit (ADK)", "OpenClaw", "Model Context Protocol (MCP)", "MCP Servers", "MCP Tools", "MCP Resources", "MCP Client Design"]),
+  branch("Computer Vision", ["Image Classification", "Object Detection", "Image Segmentation", "Pose Estimation", "Optical Flow", "OCR", "Image Embeddings", "OpenCV", "Ultralytics", "YOLO", "Camera Calibration", "Video Tracking"]),
   branch("Natural Language Processing", ["Tokenization", "Language Models", "Sentiment Analysis", "Named-Entity Recognition", "Translation", "Speech Recognition", "Text Embeddings", "Information Extraction", "Question Answering"]),
   branch("Data and ML Libraries", ["PyTorch", "TensorFlow", "scikit-learn", "NumPy", "pandas", "Jupyter Notebook", "Experiment Tracking", "Datasets", "Model Serving", "GPU Computing"]),
   branch("Search, RAG, and Vector Systems", ["RAG", "Retrieval", "Hybrid Search", "Semantic Search", "Vector Search", "Gemini Embeddings", "pgvector", "Chunking", "Reranking", "Citation Grounding", "Knowledge Bases"])
@@ -81,12 +81,12 @@ const WEB_DEVELOPMENT: TopicSeed[] = [
 ];
 
 const CLOUD_DEVOPS: TopicSeed[] = [
-  branch("CI/CD", ["CI/CD", "Continuous Integration", "Continuous Delivery", "Continuous Deployment", "Build Pipelines", "Release Pipelines", "GitHub Actions", "Workflow Files", "Build Artifacts", "Deployment Gates", "Rollback Strategies", "Preview Deployments"]),
+  branch("CI/CD", ["Continuous Integration", "Continuous Delivery", "Continuous Deployment", "Build Pipelines", "Release Pipelines", "GitHub Actions", "Workflow Files", "Build Artifacts", "Deployment Gates", "Rollback Strategies", "Preview Deployments"]),
   branch("Cloud Platforms", [
     branch("Amazon Web Services (AWS)", ["AWS", "EC2", "S3", "Lambda", "RDS", "DynamoDB", "ECS", "EKS", "CloudFront", "CloudWatch", "IAM", "VPC", "SNS", "SQS"]),
     branch("Microsoft Azure", ["Azure", "Azure App Service", "Azure Functions", "Azure Blob Storage", "Azure SQL", "Cosmos DB", "Azure Kubernetes Service", "Azure Monitor", "Microsoft Entra ID", "Azure DevOps"]),
     branch("Google Cloud Platform (GCP)", ["GCP", "Compute Engine", "Cloud Storage", "Cloud Run", "Google Kubernetes Engine", "BigQuery", "Cloud SQL", "Pub/Sub", "Vertex AI", "Cloud Monitoring", "Google Cloud IAM"]),
-    branch("Vercel", ["Vercel", "Vercel Deployments", "Vercel Preview Deployments", "Vercel Serverless Functions", "Vercel Edge Functions", "Vercel Domains", "Vercel Environment Variables"])
+      branch("Vercel", ["Vercel Deployments", "Vercel Preview Deployments", "Vercel Serverless Functions", "Vercel Edge Functions", "Vercel Domains", "Vercel Environment Variables"])
   ]),
   branch("Containers and Infrastructure", ["Docker", "Docker Images", "Docker Compose", "Kubernetes", "Pods", "Deployments", "Services", "Ingress", "Helm", "Container Registries", "Virtual Machines", "Serverless Computing", "Infrastructure as Code", "Terraform"]),
   branch("Operations and Observability", ["Observability", "Logging", "Metrics", "Distributed Tracing", "Monitoring", "Alerting", "Health Checks", "SLOs and SLIs", "Incident Response", "Secrets Management", "Configuration Management"])
@@ -96,28 +96,28 @@ const SYSTEMS: TopicSeed[] = [
   branch("Operating Systems", ["Processes", "Threads", "Scheduling", "Virtual Memory", "Memory Management", "Filesystems", "System Calls", "Kernels", "Drivers", "Permissions", "Linux", "Windows", "macOS", "iOS", "Mobile Operating Systems"]),
   branch("Systems Programming", ["C", "C++", "Rust", "POSIX", "File Descriptors", "Signals", "Sockets", "Memory Mapping", "Shell Processes", "Command-Line Tools"]),
   branch("Computer Architecture", ["CPUs", "Instruction Sets", "Registers", "Cache", "RAM", "Storage", "Buses", "Pipelining", "Branch Prediction", "Multicore CPUs", "GPUs", "ARM", "x86", "RISC", "CISC", "Motherboards"]),
-  branch("Distributed Systems", ["Client-Server Architecture", "Distributed Systems", "Service Discovery", "Load Balancing", "Replication", "Consistency", "Availability", "Fault Tolerance", "Scalability", "Rate Limiting", "Message Queues", "Event-Driven Systems", "Microservices", "Monoliths", "CAP Theorem"]),
+  branch("Distributed Systems", ["Client-Server Architecture", "Service Discovery", "Load Balancing", "Replication", "Consistency", "Availability", "Fault Tolerance", "Scalability", "Rate Limiting", "Message Queues", "Event-Driven Systems", "Microservices", "Monoliths", "CAP Theorem", branch("Scaling and Reliability", ["Scaling", "Horizontal Scaling", "Vertical Scaling", "Auto Scaling", "Elasticity", "Capacity Planning", "Load Testing", "Bottleneck Analysis", "Caching Strategies", "High Availability", "Graceful Degradation", "Circuit Breakers", "Bulkheads", "Disaster Recovery", "Multi-Region Systems", "Service Level Objectives"])]),
   branch("Messaging and Event Systems", ["Message Queues", "Publish-Subscribe", "Event Streams", "Kafka", "RabbitMQ", "Task Queues", "Exactly-Once Processing", "Idempotency", "Retries", "Backpressure"])
 ];
 
 const SECURITY: TopicSeed[] = [
   branch("Application Security", ["Web Security", "Input Validation", "Output Encoding", "SQL Injection", "Cross-Site Scripting", "CSRF", "SSRF", "Secure Headers", "Dependency Security", "Threat Modeling", "OWASP"]),
   branch("Identity and Access", ["Authentication", "Authorization", "OAuth", "OpenID Connect", "Role-Based Access Control", "Attribute-Based Access Control", "Least Privilege", "Secrets Management", "API Keys"]),
-  branch("Cryptography", ["Cryptography", "Encryption", "Symmetric Encryption", "Public-Key Cryptography", "Hashing", "Digital Signatures", "TLS", "Key Management", "Randomness"]),
+  branch("Cryptography", ["Encryption", "Symmetric Encryption", "Public-Key Cryptography", "Hashing", "Digital Signatures", "TLS", "Key Management", "Randomness"]),
   branch("Infrastructure Security", ["Network Security", "Firewalls", "VPNs", "Cloud Security", "Container Security", "Endpoint Security", "Vulnerability Management", "Security Monitoring", "Incident Response"]),
   branch("Privacy and Safety", ["Privacy by Design", "Data Minimization", "PII", "Anonymization", "Access Logs", "AI Safety", "Model Security", "Prompt Injection", "Data Governance"])
 ];
 
 const DATA_ENGINEERING: TopicSeed[] = [
   branch("Data Pipelines", ["ETL", "ELT", "Data Ingestion", "Batch Processing", "Stream Processing", "Data Validation", "Data Cleaning", "Data Lineage", "Data Contracts"]),
-  branch("Data Science", ["Data Science", "NumPy", "pandas", "DataFrames", "Statistics", "Exploratory Data Analysis", "Feature Engineering", "Data Visualization", "Jupyter Notebook"]),
+  branch("Data Science", ["NumPy", "pandas", "DataFrames", "Statistics", "Exploratory Data Analysis", "Feature Engineering", "Data Visualization", "Jupyter Notebook"]),
   branch("Files and Data Formats", ["CSV", "Excel Files", "Google Forms", "JSON", "XML", "Parquet", "Columnar Data", "File Uploads", "Data Serialization"]),
   branch("Analytics Systems", ["Data Warehouses", "BigQuery", "OLAP", "Dashboards", "Reporting", "Experiment Analysis", "Data Quality", "Data Governance"])
 ];
 
 const MOBILE_DESKTOP: TopicSeed[] = [
   branch("Apple Platforms", ["Swift", "SwiftUI", "macOS Apps", "iOS Apps", "AppKit", "Swift Package Manager", "ScreenCaptureKit", "macOS Accessibility", "Accessibility APIs", "App Sandboxing", "Universal Binaries"]),
-  branch("Desktop Automation", ["Desktop Automation", "Browser Automation", "macOS Accessibility", "ScreenCaptureKit", "Keyboard Events", "Mouse Events", "Permission Flows", "Agent-Controlled Workflows"]),
+  branch("Desktop Automation", ["Browser Automation", "macOS Accessibility", "ScreenCaptureKit", "Keyboard Events", "Mouse Events", "Permission Flows", "Agent-Controlled Workflows"]),
   branch("Document and PDF Software", ["PDF Generation", "fpdf2", "PDF Text Layout", "Document Export", "ReportLab", "Page Breaks", "Fonts and Unicode", "File System Save Dialogs"])
 ];
 
@@ -130,10 +130,10 @@ const TOOLS_WORKFLOW: TopicSeed[] = [
 const OTHER_FIELDS: TopicSeed[] = [
   branch("Compilers and Language Design", ["Lexing", "Parsing", "Abstract Syntax Trees", "Type Checking", "Interpreters", "Compilers", "Bytecode", "Garbage Collection", "Programming Language Design"]),
   branch("Graphics and Games", ["Computer Graphics", "Rendering", "Shaders", "3D Graphics", "Game Development", "Game Engines", "Physics Engines", "Animation"]),
-  branch("Human-Computer Interaction", ["Human-Computer Interaction", "User Interfaces", "Interaction Design", "Usability", "Accessibility", "Information Architecture", "User Research"]),
+  branch("Human-Computer Interaction", ["User Interfaces", "Interaction Design", "Usability", "Accessibility", "Information Architecture", "User Research"]),
   branch("Embedded and Connected Devices", ["Embedded Systems", "Microcontrollers", "Real-Time Systems", "Internet of Things", "Sensors", "Firmware", "Robotics"]),
   branch("Quantum and Emerging Computing", ["Quantum Computing", "Quantum Algorithms", "Neuromorphic Computing", "Edge Computing", "Spatial Computing", "Emerging Technologies"]),
-  branch("Computer History", ["Computer History", "Early Internet History", "Famous Computer Scientists", "Famous Software Bugs", "Operating System History", "Programming Language History", "Computing Oddities"])
+  branch("Computer History", ["Early Internet History", "Famous Computer Scientists", "Famous Software Bugs", "Operating System History", "Programming Language History", "Computing Oddities"])
 ];
 
 export function buildComputerScienceTopic(): TopicSeed {

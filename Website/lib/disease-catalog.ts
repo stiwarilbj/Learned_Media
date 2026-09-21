@@ -84,10 +84,10 @@ const PRION_DISEASES: TopicSeed[] = [
 ];
 
 const TRANSMISSION_GROUPS: TopicSeed[] = [
-  branch("Airborne and Respiratory Spread", RESPIRATORY_DISEASES.concat(["Measles", "Chickenpox", "Tuberculosis", "COVID-19", "Influenza"])),
-  branch("Fecal-Oral and Waterborne Spread", DIGESTIVE_DISEASES.concat(["Hepatitis A", "Hepatitis E", "Cholera", "Polio"])),
+  branch("Airborne and Respiratory Spread", RESPIRATORY_DISEASES.concat(["Measles", "Chickenpox"])),
+  branch("Fecal-Oral and Waterborne Spread", DIGESTIVE_DISEASES.concat(["Polio"])),
   branch("Foodborne Spread", ["Salmonellosis", "Listeriosis", "Campylobacteriosis", "Botulism", "Norovirus Infection", "Hepatitis A", "Toxoplasmosis", "Trichinellosis", "E. coli Infection", "Typhoid Fever"]),
-  branch("Bloodborne Spread", BLOOD_AND_LYMPH_DISEASES.concat(["Hepatitis B", "Hepatitis C", "HIV Infection and AIDS", "Malaria", "Babesiosis"])),
+  branch("Bloodborne Spread", BLOOD_AND_LYMPH_DISEASES),
   branch("Sexual Contact", ["HIV Infection and AIDS", "Syphilis", "Gonorrhea", "Chlamydia", "Genital Herpes", "Human Papillomavirus Disease", "Trichomoniasis", "Hepatitis B"]),
   branch("Vector-Borne Spread", ["Malaria", "Dengue", "Yellow Fever", "Zika Virus Disease", "Chikungunya", "West Nile Virus Disease", "Lyme Disease", "Plague", "Leishmaniasis", "African Sleeping Sickness", "Onchocerciasis"]),
   branch("Animal-to-Human Spread", ["Rabies", "Brucellosis", "Leptospirosis", "Anthrax", "Avian Influenza", "Swine Influenza", "Ebola Disease", "Marburg Virus Disease", "Nipah Virus Disease", "Hantavirus Disease", "COVID-19"]),
