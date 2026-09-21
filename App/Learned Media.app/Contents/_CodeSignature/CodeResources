@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		JANvV3HMOq89877/io0Zo+VJTHU=
+		NcXANfzBocPVAtGxii+zCildh9M=
 		</data>
 		<key>Resources/frontend/computer-science-catalog.js</key>
 		<data>
@@ -30,7 +30,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		GFB+EbM7fS5WusdQ56wQMom0p64=
+		Kvq4KrC9h3NSslExtVbhUGX/FGc=
 		</data>
 		<key>Resources/frontend/natural-disaster-catalog.js</key>
 		<data>
@@ -46,11 +46,15 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		AdIP9y0iO1oewL+JGjcVdc3S9KI=
+		4oPr19NeYh1HdmyjIwtJco6EV04=
 		</data>
 		<key>Resources/frontend/topic-catalog.js</key>
 		<data>
-		fELqW3d8OfMrCkJ8TQHAwqfVtLs=
+		2cDD9o1IXO0KZIlpsMuURRpXzfc=
+		</data>
+		<key>Resources/frontend/war-history-catalog.js</key>
+		<data>
+		YDqcEBOQSNBwGcm7RILBkfMXKC8=
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
@@ -70,7 +74,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			/jVFVHGGQxGB2uKl+nkdSOqJgb8C5F+VBqgB0oijg3g=
+			M+QQiTNhwjbCx3dhXX3Ir9DAY/NcGX42TRSSVILDbZc=
 			</data>
 		</dict>
 		<key>Resources/frontend/computer-science-catalog.js</key>
@@ -105,7 +109,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			r2ike6kWCJi4XyKwI5Vd97ta07JuDKaDNe/CMsKClnY=
+			SKxaRV0QIcdx5EprYd9SNs+IKq4BviuaFK3w0UoEDiY=
 			</data>
 		</dict>
 		<key>Resources/frontend/natural-disaster-catalog.js</key>
@@ -133,14 +137,21 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			5agUztYlvhav58PiNF2lUKhRXZwHOSBw5/R/N2/wWUY=
+			1NdhLtxYLbkHw/NjLC0ShvFbOXJzudSNKoYYvEf2eFA=
 			</data>
 		</dict>
 		<key>Resources/frontend/topic-catalog.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			6g6kq2ndnc8cynjnS1v3dsf9HaTTY3gffZEeEiH4IzI=
+			pJUlsXZOiWelFa6lqIS4PUzeyOOmGfsydPrJXApa23M=
+			</data>
+		</dict>
+		<key>Resources/frontend/war-history-catalog.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			mfbeIpKq/BCixtr/F6eThhLhuQYEzvTGEtu8Z+U6MtU=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-catalog.js</key>

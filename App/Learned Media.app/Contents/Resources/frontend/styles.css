@@ -865,6 +865,56 @@ body { background: var(--page-gradient); }
   .settings-side { order: 1; }
 }
 
+/* iPhone-sized Safari and Chrome: keep every shell track inside the viewport. */
+@media (max-width: 820px) {
+  html, body { min-width: 0; max-width: 100%; overflow-x: hidden; }
+  .app-frame, .main-column, .main-scroll, .top-navigation { width: 100%; min-width: 0; max-width: 100%; }
+  .top-navigation { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  .nav-brand { min-width: 0; }
+  .nav-brand .brand-wordmark { min-width: 0; max-width: 122px; overflow: hidden; }
+  .nav-brand .brand-wordmark strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .top-nav-search, .top-nav-search .global-search-wrap, .top-nav-search .global-search-wrap input { min-width: 0; width: 100%; }
+  .top-nav-search { flex: 1 1 auto; }
+  .top-nav-account { min-width: 0; }
+  .main-scroll { overflow-x: hidden; padding-bottom: calc(82px + env(safe-area-inset-bottom)); }
+  .setup-layout, .feed-layout, .settings-grid, .explore-grid { width: 100%; min-width: 0; }
+  .surface-panel, .setup-topics-panel, .feed-topics-panel, .setup-start-panel, .fact-card, .video-workspace, .settings-card, .settings-help, .danger-card { min-width: 0; max-width: 100%; }
+  .topic-tree { min-width: 0; max-width: 100%; overflow-x: hidden; }
+  .topic-row { min-width: 0; max-width: 100%; }
+  .topic-name, .topic-copy, .fact-content, .fact-body, .fact-breadcrumbs, .video-card-copy, .video-player-heading, .settings-card-heading { min-width: 0; overflow-wrap: anywhere; }
+  .topic-name { flex: 1 1 auto; }
+  .topic-weight { flex: 0 0 92px; width: 92px; }
+  .fact-card, .video-card { overflow: hidden; }
+  .fact-content h3, .fact-hook, .video-card-copy h3 { overflow-wrap: anywhere; }
+  .fact-image { max-width: 100%; }
+}
+
+@media (max-width: 480px) {
+  .top-navigation { gap: 7px; min-height: 60px; }
+  .nav-brand .brand-wordmark { display: none; }
+  .nav-brand .brand-mark { width: 34px; height: 34px; flex: 0 0 34px; }
+  .top-nav-account { flex: 0 0 34px; }
+  .top-nav-account .profile-chip { width: 34px; min-width: 34px; height: 34px; justify-content: center; padding: 0; }
+  .top-nav-account .profile-avatar { margin: 0; }
+  .top-nav-account .profile-copy, .top-nav-account .profile-chip > .icon { display: none; }
+  .top-nav-search .global-search-wrap input { height: 36px; font-size: 10px; padding-right: 8px; }
+  .main-scroll { padding-left: 10px; padding-right: 10px; }
+  .setup-topics-panel, .feed-topics-panel { padding-left: 13px; padding-right: 13px; }
+  .setup-topics-panel .topic-toolbar, .setup-topics-panel .custom-topic-form { margin-left: -13px; margin-right: -13px; padding-left: 13px; padding-right: 13px; }
+  .topic-row { gap: 5px; }
+  .topic-expand, .topic-spacer { width: 36px; height: 36px; flex-basis: 36px; margin-left: -3px; }
+  .topic-check { width: 20px; height: 20px; flex: 0 0 20px; }
+  .topic-weight { flex-basis: 86px; width: 86px; grid-template-columns: 22px minmax(28px, 1fr) 22px; }
+  .topic-weight button { min-width: 22px; }
+  .feed-intro h1, .view-heading h1 { font-size: 28px; }
+  .start-panel-copy h1 { font-size: 29px; }
+  .start-button { min-width: 0; width: 100%; }
+  .fact-content { padding-left: 14px; padding-right: 14px; }
+  .fact-actions { flex-wrap: wrap; }
+  .video-tabs { max-width: 100%; }
+  .video-tabs button { padding-left: 10px; padding-right: 10px; }
+}
+
 /* Nested topic browser: keep every control light, legible, and inside its row. */
 .topic-row { align-items: flex-start; min-height: 50px; padding-top: 6px; padding-bottom: 6px; }
 .topic-row:hover { background: rgba(226, 240, 255, .5); }

@@ -3,8 +3,9 @@ import { buildUnitedStatesPoliticalHistory, buildWorldPoliticalHistory } from ".
 import { buildDiseasesTopic } from "./disease-catalog";
 import { buildComputerScienceTopic } from "./computer-science-catalog";
 import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
+import { buildWarHistoryTopic } from "./war-history-catalog";
 
-export const TOPIC_CATALOG_VERSION = 10;
+export const TOPIC_CATALOG_VERSION = 11;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -231,6 +232,7 @@ const TOPIC_SEEDS: TopicSeed[] = [
       "History of Cities", "Everyday Life in the Past", "Historical Mysteries", "Forgotten People", "Forgotten Events"
     ])
   ]),
+  buildWarHistoryTopic(),
   branch("Science", [
     branch("Chemistry", ["Atoms", "Elements", "Periodic Table", "Chemical Bonds", "Reactions", "Organic Chemistry", "Inorganic Chemistry", "Physical Chemistry", "Analytical Chemistry", "Biochemistry", "Materials Chemistry", "Electrochemistry", "Nuclear Chemistry", "Strange Chemical Properties", "Everyday Chemistry"]),
     branch("Biology", ["Evolution", "Genetics", "DNA", "Cells", "Microbiology", "Bacteria", "Viruses", "Fungi", "Plants", "Animals", "Zoology", "Ecology", "Marine Biology", "Human Biology", "Anatomy", "Neuroscience", "Immunology", "Animal Behavior", "Extreme Organisms", "Symbiosis"]),
