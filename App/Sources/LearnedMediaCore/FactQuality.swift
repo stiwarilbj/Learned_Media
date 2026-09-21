@@ -31,8 +31,8 @@ public enum FactQuality {
 
     public static func rubric(_ level: Int) -> String {
         if level >= 10 { return "Choose one exceptionally obscure, narrowly bounded detail from a named inner section and one specific paragraph or two adjacent paragraphs of the article. It must identify a lesser-known incident, document, exception, technical mechanism, experiment, measurement, or consequence by name, date, place, or other precise marker when the page supplies one. Never use the lead, infobox, a famous introductory fact, a whole-section summary, a standard biography, a childhood detail, or a plot overview. The claim should be difficult because the sourced detail is obscure, not because the language is difficult." }
-        if level >= 9 { return "Choose one obscure paragraph-level detail from a named non-lead section, such as a lesser-known incident, document, mechanism, experiment, exception, or consequence. Name the exact people, work, date, place, or technical detail supported by that passage. Reject leads, familiar trivia, biographies, childhood summaries, plot summaries, and whole-section overviews." }
-        if level >= 5 { return "Choose one unfamiliar, paragraph-level detail from a named Wikipedia section. State the exact event, mechanism, decision, or named object and its documented consequence. Do not summarize the page or section, describe a person's life, or give a generic definition." }
+        if level >= 9 { return "Choose one obscure detail from one named non-lead section and one specific paragraph or tightly adjacent pair of paragraphs. Name the exact people, work, date, place, mechanism, document, or consequence supported by that passage. Reject leads, familiar trivia, biographies, childhood summaries, plot summaries, and whole-section overviews." }
+        if level >= 5 { return "Choose one fairly difficult, unfamiliar detail from one named non-lead Wikipedia section and one specific paragraph or tightly adjacent pair of paragraphs. State the exact event, mechanism, decision, named object, or documented consequence. Do not summarize the page or section, describe a person's life, or give a generic definition; the fact must be narrow enough that its supporting passage can be located directly." }
         return "Choose one concrete detail from a specific sentence or paragraph of the assigned article. It may be easier to learn, but it must still name an event, object, place, person, date, mechanism, or consequence. Never give a broad topic overview, generic definition, biography, childhood summary, or plot summary."
     }
     public static func normalized(_ text: String) -> String {
@@ -75,7 +75,7 @@ public enum FactQuality {
         }
         let ranked = passages.shuffled().sorted { $0.2 > $1.2 }
         let selected: [(String, String, Double)]
-        if let first = ranked.first { selected = ranked.filter { $0.0 == first.0 }.prefix(level >= 9 ? 4 : 7).map { $0 } }
+        if let first = ranked.first { selected = ranked.filter { $0.0 == first.0 }.prefix(level >= 10 ? 2 : level >= 9 ? 4 : level >= 5 ? 5 : 7).map { $0 } }
         else { selected = [] }
         return selected.map { "[Section: \($0.0)]\n\($0.1)" }.joined(separator: "\n\n")
     }

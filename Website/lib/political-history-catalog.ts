@@ -231,6 +231,71 @@ const genericWorldEvents = ["State Formation and Constitutional Change", "Major 
 
 const politicalSubtopics = ["Institutions and Powers", "Major Events and Decisions", "Political Parties and Elections", "Scandals and Controversies", "Records and Firsts"];
 
+// These branches are deliberately event- and mechanism-focused. They give the
+// generator narrow, sourceable entry points for how political actors actually
+// move, block, reshape, or explain legislation instead of another broad list of
+// officeholders or policy topics.
+const PRESIDENTIAL_INNER_WORKINGS: TopicSeed[] = [
+  branch("Presidential Tools and Constraints", [
+    "Veto Threats and Legislative Bargaining", "Pocket Vetoes", "Signing Statements", "Executive Orders and Administrative Direction",
+    "Executive Privilege", "Recess Appointments", "Presidential Proclamations", "White House Legislative Affairs",
+    "Going Public and the Bully Pulpit", "Emergency Powers and Statutory Limits"
+  ]),
+  branch("Named Presidential Episodes", [
+    "George Washington's Cabinet Debate over the National Bank", "James Madison's Veto of the Bonus Bill (1817)",
+    "Abraham Lincoln's Preliminary Emancipation Proclamation", "Theodore Roosevelt's 1902 Coal Strike Intervention",
+    "Woodrow Wilson's League of Nations Senate Fight", "Franklin D. Roosevelt's 1937 Judicial Procedures Reform Bill",
+    "Harry Truman's Executive Order 9981", "Dwight Eisenhower and Little Rock in 1957", "John F. Kennedy's 1962 Steel Price Crisis",
+    "Lyndon Johnson and the 1964 Civil Rights Act Coalition", "Richard Nixon's Saturday Night Massacre",
+    "Gerald Ford's 1974 Nixon Pardon", "Ronald Reagan's 1986 Immigration Reform Coalition",
+    "George H. W. Bush and the 1990 Americans with Disabilities Act", "Bill Clinton's 1993 Deficit-Reduction Vote",
+    "George W. Bush's 2001 Tax-Cut Reconciliation", "Barack Obama's 2010 Health-Care Reconciliation Strategy"
+  ]),
+  branch("White House Influence and Information", [
+    "Fireside Chats and Public Pressure", "State of the Union Legislative Signaling", "Kitchen Cabinets and Informal Advisers",
+    "Presidential Whip Counts", "Cabinet Meetings and Interagency Bargaining", "Signing Ceremonies as Coalition Messages",
+    "Presidential Records and Information Control"
+  ])
+];
+
+const SENATE_INNER_WORKINGS: TopicSeed[] = [
+  branch("Procedural Leverage", [
+    "Committee Referral and Hearings", "Committee Markup and Amendment Negotiations", "Unanimous Consent Agreements",
+    "Senate Holds", "Filibuster and Cloture under Rule XXII", "Voice Votes and Roll-Call Votes", "Riders on Must-Pass Bills",
+    "Budget Reconciliation and the Byrd Rule", "Advice and Consent Negotiations", "Blue Slip and Judicial Nominations",
+    "Conference Committees and Bicameral Bargaining"
+  ]),
+  branch("Named Legislative Stories", [
+    "Everett Dirksen and the 1964 Civil Rights Act Cloture Vote", "Strom Thurmond's 1998 Stem-Cell Research Testimony",
+    "Ted Kennedy, Strom Thurmond, and Stem-Cell Research", "Ted Kennedy's 2006 Stem-Cell Research Floor Push",
+    "Stem Cell Research Enhancement Act of 2005", "John McCain and Russ Feingold's Bipartisan Campaign Reform Act",
+    "Army–McCarthy Hearings and Senate Investigation", "Keating Five Ethics Investigation", "ABSCAM Senate Investigation",
+    "Robert Byrd and Senate Control of the Floor", "Margaret Chase Smith's Declaration of Conscience"
+  ]),
+  branch("Coalitions and Negotiation", [
+    "Party Conference Negotiations", "Bipartisan Working Groups", "Whip Counts and Vote Commitments",
+    "Logrolling and Legislative Bargaining", "Conference Report Negotiations", "Constituent Casework as Legislative Feedback"
+  ])
+];
+
+const HOUSE_INNER_WORKINGS: TopicSeed[] = [
+  branch("Procedural Leverage", [
+    "Rules Committee Special Rules", "Open Rules and Closed Rules", "Discharge Petitions", "Suspension of the Rules",
+    "House Committee Markup and Manager's Amendments", "The Motion to Recommit", "Appropriations Riders and Omnibus Bills",
+    "House Whip Counts", "Party Caucus and Conference Negotiations", "House–Senate Conference Committees"
+  ]),
+  branch("Named Legislative Stories", [
+    "Joseph Gurney Cannon and the 1910 House Revolt", "Charles R. Crisp and the 1931 Discharge Petition Rule",
+    "The Hastert Rule and Majority-of-the-Majority Scheduling", "John Lewis and the 2016 House Sit-In",
+    "House Impeachment Managers and Senate Trials", "The 1994 Republican Revolution and Committee Power",
+    "The 2007 House Stem-Cell Research Vote", "ABSCAM and House Ethics Investigations"
+  ]),
+  branch("Coalitions and Negotiation", [
+    "Bipartisan Problem-Solving Coalitions", "Leadership Vote Counting", "Rules Committee Negotiations",
+    "Amendment Packages and Vote Trading", "Discharge-Petition Coalitions", "Conference Report Negotiations"
+  ])
+];
+
 export function buildUnitedStatesPoliticalHistory(): TopicSeed {
   const presidents = PRESIDENTIAL_TERMS.map((term) => branch(term, politicalSubtopics));
   const vicePresidents = VICE_PRESIDENT_TERMS.map((term) => branch(term, ["Vice-Presidential Duties", "Succession and Vacancy", "Major Initiatives and Controversies"]));
@@ -243,6 +308,7 @@ export function buildUnitedStatesPoliticalHistory(): TopicSeed {
   return branch("U.S. Political History", [
     branch("Presidents", [
       ...presidents,
+      branch("Inner Workings", PRESIDENTIAL_INNER_WORKINGS),
       branch("Presidential Slogans and Campaigns", ["Campaign Slogans", "Inaugural Themes", "Reelection Campaigns", "Third-Party Presidential Campaigns"]),
       branch("Presidential Records", ["Longest Presidency", "Shortest Presidency", "Youngest and Oldest Presidents", "Presidential Elections and Popular Vote", "Presidential Firsts", "Presidential Libraries"]),
       branch("Presidential Corruption Scandals", PRESIDENTIAL_SCANDALS),
@@ -264,6 +330,7 @@ export function buildUnitedStatesPoliticalHistory(): TopicSeed {
     ]),
     branch("Senate", [
       branch("Senate Eras", ["Early Senate", "Antebellum Senate", "Civil War and Reconstruction Senate", "Progressive Era Senate", "New Deal Senate", "Cold War Senate", "Modern Senate"]),
+      branch("Inner Workings", SENATE_INNER_WORKINGS),
       branch("Famous Senators", FAMOUS_SENATORS),
       branch("Senate Elections and Representation", ELECTION_CYCLES.map((cycle) => `Senate ${cycle}`)),
       branch("Senate Committees and Leadership", ["Party Leaders", "Committee Chairs", "Filibuster and Cloture", "Advice and Consent"]),
@@ -273,6 +340,7 @@ export function buildUnitedStatesPoliticalHistory(): TopicSeed {
     ]),
     branch("House", [
       branch("House Eras", ["Early House", "Antebellum House", "Civil War and Reconstruction House", "Progressive Era House", "New Deal House", "Civil Rights Era House", "Modern House"]),
+      branch("Inner Workings", HOUSE_INNER_WORKINGS),
       branch("Congresses During Each Speakership", CONGRESS_LABELS.map((label, index) => `${label} — ${HOUSE_SPEAKERS_BY_CONGRESS[index] ?? "Speakership"} Tenure`)),
       branch("Famous House Members", FAMOUS_HOUSE_MEMBERS),
       branch("House Elections and Representation", ELECTION_CYCLES.map((cycle) => `House ${cycle}`)),
@@ -318,6 +386,12 @@ export function buildWorldPoliticalHistory(): TopicSeed {
 export const POLITICAL_HISTORY_CATALOG_SOURCES = [
   "https://www.archives.gov/research/census/presidents",
   "https://www.senate.gov/about/officers-staff/vice-presidents.htm",
+  "https://www.senate.gov/about/powers-procedures/voting.htm",
+  "https://www.senate.gov/general/common/generic/about_committees.htm",
+  "https://www.senate.gov/about/powers-procedures/filibusters-cloture.htm",
+  "https://www.govinfo.gov/content/pkg/CHRG-106shrg61422/pdf/CHRG-106shrg61422.pdf",
+  "https://www.govinfo.gov/content/pkg/GPO-CRECB-1998-pt1/pdf/GPO-CRECB-1998-pt1-10-1.pdf",
+  "https://history.house.gov/Blog/2023/July/7-20-Discharge-Petitions/",
   "https://history.house.gov/People/Office/Speakers/",
   "https://www.senate.gov/artandhistory/history/resources/pdf/chronlist.pdf",
   "https://www.supremecourt.gov/visiting/highlightsbrochure_may2026.pdf"
