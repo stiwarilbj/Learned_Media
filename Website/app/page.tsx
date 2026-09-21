@@ -724,11 +724,14 @@ export default function HomePage() {
 
   useEffect(() => {
     const element = mainScrollRef.current;
-    if (!element) return;
-    const update = () => setShowGoToTop(element.scrollTop > 420);
+    const update = () => setShowGoToTop(window.scrollY > 420 || Boolean(element && element.scrollTop > 420));
     update();
-    element.addEventListener("scroll", update, { passive: true });
-    return () => element.removeEventListener("scroll", update);
+    window.addEventListener("scroll", update, { passive: true });
+    element?.addEventListener("scroll", update, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", update);
+      element?.removeEventListener("scroll", update);
+    };
   }, [hydrated, view]);
 
   useEffect(() => {
@@ -1473,7 +1476,7 @@ export default function HomePage() {
         onMoveWorkspace={moveWorkspace}
       />
       <main className="main-column">
-        <div className="main-scroll" ref={mainScrollRef}>{renderMain()}{showGoToTop && <button type="button" className="go-to-top" onClick={() => mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" })}>Go to top</button>}</div>
+        <div className="main-scroll" ref={mainScrollRef}>{renderMain()}{showGoToTop && <button type="button" className="go-to-top" onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); }}>Go to top</button>}</div>
       </main>
     </div>
   );

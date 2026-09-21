@@ -1280,7 +1280,7 @@
     const main = node("main", { className: "main-column" });
     const scroll = node("div", { className: "main-scroll" });
     scroll.appendChild(state.view === "settings" ? settingsView() : state.view === "videos" ? videosView() : state.view === "feed" && !state.started ? setupView() : state.view === "feed" ? feedView() : collectionView(state.view));
-    scroll.appendChild(node("button", { type: "button", className: "go-to-top", onClick: function () { const target = document.querySelector(".main-scroll"); if (target) target.scrollTo({ top: 0, behavior: "smooth" }); } }, "Go to top"));
+    scroll.appendChild(node("button", { type: "button", className: "go-to-top", onClick: function () { window.scrollTo({ top: 0, behavior: "smooth" }); const target = document.querySelector(".main-scroll"); if (target) target.scrollTo({ top: 0, behavior: "smooth" }); } }, "Go to top"));
     main.appendChild(scroll);
     app.appendChild(main);
     window.requestAnimationFrame(function () {
