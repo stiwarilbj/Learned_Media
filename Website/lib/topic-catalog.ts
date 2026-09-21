@@ -5,7 +5,7 @@ import { buildComputerScienceTopic } from "./computer-science-catalog";
 import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
 import { buildWarHistoryTopic } from "./war-history-catalog";
 
-export const TOPIC_CATALOG_VERSION = 12;
+export const TOPIC_CATALOG_VERSION = 13;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -97,6 +97,34 @@ const BOOK_EXPANSION: TopicSeed[] = [
     "Where the Crawdads Sing", "Follow Your Heart (Va' dove ti porta il cuore)", "Matilda", "The Book Thief", "The Horse Whisperer", "Goodnight Moon", "The Neverending Story (Die unendliche Geschichte)", "All the Light We Cannot See", "Fifty Shades of Grey", "The Outsiders", "Guess How Much I Love You", "Shōgun", "The Poky Little Puppy", "The Pillars of the Earth", "Perfume (Das Parfum)", "The Grapes of Wrath"
   ])
 ];
+
+// Wikipedia groups these books by reported worldwide sales estimates. The
+// catalog keeps that order for the user's list, while titles not present on
+// the reference page remain at the end in their existing order.
+const BEST_SELLING_BOOK_ORDER = [
+  "A Tale of Two Cities", "The Little Prince", "The Alchemist", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber", "The Hobbit", "Alice's Adventures in Wonderland",
+  "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World", "The Bridges of Madison County", "One Hundred Years of Solitude", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose", "The Eagle Has Landed", "Watership Down", "The Hite Report", "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life",
+  "The Tale of Peter Rabbit", "Jonathan Livingston Seagull", "The Very Hungry Caterpillar", "A Message to Garcia", "To Kill a Mockingbird", "Flowers in the Attic", "Cosmos", "Angels & Demons", "How to Win Friends and Influence People", "Alcoholics Anonymous", "Fear of Flying", "How the Steel Was Tempered", "War and Peace", "The Adventures of Pinocchio", "The Diary of Anne Frank", "Your Erroneous Zones", "The Thorn Birds", "Kane and Abel", "The Kite Runner", "Valley of the Dolls", "The Great Gatsby", "Gone with the Wind", "Rebecca", "The Revolt of Mamie Stover", "The Girl with the Dragon Tattoo", "The Lost Symbol", "The Hunger Games", "James and the Giant Peach", "Ben-Hur: A Tale of the Christ", "The Young Guard", "Who Moved My Cheese?",
+  "A Brief History of Time", "Paul and Virginia", "Lust for Life", "The Wind in the Willows", "The 7 Habits of Highly Effective People", "Totto-Chan: The Little Girl at the Window", "Sapiens: A Brief History of Humankind", "Virgin Soil Upturned", "The Celestine Prophecy", "The Fault in Our Stars", "The Girl on the Train", "The Shack", "Uncle Styopa", "The Godfather", "Love Story", "Catching Fire", "Mockingjay", "Kitchen", "Andromeda Nebula", "Gone Girl", "The Bermuda Triangle", "Things Fall Apart", "Wolf Totem", "The Happy Hooker: My Own Story", "Jaws", "Love You Forever", "The Women's Room", "What to Expect When You're Expecting", "Adventures of Huckleberry Finn", "The Secret Diary of Adrian Mole, Aged 13¾", "Pride and Prejudice", "Kon-Tiki: Across the Pacific in a Raft", "The Good Soldier Švejk", "Where the Wild Things Are", "The Power of Positive Thinking", "The Secret", "Dune", "Charlie and the Chocolate Factory", "The Naked Ape", "Kokoro",
+  "Where the Crawdads Sing", "Follow Your Heart", "Matilda", "The Book Thief", "The Horse Whisperer", "Goodnight Moon", "The Neverending Story", "All the Light We Cannot See", "Fifty Shades of Grey", "The Outsiders", "Guess How Much I Love You", "Shōgun", "The Poky Little Puppy", "The Pillars of the Earth", "Perfume", "The Grapes of Wrath"
+];
+
+function bookSortKey(seed: TopicSeed) {
+  const label = typeof seed === "string" ? seed : seed.label;
+  const translated = label === "Paul et Virginie" ? "Paul and Virginia" : label;
+  return englishLiteratureLabel(translated).toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function orderBookSeeds(seeds: TopicSeed[]) {
+  const order = new Map(BEST_SELLING_BOOK_ORDER.map((title, index) => [bookSortKey(title), index]));
+  return seeds
+    .map((seed, index) => ({ seed, index, rank: order.get(bookSortKey(seed)) ?? BEST_SELLING_BOOK_ORDER.length }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(({ seed }) => seed);
+}
+
+const booksFromList = BOOK_EXPANSION.at(-1);
+if (booksFromList && typeof booksFromList !== "string") booksFromList.children = orderBookSeeds(booksFromList.children);
 
 const BEST_SELLING_BOOK_SERIES: TopicSeed = branch("Best-Selling Book Series", [
   series("Harry Potter"), series("Goosebumps"), series("Perry Mason"), series("Diary of a Wimpy Kid"), series("Choose Your Own Adventure"), series("The Berenstain Bears"), series("Mr. Men and Little Miss"), series("Sweet Valley High"), series("Noddy"), series("Jack Reacher"), series("The Railway Series / Thomas & Friends"), series("Nancy Drew"), series("San-Antonio"), series("Robert Langdon"), series("Geronimo Stilton"), series("Percy Jackson & the Olympians"), series("The Baby-Sitters Club"), series("American Girl"), series("Twilight"), series("Star Wars"),
@@ -281,7 +309,7 @@ const LOWERCASE_TOPIC_WORDS = new Set(["a", "an", "and", "as", "at", "by", "for"
 
 /** Title Case is for catalog labels only; book and video titles keep their original styling. */
 export function titleCaseTopicLabel(label: string) {
-  const words = label.split(/(\s+)/);
+  const words = label.replace(/\s+/gu, " ").trim().split(/(\s+)/);
   const wordIndexes = words.map((word, index) => (/^\s+$/.test(word) ? -1 : index)).filter((index) => index >= 0);
   const first = wordIndexes[0];
   const last = wordIndexes.at(-1);
@@ -296,30 +324,38 @@ export function titleCaseTopicLabel(label: string) {
   }).join("");
 }
 
-function buildNode(seed: TopicSeed, parentPath: string[], depth: number, rootIndex: number): TopicNode {
-  const label = typeof seed === "string" ? seed : titleCaseTopicLabel(seed.label);
+function buildNode(seed: TopicSeed, parentPath: string[], depth: number, rootIndex: number): TopicNode | null {
+  const label = (typeof seed === "string" ? seed : titleCaseTopicLabel(seed.label)).replace(/\s+/gu, " ").trim();
+  if (!label) return null;
   const children = typeof seed === "string" ? undefined : seed.children;
   const path = [...parentPath, label];
   return {
     id: nodeId(path), label, selected: false, expanded: false,
     weight: 10,
     aliases: typeof seed === "string" ? undefined : seed.aliases,
-    children: children?.map((child) => buildNode(child, path, depth + 1, rootIndex))
+    children: children?.map((child) => buildNode(child, path, depth + 1, rootIndex)).filter((child): child is TopicNode => Boolean(child))
   };
 }
 
 export function englishLiteratureLabel(label: string) {
   const translated: Record<string,string> = {
     "Paul et Virginie": "Paul and Virginia",
-    "Rokusei Senjutsu (Six-Star Astrology) Tells Your Fortune": "Six-Star Astrology Tells Your Fortune"
+    "Rokusei Senjutsu (Six-Star Astrology) Tells Your Fortune": "Six-Star Astrology Tells Your Fortune",
+    "六星占術によるあなたの運命 (Rokusei Senjutsu: Six-Star Astrology Tells Your Fortune)": "Six-Star Astrology Tells Your Fortune",
+    "六星占術によるあなたの運命": "Six-Star Astrology Tells Your Fortune"
   };
   return (translated[label] ?? label.replace(/\s*\([^)]*\)/g, "")).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^\x00-\x7F’—–]/g, "").replace(/\s+/g, " ").trim();
 }
 
 export function createCatalogTopics(): TopicNode[] {
   // Keep original IDs and aliases while presenting English-only Literature labels.
-  const clean = (node: TopicNode): TopicNode => ({...node, label: englishLiteratureLabel(node.label), aliases: [...(node.aliases ?? []), node.label], children: node.children?.map(clean)});
-  return TOPIC_SEEDS.map((seed, index) => buildNode(seed, [], 0, index)).map(node => node.label === "Literature" ? clean(node) : node);
+  const clean = (node: TopicNode): TopicNode | null => {
+    const label = englishLiteratureLabel(node.label);
+    if (!label) return null;
+    const children = node.children?.map(clean).filter((child): child is TopicNode => Boolean(child));
+    return {...node, label, aliases: Array.from(new Set([...(node.aliases ?? []), node.label])), children};
+  };
+  return TOPIC_SEEDS.map((seed, index) => buildNode(seed, [], 0, index)).filter((node): node is TopicNode => Boolean(node)).map(node => node.label === "Literature" ? clean(node) : node).filter((node): node is TopicNode => Boolean(node));
 }
 
 export function flattenTopics(nodes: TopicNode[], parentPath: string[] = []): Array<TopicNode & { path: string[] }> {

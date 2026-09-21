@@ -1281,3 +1281,9 @@ body { background: var(--page-gradient); }
   .top-nav-link span { display: none; }
   .top-nav-links { flex-shrink: 0; }
 }
+
+/* Leaf and custom topics have no subtopic control, so their labels sit in the
+   center of the available name area without changing branch rows. */
+.topic-row.leaf-row { align-items: center; }
+.topic-row.leaf-row .topic-name-wrap { align-self: stretch; align-items: center; justify-content: center; padding-top: 0; text-align: center; }
+.topic-row.leaf-row .topic-name { flex: 0 1 auto; align-self: center; text-align: center; }

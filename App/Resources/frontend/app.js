@@ -8,12 +8,27 @@
     sentenceLength: 3,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 12;
+  const TOPIC_CATALOG_VERSION = 13;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Super Duper Hard"];
   const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
+  const BEST_SELLING_BOOK_ORDER = [
+    "A Tale of Two Cities", "The Little Prince", "The Alchemist", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber", "The Hobbit", "Alice's Adventures in Wonderland",
+    "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World", "The Bridges of Madison County", "One Hundred Years of Solitude", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose", "The Eagle Has Landed", "Watership Down", "The Hite Report", "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life",
+    "The Tale of Peter Rabbit", "Jonathan Livingston Seagull", "The Very Hungry Caterpillar", "A Message to Garcia", "To Kill a Mockingbird", "Flowers in the Attic", "Cosmos", "Angels & Demons", "How to Win Friends and Influence People", "Alcoholics Anonymous", "Fear of Flying", "How the Steel Was Tempered", "War and Peace", "The Adventures of Pinocchio", "The Diary of Anne Frank", "Your Erroneous Zones", "The Thorn Birds", "Kane and Abel", "The Kite Runner", "Valley of the Dolls", "The Great Gatsby", "Gone with the Wind", "Rebecca", "The Revolt of Mamie Stover", "The Girl with the Dragon Tattoo", "The Lost Symbol", "The Hunger Games", "James and the Giant Peach", "Ben-Hur: A Tale of the Christ", "The Young Guard", "Who Moved My Cheese?",
+    "A Brief History of Time", "Paul and Virginia", "Lust for Life", "The Wind in the Willows", "The 7 Habits of Highly Effective People", "Totto-Chan: The Little Girl at the Window", "Sapiens: A Brief History of Humankind", "Virgin Soil Upturned", "The Celestine Prophecy", "The Fault in Our Stars", "The Girl on the Train", "The Shack", "Uncle Styopa", "The Godfather", "Love Story", "Catching Fire", "Mockingjay", "Kitchen", "Andromeda Nebula", "Gone Girl", "The Bermuda Triangle", "Things Fall Apart", "Wolf Totem", "The Happy Hooker: My Own Story", "Jaws", "Love You Forever", "The Women's Room", "What to Expect When You're Expecting", "Adventures of Huckleberry Finn", "The Secret Diary of Adrian Mole, Aged 13¾", "Pride and Prejudice", "Kon-Tiki: Across the Pacific in a Raft", "The Good Soldier Švejk", "Where the Wild Things Are", "The Power of Positive Thinking", "The Secret", "Dune", "Charlie and the Chocolate Factory", "The Naked Ape", "Kokoro",
+    "Where the Crawdads Sing", "Follow Your Heart", "Matilda", "The Book Thief", "The Horse Whisperer", "Goodnight Moon", "The Neverending Story", "All the Light We Cannot See", "Fifty Shades of Grey", "The Outsiders", "Guess How Much I Love You", "Shōgun", "The Poky Little Puppy", "The Pillars of the Earth", "Perfume", "The Grapes of Wrath"
+  ];
+  function bookSortKey(value) {
+    const label = String(value || "").replace(/\s*\([^)]*\)/g, "").replace(/^Paul et Virginie$/i, "Paul and Virginia");
+    return label.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+  function sortBooksBySales(children) {
+    const ranks = new Map(BEST_SELLING_BOOK_ORDER.map(function (title, index) { return [bookSortKey(title), index]; }));
+    return (children || []).map(function (child, index) { return { child: child, index: index, rank: ranks.has(bookSortKey(child)) ? ranks.get(bookSortKey(child)) : BEST_SELLING_BOOK_ORDER.length }; }).sort(function (a, b) { return a.rank - b.rank || a.index - b.index; }).map(function (item) { return item.child; });
+  }
   const KNOWN_DEMO_IDS = new Set(["demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle", "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning"]);
   const state = {
     workspaceId: "local-workspace",
@@ -89,13 +104,13 @@
   let youtubeSearchToken = 0;
 
   function makeTopics() {
-    const tree = TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); });
+    const tree = TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); }).filter(Boolean);
     function english(topic) {
       const original = topic.label;
-      const replacements = { "Paul et Virginie": "Paul and Virginia", "Rokusei Senjutsu (Six-Star Astrology) Tells Your Fortune": "Six-Star Astrology Tells Your Fortune" };
-      topic.label = (replacements[original] || original).replace(/\s*\([^)]*\)/g, "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\x20-\x7E’‘–—]/g, "").replace(/\s+/g, " ").trim() || original;
+      const replacements = { "Paul et Virginie": "Paul and Virginia", "Rokusei Senjutsu (Six-Star Astrology) Tells Your Fortune": "Six-Star Astrology Tells Your Fortune", "六星占術によるあなたの運命 (Rokusei Senjutsu: Six-Star Astrology Tells Your Fortune)": "Six-Star Astrology Tells Your Fortune", "六星占術によるあなたの運命": "Six-Star Astrology Tells Your Fortune" };
+      topic.label = (replacements[original] || original).replace(/\s*\([^)]*\)/g, "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\x20-\x7E’‘–—]/g, "").replace(/\s+/g, " ").trim();
       if (topic.label !== original) topic.aliases = Array.from(new Set((topic.aliases || []).concat(original)));
-      (topic.children || []).forEach(english);
+      topic.children = (topic.children || []).map(function (child) { english(child); return child; }).filter(function (child) { return Boolean(child.label); });
     }
     const literature = tree.find(function (topic) { return topic.label === "Literature"; });
     if (literature) {
@@ -104,20 +119,24 @@
       if (books) {
         literature.children = [books].concat(literature.children.filter(function (topic) { return topic !== books; }));
         const list = (books.children || []).find(function (topic) { return topic.label === "Books from Your List"; });
-        if (list) books.children = [list].concat(books.children.filter(function (topic) { return topic !== list; }));
+        if (list) {
+          list.children = sortBooksBySales(list.children);
+          books.children = [list].concat(books.children.filter(function (topic) { return topic !== list; }));
+        }
       }
     }
     return tree;
   }
   function buildTopicNode(seed, parentPath, depth, rootIndex) {
-    const label = typeof seed === "string" ? seed : titleCaseCatalogLabel(seed.label);
+    const label = String(typeof seed === "string" ? seed : titleCaseCatalogLabel(seed.label)).replace(/\s+/g, " ").trim();
+    if (!label) return null;
     const path = parentPath.concat(label);
-    const children = typeof seed === "string" ? undefined : (seed.children || []).map(function (child) { return buildTopicNode(child, path, depth + 1, rootIndex); });
+    const children = typeof seed === "string" ? undefined : (seed.children || []).map(function (child) { return buildTopicNode(child, path, depth + 1, rootIndex); }).filter(Boolean);
     return { id: "topic-" + path.map(slug).join("--"), label: label, aliases: typeof seed === "string" ? undefined : seed.aliases, selected: false, expanded: false, weight: 10, children: children };
   }
   function titleCaseCatalogLabel(label) {
     const small = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
-    const words = String(label).split(/(\s+)/);
+    const words = String(label).replace(/\s+/g, " ").trim().split(/(\s+)/);
     const indexes = words.map(function (word, index) { return /^\s+$/.test(word) ? -1 : index; }).filter(function (index) { return index >= 0; });
     const first = indexes[0]; const last = indexes[indexes.length - 1];
     return words.map(function (word, index) {
@@ -781,7 +800,7 @@
     row.appendChild(node("button", { className: "topic-check" + (selection === "selected" ? " checked" : "") + (selection === "mixed" ? " mixed" : ""), ariaLabel: (selection === "selected" ? "Deselect " : "Select ") + topic.label, ariaPressed: selection === "selected", dataset: { topicId: topic.id }, onClick: function () { toggleTopicSelection(topic.id); saveState(); render(); } }, selection === "selected" ? svg("check", 14) : selection === "mixed" ? node("span", { className: "topic-check-dash" }) : null));
     const nameWrap = node("div", { className: "topic-name-wrap" + (selection === "none" ? " unselected" : "") });
     nameWrap.appendChild(node("span", { className: "topic-name" + (selection === "selected" ? " selected" : ""), text: topic.label }));
-    if (hasChildren) nameWrap.appendChild(node("button", { className: "topic-subtopics-toggle", ariaExpanded: childrenVisible, dataset: { topicId: topic.id }, onClick: function () { topic.expanded = !topic.expanded; saveState(); render(); } }, childrenVisible ? "Hide subtopics" : "Show subtopics"));
+    if (hasChildren) nameWrap.appendChild(node("button", { className: "topic-subtopics-toggle", ariaExpanded: childrenVisible, dataset: { topicId: topic.id }, onClick: function () { topic.expanded = !topic.expanded; saveState(); render(); } }, childrenVisible ? "Hide Subtopics" : "Show Subtopics"));
     row.appendChild(nameWrap);
     if (topic.custom) {
       const customActions = node("span", { className: "custom-topic-actions" });

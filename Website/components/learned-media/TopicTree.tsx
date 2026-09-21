@@ -35,7 +35,7 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
           type="button"
           className="topic-expand"
           onClick={() => hasChildren && onExpand(node.id)}
-          aria-label={`${node.expanded ? "Hide" : "Show"} subtopics for ${node.label}`}
+          aria-label={`${node.expanded ? "Hide" : "Show"} Subtopics for ${node.label}`}
           aria-expanded={hasChildren ? childrenVisible : undefined}
           disabled={!hasChildren}
         >
@@ -53,7 +53,7 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
         </button>
         <div className={`topic-name-wrap ${state === "none" ? "unselected" : ""}`}>
           <span className={`topic-name ${state === "selected" ? "selected" : ""}`}>{node.label}</span>
-          {hasChildren && <button type="button" className="topic-subtopics-toggle" onClick={() => onExpand(node.id)} aria-expanded={childrenVisible}>{childrenVisible ? "Hide subtopics" : "Show subtopics"}</button>}
+          {hasChildren && <button type="button" className="topic-subtopics-toggle" onClick={() => onExpand(node.id)} aria-expanded={childrenVisible}>{childrenVisible ? "Hide Subtopics" : "Show Subtopics"}</button>}
         </div>
         {node.custom && <span className="custom-topic-actions"><span className="custom-mark">Custom</span><button type="button" className="topic-remove" onClick={() => onRemoveCustomTopic(node.id)} aria-label={`Delete custom topic ${node.label}`} title="Delete custom topic"><Icon name="trash" size={13} /></button></span>}
         <div className={`topic-weight ${state === "none" ? "disabled" : ""}`} aria-label={`${node.weight} weighting`}>
@@ -65,7 +65,6 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
             <Icon name="plus" size={13} />
           </button>
         </div>
-        {node.custom && <span className="custom-mark">Custom</span>}
       </div>
       {childrenVisible && (
         <div className="topic-children" style={{ "--guide-left": `${Math.min(depth + 1, 5) * 20 + 28}px` } as CSSProperties}>

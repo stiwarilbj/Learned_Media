@@ -145,7 +145,7 @@
     nativeLiterature.children.push(branch("Best-Selling Book Series", seriesNames.map(function (label) { return { label: label, children: [], aliases: seriesAliases[label] || [] }; })));
   }
   window.LEARNED_MEDIA_TOPIC_METADATA = {
-    catalogVersion: 7,
+    catalogVersion: 13,
     bestSellingBookSeries: {
       sourceUrl: "https://en.wikipedia.org/wiki/List_of_best-selling_books#List_of_best-selling_book_series",
       sourceLabel: "Wikipedia's List of best-selling book series",
