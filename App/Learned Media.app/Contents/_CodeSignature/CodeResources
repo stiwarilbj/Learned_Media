@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		DhH8ikYbt1uZhMh+LgcLT88sZsQ=
+		2612x1/B9C3ASCaIV7x6b0WIO8w=
 		</data>
 		<key>Resources/frontend/computer-science-catalog.js</key>
 		<data>
@@ -30,11 +30,11 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		jNzhrrypWkOvCkbgub6Vw1JX5do=
+		HqFeFlM86xcjgSl1FKDJnWOjIs8=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
-		v9hwo2VQllspSDe5tQ6glY8lhyA=
+		m2we2VfWXDSbYcNvQOQ5A0Jjo38=
 		</data>
 		<key>Resources/frontend/natural-disaster-catalog.js</key>
 		<data>
@@ -52,9 +52,13 @@
 		<data>
 		SJwZpkUI7RRVbzUdgtMkz2uDJao=
 		</data>
+		<key>Resources/frontend/television-music-sports-catalog.js</key>
+		<data>
+		Hx4PzjZPuj3uxdf6O5X3Mw5ojRA=
+		</data>
 		<key>Resources/frontend/topic-catalog.js</key>
 		<data>
-		U5I1R5A0Dj1YvWeLdkCu5e6peqk=
+		KXTVe2RmfLInxDUbKL0E2ON2Iak=
 		</data>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<data>
@@ -78,7 +82,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			sokJz5KhvZtSgfRldMaTnVla74R2KLebjHjNlyAGze8=
+			n521IvA1W3r8sWwqwp5a3pSdof6d5bvezDnL06GfOIc=
 			</data>
 		</dict>
 		<key>Resources/frontend/computer-science-catalog.js</key>
@@ -113,14 +117,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			TFvPka3D2s1BHlSIzC+sS3l+d83jeeD/4QcgpGRIKZY=
+			9HOlhH7v5nMd8AgxZq5ymjt+1kraBBxMn0LWIWlZp90=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			wgb32VM71mAufarwlDuoZMW5XPtp7l1f02aKVARx7QY=
+			aEkw6V5/aNiT4yWf43cdvdg/BPT1YtNdETC0u4Y8aHQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/natural-disaster-catalog.js</key>
@@ -151,11 +155,18 @@
 			JYPD8Zm5NpDO8DP4eL/cMPR5z8iEQ+RxYQtOSvnEidY=
 			</data>
 		</dict>
+		<key>Resources/frontend/television-music-sports-catalog.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			6YtfAGHcWgYxmDb1BnmN6v7xeYBYJmnzeLK2gWtf6eU=
+			</data>
+		</dict>
 		<key>Resources/frontend/topic-catalog.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			JU4h0zzr3c7hYRDpe3ATy6l+kECL7Z9kNi6+KurePuE=
+			CTqDE+Fe32rdncL3z2Ip9vU8FQ2PBk5L/xaOuOGABRg=
 			</data>
 		</dict>
 		<key>Resources/frontend/war-history-catalog.js</key>

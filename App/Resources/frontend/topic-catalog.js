@@ -168,8 +168,11 @@
   if (window.LEARNED_MEDIA_MOVIE_TOPICS) {
     window.LEARNED_MEDIA_TOPIC_CATALOG.push.apply(window.LEARNED_MEDIA_TOPIC_CATALOG, window.LEARNED_MEDIA_MOVIE_TOPICS);
   }
+  if (window.LEARNED_MEDIA_TELEVISION_MUSIC_SPORTS_TOPICS) {
+    window.LEARNED_MEDIA_TOPIC_CATALOG.push.apply(window.LEARNED_MEDIA_TOPIC_CATALOG, window.LEARNED_MEDIA_TELEVISION_MUSIC_SPORTS_TOPICS);
+  }
   window.LEARNED_MEDIA_TOPIC_METADATA = {
-    catalogVersion: 15,
+    catalogVersion: 16,
     bestSellingBookSeries: {
       sourceUrl: "https://en.wikipedia.org/wiki/List_of_best-selling_books#List_of_best-selling_book_series",
       sourceLabel: "Wikipedia's List of best-selling book series",

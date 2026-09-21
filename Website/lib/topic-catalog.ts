@@ -5,8 +5,9 @@ import { buildComputerScienceTopic } from "./computer-science-catalog";
 import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
 import { buildWarHistoryTopic } from "./war-history-catalog";
 import { buildMoviesTopic } from "./movie-catalog";
+import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 
-export const TOPIC_CATALOG_VERSION = 15;
+export const TOPIC_CATALOG_VERSION = 16;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -323,7 +324,8 @@ const TOPIC_SEEDS: TopicSeed[] = [
   ]),
   buildComputerScienceTopic(),
   LITERATURE_SEED,
-  buildMoviesTopic()
+  buildMoviesTopic(),
+  ...buildTelevisionMusicSportsTopics()
 ];
 
 function slug(value: string) {
