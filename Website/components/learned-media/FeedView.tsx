@@ -51,7 +51,7 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
   return (
     <aside className="feed-topics-panel surface-panel">
       <details className="topics-details" open={topicsOpen} onToggle={(event) => setTopicsOpen(event.currentTarget.open)}>
-        <summary><span><Icon name="check" size={16} /> Your topics</span><strong>{selectedCount} selected</strong></summary>
+        <summary><span>Your topics</span><strong>{selectedCount} selected</strong></summary>
         <div className="feed-topic-copy">Keep the checklist close while you read. New choices shape the next batch</div>
         <label className="topic-difficulty-control" htmlFor="feed-obscurity">
           <span className="control-label"><span>Fact Difficulty</span><strong>{normalizeDifficulty(settings.obscurity)}/10 · {DIFFICULTY_LABELS[normalizeDifficulty(settings.obscurity)]}</strong></span>
@@ -65,18 +65,18 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
         </div>
       </details>
       <details className="feed-customize">
-        <summary><span><Icon name="sliders" size={16} /> Customize your feed</span><Icon name="chevronDown" size={15} /></summary>
+        <summary><span><Icon name="sliders" size={16} /> Customize Your Feed</span><Icon name="chevronDown" size={15} /></summary>
         <div className="feed-customize-body">
           <span className="control-label">Display</span>
           <div className="feed-display-options">
             {(["picture-text", "text"] as DisplayMode[]).map((mode) => <button type="button" key={mode} className={settings.displayMode === mode ? "selected" : ""} onClick={() => onSettingsChange({ displayMode: mode })}>{mode === "picture-text" ? "Image + text" : "Text only"}</button>)}
           </div>
-          <span className="control-label">Description length</span>
-          <div className="feed-length-options" role="group" aria-label="Description length">
+          <span className="control-label">Description length (sentences):</span>
+          <div className="feed-length-options" role="group" aria-label="Description length in sentences">
             {SENTENCE_LENGTH_OPTIONS.map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} disabled={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length })}>{length}</button>)}
           </div>
-          <p className="sentence-length-note">{settings.sentenceLength} specific sentence{settings.sentenceLength === 1 ? "" : "s"} per fact</p>
           <button type="button" className={`feed-surprise-toggle ${settings.surpriseMe ? "selected" : ""}`} onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={14} /> Surprise Me <span>{settings.surpriseMe ? "On" : "Off"}</span></button>
+          <p className="surprise-note">When on, the next batch can include a less predictable topic from your chosen mix.</p>
         </div>
       </details>
     </aside>

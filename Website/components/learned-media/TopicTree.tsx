@@ -30,7 +30,7 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
 
   return (
     <div className="topic-branch">
-      <div className={`topic-row ${depth === 0 ? "root-row" : ""} ${!hasChildren ? "leaf-row" : ""} ${node.custom ? "custom-row" : ""} selection-${state}`} style={{ paddingLeft: `${Math.min(depth, 5) * 20 + 4}px` }}>
+      <div className={`topic-row ${depth === 0 ? "root-row" : ""} ${!hasChildren ? "leaf-row" : ""} ${node.custom ? "custom-row" : ""} selection-${state}`} style={{ paddingLeft: `${Math.min(depth, 5) * 20 + 4}px` }} onClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; onToggle(node.id); }}>
         <button
           type="button"
           className="topic-expand"

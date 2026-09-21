@@ -171,8 +171,14 @@
   if (window.LEARNED_MEDIA_TELEVISION_MUSIC_SPORTS_TOPICS) {
     window.LEARNED_MEDIA_TOPIC_CATALOG.push.apply(window.LEARNED_MEDIA_TOPIC_CATALOG, window.LEARNED_MEDIA_TELEVISION_MUSIC_SPORTS_TOPICS);
   }
+  const entertainmentLabels = ["Literature", "Philosophy", "Sports", "Movies", "Television", "Music"];
+  const entertainmentChildren = entertainmentLabels.map(function (label) { return window.LEARNED_MEDIA_TOPIC_CATALOG.find(function (item) { return item.label === label; }); }).filter(Boolean);
+  if (entertainmentChildren.length === entertainmentLabels.length) {
+    window.LEARNED_MEDIA_TOPIC_CATALOG = window.LEARNED_MEDIA_TOPIC_CATALOG.filter(function (item) { return entertainmentLabels.indexOf(item.label) < 0; });
+    window.LEARNED_MEDIA_TOPIC_CATALOG.push(branch("Entertainment", entertainmentChildren));
+  }
   window.LEARNED_MEDIA_TOPIC_METADATA = {
-    catalogVersion: 17,
+    catalogVersion: 18,
     bestSellingBookSeries: {
       sourceUrl: "https://en.wikipedia.org/wiki/List_of_best-selling_books#List_of_best-selling_book_series",
       sourceLabel: "Wikipedia's List of best-selling book series",

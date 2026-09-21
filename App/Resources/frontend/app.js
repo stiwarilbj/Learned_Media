@@ -8,7 +8,7 @@
     sentenceLength: 3,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 17;
+  const TOPIC_CATALOG_VERSION = 18;
   const REQUIRED_WORKING_MODELS = 3;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
@@ -45,6 +45,7 @@
     cards: [],
     profile: {},
     query: "",
+    semanticSearchTerms: [],
     topicQuery: "",
     customTopic: "",
     key: "",
@@ -134,6 +135,8 @@
   let stopYoutubePlayback = null;
   let youtubeSyncActive = false;
   let youtubeSearchToken = 0;
+  let searchInterpretToken = 0;
+  let searchInterpretTimer = null;
 
   function makeTopics() {
     const tree = TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); }).filter(Boolean);
@@ -222,6 +225,7 @@
       sliders: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
       help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1.2.8-1.5 1.2-1.5 2.5M12 17h.01"/>',
       message: '<path d="M4 5h16v11H8l-4 4V5Z"/>'
+      ,panel: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>'
     };
     return '<svg width="' + (size || 16) + '" height="' + (size || 16) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (paths[name] || "") + "</svg>";
   }
@@ -263,7 +267,7 @@
     "A calmer way to find something good.",
     "Discover approved creators, search their imported catalogs, and watch without leaving your workspace.",
     "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos.",
-    "Pick the subjects you want to see. You can change them anytime.",
+    "Pick the subjects you want to see; you can change them anytime",
     "New choices shape the next batch.",
     "Choose at least one topic from the checklist to begin.",
     "Add your API key in Settings for the next batch",
@@ -837,7 +841,7 @@
     const searchExpanded = Boolean(query && topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
     const childrenVisible = hasChildren && (topic.expanded || searchExpanded);
     const branchWrap = node("div", { className: "topic-branch" });
-    const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + (!hasChildren ? " leaf-row" : "") + (topic.custom ? " custom-row" : "") + " selection-" + selection, dataset: { topicId: topic.id } });
+    const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + (!hasChildren ? " leaf-row" : "") + (topic.custom ? " custom-row" : "") + " selection-" + selection, dataset: { topicId: topic.id }, onClick: function (event) { if (event.target.closest && event.target.closest("button")) return; toggleTopicSelection(topic.id); saveState(); render(); } });
     row.style.paddingLeft = Math.min(depth, 5) * 20 + 4 + "px";
     row.appendChild(node("button", { className: "topic-expand", disabled: !hasChildren, ariaLabel: (childrenVisible ? "Hide" : "Show") + " subtopics for " + topic.label, ariaExpanded: hasChildren ? childrenVisible : undefined, dataset: { topicId: topic.id }, onClick: function () { if (!hasChildren) return; topic.expanded = !topic.expanded; saveState(); render(); } }, hasChildren ? svg(childrenVisible ? "chevronDown" : "chevronRight", 15) : null));
     row.appendChild(node("button", { className: "topic-check" + (selection === "selected" ? " checked" : "") + (selection === "mixed" ? " mixed" : ""), ariaLabel: (selection === "selected" ? "Deselect " : "Select ") + topic.label, ariaPressed: selection === "selected", dataset: { topicId: topic.id }, onClick: function () { toggleTopicSelection(topic.id); saveState(); render(); } }, selection === "selected" ? svg("check", 14) : selection === "mixed" ? node("span", { className: "topic-check-dash" }) : null));
@@ -992,7 +996,91 @@
     render();
     showToast(target.name + " deleted.");
   }
+  function naturalSearchVariants(query) {
+    const normalized = searchText(query);
+    const groups = [
+      ["politician", "politics", "government", "congress", "legislation", "lawmakers"],
+      ["behind the scenes", "inner workings", "process", "tactics", "strategy"],
+      ["movie", "film", "cinema"],
+      ["tv", "television", "show", "series"],
+      ["music", "songs", "singers", "artists"],
+      ["sport", "sports", "athletics", "league", "players"],
+      ["science", "scientist", "research", "experiment"]
+    ];
+    return groups.filter(function (group) { return group.some(function (term) { return normalized.indexOf(term) >= 0 || term.indexOf(normalized) >= 0; }); }).flatMap(function (group) { return group; });
+  }
+  function globalSearchEntries() {
+    const topics = flatTopics().map(function (topic) { return { kind: "topic", id: topic.id, label: topic.path.join(" → "), topic: topic, text: topic.path.join(" ") + " " + topic.label + " " + (topic.aliases || []).join(" ") }; });
+    const facts = state.cards.map(function (card) { return { kind: "fact", id: card.id, label: card.title, card: card, text: [card.hook, card.title, card.body, (card.topicPath || []).join(" "), (card.sources || []).map(function (source) { return source.title; }).join(" ")].join(" ") }; });
+    return topics.concat(facts);
+  }
+  function globalSearchResults(query) {
+    const text = String(query || "").trim();
+    if (!text) return [];
+    const entries = globalSearchEntries();
+    const direct = entries.map(function (entry, index) { return { entry: entry, index: index, score: searchScore(text, entry.text) }; }).filter(function (item) { return item.score > 0; }).sort(function (left, right) { return right.score - left.score || left.index - right.index; }).slice(0, 10);
+    const directIDs = new Set(direct.map(function (item) { return item.entry.kind + ":" + item.entry.id; }));
+    const variants = [text].concat(state.semanticSearchTerms || [], naturalSearchVariants(text));
+    const related = entries.map(function (entry, index) { return { entry: entry, index: index, score: Math.max.apply(Math, variants.map(function (variant) { return searchScore(variant, entry.text); })) }; }).filter(function (item) { return item.score > 0 && !directIDs.has(item.entry.kind + ":" + item.entry.id); }).sort(function (left, right) { return right.score - left.score || left.index - right.index; }).slice(0, 90);
+    return direct.concat(related).map(function (item) { return item.entry; });
+  }
+  function renderGlobalSearchPopover(searchWrap) {
+    const previous = searchWrap.querySelector(".search-popover");
+    if (previous) previous.remove();
+    const results = globalSearchResults(state.query);
+    if (!results.length) return;
+    const popover = node("div", { className: "search-popover" });
+    const topics = results.filter(function (entry) { return entry.kind === "topic"; });
+    const facts = results.filter(function (entry) { return entry.kind === "fact"; });
+    function appendGroup(label, entries) {
+      if (!entries.length) return;
+      popover.appendChild(node("span", { className: "search-group-label", text: label }));
+      entries.forEach(function (entry) {
+        popover.appendChild(node("button", { type: "button", onClick: function () {
+          if (entry.kind === "topic") {
+            state.view = "feed";
+            state.started = false;
+            state.topicQuery = entry.topic.label;
+            state.query = "";
+          } else {
+            state.view = "history";
+            state.query = entry.card.title;
+          }
+          render();
+        } }, node("span", { text: entry.label }), svg("arrow", 14)));
+      });
+    }
+    appendGroup("Topics", topics);
+    appendGroup("Facts", facts);
+    searchWrap.appendChild(popover);
+  }
+  function requestSemanticSearch(query, searchWrap) {
+    searchInterpretToken += 1;
+    const token = searchInterpretToken;
+    if (searchInterpretTimer) window.clearTimeout(searchInterpretTimer);
+    state.semanticSearchTerms = [];
+    if (!String(query || "").trim() || !state.key.trim() || state.geminiStatus !== "connected") return;
+    searchInterpretTimer = window.setTimeout(function () {
+      bridge("searchInterpret", { key: state.key, query: String(query).trim() }).then(function (result) {
+        if (token !== searchInterpretToken) return;
+        state.semanticSearchTerms = Array.from(new Set((result.terms || []).filter(function (term) { return typeof term === "string" && term.trim(); }).map(function (term) { return term.trim(); }))).slice(0, 24);
+        renderGlobalSearchPopover(searchWrap);
+      }).catch(function () {
+        if (token === searchInterpretToken) renderGlobalSearchPopover(searchWrap);
+      });
+    }, 280);
+  }
+  function installPopoverDismiss() {
+    if (window.__learnedMediaPopoverDismiss) return;
+    window.__learnedMediaPopoverDismiss = true;
+    document.addEventListener("pointerdown", function (event) {
+      const target = event.target;
+      if (target && target.closest && (target.closest(".workspace-switcher") || target.closest(".global-search-wrap"))) return;
+      document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
+    });
+  }
   function navigation() {
+    installPopoverDismiss();
     const items = [["feed", "Feed", "home"], ["videos", "Videos", "image"], ["saved", "Saved", "bookmark"], ["likes", "Likes", "heart"], ["history", "History", "history"], ["settings", "Settings", "settings"]];
     const header = node("header", { className: "top-navigation" });
     header.appendChild(node("button", { className: "nav-brand", ariaLabel: "Learned Media home", onClick: function () { state.view = "feed"; render(); } }, node("span", { className: "brand-mark", text: "LM" }), node("span", { className: "brand-wordmark" }, node("strong", { text: "Learned Media" }))));
@@ -1002,15 +1090,16 @@
     const searchWrap = node("div", { className: "top-nav-search" });
     const search = node("div", { className: "global-search-wrap" });
     search.appendChild(svg("search", 17));
-    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts", ariaLabel: "Search topics or facts", onInput: function (event) { state.query = event.target.value; document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); } }));
+    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts", ariaLabel: "Search topics or facts", onFocus: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); renderGlobalSearchPopover(search); }, onInput: function (event) { state.query = event.target.value; const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); renderGlobalSearchPopover(search); requestSemanticSearch(state.query, search); } }));
     searchWrap.appendChild(search);
     header.appendChild(searchWrap);
     const accountName = state.workspaceName;
     const account = node("div", { className: "top-nav-account" });
     account.appendChild(node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"));
     const switcher = node("div", { className: "workspace-switcher" });
-    const profile = node("button", { className: "profile-chip", ariaExpanded: false, onClick: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); else switcher.appendChild(workspaceMenu()); } }, node("span", { className: "profile-avatar", text: accountName.slice(0, 1).toUpperCase() }), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.workspaces.length + " " + (state.workspaces.length === 1 ? "workspace" : "workspaces") })), svg("chevronDown", 15));
+    const profile = node("button", { className: "profile-chip", ariaExpanded: false, onClick: function () { const searchPopover = search.querySelector(".search-popover"); if (searchPopover) searchPopover.remove(); const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); else switcher.appendChild(workspaceMenu()); } }, node("span", { className: "profile-avatar" }, svg("panel", 16)), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.workspaces.length + " " + (state.workspaces.length === 1 ? "workspace" : "workspaces") })), svg("chevronDown", 15));
     switcher.appendChild(profile); account.appendChild(switcher); header.appendChild(account);
+    renderGlobalSearchPopover(search);
     return header;
   }
   function customTopicForm(className) {
@@ -1024,9 +1113,9 @@
     const aside = node("aside", { className: (setup ? "setup-topics-panel" : "feed-topics-panel") + " surface-panel" });
     const details = node("details", { className: setup ? "setup-topics-details" : "topics-details" });
     details.open = true;
-    details.appendChild(node("summary", {}, node("span", {}, svg("check", 17), setup ? " Choose your topics" : " Your topics")));
+    details.appendChild(node("summary", {}, node("span", {}, setup ? "Choose your topics" : "Your topics")));
     details.appendChild(node("strong", { className: "topic-selected-count", text: selectedCount() + " selected" }));
-    if (setup) details.appendChild(node("p", { className: "setup-topic-help", text: "Pick the subjects you want to see. You can change them anytime." }));
+    if (setup) details.appendChild(node("p", { className: "setup-topic-help", text: "Pick the subjects you want to see; you can change them anytime" }));
     else details.appendChild(node("div", { className: "feed-topic-copy", text: "New choices shape the next batch." }));
     details.appendChild(node("p", { className: "topic-selection-summary", text: selectedSummary(), ariaLive: "polite" }));
     const difficulty = node("label", { className: "topic-difficulty-control", for: setup ? "setup-difficulty" : "feed-difficulty" });
@@ -1043,21 +1132,21 @@
   }
   function feedCustomize(setup) {
     const details = node("details", { className: setup ? "setup-customize" : "feed-customize" });
-    details.appendChild(node("summary", {}, node("span", {}, svg("sliders", 16), " Customize your feed", svg("chevronDown", 15))));
+    details.appendChild(node("summary", {}, node("span", {}, svg("sliders", 16), " Customize Your Feed", svg("chevronDown", 15))));
     const body = node("div", { className: "setup-customize-body" });
     body.appendChild(node("span", { className: "control-label", text: "Display style" }));
     const display = node("div", { className: "feed-display-options" });
     display.appendChild(node("button", { className: state.settings.displayMode === "picture-text" ? "selected" : "", onClick: function () { state.settings.displayMode = "picture-text"; saveState(); render(); } }, "Image + text"));
     display.appendChild(node("button", { className: state.settings.displayMode === "text" ? "selected" : "", onClick: function () { state.settings.displayMode = "text"; saveState(); render(); } }, "Text only"));
     body.appendChild(display);
-    body.appendChild(node("span", { className: "control-label", text: "Description length" }));
-    const lengths = node("div", { className: "feed-length-options", role: "group", ariaLabel: "Description length" });
+    body.appendChild(node("span", { className: "control-label", text: "Description length (sentences):" }));
+    const lengths = node("div", { className: "feed-length-options", role: "group", ariaLabel: "Description length in sentences" });
     [1, 2, 3, 4, 6, 8, 10].forEach(function (length) {
       lengths.appendChild(node("button", { className: state.settings.sentenceLength === length ? "selected" : "", ariaPressed: state.settings.sentenceLength === length, disabled: state.settings.sentenceLength === length, onClick: function () { state.settings.sentenceLength = length; saveState(); render(); } }, String(length)));
     });
     body.appendChild(lengths);
-    body.appendChild(node("p", { className: "sentence-length-note", text: state.settings.sentenceLength + " specific sentence" + (state.settings.sentenceLength === 1 ? "" : "s") + " per fact" }));
     body.appendChild(node("button", { className: "feed-surprise-toggle" + (state.settings.surpriseMe ? " selected" : ""), onClick: function () { state.settings.surpriseMe = !state.settings.surpriseMe; saveState(); render(); } }, svg("sparkles", 14), " Surprise Me ", node("span", { text: state.settings.surpriseMe ? "On" : "Off" })));
+    body.appendChild(node("p", { className: "surprise-note", text: "When on, the next batch can include a less predictable topic from your chosen mix." }));
     details.appendChild(body);
     return details;
   }
@@ -1065,13 +1154,15 @@
     const hasSelection = selectedCount() > 0;
     const canStart = state.geminiStatus === "connected";
     const panel = node("section", { className: "setup-start-panel surface-panel" });
-    panel.appendChild(node("div", { className: "start-panel-copy" }, node("span", { className: "eyebrow", text: "Your next feed" }), node("h1", { text: "Ready to learn something unexpected?" }), node("p", { text: hasSelection ? selectedCount() + " topics in your mix, sourced from Wikipedia and shaped by your curiosity." : "Choose at least one topic from the checklist to begin." })));
+    panel.appendChild(node("div", { className: "start-panel-copy" }, node("span", { className: "eyebrow", text: "Your next feed" }), node("h1", { text: "Ready for a surprise?" }), node("p", { text: hasSelection ? selectedCount() + " topics in your mix, sourced from Wikipedia and shaped by your curiosity." : "Choose at least one topic from the checklist to begin." })));
     panel.appendChild(node("div", { className: "start-orbit" }, svg("sparkles", 24), node("span", { text: "Every card has a source" })));
     panel.appendChild(node("button", { className: "start-button", disabled: !hasSelection || !canStart, onClick: startFeed }, node("span", { text: !hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first" }), svg("arrow", 21)));
     panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection && canStart ? "shield" : "help", 13), " ", !hasSelection ? "Select a topic to unlock your feed." : canStart ? "Your mix stays yours." : "Connect at least three Gemini models in Settings to begin."));
-    const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings for the next batch" })));
-    keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Add key ", svg("arrow", 14)));
-    panel.appendChild(keyCallout);
+    if (!state.key.trim()) {
+      const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings for the next batch" })));
+      keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Add key ", svg("arrow", 14)));
+      panel.appendChild(keyCallout);
+    }
     panel.appendChild(feedCustomize(true));
     return panel;
   }
@@ -1160,7 +1251,7 @@
   }
   function settingsView() {
     const section = node("section", { className: "content-view settings-view" });
-    section.appendChild(node("div", { className: "view-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Your workspace" }), node("h1", { text: "Make the feed feel like yours." }), node("p", { text: "Settings stay calm, clear, and close to the experience they shape." })), node("div", { className: "settings-avatar", text: state.account ? (state.account.name || "G").slice(0, 1).toUpperCase() : "S" })));
+    section.appendChild(node("div", { className: "view-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Your workspace" }), node("h1", { text: "Make the feed feel like yours." }), node("p", { text: "Settings stay calm, clear, and close to the experience they shape." })), node("div", { className: "settings-avatar" }, svg("panel", 18))));
     const grid = node("div", { className: "settings-grid" });
     const main = node("div", { className: "settings-main" });
     const gemini = node("section", { className: "settings-card gemini-settings-card" });

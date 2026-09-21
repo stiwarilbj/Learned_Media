@@ -704,6 +704,18 @@ export async function interpretVideoSearch({ apiKey, sessionId = "default-sessio
   return { plan, modelOutcomes: result.outcomes };
 }
 
+export async function interpretNaturalSearch({ apiKey, sessionId = "default-session", query, signal }: { apiKey: string; sessionId?: string; query: string; signal?: AbortSignal }): Promise<{ terms: string[]; modelOutcomes: GeminiModelOutcome[] }> {
+  if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before using natural-language search.", undefined, [], undefined, false);
+  const prompt = "Expand this natural-language search for a closed catalog of learning topics and Wikipedia-grounded facts. Return short, concrete search phrases that capture the same meaning, including useful synonyms, plain-language paraphrases, named people, places, events, mechanisms, and likely catalog wording. Keep the intent narrow: do not turn a specific request into a generic subject, and never invent a fact or title. The original query will also be searched directly. Return only JSON with a terms array containing at most 24 phrases. Query: " + query;
+  const result = await requestStructured<{ terms?: string[] }>(apiKey, sessionId, prompt, {
+    type: "OBJECT",
+    properties: { terms: { type: "ARRAY", items: { type: "STRING" } } },
+    required: ["terms"]
+  }, "learning", GENERATION_TIMEOUT_MS, signal);
+  const terms = Array.from(new Set((result.value.terms ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean))).slice(0, 24);
+  return { terms, modelOutcomes: result.outcomes };
+}
+
 export type RankedVideoSearchResult = {
   videoId: string;
   relevance: "direct" | "strong";

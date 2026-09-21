@@ -7,7 +7,7 @@ import { buildWarHistoryTopic } from "./war-history-catalog";
 import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 
-export const TOPIC_CATALOG_VERSION = 17;
+export const TOPIC_CATALOG_VERSION = 18;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -194,6 +194,16 @@ booksBranch?.children.unshift(BOOK_EXPANSION[BOOK_EXPANSION.length - 1]);
 booksBranch?.children.push(...BOOK_EXPANSION.slice(0, -1));
 literatureChildren.push(BEST_SELLING_BOOK_SERIES, FAMOUS_AUTHORS);
 
+const [TELEVISION_SEED, MUSIC_SEED, SPORTS_SEED] = buildTelevisionMusicSportsTopics();
+const ENTERTAINMENT_SEED: TopicSeed = branch("Entertainment", [
+  LITERATURE_SEED,
+  PHILOSOPHY_SEED,
+  SPORTS_SEED,
+  buildMoviesTopic(),
+  TELEVISION_SEED,
+  MUSIC_SEED
+]);
+
 const countries = [
   "United States", "Canada", "Mexico", "Guatemala", "Cuba", "Haiti", "Dominican Republic", "Jamaica",
   "Brazil", "Argentina", "Chile", "Peru", "Colombia", "Venezuela", "Ecuador", "Bolivia", "Paraguay", "Uruguay",
@@ -308,7 +318,6 @@ const TOPIC_SEEDS: TopicSeed[] = [
     ]),
     FAMOUS_SCIENTISTS
   ]),
-  PHILOSOPHY_SEED,
   branch("Geography", [
     branch("Africa", [branch("North Africa", ["Egypt", "Morocco", "Algeria", "Tunisia", "Libya"]), branch("West Africa", ["Nigeria", "Ghana", "Senegal", "Mali", "Ivory Coast"]), branch("Central Africa", ["Cameroon", "Gabon", "Central African Republic", "Democratic Republic of the Congo"]), branch("East Africa", ["Kenya", "Ethiopia", "Tanzania", "Uganda", "Somalia"]), branch("Southern Africa", ["South Africa", "Namibia", "Botswana", "Zimbabwe", "Mozambique", "Madagascar"])]),
     branch("North America", ["Canada", "United States", "Mexico", "Central America", "Caribbean", "Greenland"]),
@@ -323,9 +332,7 @@ const TOPIC_SEEDS: TopicSeed[] = [
     branch("Other Geography", ["Islands", "Lakes", "Deserts", "Oceans", "Seas", "Borders", "Enclaves", "Exclaves", "Strange Borders", "Geographic Extremes", "Remote Places", "Caves", "Waterfalls", "Canyons", "Peninsulas", "Archipelagos", "Natural Wonders", "Human Geography", "Population", "Languages", "Migration", "Maps", "Cartography"])
   ]),
   buildComputerScienceTopic(),
-  LITERATURE_SEED,
-  buildMoviesTopic(),
-  ...buildTelevisionMusicSportsTopics()
+  ENTERTAINMENT_SEED
 ];
 
 function slug(value: string) {

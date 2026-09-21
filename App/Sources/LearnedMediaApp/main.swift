@@ -82,6 +82,7 @@ private struct GeminiVideoRankMatch: Decodable {
     let explanation: String?
 }
 private struct GeminiVideoRankEnvelope: Decodable { let matches: [GeminiVideoRankMatch]? }
+private struct GeminiNaturalSearchEnvelope: Decodable { let terms: [String]? }
 
 private struct GeminiTextResponse: Decodable {
     struct Candidate: Decodable {
@@ -904,6 +905,16 @@ private final class GeminiClient {
         return output
     }
 
+    func interpretNaturalSearch(key: String, query: String) async throws -> [String: Any] {
+        guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using natural-language search.", retryable: false) }
+        let prompt = "Expand this natural-language search for a closed catalog of learning topics and Wikipedia-grounded facts. Return short, concrete search phrases with the same meaning, including useful synonyms, plain-language paraphrases, named people, places, events, mechanisms, and likely catalog wording. Keep the intent narrow: do not turn a specific request into a generic subject, and never invent a fact or title. The original query will also be searched directly. Return only JSON with a terms array containing at most 24 phrases. Query: \(query)"
+        let schema: [String: Any] = ["type": "OBJECT", "properties": ["terms": ["type": "ARRAY", "items": ["type": "STRING"]]], "required": ["terms"]]
+        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning")
+        let envelope = try JSONDecoder().decode(GeminiNaturalSearchEnvelope.self, from: Data(result.text.utf8))
+        let terms = Array(Set((envelope.terms ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).prefix(24)
+        return ["terms": Array(terms), "modelOutcomes": result.outcomes]
+    }
+
     func rankVideoSearch(key: String, query: String, plan: [String: Any], candidates: [[String: Any]]) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using Smart search.", retryable: false) }
         let bounded = Array(candidates.prefix(40))
@@ -1085,6 +1096,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let task = Task { [weak self] in
                 guard let self else { return }
                 do { respond(id: id, result: try await gemini.interpretVideoSearch(key: key, query: query)) }
+                catch { respond(id: id, error: userMessage(error)) }
+                activeTasks[id] = nil
+            }
+            activeTasks[id] = task
+        case "searchInterpret":
+            let query = payload["query"] as? String ?? ""
+            let key = payload["key"] as? String ?? geminiKey
+            let task = Task { [weak self] in
+                guard let self else { return }
+                do { respond(id: id, result: try await gemini.interpretNaturalSearch(key: key, query: query)) }
                 catch { respond(id: id, error: userMessage(error)) }
                 activeTasks[id] = nil
             }
