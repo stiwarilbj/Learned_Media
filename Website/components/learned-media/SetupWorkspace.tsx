@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
 import type { DisplayMode, FeedSettings, TopicNode } from "@/lib/types";
@@ -20,6 +19,7 @@ type SetupWorkspaceProps = {
   onWeightTopic: (id: string, delta: number) => void;
   onRemoveCustomTopic: (id: string) => void;
   onSettingsChange: (next: Partial<FeedSettings>) => void;
+  onResetTopics: () => void;
   onStart: () => void;
   onOpenSettings: () => void;
   canStart: boolean;
@@ -31,11 +31,7 @@ const modeCopy: Array<{ id: DisplayMode; label: string; icon: "list" | "lightbul
   { id: "text", label: "Text only", icon: "lightbulb" }
 ];
 
-export function SetupWorkspace({ topics, query, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
-  const [topicsOpen, setTopicsOpen] = useState(true);
-  useEffect(() => {
-    setTopicsOpen(window.innerWidth > 820);
-  }, []);
+export function SetupWorkspace({ topics, query, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
   const selectedCount = selectedLeafCount(topics);
   const hasSelection = selectedCount > 0;
   const selectionSummary = summarizeSelection(topics);
@@ -44,9 +40,14 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
     <div className="setup-stack">
       <section className="setup-layout">
         <aside className="setup-topics-panel surface-panel">
-          <details className="setup-topics-details" open={topicsOpen} onToggle={(event) => setTopicsOpen(event.currentTarget.open)}>
-            <summary><span>Choose your topics</span></summary>
-            <strong className="topic-selected-count">{selectedCount} selected</strong>
+          <div className="setup-topics-details setup-topics-static">
+            <div className="setup-topics-heading">
+              <span>Choose your topics</span>
+              <div className="setup-topic-heading-actions">
+                <strong>{selectedCount} selected</strong>
+                <button type="button" className="text-button topic-reset-button" onClick={onResetTopics}>Reset</button>
+              </div>
+            </div>
             <p className="setup-topic-help">Pick the subjects you want to see; you can change them anytime</p>
             <p className="topic-selection-summary" aria-live="polite">{selectionSummary}</p>
             <label className="topic-difficulty-control" htmlFor="obscurity">
@@ -63,7 +64,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
               <div><strong>Add a custom topic</strong><span>Make the feed as specific as you are</span></div>
               <div className="custom-topic-input-wrap"><input value={customTopic} onChange={(event) => onCustomTopicChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onAddCustomTopic()} placeholder="Rajah Humabon" aria-label="Custom topic" /><button type="button" className="icon-button filled" onClick={onAddCustomTopic} aria-label="Add custom topic"><Icon name="plus" size={17} /></button></div>
             </div>
-          </details>
+          </div>
         </aside>
 
         <section className="setup-start-panel surface-panel">
@@ -75,7 +76,7 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
           {!hasGeminiKey && <div className="setup-key-callout">
             <div className="setup-key-callout-icon"><Icon name="key" size={16} /></div>
             <div><strong>Want Gemini-generated facts?</strong><span>Add your API key in Settings for the next batch</span></div>
-            <button type="button" className="text-button" onClick={onOpenSettings}>Add key <Icon name="arrow" size={14} /></button>
+            <button type="button" className="text-button" onClick={onOpenSettings}>Open Settings <Icon name="arrow" size={14} /></button>
           </div>}
 
           <details className="setup-customize">

@@ -1133,10 +1133,14 @@
   }
   function topicPanel(setup) {
     const aside = node("aside", { className: (setup ? "setup-topics-panel" : "feed-topics-panel") + " surface-panel" });
-    const details = node("details", { className: setup ? "setup-topics-details" : "topics-details" });
-    details.open = true;
-    details.appendChild(node("summary", {}, node("span", {}, setup ? "Choose your topics" : "Your topics")));
-    details.appendChild(node("strong", { className: "topic-selected-count", text: selectedCount() + " selected" }));
+    const details = node(setup ? "div" : "details", { className: setup ? "setup-topics-details setup-topics-static" : "topics-details" });
+    if (setup) {
+      details.appendChild(node("div", { className: "setup-topics-heading" }, node("span", { text: "Choose your topics" }), node("div", { className: "setup-topic-heading-actions" }, node("strong", { text: selectedCount() + " selected" }), node("button", { className: "text-button topic-reset-button", onClick: resetTopics }, "Reset"))));
+    } else {
+      details.open = true;
+      details.appendChild(node("summary", {}, node("span", {}, "Your topics")));
+      details.appendChild(node("strong", { className: "topic-selected-count", text: selectedCount() + " selected" }));
+    }
     if (setup) details.appendChild(node("p", { className: "setup-topic-help", text: "Pick the subjects you want to see; you can change them anytime" }));
     else details.appendChild(node("div", { className: "feed-topic-copy", text: "New choices shape the next batch." }));
     details.appendChild(node("p", { className: "topic-selection-summary", text: selectedSummary(), ariaLive: "polite" }));
@@ -1189,7 +1193,7 @@
     panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection && canStart ? "shield" : "help", 13), " ", !hasSelection ? "Select a topic to unlock your feed." : canStart ? "Your mix stays yours." : "Connect at least three Gemini models in Settings to begin."));
     if (!state.key.trim()) {
       const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings for the next batch" })));
-      keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Add key ", svg("arrow", 14)));
+      keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Open Settings ", svg("arrow", 14)));
       panel.appendChild(keyCallout);
     }
     panel.appendChild(feedCustomize(true));
@@ -1330,12 +1334,12 @@
     exports.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("bookmark", 19)), node("div", {}, node("h2", { text: "Download Facts" }), node("p", { text: "Save this workspace with its topic paths and Wikipedia sources." }))));
     const exportRow = node("div", { className: "export-controls" });
     const exportSelect = node("select", { id: "native-export-collection" });
-    exportSelect.appendChild(node("option", { value: "all", text: "All Facts (" + state.cards.length + ")" }));
+    exportSelect.appendChild(node("option", { value: "all", text: "Everything in this workspace (" + state.cards.length + ")" }));
     exportSelect.appendChild(node("option", { value: "saved", text: "Saved Facts (" + state.cards.filter(function (card) { return card.saved; }).length + ")" }));
     exportRow.appendChild(exportSelect);
     const exportButtons = node("div", { className: "export-buttons" });
     ["pdf", "txt", "docx"].forEach(function (format) { exportButtons.appendChild(node("button", { className: "secondary-button", disabled: !state.cards.length, onClick: function () { exportFactsNative(format, exportSelect.value); } }, format.toUpperCase())); });
-    exportRow.appendChild(exportButtons); exports.appendChild(exportRow); main.appendChild(exports);
+    exportRow.appendChild(exportButtons); exports.appendChild(exportRow); exports.appendChild(node("p", { className: "export-size-note", text: "Everything includes all facts and sources; embedded images are compressed or omitted when needed to keep the download manageable." })); main.appendChild(exports);
     const accountCard = node("section", { className: "settings-card" });
     accountCard.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("user", 19)), node("div", {}, node("h2", { text: "Account" }), node("p", { text: "Google sign-in keeps your account ready on this Mac." }))));
     const syncLabel = state.syncStatus === "syncing" ? "Syncing your workspace" : state.syncStatus === "offline" ? "Offline; local changes are safe" : state.syncStatus === "error" ? "Sync needs attention" : "Synced to your Google account";
@@ -1381,7 +1385,7 @@
   function exportFactsNative(format, collection) {
     const facts = (collection === "saved" ? state.cards.filter(function (card) { return card.saved; }) : state.cards).map(function (card) { return { id: card.id, hook: card.hook, title: card.title, body: card.body, topicPath: card.topicPath, sources: card.sources, image: card.image || null }; });
     if (!facts.length) return showToast("There are no facts in that collection yet.");
-    bridge("exportFacts", { format: format, workspaceName: state.workspaceName, facts: facts }).then(function (result) { if (result && result.omittedImages) showToast("Export complete. " + result.omittedImages + " image" + (result.omittedImages === 1 ? "" : "s") + " could not be loaded."); else showToast("Export complete."); }).catch(function (error) { showToast(error.message || "The facts could not be exported."); });
+    bridge("exportFacts", { format: format, workspaceName: state.workspaceName, facts: facts }).then(function (result) { if (result && result.omittedImages) showToast("Export complete. Images were omitted for " + result.omittedImages + " fact" + (result.omittedImages === 1 ? "" : "s") + " to keep the download manageable; all text and sources were kept."); else showToast("Export complete."); }).catch(function (error) { showToast(error.message || "The facts could not be exported."); });
   }
   function render() {
     if (stopYoutubePlayback) stopYoutubePlayback();
@@ -1531,6 +1535,17 @@
     saveState();
     render();
     showToast("Feed reset. Choose a topic and press Start again.");
+  }
+  function resetTopics() {
+    state.topics.forEach(function clear(topic) {
+      topic.selected = false;
+      if (topic.children) topic.children.forEach(clear);
+    });
+    state.pendingSlots = 10;
+    state.generationError = "";
+    saveState();
+    render();
+    showToast("Topics reset. Choose a topic to start again.");
   }
   function resetAll() {
     if (!window.confirm("Reset all preferences and return to the default topic mix?")) return;

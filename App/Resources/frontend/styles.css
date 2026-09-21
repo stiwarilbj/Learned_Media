@@ -1423,3 +1423,19 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
   .setup-customize { min-height: 0; }
   .workspace-menu { right: 0; }
 }
+
+/* Setup headings are informational text, not disclosure controls. Keep the
+   reset action beside the count without changing the topic panel geometry. */
+.setup-topics-static { position: relative; }
+.setup-topics-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--ink-strong); font-size: 14px; font-weight: 850; }
+.setup-topic-heading-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 9px; min-width: 0; }
+.setup-topic-heading-actions strong { color: var(--primary); font-size: 10px; white-space: nowrap; }
+.topic-reset-button { padding: 3px 0; font-size: 10px; white-space: nowrap; }
+.export-settings-card { min-height: 0; }
+.export-buttons { flex-wrap: wrap; }
+.export-size-note { margin: 10px 0 0; color: var(--muted-soft); font-size: 10px; line-height: 1.45; }
+@media (max-width: 560px) {
+  .setup-topics-heading { align-items: flex-start; font-size: 13px; }
+  .setup-topic-heading-actions { gap: 7px; }
+  .setup-topic-heading-actions strong, .topic-reset-button { font-size: 9px; }
+}

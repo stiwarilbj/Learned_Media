@@ -66,7 +66,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
     try {
       const result = await buildFactExport(format, workspaceName, exportCards);
       downloadBlob(result.blob, result.filename);
-      if (result.omittedImages.length) window.alert(`The export is complete. Images could not be loaded for ${result.omittedImages.length} fact${result.omittedImages.length === 1 ? "" : "s"}; all text and sources were kept.`);
+      if (result.omittedImages.length) window.alert(`The export is complete. Images were omitted for ${result.omittedImages.length} fact${result.omittedImages.length === 1 ? "" : "s"} to keep the file manageable; all text and sources were kept.`);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "The facts could not be exported.");
     } finally { setExporting(null); }
@@ -143,7 +143,8 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
 
           <section className="settings-card export-settings-card">
             <div className="settings-card-heading"><div className="settings-icon lilac"><Icon name="bookmark" size={19} /></div><div><h2>Download Facts</h2><p>Save this workspace with its topic paths and Wikipedia sources</p></div></div>
-            <div className="export-controls"><label className="field-label" htmlFor="export-collection">Collection</label><select id="export-collection" value={exportCollection} onChange={(event) => setExportCollection(event.target.value as "all" | "saved")}><option value="all">All Facts ({cards.length})</option><option value="saved">Saved Facts ({cards.filter((card) => card.saved).length})</option></select><div className="export-buttons"><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("pdf")}>{exporting === "pdf" ? "Preparing PDF" : "PDF"}</button><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("txt")}>{exporting === "txt" ? "Preparing TXT" : "TXT"}</button><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("docx")}>{exporting === "docx" ? "Preparing DOCX" : "DOCX"}</button></div></div>
+            <div className="export-controls"><label className="field-label" htmlFor="export-collection">Collection</label><select id="export-collection" value={exportCollection} onChange={(event) => setExportCollection(event.target.value as "all" | "saved")}><option value="all">Everything in this workspace ({cards.length})</option><option value="saved">Saved Facts ({cards.filter((card) => card.saved).length})</option></select><div className="export-buttons"><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("pdf")}>{exporting === "pdf" ? "Preparing PDF" : "PDF"}</button><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("txt")}>{exporting === "txt" ? "Preparing TXT" : "TXT"}</button><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("docx")}>{exporting === "docx" ? "Preparing DOCX" : "DOCX"}</button></div></div>
+            <p className="export-size-note">Everything includes all facts and sources; embedded images are compressed or omitted when needed to keep the download manageable.</p>
             {!cards.length && <p className="youtube-restriction-note">Generate or save a fact before downloading it</p>}
           </section>
 

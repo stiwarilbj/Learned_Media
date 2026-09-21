@@ -11,6 +11,9 @@ export type FactExportResult = {
 
 type ImageAsset = { id: string; bytes: Uint8Array; width: number; height: number };
 type PreparedFact = FactCard & { exportImage?: ImageAsset };
+const EXPORT_IMAGE_WIDTH = 960;
+const EXPORT_IMAGE_HEIGHT = 540;
+const MAX_EMBEDDED_IMAGE_BYTES = 16 * 1024 * 1024;
 
 function xmlEscape(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[character] ?? character));
@@ -61,8 +64,8 @@ function canvasImage(url: string) {
     image.crossOrigin = "anonymous";
     image.onload = () => {
       try {
-        const width = 1200;
-        const height = 675;
+        const width = EXPORT_IMAGE_WIDTH;
+        const height = EXPORT_IMAGE_HEIGHT;
         const canvas = document.createElement("canvas");
         canvas.width = width;
         canvas.height = height;
@@ -75,7 +78,7 @@ function canvasImage(url: string) {
         canvas.toBlob(async (blob) => {
           if (!blob) { reject(new Error("Image could not be exported")); return; }
           resolve({ id: "", bytes: new Uint8Array(await blob.arrayBuffer()), width, height });
-        }, "image/jpeg", 0.88);
+        }, "image/jpeg", 0.76);
       } catch (error) { reject(error); }
     };
     image.onerror = () => reject(new Error("Image could not be loaded"));
@@ -86,11 +89,18 @@ function canvasImage(url: string) {
 async function prepareFacts(cards: FactCard[]) {
   const omittedImages: string[] = [];
   const facts: PreparedFact[] = [];
+  let embeddedImageBytes = 0;
   for (const card of cards) {
     if (!card.image?.url) { facts.push(card); continue; }
     try {
       const image = await canvasImage(card.image.url);
+      if (embeddedImageBytes + image.bytes.length > MAX_EMBEDDED_IMAGE_BYTES) {
+        omittedImages.push(card.title);
+        facts.push(card);
+        continue;
+      }
       image.id = `image-${facts.length + 1}`;
+      embeddedImageBytes += image.bytes.length;
       facts.push({ ...card, exportImage: image });
     } catch {
       omittedImages.push(card.title);

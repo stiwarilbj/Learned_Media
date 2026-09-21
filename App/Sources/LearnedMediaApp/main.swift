@@ -1383,14 +1383,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         append("Workspace: \(workspaceName)", attributes: bodyAttributes, spacing: 0)
         append("Exported: \(exportedAt)", attributes: bodyAttributes, spacing: 10)
         var omittedImages = 0
+        var embeddedImageBytes = 0
+        let maxEmbeddedImageBytes = 16 * 1024 * 1024
         for (index, fact) in facts.enumerated() {
             append("\(index + 1). \(fact["title"] as? String ?? "Untitled fact")", attributes: headingAttributes, spacing: 4)
-            if let image = fact["image"] as? [String: Any], let imageURL = URL(string: image["url"] as? String ?? ""), let data = try? Data(contentsOf: imageURL), let nsImage = croppedExportImage(data: data) {
+            if let image = fact["image"] as? [String: Any], let imageURL = URL(string: image["url"] as? String ?? ""), let data = try? Data(contentsOf: imageURL), data.count + embeddedImageBytes <= maxEmbeddedImageBytes, let nsImage = croppedExportImage(data: data) {
                 let attachment = NSTextAttachment()
                 attachment.image = nsImage
                 attachment.bounds = NSRect(x: 0, y: 0, width: 512, height: 288)
                 output.append(NSAttributedString(attachment: attachment))
                 output.append(NSAttributedString(string: "\n\n", attributes: bodyAttributes))
+                embeddedImageBytes += data.count
             } else if fact["image"] != nil { omittedImages += 1 }
             append(fact["hook"] as? String ?? "", attributes: bodyAttributes, spacing: 1)
             append(fact["body"] as? String ?? "", attributes: bodyAttributes, spacing: 4)
@@ -1416,7 +1419,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
 
     private func croppedExportImage(data: Data) -> NSImage? {
         guard let source = NSImage(data: data), let representation = source.bestRepresentation(for: NSRect(origin: .zero, size: source.size), context: nil, hints: nil) else { return nil }
-        let targetSize = NSSize(width: 1200, height: 675)
+        let targetSize = NSSize(width: 960, height: 540)
         let sourceWidth = CGFloat(representation.pixelsWide > 0 ? representation.pixelsWide : Int(source.size.width))
         let sourceHeight = CGFloat(representation.pixelsHigh > 0 ? representation.pixelsHigh : Int(source.size.height))
         guard sourceWidth > 0, sourceHeight > 0 else { return nil }
