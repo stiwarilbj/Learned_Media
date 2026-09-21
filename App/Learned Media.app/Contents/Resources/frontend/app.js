@@ -80,8 +80,39 @@
     function normalized(value) { return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
     return normalized((item.claim || item.title || "") + " " + (item.body || ""));
   }
+  function claimMemoryFingerprint(item) {
+    return String(item.claim || item.title || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+  function memoryEvidence(item) {
+    const sources = item.sources || [];
+    return (item.evidence || []).map(function (entry) {
+      if (typeof entry === "string") return { quote: entry };
+      const source = sources[Number(entry.sourceIndex)] || {};
+      return {
+        quote: entry.quote || "",
+        section: entry.section || "",
+        sourceIndex: Number.isInteger(entry.sourceIndex) ? entry.sourceIndex : undefined,
+        url: source.canonicalUrl || source.url || ""
+      };
+    }).filter(function (entry) { return entry.quote; });
+  }
   function normalizeMemory(item) {
-    return Object.assign({}, item, { fingerprint: item.fingerprint || factFingerprint(item) });
+    const evidence = memoryEvidence(item);
+    const sourceUrls = item.sourceUrls || (item.sources || []).map(function (source) { return source.canonicalUrl || source.url; }).filter(Boolean);
+    const evidenceKeys = item.evidenceKeys || evidence.map(function (entry) {
+      return [entry.url || "", entry.section || "", entry.quote || ""].join("|").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9|]+/g, " ").trim();
+    });
+    const evidenceSections = item.evidenceSections || evidence.map(function (entry) { return entry.section; }).filter(Boolean);
+    const normalized = Object.assign({}, item, {
+      fingerprint: item.fingerprint || factFingerprint(item),
+      claimFingerprint: item.claimFingerprint || claimMemoryFingerprint(item),
+      sourceUrls: sourceUrls,
+      evidence: evidence,
+      evidenceKeys: evidenceKeys,
+      evidenceSections: evidenceSections
+    });
+    delete normalized.sources;
+    return normalized;
   }
   const app = document.getElementById("app");
   const pending = new Map();
@@ -442,7 +473,7 @@
     return created;
   }
   function memoryOf(card) {
-    return { id: card.id, title: card.title, hook: card.hook, body: card.body, claim: card.claim, fingerprint: factFingerprint(card), topicPath: card.topicPath || [], sourceUrls: (card.sources || []).map(function (source) { return source.url; }), evidence: (card.evidence || []).map(function (item) { return item.quote; }), known: Boolean(card.known || card.feedback === "heard") };
+    return normalizeMemory({ id: card.id, title: card.title, hook: card.hook, body: card.body, claim: card.claim, topicPath: card.topicPath || [], sources: card.sources || [], evidence: card.evidence || [], known: Boolean(card.known || card.feedback === "heard") });
   }
   function archiveFacts(cards) {
     const map = new Map();
@@ -1372,7 +1403,7 @@
     state.batchAccepted = 0;
     render();
     try {
-      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: state.settings, avoid: [], token: state.generationRequestToken });
+      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: state.settings, avoid: state.factMemory || [], token: state.generationRequestToken });
       if (activeToken !== generationToken) return;
       (result.cards || []).forEach(function (card) { acceptNewFact(card); });
       const completed = state.batchAccepted;

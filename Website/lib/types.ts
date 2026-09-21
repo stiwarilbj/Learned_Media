@@ -88,7 +88,7 @@ export type FactCard = {
   body: string;
   sentenceCount?: SentenceLength;
   claim?: string;
-  evidence?: Array<{ sentence: number; sourceIndex: number; quote: string }>;
+  evidence?: Array<{ sentence: number; sourceIndex: number; quote: string; section?: string }>;
   topicPath: string[];
   sources: WikipediaSource[];
   image?: ImageAttribution;

@@ -94,4 +94,41 @@ final class FactQualityTests: XCTestCase {
         }
         XCTAssertTrue(FactQuality.validate(title: "Ireland’s Named Relief Program", hook: "A National Soup Kitchen Law", claim: "The 1847 Relief Act created a specific relief program.", sentences: sentences, evidence: evidence, sources: source, expectedSentences: 99))
     }
+
+    func testLevelTenRequiresOneNamedInnerSection() {
+        let sources: [[String: Any]] = [[
+            "extract": "[Section: Introduction]\nThe relief program is remembered as an important response to famine.\n\n[Section: County Inspection Records]\nCounty inspectors recorded that the 1847 Relief Act required local committees to submit weekly soup-kitchen ledgers. The ledgers listed meal counts by district and let officials compare shortages across counties. Officials used the records to compare shortages across counties."
+        ]]
+        let sentences = [
+            "The 1847 Relief Act required local committees to submit weekly soup-kitchen ledgers.",
+            "Those ledgers listed meal counts by district for county inspectors.",
+            "Officials used the records to compare shortages across counties."
+        ]
+        let evidence: [[String: Any]] = [
+            ["sentence": 0, "sourceIndex": 0, "quote": sentences[0], "section": "County Inspection Records"],
+            ["sentence": 1, "sourceIndex": 0, "quote": "The ledgers listed meal counts by district and let officials compare shortages across counties.", "section": "County Inspection Records"],
+            ["sentence": 2, "sourceIndex": 0, "quote": "Officials used the records to compare shortages across counties.", "section": "County Inspection Records"]
+        ]
+        XCTAssertTrue(FactQuality.validate(title: "The Ledgers Behind County Relief", hook: "Soup Kitchens Kept Weekly Ledgers", claim: "The law required local committees to submit weekly ledgers that tracked meals by district.", sentences: sentences, evidence: evidence, sources: sources, difficulty: 10))
+
+        let leadEvidence: [[String: Any]] = [
+            ["sentence": 0, "sourceIndex": 0, "quote": "The relief program is remembered as an important response to famine.", "section": "Introduction"],
+            ["sentence": 1, "sourceIndex": 0, "quote": "The relief program is remembered as an important response to famine.", "section": "Introduction"],
+            ["sentence": 2, "sourceIndex": 0, "quote": "The relief program is remembered as an important response to famine.", "section": "Introduction"]
+        ]
+        XCTAssertFalse(FactQuality.validate(title: "A Broad Relief Overview", hook: "The Relief Program Mattered", claim: "The program mattered during famine.", sentences: sentences, evidence: leadEvidence, sources: sources, difficulty: 10))
+    }
+
+    func testPublicationLedgerRejectsSeededMemory() async {
+        let remembered: [String: Any] = [
+            "id": "remembered",
+            "title": "A Named Relief Event",
+            "claim": "A particular law created a particular relief program.",
+            "body": "A particular law created a particular relief program with a documented consequence.",
+            "fingerprint": "a particular law created a particular relief program a particular law created a particular relief program with a documented consequence."
+        ]
+        let ledger = FactPublicationLedger(initial: [remembered])
+        let accepted = await ledger.accept(remembered)
+        XCTAssertFalse(accepted)
+    }
 }
