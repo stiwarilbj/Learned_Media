@@ -60,6 +60,13 @@
     const number = Number(value);
     return Number.isInteger(number) && number >= 1 && number <= 5 ? number : 3;
   }
+  function factFingerprint(item) {
+    function normalized(value) { return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
+    return normalized((item.claim || item.title || "") + " " + (item.body || ""));
+  }
+  function normalizeMemory(item) {
+    return Object.assign({}, item, { fingerprint: item.fingerprint || factFingerprint(item) });
+  }
   const app = document.getElementById("app");
   const pending = new Map();
   let requestID = 0;
@@ -415,12 +422,11 @@
     return created;
   }
   function memoryOf(card) {
-    const normalized = function (value) { return String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); };
-    return { id: card.id, title: card.title, hook: card.hook, body: card.body, claim: card.claim, fingerprint: normalized((card.claim || card.title) + " " + card.body), topicPath: card.topicPath || [], sourceUrls: (card.sources || []).map(function (source) { return source.url; }), evidence: (card.evidence || []).map(function (item) { return item.quote; }), known: Boolean(card.known || card.feedback === "heard") };
+    return { id: card.id, title: card.title, hook: card.hook, body: card.body, claim: card.claim, fingerprint: factFingerprint(card), topicPath: card.topicPath || [], sourceUrls: (card.sources || []).map(function (source) { return source.url; }), evidence: (card.evidence || []).map(function (item) { return item.quote; }), known: Boolean(card.known || card.feedback === "heard") };
   }
   function archiveFacts(cards) {
     const map = new Map();
-    state.factMemory.forEach(function (item) { const key = item.fingerprint || item.id; map.set(key, item); });
+    state.factMemory.forEach(function (item) { const normalized = normalizeMemory(item); const key = normalized.fingerprint || normalized.id; map.set(key, normalized); });
     cards.forEach(function (card) { const item = memoryOf(card); const key = item.fingerprint || item.id; const previous = map.get(key); item.known = item.known || Boolean(previous && previous.known); map.set(key, Object.assign({}, previous || {}, item)); });
     state.factMemory = Array.from(map.values());
   }
@@ -482,7 +488,8 @@
   }
   function mergeFactMemories(local, remote) {
     const map = new Map();
-    (local || []).concat(remote || []).forEach(function (item) {
+    (local || []).concat(remote || []).forEach(function (raw) {
+      const item = normalizeMemory(raw);
       const key = item.fingerprint || item.id;
       const previous = map.get(key);
       map.set(key, Object.assign({}, previous || {}, item, { fingerprint: item.fingerprint || (previous && previous.fingerprint) || key, known: Boolean((previous && previous.known) || item.known) }));
@@ -1214,7 +1221,7 @@
       candidates.sort(function (left, right) { return String(right.savedAt || "").localeCompare(String(left.savedAt || "")); });
       const parsed = candidates[0];
       if (parsed) {
-        state.factMemory = parsed.factMemory || [];
+        state.factMemory = (parsed.factMemory || []).map(normalizeMemory);
         state.cloudOwnerId = parsed.cloudOwnerId || (parsed.account && parsed.account.id) || null;
         (parsed.workspaces || []).forEach(function (record) { archiveFacts((record.state || {}).cards || []); });
         if (Array.isArray(parsed.workspaces) && parsed.workspaces.length) {

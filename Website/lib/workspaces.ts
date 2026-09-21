@@ -53,6 +53,7 @@ export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null):
 }
 
 export async function accountWorkspaceBackup<T>(ownerId: string, value?: WorkspaceStore<T>): Promise<WorkspaceStore<T> | null> {
+  if (typeof window === "undefined" || !window.indexedDB) return null;
   const database = await openDatabase();
   try {
     return await new Promise((resolve, reject) => {

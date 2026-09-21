@@ -460,7 +460,8 @@ export default function HomePage() {
     if (!record) return;
     record.state = { ...record.state, youtubeActivity: youtubeActivityOf(youtubeWorkspace), savedAt: new Date().toISOString() };
     void writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("Your video activity could not be saved. A local recovery copy was kept."));
-  }, [hydrated, youtubeWorkspace]);
+    scheduleCloudSave();
+  }, [hydrated, scheduleCloudSave, youtubeWorkspace]);
 
   useEffect(() => {
     let active = true;
@@ -544,7 +545,14 @@ export default function HomePage() {
       try {
         const currentStore = workspaceStoreRef.current;
         const compatible = Boolean(currentStore && (!currentStore.ownerId || currentStore.ownerId === user.id));
-        if (currentStore) await accountWorkspaceBackup(currentStore.ownerId ?? user.id, structuredClone(currentStore));
+        if (currentStore) {
+          try {
+            await accountWorkspaceBackup(currentStore.ownerId ?? user.id, structuredClone(currentStore));
+          } catch {
+            // A recovery-copy failure must not prevent an otherwise valid cloud login.
+            setToast("A local recovery copy could not be updated; cloud sync will continue.");
+          }
+        }
         const remote = await cloudSyncRef.current.load(controller.signal);
         if (!active || controller.signal.aborted || cloudEpoch.current !== epoch) return;
         const localStore = compatible ? currentStore : null;
