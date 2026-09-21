@@ -4,8 +4,9 @@ import { buildDiseasesTopic } from "./disease-catalog";
 import { buildComputerScienceTopic } from "./computer-science-catalog";
 import { buildNaturalDisasterAndExtinctionTopics } from "./natural-disaster-catalog";
 import { buildWarHistoryTopic } from "./war-history-catalog";
+import { buildMoviesTopic } from "./movie-catalog";
 
-export const TOPIC_CATALOG_VERSION = 14;
+export const TOPIC_CATALOG_VERSION = 15;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -321,7 +322,8 @@ const TOPIC_SEEDS: TopicSeed[] = [
     branch("Other Geography", ["Islands", "Lakes", "Deserts", "Oceans", "Seas", "Borders", "Enclaves", "Exclaves", "Strange Borders", "Geographic Extremes", "Remote Places", "Caves", "Waterfalls", "Canyons", "Peninsulas", "Archipelagos", "Natural Wonders", "Human Geography", "Population", "Languages", "Migration", "Maps", "Cartography"])
   ]),
   buildComputerScienceTopic(),
-  LITERATURE_SEED
+  LITERATURE_SEED,
+  buildMoviesTopic()
 ];
 
 function slug(value: string) {

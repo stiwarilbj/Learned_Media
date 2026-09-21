@@ -165,8 +165,11 @@
     nativeLiterature.children = nativeLiterature.children.filter(function (item) { return item.label !== "Best-Selling Book Series"; });
     nativeLiterature.children.push(branch("Best-Selling Book Series", seriesNames.map(function (label) { return { label: label, children: [], aliases: seriesAliases[label] || [] }; })));
   }
+  if (window.LEARNED_MEDIA_MOVIE_TOPICS) {
+    window.LEARNED_MEDIA_TOPIC_CATALOG.push.apply(window.LEARNED_MEDIA_TOPIC_CATALOG, window.LEARNED_MEDIA_MOVIE_TOPICS);
+  }
   window.LEARNED_MEDIA_TOPIC_METADATA = {
-    catalogVersion: 14,
+    catalogVersion: 15,
     bestSellingBookSeries: {
       sourceUrl: "https://en.wikipedia.org/wiki/List_of_best-selling_books#List_of_best-selling_book_series",
       sourceLabel: "Wikipedia's List of best-selling book series",
