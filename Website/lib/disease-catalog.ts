@@ -1,4 +1,5 @@
 import type { TopicSeed } from "./topic-catalog";
+import { buildPublicHealthOrganizations } from "./public-health-catalog";
 
 type BranchSeed = { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -168,7 +169,8 @@ export function buildDiseasesTopic(): TopicSeed {
       branch("Noninfectious Diseases", ["Cancer", "Heart Disease", "Stroke", "Diabetes", "Asthma", "Autoimmune Disease", "Genetic Disorders", "Neurodegenerative Disease", "Mental Health Conditions", "Environmental Disease", "Occupational Disease"]),
       branch("Prevention and Control", ["Vaccines", "Hand Hygiene", "Clean Water", "Sanitation", "Food Safety", "Vector Control", "Personal Protective Equipment", "Antimicrobial Stewardship", "Disease Surveillance", "Outbreak Preparedness"]),
       branch("Diagnosis and Public Health", ["Laboratory Testing", "Medical Imaging", "Case Definitions", "Disease Reporting", "Contact Tracing", "Genomic Surveillance", "Epidemiology", "Public Health Laboratories", "Health Data and Privacy"]),
-      branch("Antimicrobial Resistance", ["Drug-Resistant Tuberculosis", "Drug-Resistant Gonorrhea", "MRSA Infection", "Candida auris", "Antimicrobial Stewardship", "Hospital Infection Control", "New Antibiotic Discovery", "One Health and Resistance"])
+      branch("Antimicrobial Resistance", ["Drug-Resistant Tuberculosis", "Drug-Resistant Gonorrhea", "MRSA Infection", "Candida auris", "Antimicrobial Stewardship", "Hospital Infection Control", "New Antibiotic Discovery", "One Health and Resistance"]),
+      ...buildPublicHealthOrganizations()
     ]),
     branch("Pandemics & Epidemics", [
       branch("By Time Span", PANDEMICS_BY_TIME),
@@ -180,6 +182,9 @@ export function buildDiseasesTopic(): TopicSeed {
 }
 
 export const DISEASE_CATALOG_SOURCES = [
+  "https://www.nih.gov/institutes-nih/list-institutes-centers",
+  "https://www.who.int/about/governance/world-health-assembly",
+  "https://www.cdc.gov/about/organization/",
   "https://www.nih.gov/nih-style-guide/appendix-biomedical-definitions",
   "https://www.who.int/health-topics/pandemics",
   "https://www.cdc.gov/fungal/about/types-of-fungal-diseases.html",

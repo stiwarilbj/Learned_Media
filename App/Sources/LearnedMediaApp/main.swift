@@ -765,17 +765,26 @@ private final class GeminiClient {
     func learn(key: String, action: String, card: [String: Any], question: String?, detailed: Bool, history: [[String: Any]]) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using this feature.") }
         let sourceTitles = (card["sources"] as? [[String: Any]] ?? []).prefix(3).compactMap { $0["title"] as? String }
-        var sourceArray = await wikipedia.resolve(title: card["title"] as? String ?? "Wikipedia", searchTitles: sourceTitles).sources
+        let originalSources = await wikipedia.resolve(title: card["title"] as? String ?? "Wikipedia", searchTitles: sourceTitles).sources
+        var sourceArray = originalSources
+        let originalURLs = Set(originalSources.compactMap { $0["url"] as? String })
         if action == "question", let question, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let additional = await wikipedia.resolve(title: question, searchTitles: []).sources
-            for source in additional where sourceArray.count < 3 { if !sourceArray.contains(where: { ($0["url"] as? String) == (source["url"] as? String) }) { sourceArray.append(source) } }
+            for source in additional where sourceArray.count < 5 { if !sourceArray.contains(where: { ($0["url"] as? String) == (source["url"] as? String) }) { sourceArray.append(source) } }
         }
         guard !sourceArray.isEmpty else { throw NativeError(message: "Wikipedia did not return the cited pages for this fact.") }
-        let context = sourceArray.prefix(3).enumerated().map { index, source in "\(index). \((source["title"] as? String) ?? "Wikipedia")\nURL: \((source["url"] as? String) ?? "")\nExcerpt: \((source["extract"] as? String) ?? "No extract returned")" }.joined(separator: "\n\n")
+        let context = sourceArray.prefix(5).enumerated().map { index, source in
+            let url = (source["url"] as? String) ?? ""
+            let label = originalURLs.contains(url) ? "[Original card source]" : "[Supplemental question lookup — not proof of the card's claim]"
+            return "\(index). \(label) \((source["title"] as? String) ?? "Wikipedia")\nURL: \(url)\nExcerpt: \((source["extract"] as? String) ?? "No extract returned")"
+        }.joined(separator: "\n\n")
         let previous = history.suffix(6).map { "\($0["role"] ?? "user"): \($0["content"] ?? "")" }.joined(separator: "\n")
-        let request = action == "learn" ? "Write one 100 to 160 word paragraph that explains the fact in more depth." : "Answer this question: \(question ?? "")"
+        let topicPath = (card["topicPath"] as? [String] ?? []).joined(separator: " → ")
+        let cardIdentity = "Topic path: \(topicPath)\nCard hook: \(card["hook"] ?? "")\nCard title: \(card["title"] ?? "")\nCard body: \(card["body"] ?? "")"
         let length = detailed ? "Use approximately 150 to 250 words and include helpful context." : "Use 2 to 4 sentences."
-        let prompt = "Answer from cited English Wikipedia material. Fact title: \(card["title"] ?? "")\nFact description: \(card["body"] ?? "")\nWikipedia evidence:\n\(context)\nPrevious conversation:\n\(previous)\n\(request) \(length)\nIf the cited material cannot answer a question, say so clearly. Do not invent details. Return JSON with answer and citationIndexes."
+        let prompt = action == "learn"
+            ? "Explain this one card in one useful paragraph. Use its topic path, hook, title, body, and original card sources to stay on the same subject. Add context rather than repeating the body. Supplemental lookups are only leads and cannot replace the original card evidence. \(length)\n\n\(cardIdentity)\n\nWikipedia evidence:\n\(context)\nPrevious conversation:\n\(previous)\nReturn JSON with answer and citationIndexes."
+            : "Answer the user's question about this exact card, not a different topic. Treat the topic path, hook, title, and body as the identity and scope. Use original card sources as primary evidence. Supplemental question lookups may clarify a term, but they are not proof of the card's claim and must not replace or contradict the original evidence. If the card context and original evidence do not support an answer, say so plainly and explain only what they establish. Do not merge unrelated pages or invent a connection. \(length)\n\n\(cardIdentity)\nUser question: \(question ?? "")\nPrevious conversation:\n\(previous)\n\nWikipedia evidence:\n\(context)\nReturn JSON with answer and citationIndexes."
         let result = try await structured(key: key, prompt: prompt, schema: ["type": "OBJECT", "properties": ["answer": ["type": "STRING"], "citationIndexes": ["type": "ARRAY", "items": ["type": "INTEGER"]]], "required": ["answer", "citationIndexes"]], stage: "learning")
         let envelope = try JSONDecoder().decode(GeminiAnswerEnvelope.self, from: Data(result.text.utf8))
         guard let answer = envelope.answer?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty else { throw NativeError(message: "Gemini returned an empty explanation.") }

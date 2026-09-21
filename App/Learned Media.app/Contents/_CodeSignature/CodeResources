@@ -10,7 +10,11 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		oAqZQ3EcRbv+FyuVQqmJ34V8tz4=
+		O8gCiXvpkSZsdAl4WnP56RTaGew=
+		</data>
+		<key>Resources/frontend/computer-science-catalog.js</key>
+		<data>
+		9Tp/ozUd534+CSrPHSXkGDk+DoQ=
 		</data>
 		<key>Resources/frontend/disease-catalog.js</key>
 		<data>
@@ -26,11 +30,15 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		+FSCKW15uvbJU6hFfoewwTqc+xA=
+		I2OuUXuEGoGH7GOAYZ3FSC1OxEA=
 		</data>
 		<key>Resources/frontend/political-history.js</key>
 		<data>
 		5UOXrWHlBzYuFRtEbAIrxXH649A=
+		</data>
+		<key>Resources/frontend/public-health-catalog.js</key>
+		<data>
+		ySB25SCJh069uTgY0aOb4dgSq2g=
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
@@ -58,7 +66,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			wiWBGHVNwjDzYEmfQ46atB9fw1bl8rHVVM9XnRg2TWg=
+			t6u8e+BY6xcvQ2fq2UFrO1Uf0sZTZAQ82NJBrzcMquI=
+			</data>
+		</dict>
+		<key>Resources/frontend/computer-science-catalog.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			wMfTCGah6d1pzs+KUsGn7po/CAAWgbb2QGvLpOq5KCk=
 			</data>
 		</dict>
 		<key>Resources/frontend/disease-catalog.js</key>
@@ -86,7 +101,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			+UpzOrFUTnldjPNumF896jWg6CuKFm2sF1rajUHNZiI=
+			dRTqXZUh3P8FnryEXDq2i/h1IYPKylgqkgiGKqEca28=
 			</data>
 		</dict>
 		<key>Resources/frontend/political-history.js</key>
@@ -94,6 +109,13 @@
 			<key>hash2</key>
 			<data>
 			38JsouxhuCSyty8H7oyH9MDwzf/kLr0gJpiXsGjrVmY=
+			</data>
+		</dict>
+		<key>Resources/frontend/public-health-catalog.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			+lltZLhBYbLQdSFnk59RTrodN3mTk4qzUpAPznPzpzI=
 			</data>
 		</dict>
 		<key>Resources/frontend/styles.css</key>

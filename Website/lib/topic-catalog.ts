@@ -1,8 +1,9 @@
 import type { TopicNode } from "./types";
 import { buildUnitedStatesPoliticalHistory, buildWorldPoliticalHistory } from "./political-history-catalog";
 import { buildDiseasesTopic } from "./disease-catalog";
+import { buildComputerScienceTopic } from "./computer-science-catalog";
 
-export const TOPIC_CATALOG_VERSION = 8;
+export const TOPIC_CATALOG_VERSION = 9;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -254,31 +255,7 @@ const TOPIC_SEEDS: TopicSeed[] = [
     branch("Biomes", ["Tropical Rainforest", "Temperate Rainforest", "Tropical Seasonal Forest", "Temperate Forest", "Boreal Forest / Taiga", "Savanna", "Temperate Grassland", "Desert", "Mediterranean", "Tundra", "Alpine", "Wetlands", "Freshwater", "Rivers", "Coral Reefs", "Coastal", "Open Ocean", "Deep Ocean", "Polar"]),
     branch("Other Geography", ["Islands", "Lakes", "Deserts", "Oceans", "Seas", "Borders", "Enclaves", "Exclaves", "Strange Borders", "Geographic Extremes", "Remote Places", "Caves", "Waterfalls", "Canyons", "Peninsulas", "Archipelagos", "Natural Wonders", "Human Geography", "Population", "Languages", "Migration", "Maps", "Cartography"])
   ]),
-  branch("Computer Science", [
-    branch("Programming Fundamentals", ["Variables", "Data Types", "Control Flow", "Functions", "Recursion", "Errors", "Memory", "OOP", "Functional Programming", "Async Programming", "Concurrency"]),
-    branch("Programming Languages", ["Python", "JavaScript", "TypeScript", "Java", "C", "C++", "C#", "Rust", "Go", "Swift", "Kotlin", "SQL", "Assembly", "Lisp", "Language History"]),
-    branch("Data Structures", ["Arrays", "Linked Lists", "Stacks", "Queues", "Hash Tables", "Trees", "Binary Search Trees", "Heaps", "Tries", "Graphs", "Disjoint Sets"]),
-    branch("Algorithms", ["Searching", "Sorting", "Recursion", "Dynamic Programming", "Greedy Algorithms", "Graph Algorithms", "String Algorithms", "Divide and Conquer", "Backtracking", "Randomized Algorithms", "Big O", "Time Complexity", "Space Complexity", "Amortized Analysis"]),
-    branch("Artificial Intelligence", [
-      branch("AI Fundamentals", ["AI History", "Search Algorithms", "Knowledge Representation", "Planning", "Reasoning"]),
-      branch("Machine Learning", ["Supervised Learning", "Unsupervised Learning", "Semi-Supervised Learning", "Reinforcement Learning", "Classification", "Regression", "Clustering", "Feature Engineering", "Evaluation"]),
-      branch("Deep Learning", ["Neural Networks", "Backpropagation", "CNNs", "RNNs", branch("Transformers", ["Attention"]), "Embeddings"]),
-      branch("Generative AI", ["Large Language Models", "Tokens", "Context Windows", "Prompting", "Fine-Tuning", "RAG", "Vector Databases", "Embeddings", "AI Agents", "Tool Calling", "Multimodal AI", "Image Generation", "Video Generation"]),
-      branch("Computer Vision", ["Image Classification", "Object Detection", "Segmentation", "Pose Estimation", "OCR", "Image Embeddings"]),
-      branch("Natural Language Processing", ["Tokenization", "Language Models", "Sentiment Analysis", "Translation", "Speech Recognition", "Text Embeddings"]),
-      branch("Recommendations", ["Collaborative Filtering", "Content-Based Recommendations", "Ranking Systems"])
-    ]),
-    branch("Networks", ["Internet Fundamentals", "IP Addresses", "IPv4", "IPv6", "TCP", "UDP", "DNS", "HTTP", "HTTPS", "TLS", "Routing", "Switching", "Wi-Fi", "Ethernet", "NAT", "VPNs", "CDNs", "Load Balancers", "Firewalls", "Network Security", "Internet Infrastructure", "Undersea Cables"]),
-    branch("Hardware", ["CPUs", "Instruction Sets", "Registers", "Cache", "RAM", "Storage", "Buses", "Pipelining", "Branch Prediction", "Multicore CPUs", "GPUs", "ARM", "x86", "RISC", "CISC", "Motherboards", "Hardware History"]),
-    branch("Operating Systems", ["Processes", "Threads", "Scheduling", "Virtual Memory", "Memory Management", "Filesystems", "System Calls", "Kernels", "Drivers", "Permissions", "Linux", "Windows", "macOS", "Mobile Operating Systems"]),
-    branch("Systems and Architecture", ["Client-Server Architecture", "APIs", "REST", "RPC", "Databases", "Caching", "Load Balancing", "Replication", "Sharding", "Message Queues", "Event-Driven Systems", "Microservices", "Monoliths", "Distributed Systems", "Consistency", "Availability", "Fault Tolerance", "Scalability", "Rate Limiting"]),
-    branch("Databases", ["SQL", "Relational Databases", "PostgreSQL", "MySQL", "SQLite", "NoSQL", "Document Databases", "Key-Value Databases", "Graph Databases", "Vector Databases", "Indexes", "Transactions", "ACID", "Query Planning", "Replication", "Database History"]),
-    branch("Web Development", ["HTML", "CSS", "JavaScript", "Browsers", "DOM", "Frontend Development", "Backend Development", "React", "Web Servers", "APIs", "Authentication", "Cookies", "Sessions", "WebSockets", "Web Security", "Browser Engines"]),
-    branch("Security", ["Cryptography", "Encryption", "Hashing", "Authentication", "Authorization", "Password Security", "Network Security", "Web Security", "Malware", "Phishing", "Vulnerabilities", "Security History", "Defensive Security"]),
-    branch("Cloud and DevOps", ["Cloud Computing", "Virtual Machines", "Containers", "Docker", "Kubernetes", "Serverless", "Infrastructure", "CI/CD", "Observability", "Logging", "Monitoring", "Cloud Storage", "Distributed Computing"]),
-    branch("Software Engineering", ["Git", "Version Control", "Testing", "Unit Testing", "Integration Testing", "Debugging", "Code Review", "Design Patterns", "Software Architecture", "Technical Debt", "Refactoring", "APIs", "Documentation", "Open Source"]),
-    branch("Other Fields", ["Distributed Systems", "Compilers", "Programming Language Design", "Computer Graphics", "Game Development", "Human-Computer Interaction", "Mobile Development", "Embedded Systems", "Internet of Things", "Robotics", "Data Engineering", "Data Science", "Parallel Computing", "Quantum Computing", "Theory of Computation", "Information Theory", "Computer History", "Famous Computer Scientists", "Famous Software Bugs", "Early Internet History", "Computing Oddities"])
-  ]),
+  buildComputerScienceTopic(),
   LITERATURE_SEED
 ];
 
