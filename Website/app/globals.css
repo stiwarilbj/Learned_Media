@@ -1519,3 +1519,9 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
   .setup-topic-heading-actions { gap: 7px; }
   .setup-topic-heading-actions strong, .topic-reset-button { font-size: 9px; }
 }
+
+/* Keep the two-column setup surface stable while the right-side disclosure opens. */
+@media (min-width: 1101px) {
+  .setup-layout { grid-template-rows: 700px; }
+  .setup-topics-panel, .setup-start-panel { height: 700px; min-height: 700px; }
+}
