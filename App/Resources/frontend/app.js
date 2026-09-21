@@ -580,7 +580,13 @@
   }
   function normalizeCard(card, index) {
     const first = card.sources && card.sources[0] ? card.sources[0] : { title: card.sourceTitle || "Wikipedia", url: card.sourceUrl || wikiURL(card.sourceTitle || card.title) };
-    const sources = (card.sources && card.sources.length ? card.sources : [first]).slice(0, 3);
+    const storedSources = card.sources && card.sources.length ? card.sources : [first];
+    const sources = storedSources.map(function (source, sourceIndex) {
+      const url = String(source.url || wikiURL(source.title || "Wikipedia"));
+      const canonicalUrl = source.canonicalUrl || url.split("#")[0];
+      const quote = (card.evidence || []).find(function (item) { return item.sourceIndex === sourceIndex; });
+      return quote && quote.quote && url.indexOf("#:~:text=") < 0 ? Object.assign({}, source, { canonicalUrl: canonicalUrl, url: wikipediaEvidenceLink(canonicalUrl, quote.quote) }) : source;
+    }).slice(0, 3);
     const image = card.image || (card.imageUrl ? { url: card.imageUrl, alt: card.title, sourceTitle: first.title, sourceUrl: first.url, filePageUrl: first.url, credit: "Wikipedia image" } : null);
     const hook = titleCaseCatalogLabel(String(card.hook || card.title || "A small fact worth keeping").trim().replace(/\.+$/, ""));
     return Object.assign({
@@ -594,6 +600,11 @@
       accent: ["blue", "lilac", "mint", "sand", "coral"][index % 5],
       createdAt: new Date().toISOString()
     }, card, { sources: sources, image: image, hook: hook });
+  }
+  function wikipediaEvidenceLink(url, quote) {
+    const text = String(quote || "").replace(/^\[Section:[^\]]+\]\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 180);
+    if (text.length < 30) return url;
+    return url.split("#")[0] + "#:~:text=" + encodeURIComponent(text);
   }
   function externalLink(url, label, className) {
     const link = node("a", { className: className || "source-link", href: url, target: "_blank", rel: "noreferrer" }, label, svg("external", 11));

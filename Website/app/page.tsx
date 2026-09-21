@@ -21,6 +21,7 @@ import { accountWorkspaceBackup, makeWorkspaceId, readWorkspaceStore, writeWorks
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_WORKSPACE, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, relatedYouTubeVideos, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
+import { wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const STORAGE_KEY = "learned-media-state";
@@ -157,7 +158,13 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
   const sourceTitle = raw.sourceTitle ?? raw.topicPath?.at(-1) ?? "Wikipedia";
   const sourceUrl = raw.sourceUrl ?? `https://en.wikipedia.org/wiki/${encodeURIComponent(sourceTitle.replace(/\s+/g, "_"))}`;
   const body = raw.body?.trim() ?? "";
-  const sources = uniqueSources(raw.sources?.length ? raw.sources : [{ title: sourceTitle, url: sourceUrl }]);
+  const storedSources = raw.sources?.length ? raw.sources : [{ title: sourceTitle, url: sourceUrl }];
+  const linkedSources = storedSources.map((source, sourceIndex) => {
+    const canonicalUrl = source.canonicalUrl ?? source.url.split("#", 1)[0];
+    const quote = raw.evidence?.find((item) => item.sourceIndex === sourceIndex)?.quote;
+    return quote && !source.url.includes("#:~:text=") ? { ...source, canonicalUrl, url: wikipediaEvidenceLink(canonicalUrl, quote) } : source;
+  });
+  const sources = uniqueSources(linkedSources);
   const rawDifficulty = legacyDifficulty ? migrateLegacyDifficulty(raw.difficulty ?? raw.obscurity) : raw.difficulty ?? raw.obscurity;
   const difficulty = normalizeDifficulty(rawDifficulty, DEFAULT_DIFFICULTY);
   return {
