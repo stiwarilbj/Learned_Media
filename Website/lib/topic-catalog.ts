@@ -1,8 +1,9 @@
 import type { TopicNode } from "./types";
+import { buildUnitedStatesPoliticalHistory, buildWorldPoliticalHistory } from "./political-history-catalog";
 
-export const TOPIC_CATALOG_VERSION = 6;
+export const TOPIC_CATALOG_VERSION = 7;
 
-type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
+export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
 const branch = (label: string, children: TopicSeed[]): TopicSeed => ({ label, children });
 const series = (label: string, aliases: string[] = []): TopicSeed => ({ label, children: [], aliases });
@@ -142,8 +143,8 @@ const countries = [
 const TOPIC_SEEDS: TopicSeed[] = [
   branch("History", [
     branch("United States", [
+      buildUnitedStatesPoliticalHistory(),
       "Indigenous America", "Colonial America", "American Revolution", "Early United States",
-      branch("U.S. Political History", ["Presidents", "Congress", "Elections", "Supreme Court History"]),
       "Civil War", "Reconstruction", "Gilded Age", "Progressive Era", "World War I Era", "Great Depression", "World War II Era",
       "Cold War", "Civil Rights Era", "Modern U.S. History", "U.S. Inventions", "American Technology", "American Industrial History",
       "Largest American Companies", "Famous American Companies", "Wealthiest Americans Through History", "Entrepreneurs",
@@ -154,6 +155,7 @@ const TOPIC_SEEDS: TopicSeed[] = [
       "Ancient Civilizations", "Empires", "Kingdoms", "Trade Routes", "Exploration", "Migration", "Revolutions", "Wars",
       "Diplomacy", "Political Systems", "Economic History", "Everyday Life", "Lost Cities", "Archaeological Discoveries"
     ]),
+    buildWorldPoliticalHistory(),
     branch("Europe", [
       "Prehistoric Europe", "Ancient Greece", "Roman Republic", "Roman Empire", "Early Medieval", "High Medieval", "Late Medieval",
       "Renaissance", "Reformation", "Age of Exploration", "Enlightenment", "Revolutionary Period", "Industrial Revolution",
@@ -412,13 +414,17 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
   const fresh = flattenTopics(next);
   const byPath = new Map(fresh.map((topic) => [topic.path.join("\u0000").toLowerCase(), topic]));
   const byLabel = new Map<string, typeof fresh>();
+  const byAlias = new Map<string, typeof fresh>();
   fresh.forEach((topic) => byLabel.set(topic.label.toLowerCase(), [...(byLabel.get(topic.label.toLowerCase()) ?? []), topic]));
+  fresh.forEach((topic) => (topic.aliases ?? []).forEach((alias) => byAlias.set(alias.toLowerCase(), [...(byAlias.get(alias.toLowerCase()) ?? []), topic])));
   const missingCustom = new Map<string, TopicNode>();
   const selectedIds = new Set<string>();
   const legacySeriesParents = new Map<string, { selected: boolean; weight?: number }>();
   flattenTopics(saved).forEach((oldTopic) => {
     const key = oldTopic.path.join("\u0000").toLowerCase();
-    const target = byPath.get(key) ?? (byLabel.get(oldTopic.label.toLowerCase())?.length === 1 ? byLabel.get(oldTopic.label.toLowerCase())?.[0] : undefined);
+    const target = byPath.get(key)
+      ?? (byLabel.get(oldTopic.label.toLowerCase())?.length === 1 ? byLabel.get(oldTopic.label.toLowerCase())?.[0] : undefined)
+      ?? (byAlias.get(oldTopic.label.toLowerCase())?.length === 1 ? byAlias.get(oldTopic.label.toLowerCase())?.[0] : undefined);
     if (target) {
       const isLegacyBuiltInRoot = migrateLegacyRootWeights && oldTopic.path.length === 1 && [30, 25, 20, 25].includes(oldTopic.weight ?? 10);
       next = updateById(next, target.id, (node) => ({ ...node, weight: isLegacyBuiltInRoot ? 10 : (oldTopic.weight || node.weight), expanded: collapseInitial ? false : oldTopic.expanded }));

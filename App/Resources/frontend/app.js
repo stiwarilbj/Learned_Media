@@ -8,7 +8,7 @@
     sentenceLength: 2,
     surpriseMe: true
   };
-  const TOPIC_CATALOG_VERSION = 6;
+  const TOPIC_CATALOG_VERSION = 7;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Super Duper Hard"];
@@ -309,7 +309,9 @@
     const fresh = flatTopics(next);
     const byPath = new Map(fresh.map(function (topic) { return [topic.path.join("\u0000").toLowerCase(), topic]; }));
     const byLabel = new Map();
+    const byAlias = new Map();
     fresh.forEach(function (topic) { const key = topic.label.toLowerCase(); byLabel.set(key, (byLabel.get(key) || []).concat(topic)); });
+    fresh.forEach(function (topic) { (topic.aliases || []).forEach(function (alias) { const key = alias.toLowerCase(); byAlias.set(key, (byAlias.get(key) || []).concat(topic)); }); });
     const selectedIds = [];
     const legacySeriesParents = new Map();
     const customs = new Map();
@@ -321,7 +323,9 @@
       }, []);
     }
     oldFlat(saved).forEach(function (oldTopic) {
-      const target = byPath.get(oldTopic.path.join("\u0000").toLowerCase()) || ((byLabel.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byLabel.get(oldTopic.label.toLowerCase())[0] : null);
+      const target = byPath.get(oldTopic.path.join("\u0000").toLowerCase())
+        || ((byLabel.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byLabel.get(oldTopic.label.toLowerCase())[0] : null)
+        || ((byAlias.get(oldTopic.label.toLowerCase()) || []).length === 1 ? byAlias.get(oldTopic.label.toLowerCase())[0] : null);
       if (target) {
         const isLegacyBuiltInRoot = Boolean(migrateLegacyRootWeights && oldTopic.path.length === 1 && [30, 25, 20, 25].indexOf(oldTopic.weight == null ? 10 : oldTopic.weight) >= 0);
         next = updateTopicById(next, target.id, function (topic) { return Object.assign({}, topic, { weight: isLegacyBuiltInRoot ? 10 : (oldTopic.weight || topic.weight), expanded: collapseInitial ? false : oldTopic.expanded }); });
