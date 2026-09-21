@@ -154,6 +154,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
 
         <aside className="settings-side">
           <section className="danger-card"><span className="eyebrow">Advanced</span><h2>Clear the slate</h2><p>Feed reset is gentle. These controls affect the rest of your saved workspace</p><button type="button" className="ghost-button full" onClick={onResetAll}><Icon name="reset" size={15} /> Reset all preferences</button><button type="button" className="danger-button full" onClick={onDeleteLearningData}><Icon name="trash" size={15} /> Delete learning data</button></section>
+          <section className="settings-help mobile-use-help"><Icon name="smartphone" size={17} /><div><strong>Use Learned Media on mobile</strong><p>Open the site in Safari or Chrome on your iPhone. In Safari, tap Share → Add to Home Screen to keep it beside your other apps. The layout adapts to narrow screens without horizontal scrolling</p></div></section>
           <section className="settings-help"><Icon name="help" size={17} /><div><strong>Privacy by default</strong><p>Your Google profile and Gemini credential never belong in a prompt. The server only sends topic and preference signals</p></div></section>
         </aside>
       </div>

@@ -125,6 +125,8 @@
       sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
       moon: '<path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z"/>',
       reset: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>',
+      trash: '<path d="M4 7h16M10 11v6m4-6v6M9 7V4h6v3m-9 0 1 14h10l1-14"/>',
+      smartphone: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',
       search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
       sliders: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',
       help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4 2c-1.2.8-1.5 1.2-1.5 2.5M12 17h.01"/>',
@@ -302,6 +304,9 @@
   }
   function updateTopicById(nodes, id, update) {
     return nodes.map(function (topic) { return topic.id === id ? update(topic) : topic.children ? Object.assign({}, topic, { children: updateTopicById(topic.children, id, update) }) : topic; });
+  }
+  function removeTopicById(nodes, id) {
+    return nodes.filter(function (topic) { return topic.id !== id; }).map(function (topic) { return topic.children ? Object.assign({}, topic, { children: removeTopicById(topic.children, id) }) : topic; });
   }
   function migrateTopics(saved, collapseInitial, migrateLegacyRootWeights) {
     if (!Array.isArray(saved) || !saved.length) return makeTopics();
@@ -615,7 +620,7 @@
     const searchExpanded = Boolean(query && topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
     const childrenVisible = hasChildren && (topic.expanded || searchExpanded);
     const branchWrap = node("div", { className: "topic-branch" });
-    const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + " selection-" + selection, dataset: { topicId: topic.id } });
+    const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + (!hasChildren ? " leaf-row" : "") + (topic.custom ? " custom-row" : "") + " selection-" + selection, dataset: { topicId: topic.id } });
     row.style.paddingLeft = Math.min(depth, 5) * 20 + 4 + "px";
     row.appendChild(node("button", { className: "topic-expand", disabled: !hasChildren, ariaLabel: (childrenVisible ? "Hide" : "Show") + " subtopics for " + topic.label, ariaExpanded: hasChildren ? childrenVisible : undefined, dataset: { topicId: topic.id }, onClick: function () { if (!hasChildren) return; topic.expanded = !topic.expanded; saveState(); render(); } }, hasChildren ? svg(childrenVisible ? "chevronDown" : "chevronRight", 15) : null));
     row.appendChild(node("button", { className: "topic-check" + (selection === "selected" ? " checked" : "") + (selection === "mixed" ? " mixed" : ""), ariaLabel: (selection === "selected" ? "Deselect " : "Select ") + topic.label, ariaPressed: selection === "selected", dataset: { topicId: topic.id }, onClick: function () { toggleTopicSelection(topic.id); saveState(); render(); } }, selection === "selected" ? svg("check", 14) : selection === "mixed" ? node("span", { className: "topic-check-dash" }) : null));
@@ -623,6 +628,12 @@
     nameWrap.appendChild(node("span", { className: "topic-name" + (selection === "selected" ? " selected" : ""), text: topic.label }));
     if (hasChildren) nameWrap.appendChild(node("button", { className: "topic-subtopics-toggle", ariaExpanded: childrenVisible, dataset: { topicId: topic.id }, onClick: function () { topic.expanded = !topic.expanded; saveState(); render(); } }, childrenVisible ? "Hide subtopics" : "Show subtopics"));
     row.appendChild(nameWrap);
+    if (topic.custom) {
+      const customActions = node("span", { className: "custom-topic-actions" });
+      customActions.appendChild(node("span", { className: "custom-mark", text: "Custom" }));
+      customActions.appendChild(node("button", { className: "topic-remove", ariaLabel: "Delete custom topic " + topic.label, title: "Delete custom topic", onClick: function () { removeCustomTopic(topic.id); } }, svg("trash", 13)));
+      row.appendChild(customActions);
+    }
     const weight = node("div", { className: "topic-weight" + (selection === "none" ? " disabled" : "") });
     weight.appendChild(node("button", { disabled: selection === "none", ariaLabel: "Lower " + topic.label + " weight", dataset: { topicId: topic.id }, onClick: function () { topic.weight = Math.max(5, topic.weight - 5); saveState(); render(); } }, svg("minus", 12)));
     weight.appendChild(node("span", { className: "topic-weight-value", text: topic.weight }));
@@ -957,6 +968,7 @@
     danger.appendChild(node("button", { className: "ghost-button full", onClick: resetAll }, svg("reset", 15), " Reset all preferences"));
     danger.appendChild(node("button", { className: "danger-button full", onClick: deleteData }, svg("reset", 15), " Delete learning data"));
     side.appendChild(danger);
+    side.appendChild(node("section", { className: "settings-help mobile-use-help" }, svg("smartphone", 17), node("div", {}, node("strong", { text: "Use Learned Media on mobile" }), node("p", { text: "Open the site in Safari or Chrome on your iPhone. In Safari, tap Share → Add to Home Screen to keep it beside your other apps. The layout adapts to narrow screens without horizontal scrolling." }))));
     side.appendChild(node("section", { className: "settings-help" }, svg("help", 17), node("div", {}, node("strong", { text: "Privacy by default" }), node("p", { text: "Your Gemini credential is kept in memory only. Learning data stays on this Mac until you clear it." }))));
     grid.appendChild(side);
     section.appendChild(grid);
@@ -1074,6 +1086,15 @@
     if (!findTopic(id)) state.topics.push({ id: id, label: label, selected: true, expanded: false, weight: 10, custom: true });
     state.customTopic = "";
     saveState();
+    render();
+  }
+  function removeCustomTopic(id) {
+    const topic = findTopic(id);
+    if (!topic || !topic.custom) return;
+    state.topics = removeTopicById(state.topics, id);
+    state.customTopic = "";
+    saveState();
+    showToast(topic.label + " removed from your topic tree.");
     render();
   }
   function startFeed() {

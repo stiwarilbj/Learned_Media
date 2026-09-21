@@ -12,6 +12,7 @@ type TopicTreeProps = {
   onToggle: (id: string) => void;
   onExpand: (id: string) => void;
   onWeight: (id: string, delta: number) => void;
+  onRemoveCustomTopic: (id: string) => void;
 };
 
 function matchesNode(node: TopicNode, query: string, parentPath: string[] = []): boolean {
@@ -20,7 +21,7 @@ function matchesNode(node: TopicNode, query: string, parentPath: string[] = []):
   return searchScore(query, path.join(" ")) > 0 || Boolean(node.children?.some((child) => matchesNode(child, query, path)));
 }
 
-function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onWeight }: TopicTreeProps & { node: TopicNode; depth: number; parentPath?: string[] }) {
+function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onWeight, onRemoveCustomTopic }: TopicTreeProps & { node: TopicNode; depth: number; parentPath?: string[] }) {
   if (!matchesNode(node, query ?? "", parentPath)) return null;
   const hasChildren = Boolean(node.children?.length);
   const state = selectionState(node);
@@ -29,7 +30,7 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
 
   return (
     <div className="topic-branch">
-      <div className={`topic-row ${depth === 0 ? "root-row" : ""} selection-${state}`} style={{ paddingLeft: `${Math.min(depth, 5) * 20 + 4}px` }}>
+      <div className={`topic-row ${depth === 0 ? "root-row" : ""} ${!hasChildren ? "leaf-row" : ""} ${node.custom ? "custom-row" : ""} selection-${state}`} style={{ paddingLeft: `${Math.min(depth, 5) * 20 + 4}px` }}>
         <button
           type="button"
           className="topic-expand"
@@ -54,6 +55,7 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
           <span className={`topic-name ${state === "selected" ? "selected" : ""}`}>{node.label}</span>
           {hasChildren && <button type="button" className="topic-subtopics-toggle" onClick={() => onExpand(node.id)} aria-expanded={childrenVisible}>{childrenVisible ? "Hide subtopics" : "Show subtopics"}</button>}
         </div>
+        {node.custom && <span className="custom-topic-actions"><span className="custom-mark">Custom</span><button type="button" className="topic-remove" onClick={() => onRemoveCustomTopic(node.id)} aria-label={`Delete custom topic ${node.label}`} title="Delete custom topic"><Icon name="trash" size={13} /></button></span>}
         <div className={`topic-weight ${state === "none" ? "disabled" : ""}`} aria-label={`${node.weight} weighting`}>
           <button type="button" disabled={state === "none"} onClick={() => onWeight(node.id, -5)} aria-label={`Decrease ${node.label} weight`}>
             <Icon name="minus" size={13} />
@@ -78,6 +80,7 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
               onToggle={onToggle}
               onExpand={onExpand}
               onWeight={onWeight}
+              onRemoveCustomTopic={onRemoveCustomTopic}
             />
           ))}
         </div>
@@ -86,11 +89,11 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
   );
 }
 
-export function TopicTree({ nodes, query = "", onToggle, onExpand, onWeight }: TopicTreeProps) {
+export function TopicTree({ nodes, query = "", onToggle, onExpand, onWeight, onRemoveCustomTopic }: TopicTreeProps) {
   return (
     <div className="topic-tree" role="tree" aria-label="Topic browser">
       {nodes.map((node) => (
-        <TopicRow key={node.id} node={node} depth={0} nodes={nodes} query={query} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} />
+        <TopicRow key={node.id} node={node} depth={0} nodes={nodes} query={query} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />
       ))}
     </div>
   );

@@ -22,6 +22,12 @@ export function updateTopicTree(
   });
 }
 
+export function removeTopicTree(nodes: TopicNode[], id: string): TopicNode[] {
+  return nodes
+    .filter((node) => node.id !== id)
+    .map((node) => node.children ? { ...node, children: removeTopicTree(node.children, id) } : node);
+}
+
 export function clearTopicSelections(nodes: TopicNode[]): TopicNode[] {
   return nodes.map((node) => ({
     ...node,
