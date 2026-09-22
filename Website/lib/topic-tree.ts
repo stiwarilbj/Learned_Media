@@ -22,6 +22,14 @@ export function updateTopicTree(
   });
 }
 
+export function collapseTopicBranches(nodes: TopicNode[]): TopicNode[] {
+  return nodes.map((node) => {
+    const collapsed = { ...node, expanded: false };
+    if (node.children) collapsed.children = collapseTopicBranches(node.children);
+    return collapsed;
+  });
+}
+
 export function removeTopicTree(nodes: TopicNode[], id: string): TopicNode[] {
   return nodes
     .filter((node) => node.id !== id)

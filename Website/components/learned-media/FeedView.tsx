@@ -34,6 +34,7 @@ type FeedViewProps = {
   onAddCustomTopic: () => void;
   onToggleTopic: (id: string) => void;
   onExpandTopic: (id: string) => void;
+  onCollapseTopics: () => void;
   onWeightTopic: (id: string, delta: number) => void;
   onRemoveCustomTopic: (id: string) => void;
 };
@@ -42,7 +43,7 @@ function SkeletonCard() {
   return <div className="skeleton-card"><div className="skeleton-media shimmer" /><div className="skeleton-line wide shimmer" /><div className="skeleton-line shimmer" /><div className="skeleton-line short shimmer" /></div>;
 }
 
-function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onRemoveCustomTopic, onSettingsChange }: Pick<FeedViewProps, "topics" | "query" | "customTopic" | "settings" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onWeightTopic" | "onRemoveCustomTopic" | "onSettingsChange">) {
+function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange }: Pick<FeedViewProps, "topics" | "query" | "customTopic" | "settings" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onCollapseTopics" | "onWeightTopic" | "onRemoveCustomTopic" | "onSettingsChange">) {
   const [topicsOpen, setTopicsOpen] = useState(true);
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
@@ -58,7 +59,7 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
           <input id="feed-obscurity" className="feed-range" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
           <span className="range-ends"><span>A Little Hard</span><span>Impossible</span></span>
         </label>
-        <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
+        <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onCollapseAll={onCollapseTopics} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
         <div className="feed-custom-topic">
           <input value={customTopic} onChange={(event) => onCustomTopicChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onAddCustomTopic()} placeholder="Add a topic" aria-label="Add a custom topic" />
           <button type="button" onClick={onAddCustomTopic} aria-label="Add custom topic"><Icon name="plus" size={15} /></button>
@@ -82,13 +83,13 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
   );
 }
 
-export function FeedView({ cards, query = "", settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+export function FeedView({ cards, query = "", settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
   return (
     <div className="feed-workspace">
       {rabbitHole && <div className="rabbit-banner"><div><Icon name="arrow" size={16} /><span>Rabbit Hole Mode <strong>→ {rabbitHole}</strong></span></div><button type="button" onClick={onReset}>Exit rabbit hole</button></div>}
       {toast && <div className="feed-toast"><Icon name="check" size={15} /> {toast}</div>}
       <div className="feed-layout">
-          <TopicSidebar topics={topics} query={query} customTopic={customTopic} settings={settings} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onWeightTopic={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} onSettingsChange={onSettingsChange} />
+          <TopicSidebar topics={topics} query={query} customTopic={customTopic} settings={settings} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onCollapseTopics={onCollapseTopics} onWeightTopic={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} onSettingsChange={onSettingsChange} />
         <section className="feed-content-column">
           <div className="feed-toolbar">
             <div className="active-topics"><span className="toolbar-label">Your feed</span></div>
