@@ -1,12 +1,13 @@
-import { createClient, type User } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import { canonicalRecord, safeMemory, type CloudRecord } from './cloud-records';
 import type { FactMemory } from './fact-quality';
+import type { Database } from './supabase/database.types';
 // Public client configuration; authorization is enforced by RLS, never by this key.
 export const CLOUD_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ignafizdnpjludnvqkjz.supabase.co';
 export const CLOUD_PUBLIC_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_PyviIi5NadM-SswSlJBuVg_UugoFxEe';
-let client: ReturnType<typeof createClient> | undefined;
+let client: SupabaseClient<Database> | undefined;
 export function cloudClient() {
-  return client ??= createClient(CLOUD_URL, CLOUD_PUBLIC_KEY, { auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+  return client ??= createClient<Database>(CLOUD_URL, CLOUD_PUBLIC_KEY, { auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
 }
 export async function googleSignIn() {
   const response = await fetch(CLOUD_URL + '/auth/v1/settings', { headers: { apikey: CLOUD_PUBLIC_KEY } });

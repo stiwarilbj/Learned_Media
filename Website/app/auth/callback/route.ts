@@ -6,7 +6,7 @@ export async function GET(request: Request) {
   const code = url.searchParams.get("code");
   const redirectTo = new URL("/", url.origin);
   if (!code) return NextResponse.redirect(redirectTo);
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
   if (!supabase) return NextResponse.redirect(new URL("/?auth=not-configured", url.origin));
   await supabase.auth.exchangeCodeForSession(code);
   return NextResponse.redirect(redirectTo);
