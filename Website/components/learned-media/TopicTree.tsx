@@ -2,7 +2,7 @@
 
 import type { TopicNode } from "@/lib/types";
 import type { CSSProperties } from "react";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { selectionState } from "@/lib/topic-tree";
 import { normalizeSearchText } from "@/lib/search";
 import { Icon } from "./icons";
@@ -12,6 +12,7 @@ type TopicTreeProps = {
   query?: string;
   onToggle: (id: string) => void;
   onExpand: (id: string) => void;
+  onCollapseAll: () => void;
   onWeight: (id: string, delta: number) => void;
   onRemoveCustomTopic: (id: string) => void;
 };
@@ -66,14 +67,22 @@ function buildTopicSearchIndex(nodes: TopicNode[], query: string): TopicSearchIn
   return { directScores, matchingNodes, matchingDescendants };
 }
 
-function TopicRow({ node, depth, query, searchIndex, onToggle, onExpand, onWeight, onRemoveCustomTopic }: TopicTreeProps & { node: TopicNode; depth: number; searchIndex: TopicSearchIndex }) {
+type TopicRowProps = Pick<TopicTreeProps, "onToggle" | "onExpand" | "onWeight" | "onRemoveCustomTopic"> & {
+  node: TopicNode;
+  depth: number;
+  query: string;
+  searchIndex: TopicSearchIndex;
+  searchExpansionSuppressed: boolean;
+};
+
+function TopicRow({ node, depth, query, searchIndex, searchExpansionSuppressed, onToggle, onExpand, onWeight, onRemoveCustomTopic }: TopicRowProps) {
   const activeQuery = query?.trim() ?? "";
   const directSearchScore = searchIndex.directScores.get(node.id) ?? 0;
   if (activeQuery && !searchIndex.matchingNodes.has(node.id)) return null;
   const hasChildren = Boolean(node.children?.length);
   const state = selectionState(node);
   const isSearchExpanded = Boolean(activeQuery && searchIndex.matchingDescendants.has(node.id));
-  const childrenVisible = hasChildren && (node.expanded || isSearchExpanded);
+  const childrenVisible = hasChildren && (node.expanded || (isSearchExpanded && !searchExpansionSuppressed));
 
   return (
     <div className="topic-branch">
@@ -120,9 +129,9 @@ function TopicRow({ node, depth, query, searchIndex, onToggle, onExpand, onWeigh
               key={child.id}
               node={child}
               depth={depth + 1}
-              nodes={[]}
               query={query}
               searchIndex={searchIndex}
+              searchExpansionSuppressed={searchExpansionSuppressed}
               onToggle={onToggle}
               onExpand={onExpand}
               onWeight={onWeight}
@@ -135,10 +144,15 @@ function TopicRow({ node, depth, query, searchIndex, onToggle, onExpand, onWeigh
   );
 }
 
-export function TopicTree({ nodes, query = "", onToggle, onExpand, onWeight, onRemoveCustomTopic }: TopicTreeProps) {
+export function TopicTree({ nodes, query = "", onToggle, onExpand, onCollapseAll, onWeight, onRemoveCustomTopic }: TopicTreeProps) {
   const treeRef = useRef<HTMLDivElement>(null);
+  const [searchExpansionSuppressed, setSearchExpansionSuppressed] = useState(false);
   const searchIndex = useMemo(() => buildTopicSearchIndex(nodes, query), [nodes, query]);
   const hasMatches = !query.trim() || nodes.some((node) => searchIndex.matchingNodes.has(node.id));
+
+  useEffect(() => {
+    setSearchExpansionSuppressed(false);
+  }, [query]);
 
   useEffect(() => {
     const tree = treeRef.current;
@@ -169,12 +183,17 @@ export function TopicTree({ nodes, query = "", onToggle, onExpand, onWeight, onR
   }, [hasMatches, query, searchIndex]);
 
   return (
-    <div className="topic-tree" role="tree" aria-label="Topic browser" ref={treeRef}>
-      {query.trim() && !hasMatches
-        ? <p className="topic-tree-empty" role="status">No topics found for “{query.trim()}”.</p>
-        : nodes.map((node) => (
-          <TopicRow key={node.id} node={node} depth={0} nodes={nodes} query={query} searchIndex={searchIndex} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />
-        ))}
+    <div className="topic-tree-picker">
+      <div className="topic-tree-actions">
+        <button type="button" className="topic-tree-collapse-button" onClick={() => { setSearchExpansionSuppressed(true); onCollapseAll(); }} aria-label="Collapse all topic branches">Collapse all</button>
+      </div>
+      <div className="topic-tree" role="tree" aria-label="Topic browser" ref={treeRef}>
+        {query.trim() && !hasMatches
+          ? <p className="topic-tree-empty" role="status">No topics found for “{query.trim()}”.</p>
+          : nodes.map((node) => (
+            <TopicRow key={node.id} node={node} depth={0} query={query} searchIndex={searchIndex} searchExpansionSuppressed={searchExpansionSuppressed} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />
+          ))}
+      </div>
     </div>
   );
 }

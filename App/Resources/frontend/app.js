@@ -145,6 +145,7 @@
   let stopYoutubePlayback = null;
   let setupCustomizeOpen = false;
   let feedCustomizeOpen = false;
+  let topicSearchExpansionSuppressed = false;
   let youtubeSyncActive = false;
   let youtubeSearchToken = 0;
   let searchInterpretToken = 0;
@@ -864,7 +865,7 @@
     const hasChildren = Boolean(topic.children && topic.children.length);
     const selection = selectionState(topic);
     const searchExpanded = Boolean(query && topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
-    const childrenVisible = hasChildren && (topic.expanded || searchExpanded);
+    const childrenVisible = hasChildren && (topic.expanded || (searchExpanded && !topicSearchExpansionSuppressed));
     const branchWrap = node("div", { className: "topic-branch" });
     const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + (!hasChildren ? " leaf-row" : "") + (topic.custom ? " custom-row" : "") + " selection-" + selection, dataset: { topicId: topic.id }, onClick: function (event) { if (event.target.closest && event.target.closest("button")) return; toggleTopicSelection(topic.id); saveState(); render(); } });
     row.style.paddingLeft = Math.min(depth, 5) * 20 + 4 + "px";
@@ -895,10 +896,22 @@
     return branchWrap;
   }
   function topicTree() {
+    const picker = node("div", { className: "topic-tree-picker" });
+    const actions = node("div", { className: "topic-tree-actions" });
+    actions.appendChild(node("button", { className: "topic-tree-collapse-button", ariaLabel: "Collapse all topic branches", onClick: function () { topicSearchExpansionSuppressed = true; state.topics = collapseTopicBranches(state.topics); saveState(); render(); } }, "Collapse all"));
+    picker.appendChild(actions);
     const tree = node("div", { className: "topic-tree", role: "tree", ariaLabel: "Topic browser" });
     const query = state.topicQuery.trim();
     state.topics.forEach(function (topic) { const row = topicRow(topic, 0, query); if (row) tree.appendChild(row); });
-    return tree;
+    picker.appendChild(tree);
+    return picker;
+  }
+  function collapseTopicBranches(topics) {
+    return topics.map(function (topic) {
+      const collapsed = Object.assign({}, topic, { expanded: false });
+      if (topic.children) collapsed.children = collapseTopicBranches(topic.children);
+      return collapsed;
+    });
   }
   function cancelWorkspaceOperations() {
     generationToken += 1;
@@ -1249,7 +1262,7 @@
     difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
     difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Impossible" })));
     details.appendChild(difficulty);
-    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; render(); } })));
+    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; topicSearchExpansionSuppressed = false; render(); } })));
     details.appendChild(topicTree());
     details.appendChild(customTopicForm(setup ? "custom-topic-form" : "feed-custom-topic"));
     details.appendChild(feedCustomize(setup));

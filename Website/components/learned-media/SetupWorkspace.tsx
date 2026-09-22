@@ -17,6 +17,7 @@ type SetupWorkspaceProps = {
   onAddCustomTopic: () => void;
   onToggleTopic: (id: string) => void;
   onExpandTopic: (id: string) => void;
+  onCollapseTopics: () => void;
   onWeightTopic: (id: string, delta: number) => void;
   onRemoveCustomTopic: (id: string) => void;
   onSettingsChange: (next: Partial<FeedSettings>) => void;
@@ -32,7 +33,7 @@ const modeCopy: Array<{ id: DisplayMode; label: string; icon: "list" | "lightbul
   { id: "text", label: "Text only", icon: "lightbulb" }
 ];
 
-export function SetupWorkspace({ topics, query, onQueryChange, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
+export function SetupWorkspace({ topics, query, onQueryChange, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
   const selectedCount = selectedLeafCount(topics);
   const hasSelection = selectedCount > 0;
   const selectionSummary = summarizeSelection(topics);
@@ -62,7 +63,7 @@ export function SetupWorkspace({ topics, query, onQueryChange, settings, customT
               </label>
               <button type="button" className="text-button" onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={15} /> {settings.surpriseMe ? "Surprise me is on" : "Surprise me is off"}</button>
             </div>
-            <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
+            <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onCollapseAll={onCollapseTopics} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
             <div className="custom-topic-form">
               <div><strong>Add a custom topic</strong><span>Make the feed as specific as you are</span></div>
               <div className="custom-topic-input-wrap"><input value={customTopic} onChange={(event) => onCustomTopicChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onAddCustomTopic()} placeholder="Rajah Humabon" aria-label="Custom topic" /><button type="button" className="icon-button filled" onClick={onAddCustomTopic} aria-label="Add custom topic"><Icon name="plus" size={17} /></button></div>
