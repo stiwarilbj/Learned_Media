@@ -59,7 +59,7 @@ export function SetupWorkspace({ topics, query, onQueryChange, settings, customT
             <div className="topic-toolbar">
               <label className="topic-search-control">
                 <Icon name="search" size={16} />
-                <input type="search" value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search the topic checklist" aria-label="Search the topic checklist" />
+                <input type="search" value={query} onChange={(event) => onQueryChange(event.target.value)} aria-label="Search the topic checklist" />
               </label>
               <button type="button" className="text-button" onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={15} /> {settings.surpriseMe ? "Surprise me is on" : "Surprise me is off"}</button>
             </div>

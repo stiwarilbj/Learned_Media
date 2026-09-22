@@ -56,7 +56,7 @@ function buildTopicSearchIndex(nodes: TopicNode[], query: string): TopicSearchIn
     );
     if (directScore > 0) directScores.set(node.id, directScore);
 
-    const hasMatchingDescendant = node.children?.some(visit) ?? false;
+    const hasMatchingDescendant = node.children?.map(visit).some(Boolean) ?? false;
     if (directScore > 0 || hasMatchingDescendant) matchingNodes.add(node.id);
     if (hasMatchingDescendant) matchingDescendants.add(node.id);
     return directScore > 0 || hasMatchingDescendant;
