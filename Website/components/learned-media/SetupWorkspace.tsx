@@ -10,6 +10,7 @@ import { TopicTree } from "./TopicTree";
 type SetupWorkspaceProps = {
   topics: TopicNode[];
   query: string;
+  onQueryChange: (value: string) => void;
   settings: FeedSettings;
   customTopic: string;
   onCustomTopicChange: (value: string) => void;
@@ -31,7 +32,7 @@ const modeCopy: Array<{ id: DisplayMode; label: string; icon: "list" | "lightbul
   { id: "text", label: "Text only", icon: "lightbulb" }
 ];
 
-export function SetupWorkspace({ topics, query, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
+export function SetupWorkspace({ topics, query, onQueryChange, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
   const selectedCount = selectedLeafCount(topics);
   const hasSelection = selectedCount > 0;
   const selectionSummary = summarizeSelection(topics);
@@ -56,7 +57,10 @@ export function SetupWorkspace({ topics, query, settings, customTopic, onCustomT
               <span className="range-ends"><span>A Little Hard</span><span>Super Duper Hard</span></span>
             </label>
             <div className="topic-toolbar">
-              <div className="topic-search-note"><Icon name="search" size={16} /><span>{query ? `Filtering for “${query}”` : "Search the topic checklist"}</span></div>
+              <label className="topic-search-control">
+                <Icon name="search" size={16} />
+                <input type="search" value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search the topic checklist" aria-label="Search the topic checklist" />
+              </label>
               <button type="button" className="text-button" onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={15} /> {settings.surpriseMe ? "Surprise me is on" : "Surprise me is off"}</button>
             </div>
             <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
