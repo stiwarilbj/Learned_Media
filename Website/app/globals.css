@@ -1533,13 +1533,10 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
   .setup-topics-panel, .setup-start-panel { height: 700px; min-height: 700px; }
 }
 
-/* Pointer clicks should not leave clickable boxes looking selected; keyboard focus remains visible. */
-html[data-input-modality="pointer"] button:focus,
-html[data-input-modality="pointer"] summary:focus,
-html[data-input-modality="pointer"] select:focus,
-html[data-input-modality="pointer"] input[type="checkbox"]:focus,
-html[data-input-modality="pointer"] input[type="range"]:focus,
-html[data-input-modality="pointer"] .topic-search-control input:focus,
-html[data-input-modality="pointer"] [role="button"]:focus {
+/* Suppress pointer-only focus rings site-wide; keyboard navigation keeps its cue. */
+html[data-input-modality="pointer"] :focus {
   outline: none !important;
+}
+html[data-input-modality="pointer"] :is(input, select, textarea):focus {
+  box-shadow: none !important;
 }
