@@ -1494,7 +1494,7 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
   .setup-topics-panel { display: flex; flex-direction: column; }
   .setup-topics-details { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
   .setup-topics-details .topic-tree { flex: 1 1 auto; min-height: 0; max-height: min(44vh, 430px); overflow-y: auto; }
-  .setup-topics-panel .custom-topic-form { position: static; left: auto; right: auto; bottom: auto; margin: auto -20px 0; padding-top: 14px; padding-bottom: 16px; }
+  .setup-topics-panel .custom-topic-form { position: static; left: auto; right: auto; bottom: auto; margin: auto -20px 0; padding-top: 14px; padding-bottom: 24px; }
   .setup-start-panel { display: flex; flex-direction: column; }
   .setup-customize { min-height: clamp(250px, 31vh, 300px); margin-top: 16px; margin-bottom: 2px; }
 }
