@@ -384,7 +384,7 @@ export default function HomePage() {
     const restoredCards = uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body));
     setCards(restoredCards);
     setLearningProfile(target.state.learningProfile ?? {});
-    setFeedStarted(Boolean(target.state.feedStarted && restoredCards.some((card) => hasExactSentenceCount(card.body, target.state.settings?.sentenceLength))));
+    setFeedStarted(Boolean(target.state.feedStarted && restoredCards.length));
     setFeedHasMore(true);
     setPendingSlots(10);
     setQuery("");
@@ -489,7 +489,7 @@ export default function HomePage() {
       const replacementCards = uniqueCards((replacement.state.cards ?? []).map((card, cardIndex) => normalizeFact(card, cardIndex)).filter((card) => card.title && card.body));
       setCards(replacementCards);
       setLearningProfile(replacement.state.learningProfile ?? {});
-      setFeedStarted(Boolean(replacement.state.feedStarted && replacementCards.some((card) => hasExactSentenceCount(card.body, replacement.state.settings?.sentenceLength))));
+      setFeedStarted(Boolean(replacement.state.feedStarted && replacementCards.length));
       setFeedHasMore(true);
       setPendingSlots(10);
       setQuery("");
@@ -556,7 +556,7 @@ export default function HomePage() {
       const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
       const restoredProfile = parsed?.learningProfile ? (parsed.learningProfile) : {};
       const restoredTheme = parsed?.theme === "dark" ? "dark" : "light";
-      return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.some((card) => hasExactSentenceCount(card.body, restoredSettings.sentenceLength))), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
+      return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
     };
     const restore = async () => {
       let legacy: Partial<PersistedState> | null = null;
@@ -658,7 +658,7 @@ export default function HomePage() {
         const targetCards = uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body));
         setCards(targetCards);
         setLearningProfile(target.state.learningProfile ?? {});
-        setFeedStarted(Boolean(target.state.feedStarted && targetCards.some((card) => hasExactSentenceCount(card.body, target.state.settings?.sentenceLength))));
+        setFeedStarted(Boolean(target.state.feedStarted && targetCards.length));
         setTheme(mergedStore.theme ?? "light");
         persistedStateRef.current = target.state;
         await writeWorkspaceStore(mergedStore);
@@ -777,24 +777,12 @@ export default function HomePage() {
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => {
     const nextSentenceLength = next.sentenceLength === undefined ? settings.sentenceLength : normalizeSentenceLength(next.sentenceLength);
-    if (nextSentenceLength !== settings.sentenceLength) {
-      // A feed may contain cards from an older setting. Keep those cards in
-      // saved history, but require a fresh feed before showing a new length.
-      cancelGeneration();
-      requestGeneration.current += 1;
-      setFeedStarted(false);
-      setFeedHasMore(true);
-      setPendingSlots(10);
-      setRabbitHole(null);
-      setGenerationError("");
-      setToast(`Next feed cards will use exactly ${nextSentenceLength} sentence${nextSentenceLength === 1 ? "" : "s"}.`);
-    }
     setSettings((current) => ({ ...current, ...next, sentenceLength: nextSentenceLength }));
     if (next.obscurity !== undefined) {
       const difficulty = normalizeDifficulty(next.obscurity);
       setLearningProfile((current) => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, { ...value, unknownStreak: 0, targetDifficulty: difficulty }])) as LearningProfile);
     }
-  }, [cancelGeneration, settings.sentenceLength]);
+  }, [settings.sentenceLength]);
 
   const handleGoogleSignIn = useCallback(() => {
     if (!supabaseConfigured) {
@@ -1518,10 +1506,9 @@ export default function HomePage() {
   }, [youtubeSearchResults, youtubeSmartSearchRan, youtubeWorkspace]);
 
   const filteredCards = useMemo(() => {
-    const exactCards = cards.filter((card) => hasExactSentenceCount(card.body, settings.sentenceLength));
-    if (!query.trim()) return exactCards;
-    return rankSearchResults(query, exactCards, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
-  }, [cards, query, settings.sentenceLength]);
+    if (!query.trim()) return cards;
+    return rankSearchResults(query, cards, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
+  }, [cards, query]);
 
   const activeCollection = (kind: "saved" | "likes" | "history") => {
     const collection = kind === "saved" ? cards.filter((card) => card.saved) : kind === "likes" ? cards.filter((card) => card.liked) : cards;

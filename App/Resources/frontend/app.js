@@ -74,7 +74,8 @@
     youtubeSearchPhase: "idle",
     youtubeSearchError: "",
     connectionToken: 0,
-    generationRequestToken: 0
+    generationRequestToken: 0,
+    activeGenerationSentenceLength: 3
   };
   function normalizeSentenceLength(value) {
     const number = Number(value);
@@ -343,7 +344,7 @@
     }
     if (message.type === "generationCard" && message.token === state.generationRequestToken && state.started) {
       const raw = message.card;
-      if (!acceptNewFact(raw)) return;
+      if (!acceptNewFact(raw, state.activeGenerationSentenceLength)) return;
       saveState();
       render();
     }
@@ -521,8 +522,8 @@
       return overlap(words(item.body),words(old.body)) >= .78 && (overlap(words(item.title),words(old.title)) >= .5 || item.sourceUrls.some(function (url) { return (old.sourceUrls || []).indexOf(url) >= 0; }));
     });
   }
-  function acceptNewFact(raw) {
-    if (!raw || !raw.id || !raw.body || !hasExactSentenceCount(raw.body, state.settings.sentenceLength) || repeatedFact(raw)) return false;
+  function acceptNewFact(raw, expectedSentenceLength) {
+    if (!raw || !raw.id || !raw.body || !hasExactSentenceCount(raw.body, expectedSentenceLength === undefined ? state.settings.sentenceLength : expectedSentenceLength) || repeatedFact(raw)) return false;
     const card = normalizeCard(raw);
     archiveFacts([card]);
     state.cards.push(card);
@@ -922,7 +923,7 @@
     state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: normalizeSentenceLength(snapshot.settings && snapshot.settings.sentenceLength) });
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
     state.profile = snapshot.profile || snapshot.learningProfile || {};
-    state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.some(function (card) { return hasExactSentenceCount(card.body, state.settings.sentenceLength); }));
+    state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.length);
     applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube);
   }
   function workspaceMenu() {
@@ -1275,9 +1276,6 @@
       lengths.appendChild(node("button", { className: state.settings.sentenceLength === length ? "selected" : "", ariaPressed: state.settings.sentenceLength === length, disabled: state.settings.sentenceLength === length, onClick: function () {
         if (state.settings.sentenceLength === length) return;
         state.settings.sentenceLength = length;
-        state.started = false;
-        state.pendingSlots = 10;
-        state.generationError = "";
         saveState();
         render();
       } }, String(length)));
@@ -1370,7 +1368,7 @@
     layout.appendChild(topicPanel(false));
     const column = node("section", { className: "feed-content-column" });
     column.appendChild(node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" })), node("button", { className: "toolbar-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed")));
-    const feedCards = state.cards.filter(function (card) { return hasExactSentenceCount(card.body, state.settings.sentenceLength); });
+    const feedCards = state.cards;
     column.appendChild(node("div", { className: "feed-intro" }, node("div", {}, node("h1", { text: "Keep going." }), node("p", { text: "One small idea at a time. Every card has a place to look next." })), node("span", { className: "feed-count", text: feedCards.length + " cards in this session" })));
     const list = node("div", { className: "fact-feed" });
     feedCards.forEach(function (card, index) {
@@ -1686,12 +1684,15 @@
     state.loading = true;
     state.generationError = "";
     const count = Math.max(1, Math.min(10, Number(requestedCount) || 10));
+    const generationSentenceLength = normalizeSentenceLength(state.settings.sentenceLength);
+    state.activeGenerationSentenceLength = generationSentenceLength;
     state.batchAccepted = 0;
     render();
     try {
-      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: state.settings, avoid: state.factMemory || [], token: state.generationRequestToken });
+      const generationSettings = Object.assign({}, state.settings, { sentenceLength: generationSentenceLength });
+      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], token: state.generationRequestToken });
       if (activeToken !== generationToken) return;
-      (result.cards || []).forEach(function (card) { acceptNewFact(card); });
+      (result.cards || []).forEach(function (card) { acceptNewFact(card, generationSentenceLength); });
       const completed = state.batchAccepted;
       state.pendingSlots = Math.max(0, count - completed);
       if (state.pendingSlots) { state.generationError = completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."; }
