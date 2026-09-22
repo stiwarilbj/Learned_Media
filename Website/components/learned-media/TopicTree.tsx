@@ -2,8 +2,9 @@
 
 import type { TopicNode } from "@/lib/types";
 import type { CSSProperties } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { selectionState } from "@/lib/topic-tree";
-import { searchScore } from "@/lib/search";
+import { normalizeSearchText } from "@/lib/search";
 import { Icon } from "./icons";
 
 type TopicTreeProps = {
@@ -15,22 +16,68 @@ type TopicTreeProps = {
   onRemoveCustomTopic: (id: string) => void;
 };
 
-function matchesNode(node: TopicNode, query: string, parentPath: string[] = []): boolean {
-  if (!query) return true;
-  const path = [...parentPath, node.label];
-  return searchScore(query, path.join(" ")) > 0 || Boolean(node.children?.some((child) => matchesNode(child, query, path)));
+type TopicSearchIndex = {
+  directScores: Map<string, number>;
+  matchingNodes: Set<string>;
+  matchingDescendants: Set<string>;
+};
+
+function topicSearchScore(query: string, value: string) {
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedValue = normalizeSearchText(value);
+  if (normalizedQuery.length < 2 || !normalizedValue) return 0;
+  if (normalizedValue.includes(normalizedQuery)) return 100 + normalizedQuery.length;
+
+  const queryTokens = normalizedQuery.split(" ").filter((token) => token.length > 1);
+  const valueTokens = normalizedValue.split(" ").filter(Boolean);
+  if (!queryTokens.length) return 0;
+
+  let score = 0;
+  for (const queryToken of queryTokens) {
+    const matchingToken = valueTokens.find((token) => token.startsWith(queryToken));
+    if (!matchingToken) return 0;
+    score += matchingToken === queryToken ? 20 : 13;
+  }
+  return score + 12;
 }
 
-function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onWeight, onRemoveCustomTopic }: TopicTreeProps & { node: TopicNode; depth: number; parentPath?: string[] }) {
-  if (!matchesNode(node, query ?? "", parentPath)) return null;
+function buildTopicSearchIndex(nodes: TopicNode[], query: string): TopicSearchIndex {
+  const directScores = new Map<string, number>();
+  const matchingNodes = new Set<string>();
+  const matchingDescendants = new Set<string>();
+  const activeQuery = query.trim();
+  if (!activeQuery) return { directScores, matchingNodes, matchingDescendants };
+
+  const visit = (node: TopicNode): boolean => {
+    const directScore = Math.max(
+      topicSearchScore(activeQuery, node.label),
+      ...(node.aliases ?? []).map((alias) => topicSearchScore(activeQuery, alias)),
+      0,
+    );
+    if (directScore > 0) directScores.set(node.id, directScore);
+
+    const hasMatchingDescendant = node.children?.map(visit).some(Boolean) ?? false;
+    if (directScore > 0 || hasMatchingDescendant) matchingNodes.add(node.id);
+    if (hasMatchingDescendant) matchingDescendants.add(node.id);
+    return directScore > 0 || hasMatchingDescendant;
+  };
+
+  nodes.forEach(visit);
+  return { directScores, matchingNodes, matchingDescendants };
+}
+
+function TopicRow({ node, depth, query, searchIndex, onToggle, onExpand, onWeight, onRemoveCustomTopic }: TopicTreeProps & { node: TopicNode; depth: number; searchIndex: TopicSearchIndex }) {
+  const activeQuery = query?.trim() ?? "";
+  const directSearchScore = searchIndex.directScores.get(node.id) ?? 0;
+  if (activeQuery && !searchIndex.matchingNodes.has(node.id)) return null;
   const hasChildren = Boolean(node.children?.length);
   const state = selectionState(node);
-  const isSearchExpanded = Boolean(query && node.children?.some((child) => matchesNode(child, query, [...parentPath, node.label])));
+  const isSearchExpanded = Boolean(activeQuery && searchIndex.matchingDescendants.has(node.id));
   const childrenVisible = hasChildren && (node.expanded || isSearchExpanded);
 
   return (
     <div className="topic-branch">
-      <div className={`topic-row ${depth === 0 ? "root-row" : ""} ${!hasChildren ? "leaf-row" : ""} ${node.custom ? "custom-row" : ""} selection-${state}`} style={{ paddingLeft: `${Math.min(depth, 5) * 20 + 4}px` }} onClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; onToggle(node.id); }}>
+      <div data-topic-search-score={directSearchScore || undefined} className={`topic-row ${depth === 0 ? "root-row" : ""} ${!hasChildren ? "leaf-row" : ""} ${node.custom ? "custom-row" : ""} selection-${state}`} style={{ paddingLeft: `${Math.min(depth, 5) * 20 + 4}px` }} onClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; onToggle(node.id); }}>
         <button
           type="button"
           className="topic-expand"
@@ -75,7 +122,7 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
               depth={depth + 1}
               nodes={[]}
               query={query}
-              parentPath={[...parentPath, node.label]}
+              searchIndex={searchIndex}
               onToggle={onToggle}
               onExpand={onExpand}
               onWeight={onWeight}
@@ -89,11 +136,45 @@ function TopicRow({ node, depth, query, parentPath = [], onToggle, onExpand, onW
 }
 
 export function TopicTree({ nodes, query = "", onToggle, onExpand, onWeight, onRemoveCustomTopic }: TopicTreeProps) {
+  const treeRef = useRef<HTMLDivElement>(null);
+  const searchIndex = useMemo(() => buildTopicSearchIndex(nodes, query), [nodes, query]);
+  const hasMatches = !query.trim() || nodes.some((node) => searchIndex.matchingNodes.has(node.id));
+
+  useEffect(() => {
+    const tree = treeRef.current;
+    if (!tree) return;
+    const activeQuery = query.trim();
+    if (!activeQuery) {
+      tree.scrollTop = 0;
+      return;
+    }
+
+    const candidates = tree.querySelectorAll<HTMLElement>("[data-topic-search-score]");
+    const target = Array.from(candidates).sort((left, right) => (
+      Number(right.dataset.topicSearchScore ?? 0) - Number(left.dataset.topicSearchScore ?? 0)
+    ))[0] ?? null;
+    if (!target || !hasMatches) return;
+
+    const treeRect = tree.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    if (tree.scrollHeight > tree.clientHeight) {
+      const targetTop = tree.scrollTop + targetRect.top - treeRect.top;
+      tree.scrollTo({
+        top: targetTop - (tree.clientHeight - targetRect.height) / 2,
+        behavior: "smooth",
+      });
+    } else {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [hasMatches, query, searchIndex]);
+
   return (
-    <div className="topic-tree" role="tree" aria-label="Topic browser">
-      {nodes.map((node) => (
-        <TopicRow key={node.id} node={node} depth={0} nodes={nodes} query={query} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />
-      ))}
+    <div className="topic-tree" role="tree" aria-label="Topic browser" ref={treeRef}>
+      {query.trim() && !hasMatches
+        ? <p className="topic-tree-empty" role="status">No topics found for “{query.trim()}”.</p>
+        : nodes.map((node) => (
+          <TopicRow key={node.id} node={node} depth={0} nodes={nodes} query={query} searchIndex={searchIndex} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />
+        ))}
     </div>
   );
 }

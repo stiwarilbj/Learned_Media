@@ -10,7 +10,7 @@ export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
   7: "Very Hard",
   8: "Extremely Hard",
   9: "Nearly Impossible",
-  10: "Super Duper Hard"
+  10: "Super Hard"
 };
 
 export const MAX_DIFFICULTY = 10;
