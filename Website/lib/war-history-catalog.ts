@@ -218,7 +218,7 @@ const worldWars = branch("World Wars and Global Conflicts", [
 ]);
 
 const periods = grouped("Wars by Period", [
-  ["Prehistoric and Early State Wars", ["Tribal Warfare", "Neolithic Warfare", "Bronze Age Collapse", "Egyptian–Hittite Wars", "Late Bronze Age Wars"]],
+  ["Prehistoric and Early State Wars", ["Tribal Warfare", "Neolithic Warfare", "Egyptian–Hittite Wars", "Late Bronze Age Wars"]],
   ["Ancient and Classical Wars", ["Greek and Persian Wars", "Peloponnesian War", "Macedonian Wars", "Punic Wars", "Roman Civil Wars", "Han–Xiongnu War"]],
   ["Late Antique Wars", ["Gothic Wars", "Vandalic War", "Byzantine–Sasanian War", "Arab–Byzantine Wars", "Lombard Wars"]],
   ["Early and High Medieval Wars", ["Viking Invasions", "Norman Conquest", "Crusades", "Mongol Conquests", "Reconquista", "Scottish Wars of Independence", "Hundred Years' War"]],

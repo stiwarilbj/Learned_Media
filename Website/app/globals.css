@@ -1273,6 +1273,15 @@ body { background: var(--page-gradient); }
 .workspace-menu-row-actions button { border: 0; border-radius: 6px; padding: 3px 5px; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }
 .workspace-menu-row-actions button:hover { background: var(--surface-blue); color: var(--primary); }
 .workspace-menu-row-actions button:disabled { opacity: .35; cursor: not-allowed; }
+.workspace-rename-form { display: grid; gap: 7px; padding: 4px 6px; }
+.workspace-rename-form input { width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 7px 8px; background: var(--surface-soft); color: var(--ink); font-size: 11px; }
+.workspace-rename-form input:focus { border-color: var(--primary); outline: 2px solid rgba(76, 143, 247, .2); }
+.workspace-rename-error { color: #b42318; font-size: 10px; line-height: 1.35; }
+.workspace-rename-actions { display: flex; justify-content: flex-end; gap: 5px; }
+.workspace-rename-actions button { border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; background: var(--surface); color: var(--muted); font-size: 10px; cursor: pointer; }
+.workspace-rename-actions button[type="submit"] { border-color: var(--primary); background: var(--primary); color: #fff; font-weight: 700; }
+.workspace-rename-actions button:hover { border-color: var(--primary); color: var(--primary); }
+.workspace-rename-actions button[type="submit"]:hover { background: var(--primary-dark); color: #fff; }
 .workspace-menu-actions button { display: block; width: 100%; border: 0; border-radius: 9px; padding: 9px 10px; background: transparent; color: var(--ink); text-align: left; font-size: 11px; cursor: pointer; }
 .workspace-menu-actions button:hover { background: var(--surface-blue); color: var(--primary); }
 .workspace-menu-actions { display: grid; gap: 2px; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }

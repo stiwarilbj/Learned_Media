@@ -6,13 +6,13 @@
     obscurity: 5,
     displayMode: "picture-text",
     sentenceLength: 3,
-    surpriseMe: true
+    surpriseMe: false
   };
-  const TOPIC_CATALOG_VERSION = 21;
+  const TOPIC_CATALOG_VERSION = 23;
   const REQUIRED_WORKING_MODELS = 3;
   const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
-  const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Super Duper Hard"];
+  const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Super Hard"];
   const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const BEST_SELLING_BOOK_ORDER = [
@@ -35,6 +35,9 @@
     workspaceId: "local-workspace",
     workspaceName: "Local Workspace",
     workspaces: [],
+    renameWorkspaceId: null,
+    renameWorkspaceDraft: "",
+    renameWorkspaceError: "",
     factMemory: [],
     batchAccepted: 0,
     keyEditEpoch: 0,
@@ -139,6 +142,8 @@
   let cloudSyncToken = 0;
   let queuedWorkspaceState = null;
   let stopYoutubePlayback = null;
+  let setupCustomizeOpen = false;
+  let feedCustomizeOpen = false;
   let youtubeSyncActive = false;
   let youtubeSearchToken = 0;
   let searchInterpretToken = 0;
@@ -177,7 +182,10 @@
   }
   function titleCaseCatalogLabel(label) {
     const small = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
-    const words = String(label).replace(/\s+/g, " ").trim().split(/(\s+)/);
+    const normalized = String(label).replace(/\s+/g, " ").trim();
+    const scientificName = normalized.match(/^([A-Z][a-z]+) ([a-z][a-z-]+)(?:\s|$)/);
+    if (scientificName && ["Ardipithecus", "Australopithecus", "Homo", "Kenyanthropus", "Orrorin", "Paranthropus", "Sahelanthropus"].indexOf(scientificName[1]) >= 0) return normalized;
+    const words = normalized.split(/(\s+)/);
     const indexes = words.map(function (word, index) { return /^\s+$/.test(word) ? -1 : index; }).filter(function (index) { return index >= 0; });
     const first = indexes[0]; const last = indexes[indexes.length - 1];
     return words.map(function (word, index) {
@@ -922,19 +930,109 @@
     menu.appendChild(node("span", { className: "workspace-menu-label", text: "All workspaces" }));
     state.workspaces.forEach(function (workspace, index) {
       const row = node("div", { className: "workspace-menu-row" });
-      row.appendChild(node("button", { role: "menuitem", className: workspace.id === state.workspaceId ? "active" : "", onClick: function () { switchWorkspace(workspace.id); } }, workspace.name));
-      const actions = node("div", { className: "workspace-menu-row-actions" });
-      actions.appendChild(node("button", { type: "button", disabled: index === 0, ariaLabel: "Move " + workspace.name + " up", onClick: function () { moveWorkspace(workspace.id, "up"); } }, "↑"));
-      actions.appendChild(node("button", { type: "button", disabled: index === state.workspaces.length - 1, ariaLabel: "Move " + workspace.name + " down", onClick: function () { moveWorkspace(workspace.id, "down"); } }, "↓"));
-      actions.appendChild(node("button", { type: "button", ariaLabel: "Rename " + workspace.name, onClick: function () { renameWorkspace(workspace.id); } }, "Rename"));
-      actions.appendChild(node("button", { type: "button", ariaLabel: "Delete " + workspace.name, onClick: function () { deleteWorkspace(workspace.id); } }, "Delete"));
-      row.appendChild(actions);
+      if (state.renameWorkspaceId === workspace.id) {
+        const form = node("form", { className: "workspace-rename-form" });
+        const input = node("input", {
+          type: "text",
+          maxLength: "48",
+          value: state.renameWorkspaceDraft,
+          ariaLabel: "Rename " + workspace.name,
+          "aria-invalid": state.renameWorkspaceError ? "true" : null,
+          onInput: function (event) {
+            state.renameWorkspaceDraft = event.currentTarget.value;
+            state.renameWorkspaceError = "";
+            event.currentTarget.removeAttribute("aria-invalid");
+            const error = form.querySelector(".workspace-rename-error");
+            if (error) error.textContent = "";
+          },
+          onKeydown: function (event) {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              cancelWorkspaceRename(menu);
+            }
+          }
+        });
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          commitWorkspaceRename(workspace.id, menu);
+        });
+        form.appendChild(input);
+        form.appendChild(node("span", { className: "workspace-rename-error", role: "status", "aria-live": "polite", text: state.renameWorkspaceError }));
+        const renameActions = node("div", { className: "workspace-rename-actions" });
+        renameActions.appendChild(node("button", { type: "submit" }, "Save"));
+        renameActions.appendChild(node("button", { type: "button", onClick: function () { cancelWorkspaceRename(menu); } }, "Cancel"));
+        form.appendChild(renameActions);
+        row.appendChild(form);
+      } else {
+        row.appendChild(node("button", { role: "menuitem", className: workspace.id === state.workspaceId ? "active" : "", onClick: function () { switchWorkspace(workspace.id); } }, workspace.name));
+        const actions = node("div", { className: "workspace-menu-row-actions" });
+        actions.appendChild(node("button", { type: "button", disabled: index === 0, ariaLabel: "Move " + workspace.name + " up", onClick: function () { moveWorkspace(workspace.id, "up"); } }, "↑"));
+        actions.appendChild(node("button", { type: "button", disabled: index === state.workspaces.length - 1, ariaLabel: "Move " + workspace.name + " down", onClick: function () { moveWorkspace(workspace.id, "down"); } }, "↓"));
+        actions.appendChild(node("button", { type: "button", ariaLabel: "Rename " + workspace.name, onClick: function (event) { beginWorkspaceRename(workspace.id, event.currentTarget.closest(".workspace-menu")); } }, "Rename"));
+        actions.appendChild(node("button", { type: "button", ariaLabel: "Delete " + workspace.name, onClick: function () { deleteWorkspace(workspace.id); } }, "Delete"));
+        row.appendChild(actions);
+      }
       menu.appendChild(row);
     });
     const actions = node("div", { className: "workspace-menu-actions" });
     actions.appendChild(node("button", { type: "button", onClick: createWorkspace }, "Create workspace"));
     menu.appendChild(actions);
     return menu;
+  }
+  function nextLocalWorkspaceName() {
+    const highestNumber = state.workspaces.reduce(function (highest, workspace) {
+      const match = workspace.name.trim().match(/^Local Workspace\s+(\d+)$/i);
+      const number = match ? Number(match[1]) : 1;
+      return Number.isSafeInteger(number) ? Math.max(highest, number) : highest;
+    }, 1);
+    return "Local Workspace " + (highestNumber + 1);
+  }
+  function clearWorkspaceRename() {
+    state.renameWorkspaceId = null;
+    state.renameWorkspaceDraft = "";
+    state.renameWorkspaceError = "";
+  }
+  function replaceWorkspaceMenu(menu) {
+    if (menu && menu.isConnected) menu.replaceWith(workspaceMenu());
+  }
+  function beginWorkspaceRename(id, menu) {
+    const target = state.workspaces.find(function (workspace) { return workspace.id === id; });
+    if (!target) return;
+    state.renameWorkspaceId = id;
+    state.renameWorkspaceDraft = target.name;
+    state.renameWorkspaceError = "";
+    replaceWorkspaceMenu(menu);
+    const input = document.querySelector(".workspace-menu .workspace-rename-form input");
+    if (input) { input.focus(); input.select(); }
+  }
+  function cancelWorkspaceRename(menu) {
+    clearWorkspaceRename();
+    replaceWorkspaceMenu(menu);
+  }
+  function commitWorkspaceRename(id, menu) {
+    const nextName = state.renameWorkspaceDraft.trim();
+    const input = menu && menu.querySelector(".workspace-rename-form input");
+    const error = menu && menu.querySelector(".workspace-rename-error");
+    const target = state.workspaces.find(function (workspace) { return workspace.id === id; });
+    let message = "";
+    if (!nextName) message = "Enter a workspace name.";
+    else if (state.workspaces.some(function (workspace) { return workspace.id !== id && workspace.name.toLowerCase() === nextName.toLowerCase(); })) message = "A workspace with that name already exists.";
+    if (message) {
+      state.renameWorkspaceError = message;
+      if (input) { input.setAttribute("aria-invalid", "true"); input.focus(); }
+      if (error) error.textContent = message;
+      return;
+    }
+    if (!target) return;
+    if (!renameWorkspace(id, nextName)) {
+      state.renameWorkspaceError = "This workspace name is unavailable.";
+      if (input) { input.setAttribute("aria-invalid", "true"); input.focus(); }
+      if (error) error.textContent = state.renameWorkspaceError;
+      return;
+    }
+    clearWorkspaceRename();
+    replaceWorkspaceMenu(menu);
   }
   function switchWorkspace(id) {
     if (id === state.workspaceId) return;
@@ -953,11 +1051,8 @@
     render();
   }
   function createWorkspace() {
-    const suggested = "Workspace " + (state.workspaces.length + 1);
-    const requested = window.prompt("Name this workspace", suggested);
-    const name = requested && requested.trim();
-    if (!name) return;
-    if (state.workspaces.some(function (workspace) { return workspace.name.toLowerCase() === name.toLowerCase(); })) return showToast("A workspace with that name already exists.");
+    clearWorkspaceRename();
+    const name = nextLocalWorkspaceName();
     cancelWorkspaceOperations();
     saveState();
     const now = new Date().toISOString();
@@ -974,18 +1069,20 @@
     render();
     showToast(name + " created.");
   }
-  function renameWorkspace(targetId) {
-    const target = state.workspaces.find(function (workspace) { return workspace.id === (targetId || state.workspaceId); });
-    if (!target) return;
-    const name = window.prompt("Name this workspace", target.name);
-    const trimmed = name && name.trim();
-    if (!trimmed || trimmed === target.name) return;
-    if (state.workspaces.some(function (workspace) { return workspace.id !== target.id && workspace.name.toLowerCase() === trimmed.toLowerCase(); })) return showToast("A workspace with that name already exists.");
+  function renameWorkspace(targetId, requestedName) {
+    const target = state.workspaces.find(function (workspace) { return workspace.id === targetId; });
+    const trimmed = String(requestedName || "").trim();
+    if (!target || !trimmed) return false;
+    if (state.workspaces.some(function (workspace) { return workspace.id !== target.id && workspace.name.toLowerCase() === trimmed.toLowerCase(); })) return false;
     target.name = trimmed;
     target.updatedAt = new Date().toISOString();
     if (target.id === state.workspaceId) state.workspaceName = trimmed;
     saveState();
-    render();
+    if (target.id === state.workspaceId) {
+      const accountName = document.querySelector(".profile-copy strong");
+      if (accountName) accountName.textContent = trimmed;
+    }
+    return true;
   }
   function moveWorkspace(id, direction) {
     const index = state.workspaces.findIndex(function (workspace) { return workspace.id === id; });
@@ -1092,13 +1189,15 @@
     document.addEventListener("pointerdown", function (event) {
       const target = event.target;
       if (target && target.closest && (target.closest(".workspace-switcher") || target.closest(".global-search-wrap"))) return;
+      clearWorkspaceRename();
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
     });
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape") return;
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
+      clearWorkspaceRename();
       const active = document.activeElement;
-      if (active && active.blur) active.blur();
+      if (active && active.matches && active.matches(".workspace-rename-form input") && active.blur) active.blur();
     });
   }
   function navigation() {
@@ -1112,14 +1211,14 @@
     const searchWrap = node("div", { className: "top-nav-search" });
     const search = node("div", { className: "global-search-wrap" });
     search.appendChild(svg("search", 17));
-    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts", ariaLabel: "Search topics or facts", onFocus: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); renderGlobalSearchPopover(search); }, onInput: function (event) { state.query = event.target.value; const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); renderGlobalSearchPopover(search); requestSemanticSearch(state.query, search); } }));
+    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts", ariaLabel: "Search topics or facts", onFocus: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } renderGlobalSearchPopover(search); }, onInput: function (event) { state.query = event.target.value; const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); renderGlobalSearchPopover(search); requestSemanticSearch(state.query, search); } }));
     searchWrap.appendChild(search);
     header.appendChild(searchWrap);
     const accountName = state.workspaceName;
     const account = node("div", { className: "top-nav-account" });
     account.appendChild(node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"));
     const switcher = node("div", { className: "workspace-switcher" });
-    const profile = node("button", { className: "profile-chip", ariaExpanded: false, onClick: function () { const searchPopover = search.querySelector(".search-popover"); if (searchPopover) searchPopover.remove(); const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); else switcher.appendChild(workspaceMenu()); } }, node("span", { className: "profile-avatar" }, svg("panel", 16)), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.workspaces.length + " " + (state.workspaces.length === 1 ? "workspace" : "workspaces") })), svg("chevronDown", 15));
+    const profile = node("button", { className: "profile-chip", ariaExpanded: false, onClick: function () { const searchPopover = search.querySelector(".search-popover"); if (searchPopover) searchPopover.remove(); const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } else switcher.appendChild(workspaceMenu()); } }, node("span", { className: "profile-avatar" }, svg("panel", 16)), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.workspaces.length + " " + (state.workspaces.length === 1 ? "workspace" : "workspaces") })), svg("chevronDown", 15));
     switcher.appendChild(profile); account.appendChild(switcher); header.appendChild(account);
     renderGlobalSearchPopover(search);
     return header;
@@ -1147,7 +1246,7 @@
     const difficulty = node("label", { className: "topic-difficulty-control", for: setup ? "setup-difficulty" : "feed-difficulty" });
     difficulty.appendChild(node("span", { className: "control-label" }, node("span", { text: "Fact Difficulty" }), node("strong", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
     difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
-    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Super Duper Hard" })));
+    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Super Hard" })));
     details.appendChild(difficulty);
     details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; render(); } })));
     details.appendChild(topicTree());
@@ -1158,6 +1257,11 @@
   }
   function feedCustomize(setup) {
     const details = node("details", { className: setup ? "setup-customize" : "feed-customize" });
+    details.open = setup ? setupCustomizeOpen : feedCustomizeOpen;
+    details.addEventListener("toggle", function () {
+      if (setup) setupCustomizeOpen = details.open;
+      else feedCustomizeOpen = details.open;
+    });
     details.appendChild(node("summary", {}, node("span", {}, svg("sliders", 16), " Customize Your Feed", svg("chevronDown", 15))));
     const body = node("div", { className: "setup-customize-body" });
     body.appendChild(node("span", { className: "control-label", text: "Display style" }));
@@ -1190,9 +1294,9 @@
     panel.appendChild(node("div", { className: "start-panel-copy" }, node("span", { className: "eyebrow", text: "Your next feed" }), node("h1", { text: "Ready for a surprise?" }), node("p", { text: hasSelection ? selectedCount() + " topics in your mix, sourced from Wikipedia and shaped by your curiosity." : "Choose at least one topic from the checklist to begin." })));
     panel.appendChild(node("div", { className: "start-orbit" }, svg("sparkles", 24), node("span", { text: "Every card has a source" })));
     panel.appendChild(node("button", { className: "start-button", disabled: !hasSelection || !canStart, onClick: startFeed }, node("span", { text: !hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first" }), svg("arrow", 21)));
-    panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection && canStart ? "shield" : "help", 13), " ", !hasSelection ? "Select a topic to unlock your feed." : canStart ? "Your mix stays yours." : "Connect at least three Gemini models in Settings to begin."));
-    if (!state.key.trim()) {
-      const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings for the next batch" })));
+    panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection ? "shield" : "help", 13), " ", hasSelection ? "Your mix stays yours." : "Select a topic to unlock your feed."));
+    if (!canStart) {
+      const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Gemini isn’t connected" }), node("span", { text: "Add or connect your API key in Settings to start learning" })));
       keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Open Settings ", svg("arrow", 14)));
       panel.appendChild(keyCallout);
     }

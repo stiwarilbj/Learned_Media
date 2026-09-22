@@ -22,7 +22,7 @@ type NavigationProps = {
   workspaces: WorkspaceSummary[];
   onSwitchWorkspace: (id: string) => void;
   onCreateWorkspace: () => void;
-  onRenameWorkspace: (id: string) => void;
+  onRenameWorkspace: (id: string, name: string) => boolean;
   onDeleteWorkspace: (id: string) => void;
   onMoveWorkspace: (id: string, direction: "up" | "down") => void;
 };
@@ -40,18 +40,27 @@ const items: Array<{ id: View; label: string; icon: IconName }> = [
 export function Navigation({ view, onNavigate, onReset, query, onQueryChange, topicResults, factResults, onChooseTopic, onChooseFact, workspaceId, workspaceName, workspaces, onSwitchWorkspace, onCreateWorkspace, onRenameWorkspace, onDeleteWorkspace, onMoveWorkspace }: NavigationProps) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [renameId, setRenameId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameError, setRenameError] = useState("");
   const navigationRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const closePopovers = (event: PointerEvent) => {
       if (!navigationRef.current?.contains(event.target as Node)) {
         setWorkspaceOpen(false);
         setSearchOpen(false);
+        setRenameId(null);
+        setRenameDraft("");
+        setRenameError("");
       }
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setWorkspaceOpen(false);
         setSearchOpen(false);
+        setRenameId(null);
+        setRenameDraft("");
+        setRenameError("");
       }
     };
     document.addEventListener("pointerdown", closePopovers);
@@ -76,6 +85,29 @@ export function Navigation({ view, onNavigate, onReset, query, onQueryChange, to
     setWorkspaceOpen(false);
     onNavigate(nextView);
   };
+  const startWorkspaceRename = (id: string, name: string) => {
+    setRenameId(id);
+    setRenameDraft(name);
+    setRenameError("");
+  };
+  const cancelWorkspaceRename = () => {
+    setRenameId(null);
+    setRenameDraft("");
+    setRenameError("");
+  };
+  const saveWorkspaceRename = (id: string) => {
+    const nextName = renameDraft.trim();
+    if (!nextName) {
+      setRenameError("Enter a workspace name.");
+      return;
+    }
+    if (workspaces.some((workspace) => workspace.id !== id && workspace.name.trim().toLocaleLowerCase() === nextName.toLocaleLowerCase())) {
+      setRenameError("A workspace with that name already exists.");
+      return;
+    }
+    if (onRenameWorkspace(id, nextName)) cancelWorkspaceRename();
+    else setRenameError("This workspace name is unavailable.");
+  };
   return (
     <>
       <header className="top-navigation" ref={navigationRef}>
@@ -97,7 +129,7 @@ export function Navigation({ view, onNavigate, onReset, query, onQueryChange, to
             </div>}
           </div>
         </div>
-        <div className="top-nav-account"><button type="button" className="nav-reset" onClick={() => { setSearchOpen(false); setWorkspaceOpen(false); onReset(); }}><Icon name="reset" size={15} /> Reset feed</button><div className="workspace-switcher"><button type="button" className="profile-chip" onClick={() => { setWorkspaceOpen((open) => !open); setSearchOpen(false); }} aria-expanded={workspaceOpen} aria-label="Open workspace manager"><span className="profile-avatar"><Icon name="panel" size={16} /></span><span className="profile-copy"><strong>{workspaceName}</strong><small>{workspaces.length} {workspaces.length === 1 ? "workspace" : "workspaces"}</small></span><Icon name="chevronDown" size={15} /></button>{workspaceOpen && <div className="workspace-menu" role="menu"><span className="workspace-menu-label">All workspaces</span>{workspaces.map((workspace, index) => <div className="workspace-menu-row" key={workspace.id}><button type="button" role="menuitem" className={workspace.id === workspaceId ? "active" : ""} onClick={() => { onSwitchWorkspace(workspace.id); setWorkspaceOpen(false); }}>{workspace.name}</button><div className="workspace-menu-row-actions"><button type="button" onClick={() => { onMoveWorkspace(workspace.id, "up"); setWorkspaceOpen(false); }} disabled={index === 0} aria-label={`Move ${workspace.name} up`}>↑</button><button type="button" onClick={() => { onMoveWorkspace(workspace.id, "down"); setWorkspaceOpen(false); }} disabled={index === workspaces.length - 1} aria-label={`Move ${workspace.name} down`}>↓</button><button type="button" onClick={() => { onRenameWorkspace(workspace.id); setWorkspaceOpen(false); }} aria-label={`Rename ${workspace.name}`}>Rename</button><button type="button" onClick={() => { onDeleteWorkspace(workspace.id); setWorkspaceOpen(false); }} aria-label={`Delete ${workspace.name}`}>Delete</button></div></div>)}<div className="workspace-menu-actions"><button type="button" onClick={() => { onCreateWorkspace(); setWorkspaceOpen(false); }}>Create workspace</button></div></div>}</div></div>
+        <div className="top-nav-account"><button type="button" className="nav-reset" onClick={() => { setSearchOpen(false); setWorkspaceOpen(false); onReset(); }}><Icon name="reset" size={15} /> Reset feed</button><div className="workspace-switcher"><button type="button" className="profile-chip" onClick={() => { setWorkspaceOpen((open) => !open); setSearchOpen(false); }} aria-expanded={workspaceOpen} aria-label="Open workspace manager"><span className="profile-avatar"><Icon name="panel" size={16} /></span><span className="profile-copy"><strong>{workspaceName}</strong><small>{workspaces.length} {workspaces.length === 1 ? "workspace" : "workspaces"}</small></span><Icon name="chevronDown" size={15} /></button>{workspaceOpen && <div className="workspace-menu" role="menu"><span className="workspace-menu-label">All workspaces</span>{workspaces.map((workspace, index) => <div className="workspace-menu-row" key={workspace.id}>{renameId === workspace.id ? <form className="workspace-rename-form" onSubmit={(event) => { event.preventDefault(); saveWorkspaceRename(workspace.id); }}><input autoFocus type="text" maxLength={48} value={renameDraft} onChange={(event) => { setRenameDraft(event.target.value); setRenameError(""); }} aria-label={`Rename ${workspace.name}`} aria-invalid={renameError ? "true" : undefined} />{renameError && <span className="workspace-rename-error" role="status" aria-live="polite">{renameError}</span>}<div className="workspace-rename-actions"><button type="submit">Save</button><button type="button" onClick={cancelWorkspaceRename}>Cancel</button></div></form> : <><button type="button" role="menuitem" className={workspace.id === workspaceId ? "active" : ""} onClick={() => { onSwitchWorkspace(workspace.id); setWorkspaceOpen(false); }}>{workspace.name}</button><div className="workspace-menu-row-actions"><button type="button" onClick={() => { onMoveWorkspace(workspace.id, "up"); setWorkspaceOpen(false); }} disabled={index === 0} aria-label={`Move ${workspace.name} up`}>↑</button><button type="button" onClick={() => { onMoveWorkspace(workspace.id, "down"); setWorkspaceOpen(false); }} disabled={index === workspaces.length - 1} aria-label={`Move ${workspace.name} down`}>↓</button><button type="button" onClick={() => startWorkspaceRename(workspace.id, workspace.name)} aria-label={`Rename ${workspace.name}`}>Rename</button><button type="button" onClick={() => { onDeleteWorkspace(workspace.id); setWorkspaceOpen(false); }} aria-label={`Delete ${workspace.name}`}>Delete</button></div></>}</div>)}<div className="workspace-menu-actions"><button type="button" onClick={() => { onCreateWorkspace(); setWorkspaceOpen(false); }}>Create workspace</button></div></div>}</div></div>
       </header>
       <nav className="mobile-nav" aria-label="Mobile navigation">
         {items.filter((item) => item.id !== "likes").map((item) => <button type="button" key={item.id} className={`mobile-nav-link ${view === item.id ? "active" : ""}`} onClick={() => navigate(item.id)} aria-current={view === item.id ? "page" : undefined}><Icon name={item.icon} size={19} strokeWidth={1.8} /><span>{item.label}</span></button>)}

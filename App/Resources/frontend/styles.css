@@ -1293,6 +1293,15 @@ body { background: var(--page-gradient); }
 .workspace-menu-row-actions button { border: 0; border-radius: 6px; padding: 3px 5px; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }
 .workspace-menu-row-actions button:hover { background: var(--surface-blue); color: var(--primary); }
 .workspace-menu-row-actions button:disabled { opacity: .35; cursor: not-allowed; }
+.workspace-rename-form { display: grid; gap: 7px; padding: 4px 6px; }
+.workspace-rename-form input { width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 7px 8px; background: var(--surface-soft); color: var(--ink); font-size: 11px; }
+.workspace-rename-form input:focus { border-color: var(--primary); outline: 2px solid rgba(76, 143, 247, .2); }
+.workspace-rename-error { color: #b42318; font-size: 10px; line-height: 1.35; }
+.workspace-rename-actions { display: flex; justify-content: flex-end; gap: 5px; }
+.workspace-rename-actions button { border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; background: var(--surface); color: var(--muted); font-size: 10px; cursor: pointer; }
+.workspace-rename-actions button[type="submit"] { border-color: var(--primary); background: var(--primary); color: #fff; font-weight: 700; }
+.workspace-rename-actions button:hover { border-color: var(--primary); color: var(--primary); }
+.workspace-rename-actions button[type="submit"]:hover { background: var(--primary-dark); color: #fff; }
 .workspace-menu-actions { display: grid; gap: 2px; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }
 .workspace-menu-actions button { display: block; width: 100%; border: 0; border-radius: 9px; padding: 9px 10px; background: transparent; color: var(--primary); text-align: left; font-size: 11px; font-weight: 800; cursor: pointer; }
 .workspace-menu-actions button:hover { background: var(--surface-blue); }
@@ -1403,10 +1412,10 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
 .topic-difficulty-control input[type="range"], .feed-range { height: 26px; border: 0; background: transparent; box-shadow: none; }
 .topic-difficulty-control input[type="range"]:focus-visible, .feed-range:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset: 3px; border-radius: 999px; box-shadow: none; }
 .topic-difficulty-control input[type="range"]::-webkit-slider-runnable-track, .feed-range::-webkit-slider-runnable-track { height: 6px; border: 0; border-radius: 999px; background: #c9e2f8; }
-.topic-difficulty-control input[type="range"]::-webkit-slider-thumb, .feed-range::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -6px; border: 0; border-radius: 50%; background: #4d91e8; box-shadow: none; }
+.topic-difficulty-control input[type="range"]::-webkit-slider-thumb, .feed-range::-webkit-slider-thumb { width: 14px; height: 14px; margin-top: -4px; border: 0; border-radius: 50%; background: #4d91e8; box-shadow: none; }
 .topic-difficulty-control input[type="range"]::-moz-range-track, .feed-range::-moz-range-track { height: 6px; border: 0; border-radius: 999px; background: #c9e2f8; }
 .topic-difficulty-control input[type="range"]::-moz-range-progress, .feed-range::-moz-range-progress { height: 6px; border: 0; border-radius: 999px; background: #c9e2f8; }
-.topic-difficulty-control input[type="range"]::-moz-range-thumb, .feed-range::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: #4d91e8; box-shadow: none; }
+.topic-difficulty-control input[type="range"]::-moz-range-thumb, .feed-range::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #4d91e8; box-shadow: none; }
 @media (min-width: 821px) {
   .main-scroll:has(.setup-stack) { overflow-y: auto; }
   .setup-layout { align-items: stretch; }
@@ -1422,6 +1431,37 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
   .setup-topics-details .topic-tree { max-height: min(48vh, 380px); overflow-y: auto; }
   .setup-customize { min-height: 0; }
   .workspace-menu { right: 0; }
+}
+
+/* Keep the setup accordion anchored while its contents expand inside a fixed
+   panel area, so opening it cannot resize the paired topic checklist. */
+.setup-key-callout { gap: 8px; margin: 10px 0; padding: 8px 10px; }
+.setup-key-callout-icon { width: 27px; height: 27px; }
+.setup-key-callout .text-button { font-size: 10px; white-space: nowrap; }
+@media (min-width: 821px) {
+  .setup-topics-panel .topic-expand { position: relative; left: -10px; }
+  .setup-topics-panel .custom-topic-form {
+    padding-left: 26px;
+    padding-right: 26px;
+    transform: translateY(-7px);
+  }
+  .setup-customize {
+    height: clamp(250px, 31vh, 300px);
+    min-height: 0;
+    flex: 0 0 clamp(250px, 31vh, 300px);
+    margin-top: auto;
+    margin-bottom: 2px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .setup-customize > summary { flex: 0 0 auto; }
+  .setup-customize-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+}
+@media (max-width: 560px) {
+  .setup-key-callout { align-items: flex-start; flex-wrap: wrap; }
+  .setup-key-callout .text-button { margin-left: 0; }
 }
 
 /* Setup headings are informational text, not disclosure controls. Keep the

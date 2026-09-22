@@ -7,8 +7,9 @@ import { buildWarHistoryTopic } from "./war-history-catalog";
 import { buildCompaniesTopic } from "./company-history-catalog";
 import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
+import { buildGeologyTopic, buildHumanOriginsTopic, buildOrganismsTopic } from "./history-science-taxonomy-catalog";
 
-export const TOPIC_CATALOG_VERSION = 22;
+export const TOPIC_CATALOG_VERSION = 23;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -288,10 +289,7 @@ const TOPIC_SEEDS: TopicSeed[] = [
       "Ancient Inventions", "Forgotten Inventions", "Accidental Inventions", "Medical Inventions", "Transportation", "Communication",
       "Computing", "Military Inventions", "Industrial Inventions", "Household Inventions", "Failed Inventions", "Inventions Ahead of Their Time"
     ]),
-    branch("Human Origins and Evolution", [
-      "Human Evolution", "Australopithecus", "Homo habilis", "Homo erectus", "Neanderthals", "Denisovans", "Early Homo sapiens",
-      "Human Migration", "Stone Tools", "Fire", "Hunting", "Clothing", "Cave Art", "Ancient DNA", "Extinct Human Relatives"
-    ]),
+    buildHumanOriginsTopic(),
     branch("Earth History", ["Hadean", "Archean", "Proterozoic", "Cambrian", "Ordovician", "Silurian", "Devonian", "Carboniferous", "Permian", "Triassic", "Jurassic", "Cretaceous", "Paleocene", "Eocene", "Oligocene", "Miocene", "Pliocene", "Pleistocene", "Holocene"]),
     branch("Prehistoric and Extinct Life", [
       "Cambrian Animals", "Ancient Ocean Life", "Trilobites", "Early Fish", "Prehistoric Amphibians", "Prehistoric Reptiles", "Dinosaurs",
@@ -309,11 +307,11 @@ const TOPIC_SEEDS: TopicSeed[] = [
   branch("Science", [
     buildComputerScienceTopic(),
     branch("Chemistry", ["Atoms", "Elements", "Periodic Table", "Chemical Bonds", "Reactions", "Organic Chemistry", "Inorganic Chemistry", "Physical Chemistry", "Analytical Chemistry", "Biochemistry", "Materials Chemistry", "Electrochemistry", "Nuclear Chemistry", "Strange Chemical Properties", "Everyday Chemistry"]),
-    branch("Biology", ["Evolution", "Genetics", "DNA", "Cells", "Microbiology", "Bacteria", "Viruses", "Fungi", "Plants", "Animals", "Zoology", "Ecology", "Marine Biology", "Human Biology", "Anatomy", "Neuroscience", "Immunology", "Animal Behavior", "Extreme Organisms", "Symbiosis"]),
+    branch("Biology", ["Evolution", "Genetics", "DNA", "Cells", "Microbiology", "Viruses", "Zoology", "Ecology", "Marine Biology", "Human Biology", "Anatomy", "Neuroscience", "Immunology", "Animal Behavior", "Extreme Organisms", "Symbiosis", buildOrganismsTopic()]),
     buildDiseasesTopic(),
     ...buildNaturalDisasterAndExtinctionTopics(),
     branch("Physics", ["Mechanics", "Motion", "Gravity", "Electricity", "Magnetism", "Waves", "Sound", "Light", "Thermodynamics", "Fluid Mechanics", "Quantum Physics", "Particle Physics", "Nuclear Physics", "Relativity", "Strange Physical Phenomena"]),
-    branch("Earth Science", ["Geology", "Plate Tectonics", "Volcanoes", "Earthquakes", "Minerals", "Rocks", "Oceans", "Atmosphere", "Weather", "Climate", "Paleontology", "Earth's Interior"]),
+    branch("Earth Science", [buildGeologyTopic(), "Oceans", "Atmosphere", "Weather", "Climate"]),
     branch("Technology", ["Electronics", "Computing", "Semiconductors", "Robotics", "Telecommunications", "Energy", "Transportation", "Manufacturing", "Materials", "Batteries", "Sensors", "Medical Technology", "Emerging Technology"]),
     branch("Space", [
       branch("Solar System", ["Sun", "Mercury", "Venus", branch("Earth", ["Moon"]), "Mars", "Jupiter", "Saturn", "Uranus", "Neptune", "Dwarf Planets", "Asteroids", "Comets"]),
@@ -351,10 +349,14 @@ function nodeId(path: string[]) {
 }
 
 const LOWERCASE_TOPIC_WORDS = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
+const SCIENTIFIC_GENERA = new Set(["Ardipithecus", "Australopithecus", "Homo", "Kenyanthropus", "Orrorin", "Paranthropus", "Sahelanthropus"]);
 
 /** Title Case is for catalog labels only; book and video titles keep their original styling. */
 export function titleCaseTopicLabel(label: string) {
-  const words = label.replace(/\s+/gu, " ").trim().split(/(\s+)/);
+  const normalized = label.replace(/\s+/gu, " ").trim();
+  const scientificName = normalized.match(/^([A-Z][a-z]+) ([a-z][a-z-]+)(?:\s|$)/u);
+  if (scientificName && SCIENTIFIC_GENERA.has(scientificName[1])) return normalized;
+  const words = normalized.split(/(\s+)/);
   const wordIndexes = words.map((word, index) => (/^\s+$/.test(word) ? -1 : index)).filter((index) => index >= 0);
   const first = wordIndexes[0];
   const last = wordIndexes.at(-1);

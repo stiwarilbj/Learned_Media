@@ -6,6 +6,15 @@ export type WorkspaceSummary = {
   updatedAt: string;
 };
 
+export function nextLocalWorkspaceName(workspaces: readonly Pick<WorkspaceSummary, "name">[]) {
+  const highestNumber = workspaces.reduce((highest, workspace) => {
+    const match = workspace.name.trim().match(/^Local Workspace\s+(\d+)$/i);
+    const number = match ? Number(match[1]) : 1;
+    return Number.isSafeInteger(number) ? Math.max(highest, number) : highest;
+  }, 1);
+  return `Local Workspace ${highestNumber + 1}`;
+}
+
 export type WorkspaceRecord<T> = WorkspaceSummary & { state: T };
 
 export type WorkspaceStore<T> = {
