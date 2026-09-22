@@ -56,7 +56,7 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
         <label className="topic-difficulty-control" htmlFor="feed-obscurity">
           <span className="control-label"><span>Fact Difficulty</span><strong>{normalizeDifficulty(settings.obscurity)}/10 · {DIFFICULTY_LABELS[normalizeDifficulty(settings.obscurity)]}</strong></span>
           <input id="feed-obscurity" className="feed-range" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
-          <span className="range-ends"><span>A Little Hard</span><span>Super Hard</span></span>
+          <span className="range-ends"><span>A Little Hard</span><span>Impossible</span></span>
         </label>
         <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
         <div className="feed-custom-topic">
