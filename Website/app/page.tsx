@@ -17,7 +17,7 @@ import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog"
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
 import { rankSearchResults, searchScore } from "@/lib/search";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
-import { accountWorkspaceBackup, makeWorkspaceId, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
+import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_WORKSPACE, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, relatedYouTubeVideos, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
@@ -400,13 +400,7 @@ export default function HomePage() {
 
   const createWorkspace = useCallback(async () => {
     if (!workspaceStoreRef.current) return;
-    const suggestedName = `Workspace ${workspaceStoreRef.current.records.length + 1}`;
-    const requestedName = window.prompt("Name this workspace", suggestedName)?.trim();
-    if (!requestedName) return;
-    if (workspaceStoreRef.current.records.some((record) => record.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase())) {
-      setToast("A workspace with that name already exists.");
-      return;
-    }
+    const requestedName = nextLocalWorkspaceName(workspaceStoreRef.current.records);
     cancelWorkspaceRequests();
     await saveWorkspaceRecordNow(workspaceIdRef.current, workspaceNameRef.current, makeCurrentSnapshot());
     const now = new Date().toISOString();
@@ -432,14 +426,18 @@ export default function HomePage() {
     setToast(`${record.name} created.`);
   }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow, theme]);
 
-  const renameWorkspace = useCallback((targetId = workspaceIdRef.current) => {
+  const renameWorkspace = useCallback((targetId: string, requestedName: string) => {
     const target = workspaceStoreRef.current?.records.find((record) => record.id === targetId);
-    if (!target) return;
-    const nextName = window.prompt("Name this workspace", target.name)?.trim();
-    if (!nextName || nextName === target.name || !workspaceStoreRef.current) return;
+    if (!target || !workspaceStoreRef.current) return false;
+    const nextName = requestedName.trim();
+    if (!nextName) {
+      setToast("Enter a workspace name.");
+      return false;
+    }
+    if (nextName.toLocaleLowerCase() === target.name.toLocaleLowerCase()) return true;
     if (workspaceStoreRef.current.records.some((record) => record.id !== targetId && record.name.toLocaleLowerCase() === nextName.toLocaleLowerCase())) {
       setToast("A workspace with that name already exists.");
-      return;
+      return false;
     }
     target.name = nextName;
     target.updatedAt = new Date().toISOString();
@@ -449,6 +447,7 @@ export default function HomePage() {
     }
     setWorkspaceSummaries(workspaceStoreRef.current.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
     void writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The new name could not be saved."));
+    return true;
   }, []);
 
   const moveWorkspace = useCallback((targetId: string, direction: "up" | "down") => {
