@@ -1470,9 +1470,9 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
   background: #c9e2f8;
 }
 .topic-difficulty-control input[type="range"]::-webkit-slider-thumb, .feed-range::-webkit-slider-thumb {
-  width: 16px;
-  height: 16px;
-  margin-top: -5px;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
   border: 0;
   border-radius: 50%;
   background: #4d91e8;
@@ -1486,8 +1486,8 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
 }
 .topic-difficulty-control input[type="range"]::-moz-range-progress, .feed-range::-moz-range-progress { height: 6px; border: 0; border-radius: 999px; background: #c9e2f8; }
 .topic-difficulty-control input[type="range"]::-moz-range-thumb, .feed-range::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border: 0;
   border-radius: 50%;
   background: #4d91e8;

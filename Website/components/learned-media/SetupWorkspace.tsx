@@ -54,7 +54,7 @@ export function SetupWorkspace({ topics, query, onQueryChange, settings, customT
             <label className="topic-difficulty-control" htmlFor="obscurity">
               <span className="control-label"><span>Fact Difficulty</span><strong>{difficulty}/10 · {DIFFICULTY_LABELS[difficulty]}</strong></span>
               <input id="obscurity" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
-              <span className="range-ends"><span>A Little Hard</span><span>Super Duper Hard</span></span>
+              <span className="range-ends"><span>A Little Hard</span><span>Super Hard</span></span>
             </label>
             <div className="topic-toolbar">
               <label className="topic-search-control">
