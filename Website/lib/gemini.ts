@@ -7,6 +7,7 @@ import type { YouTubeSearchCandidate } from "./youtube";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
 const MODEL_CHECK_TIMEOUT_MS = 20_000;
+const MODEL_CHECK_CONCURRENCY = 3;
 const GENERATION_TIMEOUT_MS = 45_000;
 const MODEL_COOLDOWN_MS = 45_000;
 const OUTAGE_COOLDOWN_MS = 60_000;
@@ -861,8 +862,8 @@ export async function testGeminiKey(apiKey: string, signal?: AbortSignal, sessio
   checks.forEach((check) => pool.checks.set(check.model, check));
   let readyCount = 0;
   let offset = 0;
-  while (offset < ALLOWED_GEMINI_MODELS.length && readyCount < REQUIRED_WORKING_MODELS && !signal?.aborted) {
-    const count = offset === 0 ? REQUIRED_WORKING_MODELS : Math.min(REQUIRED_WORKING_MODELS - readyCount, ALLOWED_GEMINI_MODELS.length - offset);
+  while (offset < ALLOWED_GEMINI_MODELS.length && !signal?.aborted) {
+    const count = Math.min(MODEL_CHECK_CONCURRENCY, ALLOWED_GEMINI_MODELS.length - offset);
     const models = ALLOWED_GEMINI_MODELS.slice(offset, offset + count);
     const results = await Promise.all(models.map(model => checkOneModel(apiKey, model, signal)));
     results.forEach((check, localIndex) => {

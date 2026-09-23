@@ -12,7 +12,7 @@ import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
 import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
-import { ALLOWED_GEMINI_MODELS, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, REQUIRED_WORKING_MODELS, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
+import { ALLOWED_GEMINI_MODELS, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
@@ -1281,7 +1281,7 @@ export default function HomePage() {
     setModelChecks(ALLOWED_GEMINI_MODELS.map((model) => ({ model, status: "unchecked" })));
     try {
       if (isGitHubPagesRuntime()) {
-        const result = await testGeminiKey(keyAtStart, controller.signal, sessionIdRef.current, (check, readyCount) => {
+        const result = await testGeminiKey(keyAtStart, controller.signal, sessionIdRef.current, (check) => {
           setModelChecks((current) => {
             const next = [...current];
             const index = next.findIndex((item) => item?.model === check.model);
@@ -1289,7 +1289,6 @@ export default function HomePage() {
             else next.push(check);
             return next;
           });
-          if (readyCount >= REQUIRED_WORKING_MODELS) setGeminiStatus("connected");
         });
         if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
         setModelChecks(result.models);
@@ -1315,7 +1314,6 @@ export default function HomePage() {
             else next.push(check);
             return next;
           });
-          if (Number(message.readyCount) >= REQUIRED_WORKING_MODELS) setGeminiStatus("connected");
         } else if (message.type === "complete") {
           finalStatus = message.status as GeminiStatus;
           finalModels = message.models as GeminiModelCheck[];
