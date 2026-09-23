@@ -4,6 +4,7 @@ export type ApprovedChannelSeed = {
   name: string;
   handle?: string;
   channelId?: string;
+  titleAliases?: string[];
   playlistIds?: string[];
 };
 
@@ -148,10 +149,10 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
   { name: "Tor’s Cabinet of Curiosities" },
   { name: "Extra History" },
   { name: "Justin Portela" },
-  { name: "Patrick Kelly" },
+  { name: "Patrick Kelly", handle: "@PatKellyTeaches", channelId: "UCXGtJRfZ_pmJgKKE67PeCEA" },
   { name: "Historically" },
   { name: "Mental Floss" },
-  { name: "Crash Course" },
+  { name: "Crash Course", handle: "@crashcourse", channelId: "UCX6b17PVsYBQ0ip5gyeme-Q", titleAliases: ["CrashCourse"] },
   { name: "SciShow" },
   { name: "OverSimplified" },
   { name: "vlogbrothers" },
@@ -162,8 +163,8 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
   { name: "Jay Hona" },
   { name: "Veritasium" },
   { name: "theweeklyjack", handle: "@theweeklyjack1" },
-  { name: "Jackdaw" },
-  { name: "Grist" },
+  { name: "Jackdaw", handle: "@JackdawJPG", channelId: "UCvhjLch7MMc9O8toGFW0hSg" },
+  { name: "Grist", handle: "@Grist", channelId: "UC7ga3FLMFOOpMQwaYoW42bw" },
   { name: "Bizarre Beasts" },
   { name: "Ze Frank" },
   { name: "Make Thing With Hand" },
@@ -179,7 +180,7 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
   { name: "PolyMatter", handle: "@PolyMatter", channelId: "UCgNg3vwj3xt7QOrcIDaHdFg" },
   { name: "AlternateHistoryHub", handle: "@AlternateHistoryHub", channelId: "UClfEht64_NrzHf8Y0slKEjw" },
   { name: "J.J. McCullough", handle: "@JJMcCullough", channelId: "UCyhOl6uRlxryALlT5yifldw" },
-  { name: "Primer", handle: "@primerlearning", channelId: "UCKzJFdi57J53Vr_BkTfN3uQ" },
+  { name: "Primer", handle: "@PrimerBlobs", channelId: "UCKzJFdi57J53Vr_BkTfN3uQ" },
   { name: "Primal Space", handle: "@primalspace", channelId: "UClZbmi9JzfnB2CEb0fG8iew" },
   { name: "Mitsi Studio", handle: "@mitsistudio", channelId: "UCuXCgyOCMXic7j0_wghXnRA" },
   { name: "Jabroni Baseball", handle: "@JabroniBaseball", channelId: "UCfBXZotQqPlpDWXTbRbi2qA" }
@@ -225,6 +226,10 @@ export class YouTubeApiError extends Error {
 
 function normalized(value: string) {
   return value.toLocaleLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function matchesApprovedChannelTitle(value: string, seed: ApprovedChannelSeed) {
+  return [seed.name, ...(seed.titleAliases ?? [])].some((title) => normalized(value) === normalized(title));
 }
 
 function normalizedApprovedVideoTitle(value: string) {
@@ -385,13 +390,13 @@ export class YouTubeClient {
       payload = await this.request<ChannelApiResponse>("channels", { part: "snippet,contentDetails", forHandle: seed.handle.replace(/^@/, "") }, signal);
     } else {
       const search = await this.request<SearchApiResponse>("search", { part: "snippet", q: seed.name, type: "channel", maxResults: "8" }, signal);
-      const candidate = (search.items ?? []).find((item) => normalized(item.snippet?.title ?? "") === normalized(seed.name));
+      const candidate = (search.items ?? []).find((item) => matchesApprovedChannelTitle(item.snippet?.title ?? "", seed));
       if (!candidate?.id?.channelId) throw new YouTubeApiError(`Could not verify the approved channel “${seed.name}”.`, undefined, "channel-not-found", false);
       payload = await this.request<ChannelApiResponse>("channels", { part: "snippet,contentDetails", id: candidate.id.channelId }, signal);
     }
     const item = payload.items?.[0];
-    if (!item?.id || (seed.channelId && item.id !== seed.channelId) || normalized(item.snippet?.title ?? "") !== normalized(seed.name)) throw new YouTubeApiError(`YouTube returned a different channel for “${seed.name}”.`, undefined, "channel-mismatch", false);
-    return { id: item.id, name: item.snippet?.title ?? seed.name, handle: item.snippet?.customUrl ?? seed.handle, thumbnailUrl: item.snippet?.thumbnails?.default?.url, uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads, videoCount: 0, approved: true, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds };
+    if (!item?.id || (seed.channelId && item.id !== seed.channelId) || !matchesApprovedChannelTitle(item.snippet?.title ?? "", seed)) throw new YouTubeApiError(`YouTube returned a different channel for “${seed.name}”.`, undefined, "channel-mismatch", false);
+    return { id: item.id, name: seed.name, handle: item.snippet?.customUrl ?? seed.handle, thumbnailUrl: item.snippet?.thumbnails?.default?.url, uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads, videoCount: 0, approved: true, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds };
   }
 
   private async importPlaylist(channel: YouTubeChannelRecord, playlistId: string, sourceId: string, signal?: AbortSignal, onPage?: (count: number) => void) {
@@ -411,7 +416,7 @@ export class YouTubeClient {
       const durationSeconds = parseDuration(item.contentDetails?.duration);
       const title = snippet?.title?.trim();
       if (!title || !snippet?.publishedAt) return;
-      mapped.push({ id: item.id, channelId: channel.id, channelName: snippet.channelTitle ?? channel.name, title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, durationLabel: formatDuration(durationSeconds), thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url, embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(channel.name, title, snippet.description ?? "", snippet.tags ?? []), approved: true, sourceIds: [sourceId], metadataRefreshedAt: new Date().toISOString() });
+      mapped.push({ id: item.id, channelId: channel.id, channelName: channel.name, title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, durationLabel: formatDuration(durationSeconds), thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url, embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(channel.name, title, snippet.description ?? "", snippet.tags ?? []), approved: true, sourceIds: [sourceId], metadataRefreshedAt: new Date().toISOString() });
     });
     return mapped;
   }
@@ -450,7 +455,7 @@ export class YouTubeClient {
       const previous = existingChannels.find((item) => normalized(item.name) === normalized(seed.name));
       try {
         const needsPinnedResolution = Boolean(seed.channelId && previous?.id !== seed.channelId);
-        const channel = previous?.id && !needsPinnedResolution ? { ...previous, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds } : await this.resolveChannel(seed, signal);
+        const channel = previous?.id && !needsPinnedResolution ? { ...previous, name: seed.name, handle: seed.handle ?? previous.handle, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds } : await this.resolveChannel(seed, signal);
         progress.completedChannels = index + 1;
         onProgress?.({ ...progress });
         return { seed, channel };
