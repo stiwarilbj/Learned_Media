@@ -9,7 +9,7 @@ import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 import { buildGeologyTopic, buildHumanOriginsTopic, buildOrganismsTopic } from "./history-science-taxonomy-catalog";
 
-export const TOPIC_CATALOG_VERSION = 23;
+export const TOPIC_CATALOG_VERSION = 24;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -311,6 +311,7 @@ const TOPIC_SEEDS: TopicSeed[] = [
     buildDiseasesTopic(),
     ...buildNaturalDisasterAndExtinctionTopics(),
     branch("Physics", ["Mechanics", "Motion", "Gravity", "Electricity", "Magnetism", "Waves", "Sound", "Light", "Thermodynamics", "Fluid Mechanics", "Quantum Physics", "Particle Physics", "Nuclear Physics", "Relativity", "Strange Physical Phenomena"]),
+    branch("Natural History", ["Ancient DNA", "Volcanoes", "Earthquakes", "Paleontology"]),
     branch("Earth Science", [buildGeologyTopic(), "Oceans", "Atmosphere", "Weather", "Climate"]),
     branch("Technology", ["Electronics", "Computing", "Semiconductors", "Robotics", "Telecommunications", "Energy", "Transportation", "Manufacturing", "Materials", "Batteries", "Sensors", "Medical Technology", "Emerging Technology"]),
     branch("Space", [
