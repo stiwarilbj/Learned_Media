@@ -5,6 +5,7 @@ import { CollectionView } from "@/components/learned-media/CollectionView";
 import { ExploreView } from "@/components/learned-media/ExploreView";
 import { FeedView } from "@/components/learned-media/FeedView";
 import { Navigation } from "@/components/learned-media/Navigation";
+import { Icon } from "@/components/learned-media/icons";
 import { SettingsView } from "@/components/learned-media/SettingsView";
 import { VideoWorkspace } from "@/components/learned-media/VideoWorkspace";
 import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
@@ -1645,7 +1646,15 @@ export default function HomePage() {
         onMoveWorkspace={moveWorkspace}
       />
       <main className="main-column">
-        <div className="main-scroll" ref={mainScrollRef}>{renderMain()}{showGoToTop && <button type="button" className="go-to-top" onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); }}>Go to top</button>}</div>
+        <div className="main-scroll" ref={mainScrollRef}>
+          {keysHydrated && !apiKey.trim() && view !== "settings" && <button type="button" className="mobile-api-key-notice" onClick={() => { setView("settings"); window.scrollTo({ top: 0, behavior: "smooth" }); mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); }}>
+            <span className="mobile-api-key-notice-icon"><Icon name="key" size={15} /></span>
+            <span className="mobile-api-key-notice-copy"><strong>Gemini API key not connected</strong><small>Tap to add one in Settings</small></span>
+            <Icon name="arrow" size={16} />
+          </button>}
+          {renderMain()}
+          {showGoToTop && <button type="button" className="go-to-top" onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); }}>Go to top</button>}
+        </div>
       </main>
       {confirmation && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeConfirmation(); }}>
         <section className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-message" onMouseDown={(event) => event.stopPropagation()}>
