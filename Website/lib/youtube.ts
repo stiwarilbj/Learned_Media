@@ -196,6 +196,7 @@ export const DEFAULT_YOUTUBE_RECENCY_PREFERENCES: Record<string, boolean> = Obje
 // broad recommendation query.
 export const APPROVED_INDIVIDUAL_VIDEOS: ApprovedVideoSeed[] = [
   { creator: "melodysheep", title: "TIMELAPSE OF THE ENTIRE UNIVERSE", videoId: "TBikbn5XJhg" },
+  { creator: "melodysheep", title: "TIMELAPSE OF THE UNIVERSE: 13 Billion Years in 10 Minutes • Updated and Remastered", videoId: "QTQVZuBV9oA" },
   { creator: "Ollie Bye", title: "The History of the World: Every Year", videoId: "-6Wu0Q7x5D0" },
   { creator: "Ollie Bye", title: "Top 5 Tallest Buildings Throughout History", videoId: "0MobSmVpvTM" },
   { creator: "Ollie Bye", title: "The Largest Cities Throughout History: Every Year", videoId: "kptMVQRud5c" },
