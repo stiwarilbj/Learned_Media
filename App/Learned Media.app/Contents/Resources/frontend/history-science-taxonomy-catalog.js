@@ -157,5 +157,9 @@
     earthScience.children.unshift(geology());
   }
 
-  if (window.LEARNED_MEDIA_TOPIC_METADATA) window.LEARNED_MEDIA_TOPIC_METADATA.catalogVersion = 23;
+  if (science && !findBranch(science.children, "Natural History")) {
+    science.children.push(branch("Natural History", ["Ancient DNA", "Volcanoes", "Earthquakes", "Paleontology"]));
+  }
+
+  if (window.LEARNED_MEDIA_TOPIC_METADATA) window.LEARNED_MEDIA_TOPIC_METADATA.catalogVersion = 24;
 })();
