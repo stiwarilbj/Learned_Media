@@ -176,7 +176,7 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
   { name: "hydn" },
   { name: "ExtinctZoo", handle: "@ExtinctZoo" },
   { name: "PBS Terra", handle: "@pbsterra", channelId: "UCpxYSWgxVt3Pyn1ovXsGQ0g" },
-  { name: "PolyMatter", handle: "@PolyMatter", channelId: "UCgNg3vwj3xt7QOrcIDaHdDQ" },
+  { name: "PolyMatter", handle: "@PolyMatter", channelId: "UCgNg3vwj3xt7QOrcIDaHdFg" },
   { name: "AlternateHistoryHub", handle: "@AlternateHistoryHub", channelId: "UClfEht64_NrzHf8Y0slKEjw" },
   { name: "J.J. McCullough", handle: "@JJMcCullough", channelId: "UCyhOl6uRlxryALlT5yifldw" },
   { name: "Primer", handle: "@primerlearning", channelId: "UCKzJFdi57J53Vr_BkTfN3uQ" },
@@ -225,6 +225,10 @@ export class YouTubeApiError extends Error {
 
 function normalized(value: string) {
   return value.toLocaleLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function normalizedApprovedVideoTitle(value: string) {
+  return normalized(value.replace(/(?:\s+#[^\s#]+)+\s*$/u, ""));
 }
 
 function abortError() {
@@ -422,13 +426,13 @@ export class YouTubeClient {
     if (!videoId) {
       const channel = channels.find((item) => normalized(item.name) === normalized(seed.creator));
       const search = await this.request<SearchApiResponse>("search", { part: "snippet", q: seed.title, type: "video", maxResults: "10", ...(channel ? { channelId: channel.id } : {}) }, signal);
-      const found = (search.items ?? []).find((item) => normalized(item.snippet?.title ?? "") === normalized(seed.title) && normalized(item.snippet?.channelTitle ?? "") === normalized(seed.creator));
+      const found = (search.items ?? []).find((item) => normalizedApprovedVideoTitle(item.snippet?.title ?? "") === normalizedApprovedVideoTitle(seed.title) && normalized(item.snippet?.channelTitle ?? "") === normalized(seed.creator));
       videoId = found?.id?.videoId;
     }
     if (!videoId) throw new YouTubeApiError(`Could not verify the approved video “${seed.title}”.`, undefined, "video-not-found", false);
     const payload = await this.request<VideoApiResponse>("videos", { part: "snippet,contentDetails,status", id: videoId }, signal);
     const item = payload.items?.[0];
-    if (!item?.id || normalized(item.snippet?.title ?? "") !== normalized(seed.title) || normalized(item.snippet?.channelTitle ?? "") !== normalized(seed.creator)) throw new YouTubeApiError(`The approved video “${seed.title}” did not match its creator and title.`, undefined, "video-mismatch", false);
+    if (!item?.id || normalizedApprovedVideoTitle(item.snippet?.title ?? "") !== normalizedApprovedVideoTitle(seed.title) || normalized(item.snippet?.channelTitle ?? "") !== normalized(seed.creator)) throw new YouTubeApiError(`The approved video “${seed.title}” did not match its creator and title.`, undefined, "video-mismatch", false);
     const snippet = item.snippet!;
     const durationSeconds = parseDuration(item.contentDetails?.duration);
     return { id: item.id, channelId: snippet.channelId ?? `special-${normalized(seed.creator).replace(/ /g, "-")}`, channelName: snippet.channelTitle ?? seed.creator, title: snippet.title!, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt ?? new Date().toISOString(), durationSeconds, durationLabel: formatDuration(durationSeconds), ...(snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url ? { thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url } : {}), embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(seed.creator, snippet.title!, snippet.description ?? "", snippet.tags ?? []), approved: true, special: true, sourceIds: [`individual:${item.id}`], metadataRefreshedAt: new Date().toISOString() } as YouTubeVideo;
