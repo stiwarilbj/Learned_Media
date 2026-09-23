@@ -1570,3 +1570,11 @@ html[data-input-modality="pointer"] :focus {
 html[data-input-modality="pointer"] :is(input, select, textarea):focus {
   box-shadow: none !important;
 }
+
+/* Keep search suggestions readable over the page content. */
+.search-popover {
+  background: var(--surface);
+  background-color: var(--surface);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
