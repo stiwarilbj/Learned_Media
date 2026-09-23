@@ -52,6 +52,12 @@ type YouTubeWorkspaceActivity = Pick<YouTubeWorkspaceState, "savedIds" | "histor
 
 type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
+type ConfirmationRequest = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  action: () => void | Promise<void>;
+};
 
 function readWorkspaceState() {
   for (const key of [STORAGE_KEY, STORAGE_BACKUP_KEY, LEGACY_STORAGE_KEY]) {
@@ -236,6 +242,7 @@ export default function HomePage() {
   const [customTopic, setCustomTopic] = useState("");
   const [rabbitHole, setRabbitHole] = useState<string | null>(null);
   const [toast, setToast] = useState("");
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [apiKey, setApiKey] = useState("");
   const [keysHydrated, setKeysHydrated] = useState(false);
@@ -476,17 +483,16 @@ export default function HomePage() {
     void writeWorkspaceStore(store).catch(() => setToast("The workspace order could not be saved."));
   }, []);
 
-  const deleteWorkspace = useCallback(async (targetId: string) => {
+  const performDeleteWorkspace = useCallback(async (targetId: string) => {
     const store = workspaceStoreRef.current;
     if (!store) return;
+    const index = store.records.findIndex((record) => record.id === targetId);
+    if (index < 0) return;
+    const target = store.records[index];
     if (store.records.length <= 1) {
       setToast("Keep at least one workspace so your local data always has a home.");
       return;
     }
-    const index = store.records.findIndex((record) => record.id === targetId);
-    if (index < 0) return;
-    const target = store.records[index];
-    if (!window.confirm(`Delete workspace “${target.name}”? Its cards and local history will be removed from this device.`)) return;
     if (targetId === workspaceIdRef.current) {
       cancelWorkspaceRequests();
       await saveWorkspaceRecordNow(workspaceIdRef.current, workspaceNameRef.current, makeCurrentSnapshot());
@@ -520,6 +526,40 @@ export default function HomePage() {
     await writeWorkspaceStore(store).catch(() => setToast("The workspace was removed locally, but the new order could not be saved."));
     setToast(`${target.name} deleted.`);
   }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow]);
+
+  const requestDeleteWorkspace = useCallback((targetId: string) => {
+    const store = workspaceStoreRef.current;
+    if (!store) return;
+    if (store.records.length <= 1) {
+      setToast("Keep at least one workspace so your local data always has a home.");
+      return;
+    }
+    const target = store.records.find((record) => record.id === targetId);
+    if (!target) return;
+    setConfirmation({
+      title: `Delete workspace “${target.name}”?`,
+      message: "Its cards and local history will be removed from this device.",
+      confirmLabel: "Confirm",
+      action: () => performDeleteWorkspace(targetId)
+    });
+  }, [performDeleteWorkspace]);
+
+  const closeConfirmation = useCallback(() => setConfirmation(null), []);
+
+  const confirmPendingAction = useCallback(() => {
+    const action = confirmation?.action;
+    setConfirmation(null);
+    if (action) void action();
+  }, [confirmation]);
+
+  useEffect(() => {
+    if (!confirmation) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeConfirmation();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeConfirmation, confirmation]);
 
   useEffect(() => () => {
     generationAbortController.current?.abort();
@@ -1148,8 +1188,7 @@ export default function HomePage() {
     if (action === "less") setToast("We’ll keep this thread quieter for a while.");
   }, [cards, learningProfile, settings.obscurity, startFeed]);
 
-  const resetAllPreferences = useCallback(() => {
-    if (!window.confirm("Reset all preferences and return to the default topic mix?")) return;
+  const performResetAllPreferences = useCallback(() => {
     cancelGeneration();
     requestGeneration.current += 1;
     setTopics(createDefaultTopics());
@@ -1170,8 +1209,16 @@ export default function HomePage() {
     setToast("Preferences restored to the starting mix.");
   }, [cancelGeneration]);
 
-  const deleteLearningData = useCallback(() => {
-    if (!window.confirm("Delete saved facts, likes, history, and current feed from this workspace?")) return;
+  const resetAllPreferences = useCallback(() => {
+    setConfirmation({
+      title: "Reset all preferences?",
+      message: "Your topic mix, feed, and learning preferences will return to their starting values.",
+      confirmLabel: "Confirm",
+      action: performResetAllPreferences
+    });
+  }, [performResetAllPreferences]);
+
+  const performDeleteLearningData = useCallback(() => {
     cancelGeneration();
     requestGeneration.current += 1;
     setCards([]);
@@ -1185,6 +1232,15 @@ export default function HomePage() {
     setRabbitHole(null);
     setToast("Learning data cleared. Your topic library and Gemini key were kept.");
   }, [cancelGeneration]);
+
+  const deleteLearningData = useCallback(() => {
+    setConfirmation({
+      title: "Delete learning data?",
+      message: "Saved facts, likes, history, and the current feed will be removed from this workspace. Your topic library and Gemini key will stay.",
+      confirmLabel: "Confirm",
+      action: performDeleteLearningData
+    });
+  }, [performDeleteLearningData]);
 
   const handleApiKeyChange = useCallback((value: string) => {
     keyEditEpoch.current += 1;
@@ -1597,12 +1653,23 @@ export default function HomePage() {
         onSwitchWorkspace={(id) => void switchWorkspace(id)}
         onCreateWorkspace={() => void createWorkspace()}
         onRenameWorkspace={renameWorkspace}
-        onDeleteWorkspace={(id) => void deleteWorkspace(id)}
+        onDeleteWorkspace={requestDeleteWorkspace}
         onMoveWorkspace={moveWorkspace}
       />
       <main className="main-column">
         <div className="main-scroll" ref={mainScrollRef}>{renderMain()}{showGoToTop && <button type="button" className="go-to-top" onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); }}>Go to top</button>}</div>
       </main>
+      {confirmation && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeConfirmation(); }}>
+        <section className="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-message" onMouseDown={(event) => event.stopPropagation()}>
+          <span className="eyebrow">Please confirm</span>
+          <h2 id="confirmation-title">{confirmation.title}</h2>
+          <p id="confirmation-message">{confirmation.message}</p>
+          <div className="confirmation-actions">
+            <button type="button" className="ghost-button" onClick={closeConfirmation}>Cancel</button>
+            <button type="button" className="danger-button" onClick={confirmPendingAction} autoFocus>{confirmation.confirmLabel}</button>
+          </div>
+        </section>
+      </div>}
     </div>
   );
 }

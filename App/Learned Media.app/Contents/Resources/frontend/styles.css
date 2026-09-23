@@ -248,6 +248,11 @@ a { color: inherit; }
 .secondary-button:hover { border-color: var(--primary); background: var(--surface-blue); }
 .ghost-button { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 10px 13px; }
 .danger-button { background: transparent; color: #cf5c63; border: 1px solid rgba(207, 92, 99, .28); padding: 10px 13px; }
+.confirmation-backdrop { position: fixed; inset: 0; z-index: 1200; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(12, 31, 59, .28); -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px); }
+.confirmation-dialog { width: min(100%, 460px); padding: 25px; border: 1px solid var(--border); border-radius: 22px; background: var(--surface); box-shadow: 0 24px 80px rgba(20, 62, 103, .24); }
+.confirmation-dialog h2 { margin: 7px 0 8px; color: var(--ink-strong); font-size: 22px; letter-spacing: -.04em; }
+.confirmation-dialog p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.confirmation-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 22px; }
 .panel-footnote { display: flex; justify-content: center; align-items: center; gap: 5px; color: var(--muted-soft); font-size: 10px; margin: 12px 0 0; }
 .preview-strip { margin-top: 18px; padding: 22px 25px 25px; }
 .preview-heading { display: flex; justify-content: space-between; align-items: end; gap: 15px; margin-bottom: 16px; }
@@ -412,6 +417,12 @@ a { color: inherit; }
   .explore-callout { align-items: flex-start; flex-wrap: wrap; }.explore-callout > .text-button { margin-left: 48px; }
   .key-input-row { align-items: stretch; flex-direction: column; }.account-row { align-items: flex-start; flex-wrap: wrap; }.account-row .secondary-button { margin-left: 40px; }
   .settings-card, .danger-card, .settings-help { padding: 17px; }.status-dot { font-size: 9px; }.settings-card-heading p { max-width: 210px; }.api-key-guide { align-items: flex-start; grid-template-columns: auto minmax(0, 1fr); }.api-key-link { grid-column: 2; justify-self: start; }.setup-key-callout { align-items: flex-start; flex-wrap: wrap; }.setup-key-callout .text-button { margin-left: 41px; }
+}
+
+@media (max-width: 560px) {
+  .confirmation-dialog { padding: 20px; }
+  .confirmation-actions { flex-direction: column-reverse; }
+  .confirmation-actions button { width: 100%; }
 }
 
 /* Reading flow: topic controls travel with the page and new cards are requested explicitly. */

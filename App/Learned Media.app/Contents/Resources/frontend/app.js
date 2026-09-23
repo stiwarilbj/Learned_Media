@@ -66,6 +66,7 @@
     syncStatus: "signed-out",
     syncError: "",
     toast: "",
+    confirmation: null,
     loading: false,
     loadingCard: null,
     errorByCard: {},
@@ -479,6 +480,21 @@
     state.toast = message || "";
     render();
     if (message) window.setTimeout(function () { if (state.toast === message) { state.toast = ""; render(); } }, 4200);
+  }
+  function requestConfirmation(title, message, confirmLabel, action) {
+    state.confirmation = { title: title, message: message, confirmLabel: confirmLabel, action: action };
+    render();
+  }
+  function closeConfirmation() {
+    if (!state.confirmation) return;
+    state.confirmation = null;
+    render();
+  }
+  function confirmPendingAction() {
+    const request = state.confirmation;
+    state.confirmation = null;
+    render();
+    if (request && request.action) request.action();
   }
   function youtubeActivity(workspace) {
     const source = workspace || state.youtube;
@@ -1106,12 +1122,11 @@
     saveState();
     render();
   }
-  function deleteWorkspace(id) {
-    if (state.workspaces.length <= 1) return showToast("Keep at least one workspace so your local data always has a home.");
+  function performDeleteWorkspace(id) {
     const index = state.workspaces.findIndex(function (workspace) { return workspace.id === id; });
     if (index < 0) return;
     const target = state.workspaces[index];
-    if (!window.confirm("Delete workspace “" + target.name + "”? Its cards and local history will be removed from this Mac.")) return;
+    if (state.workspaces.length <= 1) return showToast("Keep at least one workspace so your local data always has a home.");
     if (id === state.workspaceId) {
       cancelWorkspaceOperations();
       const replacement = state.workspaces[index === 0 ? 1 : index - 1];
@@ -1122,6 +1137,12 @@
     saveState();
     render();
     showToast(target.name + " deleted.");
+  }
+  function deleteWorkspace(id) {
+    if (state.workspaces.length <= 1) return showToast("Keep at least one workspace so your local data always has a home.");
+    const target = state.workspaces.find(function (workspace) { return workspace.id === id; });
+    if (!target) return;
+    requestConfirmation("Delete workspace “" + target.name + "”?", "Its cards and local history will be removed from this Mac.", "Confirm", function () { performDeleteWorkspace(id); });
   }
   function naturalSearchVariants(query) {
     const normalized = searchText(query);
@@ -1208,6 +1229,10 @@
     });
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape") return;
+      if (state.confirmation) {
+        closeConfirmation();
+        return;
+      }
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
       clearWorkspaceRename();
       const active = document.activeElement;
@@ -1504,6 +1529,21 @@
     if (!facts.length) return showToast("There are no facts in that collection yet.");
     bridge("exportFacts", { format: format, workspaceName: state.workspaceName, facts: facts }).then(function (result) { if (result && result.omittedImages) showToast("Export complete. Images were omitted for " + result.omittedImages + " fact" + (result.omittedImages === 1 ? "" : "s") + " to keep the download manageable; all text and sources were kept."); else showToast("Export complete."); }).catch(function (error) { showToast(error.message || "The facts could not be exported."); });
   }
+  function confirmationOverlay() {
+    const request = state.confirmation;
+    if (!request) return null;
+    return node("div", { className: "confirmation-backdrop", role: "presentation", onClick: function (event) { if (event.target === event.currentTarget) closeConfirmation(); } },
+      node("section", { className: "confirmation-dialog", role: "alertdialog", "aria-modal": "true", "aria-labelledby": "native-confirmation-title", "aria-describedby": "native-confirmation-message", onClick: function (event) { event.stopPropagation(); } },
+        node("span", { className: "eyebrow", text: "Please confirm" }),
+        node("h2", { id: "native-confirmation-title", text: request.title }),
+        node("p", { id: "native-confirmation-message", text: request.message }),
+        node("div", { className: "confirmation-actions" },
+          node("button", { type: "button", className: "ghost-button", onClick: closeConfirmation }, "Cancel"),
+          node("button", { type: "button", className: "danger-button", autofocus: true, onClick: confirmPendingAction }, request.confirmLabel)
+        )
+      )
+    );
+  }
   function render() {
     if (stopYoutubePlayback) stopYoutubePlayback();
     const currentTopicTree = document.querySelector(".topic-tree");
@@ -1525,6 +1565,8 @@
     scroll.appendChild(node("button", { type: "button", className: "go-to-top", onClick: function () { window.scrollTo({ top: 0, behavior: "smooth" }); const target = document.querySelector(".main-scroll"); if (target) target.scrollTo({ top: 0, behavior: "smooth" }); } }, "Go to top"));
     main.appendChild(scroll);
     app.appendChild(main);
+    const confirmation = confirmationOverlay();
+    if (confirmation) app.appendChild(confirmation);
     window.requestAnimationFrame(function () {
       const nextTopicTree = document.querySelector(".topic-tree");
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
@@ -1666,8 +1708,7 @@
     render();
     showToast("Topics reset. Choose a topic to start again.");
   }
-  function resetAll() {
-    if (!window.confirm("Reset all preferences and return to the default topic mix?")) return;
+  function performResetAll() {
     generationToken += 1;
     state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
@@ -1681,8 +1722,10 @@
     saveState();
     render();
   }
-  function deleteData() {
-    if (!window.confirm("Delete saved facts, likes, history, and the current feed?")) return;
+  function resetAll() {
+    requestConfirmation("Reset all preferences?", "Your topic mix, feed, and learning preferences will return to their starting values.", "Confirm", performResetAll);
+  }
+  function performDeleteData() {
     generationToken += 1;
     state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
@@ -1693,6 +1736,9 @@
     saveState();
     render();
     showToast("Learning data cleared.");
+  }
+  function deleteData() {
+    requestConfirmation("Delete learning data?", "Saved facts, likes, history, and the current feed will be removed from this workspace.", "Confirm", performDeleteData);
   }
   async function generateBatch(token, requestedCount) {
     if (state.loading || !selectedCount()) return;
