@@ -18,7 +18,6 @@ export function ExploreView({ onChoose }: ExploreViewProps) {
           </article>
         ))}
       </div>
-      <div className="explore-callout"><div className="callout-icon"><Icon name="sparkles" size={18} /></div><div><strong>Want something more specific?</strong><p>Add a custom topic like “Rajah Humabon” or “forgotten 20th-century patents”</p></div><button type="button" className="text-button" onClick={() => onChoose("Custom topic")}>Make one <Icon name="arrow" size={15} /></button></div>
     </section>
   );
 }
