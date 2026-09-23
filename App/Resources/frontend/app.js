@@ -1230,7 +1230,7 @@
     header.appendChild(searchWrap);
     const accountName = state.workspaceName;
     const account = node("div", { className: "top-nav-account" });
-    account.appendChild(node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"));
+    if (state.cards.length || state.loading) account.appendChild(node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"));
     const switcher = node("div", { className: "workspace-switcher" });
     const profile = node("button", { className: "profile-chip", ariaExpanded: false, onClick: function () { const searchPopover = search.querySelector(".search-popover"); if (searchPopover) searchPopover.remove(); const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } else switcher.appendChild(workspaceMenu()); } }, node("span", { className: "profile-avatar" }, svg("panel", 16)), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.workspaces.length + " " + (state.workspaces.length === 1 ? "workspace" : "workspaces") })), svg("chevronDown", 15));
     switcher.appendChild(profile); account.appendChild(switcher); header.appendChild(account);
@@ -1246,6 +1246,7 @@
   }
   function topicPanel(setup) {
     const aside = node("aside", { className: (setup ? "setup-topics-panel" : "feed-topics-panel") + " surface-panel" });
+    if (!setup && (state.cards.length || state.loading)) aside.appendChild(node("button", { className: "topic-sidebar-reset", onClick: resetFeed }, svg("reset", 14), " Reset feed"));
     const details = node(setup ? "div" : "details", { className: setup ? "setup-topics-details setup-topics-static" : "topics-details" });
     if (setup) {
       details.appendChild(node("div", { className: "setup-topics-heading" }, node("span", { text: "Choose your topics" }), node("div", { className: "setup-topic-heading-actions" }, node("strong", { text: selectedCount() + " selected" }), node("button", { className: "text-button topic-reset-button", onClick: resetTopics }, "Reset"))));
@@ -1380,7 +1381,7 @@
     const layout = node("div", { className: "feed-layout" });
     layout.appendChild(topicPanel(false));
     const column = node("section", { className: "feed-content-column" });
-    column.appendChild(node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" })), node("button", { className: "toolbar-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed")));
+    column.appendChild(node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" }))));
     const feedCards = state.cards;
     column.appendChild(node("div", { className: "feed-intro" }, node("div", {}, node("h1", { text: "Keep going." }), node("p", { text: "One small idea at a time. Every card has a place to look next." })), node("span", { className: "feed-count", text: feedCards.length + " cards in this session" })));
     const list = node("div", { className: "fact-feed" });
@@ -1650,6 +1651,8 @@
     saveState();
     render();
     showToast("Feed reset. Choose a topic and press Start again.");
+    mainScrollTop = 0;
+    window.requestAnimationFrame(function () { window.scrollTo({ top: 0, behavior: "smooth" }); const target = document.querySelector(".main-scroll"); if (target) target.scrollTo({ top: 0, behavior: "smooth" }); });
   }
   function resetTopics() {
     state.topics.forEach(function clear(topic) {
