@@ -156,6 +156,9 @@ a { color: inherit; }
 .topbar-account { margin-left: 2px; border: 0; background: transparent; display: flex; align-items: center; gap: 7px; color: var(--muted); padding: 4px; }
 .search-popover { position: absolute; top: 50px; left: 0; right: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 13px; box-shadow: var(--shadow); padding: 8px; z-index: 20; }
 .search-group-label { display: block; color: var(--muted-soft); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; padding: 7px 8px 5px; }
+.search-suggestion-total { color: var(--muted); }
+.search-suggestion-group + .search-suggestion-group { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.search-group-count { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 4px; }
 .search-popover button { width: 100%; display: flex; justify-content: space-between; align-items: center; border: 0; border-radius: 8px; color: var(--ink); background: transparent; padding: 9px 8px; text-align: left; font-size: 11px; gap: 8px; }
 .search-popover button:hover { background: var(--surface-soft); color: var(--primary); }
 .mobile-brand { display: none; }

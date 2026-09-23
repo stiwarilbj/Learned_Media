@@ -15,7 +15,8 @@ import { ALLOWED_GEMINI_MODELS, generateGeminiFacts, generateLearningResponse, i
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
-import { rankSearchResults, searchScore } from "@/lib/search";
+import { rankSearchResults } from "@/lib/search";
+import { createTopicSuggestionIndex, suggestTopics } from "@/lib/topic-suggestions";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
 import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
@@ -238,7 +239,7 @@ export default function HomePage() {
   const [feedStarted, setFeedStarted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
-  const [semanticSearchTerms, setSemanticSearchTerms] = useState<string[]>([]);
+  const [semanticSearch, setSemanticSearch] = useState<{ query: string; terms: string[] }>({ query: "", terms: [] });
   const [customTopic, setCustomTopic] = useState("");
   const [rabbitHole, setRabbitHole] = useState<string | null>(null);
   const [toast, setToast] = useState("");
@@ -808,16 +809,16 @@ export default function HomePage() {
     globalSearchAbortController.current?.abort();
     const text = query.trim();
     if (!text || !apiKey.trim() || geminiStatus !== "connected") {
-      setSemanticSearchTerms([]);
+      setSemanticSearch({ query: text, terms: [] });
       return;
     }
     const controller = new AbortController();
     globalSearchAbortController.current = controller;
     const timer = window.setTimeout(() => {
       void interpretNaturalSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: text, signal: controller.signal }).then((result) => {
-        if (!controller.signal.aborted && globalSearchAbortController.current === controller) setSemanticSearchTerms(result.terms);
+        if (!controller.signal.aborted && globalSearchAbortController.current === controller) setSemanticSearch({ query: text, terms: result.terms });
       }).catch(() => {
-        if (!controller.signal.aborted && globalSearchAbortController.current === controller) setSemanticSearchTerms([]);
+        if (!controller.signal.aborted && globalSearchAbortController.current === controller) setSemanticSearch({ query: text, terms: [] });
       });
     }, 280);
     return () => {
@@ -829,6 +830,7 @@ export default function HomePage() {
 
   const selectedCount = useMemo(() => selectedLeafCount(topics), [topics]);
   const allTopicResults = useMemo(() => flattenTopics(topics), [topics]);
+  const topicSuggestionIndex = useMemo(() => createTopicSuggestionIndex(allTopicResults), [allTopicResults]);
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => {
     const nextSentenceLength = next.sentenceLength === undefined ? settings.sentenceLength : normalizeSentenceLength(next.sentenceLength);
@@ -1613,22 +1615,10 @@ export default function HomePage() {
     return <FeedView cards={filteredCards} showReset={cards.length > 0 || loading} query={query} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, 10)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
 
-  const searchCollection = view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : cards;
-  const searchEntries = useMemo(() => [
-    ...allTopicResults.map((topic) => ({ kind: "topic" as const, item: topic, text: `${topic.path.join(" ")} ${topic.label} ${(topic.aliases ?? []).join(" ")}` })),
-    ...searchCollection.map((card) => ({ kind: "fact" as const, item: card, text: `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}` }))
-  ], [allTopicResults, searchCollection]);
-  const searchResults = useMemo(() => {
-    const text = query.trim();
-    if (!text) return [];
-    const rankedDirect = searchEntries.map((entry, index) => ({ entry, index, score: searchScore(text, entry.text) })).filter((entry) => entry.score > 0).sort((left, right) => right.score - left.score || left.index - right.index).slice(0, 10);
-    const directIds = new Set(rankedDirect.map(({ entry }) => entry.kind + ":" + entry.item.id));
-    const semanticQueries = [text, ...semanticSearchTerms].filter((value, index, values) => value && values.indexOf(value) === index);
-    const rankedSemantic = searchEntries.map((entry, index) => ({ entry, index, score: Math.max(...semanticQueries.map((term) => searchScore(term, entry.text)), 0) })).filter((entry) => entry.score > 0 && !directIds.has(entry.entry.kind + ":" + entry.entry.item.id)).sort((left, right) => right.score - left.score || left.index - right.index).slice(0, 90);
-    return [...rankedDirect, ...rankedSemantic].map(({ entry }) => entry);
-  }, [query, searchEntries, semanticSearchTerms]);
-  const topicResults = searchResults.filter((entry): entry is { kind: "topic"; item: (typeof allTopicResults)[number]; text: string } => entry.kind === "topic").map(({ item }) => item);
-  const factResults = searchResults.filter((entry): entry is { kind: "fact"; item: FactCard; text: string } => entry.kind === "fact").map(({ item }) => item);
+  const topicSuggestions = useMemo(
+    () => suggestTopics(topicSuggestionIndex, query, semanticSearch.query === query.trim() ? semanticSearch.terms : []),
+    [topicSuggestionIndex, query, semanticSearch]
+  );
 
   return (
     <div
@@ -1643,10 +1633,8 @@ export default function HomePage() {
         showReset={cards.length > 0 || loading}
         query={query}
         onQueryChange={setQuery}
-        topicResults={topicResults}
-        factResults={factResults}
+        topicSuggestions={topicSuggestions}
         onChooseTopic={(label) => { setView("feed"); setFeedStarted(false); setQuery(label); }}
-        onChooseFact={(title) => { setView("history"); setQuery(title); }}
         workspaceId={workspaceId}
         workspaceName={workspaceName}
         workspaces={workspaceSummaries}

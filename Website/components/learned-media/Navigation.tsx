@@ -2,11 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { View } from "@/lib/types";
-import type { FactCard } from "@/lib/types";
+import type { TopicSuggestion } from "@/lib/topic-suggestions";
 import { Icon, type IconName } from "./icons";
 import type { WorkspaceSummary } from "@/lib/workspaces";
 
-type TopicSearchResult = { id: string; label: string; path: string[] };
 type NavigationProps = {
   view: View;
   onNavigate: (view: View) => void;
@@ -14,10 +13,8 @@ type NavigationProps = {
   showReset: boolean;
   query: string;
   onQueryChange: (query: string) => void;
-  topicResults: TopicSearchResult[];
-  factResults: Array<Pick<FactCard, "id" | "title">>;
+  topicSuggestions: TopicSuggestion[];
   onChooseTopic: (label: string) => void;
-  onChooseFact: (title: string) => void;
   workspaceId: string;
   workspaceName: string;
   workspaces: WorkspaceSummary[];
@@ -38,7 +35,7 @@ const items: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "settings", label: "Settings", icon: "settings" }
 ];
 
-export function Navigation({ view, onNavigate, onReset, showReset, query, onQueryChange, topicResults, factResults, onChooseTopic, onChooseFact, workspaceId, workspaceName, workspaces, onSwitchWorkspace, onCreateWorkspace, onRenameWorkspace, onDeleteWorkspace, onMoveWorkspace }: NavigationProps) {
+export function Navigation({ view, onNavigate, onReset, showReset, query, onQueryChange, topicSuggestions, onChooseTopic, workspaceId, workspaceName, workspaces, onSwitchWorkspace, onCreateWorkspace, onRenameWorkspace, onDeleteWorkspace, onMoveWorkspace }: NavigationProps) {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [renameId, setRenameId] = useState<string | null>(null);
@@ -75,11 +72,6 @@ export function Navigation({ view, onNavigate, onReset, showReset, query, onQuer
     setSearchOpen(false);
     setWorkspaceOpen(false);
     onChooseTopic(label);
-  };
-  const chooseFact = (title: string) => {
-    setSearchOpen(false);
-    setWorkspaceOpen(false);
-    onChooseFact(title);
   };
   const navigate = (nextView: View) => {
     setSearchOpen(false);
@@ -122,11 +114,19 @@ export function Navigation({ view, onNavigate, onReset, showReset, query, onQuer
         <div className="top-nav-search">
           <div className="global-search-wrap">
             <Icon name="search" size={17} />
-            <input value={query} onFocus={() => { setSearchOpen(true); setWorkspaceOpen(false); }} onChange={(event) => { setSearchOpen(true); onQueryChange(event.target.value); }} placeholder="Search topics or facts" aria-label="Search topics or facts" />
+            <input value={query} onFocus={() => { setSearchOpen(true); setWorkspaceOpen(false); }} onChange={(event) => { setSearchOpen(true); onQueryChange(event.target.value); }} placeholder="Search topics" aria-label="Search topics" />
             {query && <button type="button" className="clear-search" onClick={() => { setSearchOpen(false); onQueryChange(""); }} aria-label="Clear search"><Icon name="x" size={15} /></button>}
-            {query && searchOpen && (topicResults.length > 0 || factResults.length > 0) && <div className="search-popover">
-              {topicResults.length > 0 && <><span className="search-group-label">Topics</span>{topicResults.map((topic) => <button type="button" key={topic.id} onClick={() => chooseTopic(topic.label)}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}</>}
-              {factResults.length > 0 && <><span className="search-group-label">Facts</span>{factResults.map((card) => <button type="button" key={card.id} onClick={() => chooseFact(card.title)}><span>{card.title}</span><Icon name="arrow" size={14} /></button>)}</>}
+            {query && searchOpen && topicSuggestions.length > 0 && <div className="search-popover" role="region" aria-label={`${topicSuggestions.length} topic suggestions`}>
+              <span className="search-group-label search-suggestion-total">{topicSuggestions.length} topic suggestions</span>
+              {(["keyword", "related", "explore"] as const).map((group) => {
+                const groupSuggestions = topicSuggestions.filter((topic) => topic.group === group);
+                if (groupSuggestions.length === 0) return null;
+                const label = group === "keyword" ? "Keyword matches" : group === "related" ? "Related topics" : "Explore more";
+                return <section className="search-suggestion-group" key={group} aria-label={`${label}: ${groupSuggestions.length}`}>
+                  <span className="search-group-label">{label} <span className="search-group-count">{groupSuggestions.length}</span></span>
+                  {groupSuggestions.map((topic) => <button type="button" key={topic.id} title={topic.path.join(" → ")} aria-label={topic.path.join(" → ")} onClick={() => chooseTopic(topic.label)}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}
+                </section>;
+              })}
             </div>}
           </div>
         </div>
