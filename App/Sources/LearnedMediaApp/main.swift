@@ -12,10 +12,12 @@ import LearnedMediaCore
 private struct NativeError: Error {
     let message: String
     let retryable: Bool
+    let outcomes: [[String: Any]]
 
-    init(message: String, retryable: Bool = true) {
+    init(message: String, retryable: Bool = true, outcomes: [[String: Any]] = []) {
         self.message = message
         self.retryable = retryable
+        self.outcomes = outcomes
     }
 }
 
@@ -423,47 +425,48 @@ private final class WikipediaClient: @unchecked Sendable {
 
 private actor ModelScheduler {
     private var models: [String] = []
-    private var healthy = Set<String>()
+    private var working = Set<String>()
+    private var failed = Set<String>()
     private var cooldowns: [String: Date] = [:]
     private var resolvedByRequested: [String: String] = [:]
     private var inFlight = Set<String>()
     private var inFlightResolved = Set<String>()
-    private var cursor = 0
     private var outageCooldownUntil: Date?
+    private var ready = false
 
     func update(_ next: [String]) {
         models = GeminiModelPolicy.sort(next)
-        healthy = healthy.intersection(Set(models))
+        working = working.intersection(Set(models))
+        failed = failed.intersection(Set(models))
         cooldowns = cooldowns.filter { models.contains($0.key) }
         resolvedByRequested = resolvedByRequested.filter { models.contains($0.key) }
-        cursor = cursor % max(models.count, 1)
     }
 
     func hasModels() -> Bool { !models.isEmpty }
-    func hasHealthyModels() -> Bool { !availableModels().isEmpty }
+    func isReady() -> Bool { ready }
+    func hasAvailableModels() -> Bool { !availableModels().isEmpty }
+    func setReady(_ value: Bool) { ready = value }
     func reset() {
         models = []
-        healthy.removeAll()
+        working.removeAll()
+        failed.removeAll()
         cooldowns.removeAll()
         resolvedByRequested.removeAll()
         inFlight.removeAll()
         inFlightResolved.removeAll()
         outageCooldownUntil = nil
-        cursor = 0
+        ready = false
     }
 
     func reserve(tried: Set<String>) -> String? {
         guard inFlight.count < 5 else { return nil }
         let available = availableModels()
         guard !available.isEmpty else { return nil }
-        for offset in 0..<models.count {
-            let index = (cursor + offset) % models.count
-            let model = models[index]
+        for model in models {
             guard available.contains(model), !tried.contains(model), !inFlight.contains(model) else { continue }
             if let resolved = resolvedByRequested[model], inFlightResolved.contains(resolved) { continue }
             inFlight.insert(model)
             if let resolved = resolvedByRequested[model] { inFlightResolved.insert(resolved) }
-            cursor = (index + 1) % models.count
             return model
         }
         return nil
@@ -475,7 +478,8 @@ private actor ModelScheduler {
     }
 
     func markSuccess(_ model: String, resolvedModel: String?) {
-        healthy.insert(model)
+        working.insert(model)
+        failed.remove(model)
         cooldowns[model] = nil
         if let resolvedModel, !resolvedModel.isEmpty { resolvedByRequested[model] = resolvedModel }
         release(model)
@@ -484,10 +488,10 @@ private actor ModelScheduler {
 
     func markFailure(_ model: String, retryable: Bool) {
         if retryable {
-            healthy.insert(model)
             cooldowns[model] = Date().addingTimeInterval(45)
         } else {
-            healthy.remove(model)
+            working.remove(model)
+            failed.insert(model)
             cooldowns[model] = nil
         }
         release(model)
@@ -499,7 +503,7 @@ private actor ModelScheduler {
 
     func healthyCount() -> Int {
         var resolved = Set<String>()
-        return healthy.reduce(into: 0) { count, model in
+        return working.reduce(into: 0) { count, model in
             if let version = resolvedByRequested[model] {
                 if resolved.insert(version).inserted { count += 1 }
             } else {
@@ -524,7 +528,7 @@ private actor ModelScheduler {
         let now = Date()
         var seenResolved = Set<String>()
         return models.filter { model in
-            guard healthy.contains(model), (cooldowns[model] ?? .distantPast) <= now else { return false }
+            guard !failed.contains(model), (cooldowns[model] ?? .distantPast) <= now else { return false }
             if let resolved = resolvedByRequested[model] {
                 guard !seenResolved.contains(resolved) else { return false }
                 seenResolved.insert(resolved)
@@ -587,6 +591,10 @@ private final class GeminiClient {
 
     private func isoNow() -> String { ISO8601DateFormatter().string(from: Date()) }
 
+    private func isCredentialFailure(_ message: String) -> Bool {
+        message.range(of: "401|403|API key|permission|unauthorized|forbidden", options: [.caseInsensitive, .regularExpression]) != nil
+    }
+
     private func requestModel(_ model: String, key: String, prompt: String, schema: [String: Any], timeout: TimeInterval = 45) async throws -> (text: String, resolvedModel: String?) {
         let endpoint = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent")!
         var request = URLRequest(url: endpoint, timeoutInterval: timeout)
@@ -625,10 +633,11 @@ private final class GeminiClient {
 
     private func structured(key: String, prompt: String, schema: [String: Any], stage: String, timeout: TimeInterval = 45) async throws -> (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]]) {
         try await ensureModels(key: key)
-        if !(await scheduler.hasHealthyModels()), let retryDate = await scheduler.nextRetryDate() {
+        guard await scheduler.isReady() else { throw NativeError(message: "Connect Gemini and wait until at least three allowed models pass their structured-output checks.", retryable: false) }
+        if !(await scheduler.hasAvailableModels()), let retryDate = await scheduler.nextRetryDate() {
             try await Task.sleep(nanoseconds: UInt64(max(0, retryDate.timeIntervalSinceNow) * 1_000_000_000))
         }
-        guard await scheduler.hasHealthyModels() else { throw NativeError(message: "No healthy requested Gemini model is available. Recheck the models or retry after the cooldown.", retryable: true) }
+        guard await scheduler.hasAvailableModels() else { throw NativeError(message: "No allowed Gemini model is available right now. Retry after the cooldown.", retryable: true) }
         var outcomes: [[String: Any]] = []
         var tried = Set<String>()
         var pass = 0
@@ -652,6 +661,9 @@ private final class GeminiClient {
                     let latency = Int(Date().timeIntervalSince(started) * 1000)
                     outcomes.append(["model": model, "stage": stage, "status": retryable ? "cooldown" : "failed", "latencyMs": latency, "error": message])
                     await scheduler.markFailure(model, retryable: retryable)
+                    if message.range(of: "Gemini HTTP 401", options: .caseInsensitive) != nil || message.range(of: "Gemini HTTP 403", options: .caseInsensitive) != nil || message.range(of: "API key|permission|unauthorized|forbidden", options: [.caseInsensitive, .regularExpression]) != nil {
+                        throw NativeError(message: message, retryable: false, outcomes: outcomes)
+                    }
                     lastError = error
                     sawRetryableFailure = sawRetryableFailure || retryable
                     continue
@@ -668,10 +680,14 @@ private final class GeminiClient {
                 continue
             }
             if tried.isEmpty {
-                throw NativeError(message: "Every healthy requested Gemini model is busy or cooling down.", retryable: true)
+                throw NativeError(message: "Every allowed Gemini model is busy or cooling down.", retryable: true)
             }
             if !sawRetryableFailure {
-                throw lastError ?? NativeError(message: "Gemini did not return a usable result.", retryable: false)
+                if let lastError {
+                    let nativeError = lastError as? NativeError
+                    throw NativeError(message: nativeError?.message ?? "Gemini did not return a usable result.", retryable: nativeError?.retryable ?? false, outcomes: outcomes)
+                }
+                throw NativeError(message: "Gemini did not return a usable result.", retryable: false, outcomes: outcomes)
             }
             if pass < 1 {
                 pass += 1
@@ -709,33 +725,35 @@ private final class GeminiClient {
     }
 
     func test(key: String, onCheck: @escaping ([String: Any], Int) -> Void) async -> [String: Any] {
-        guard !key.isEmpty else { return ["status": "not-configured", "models": []] }
+        guard !key.isEmpty else {
+            let models = GeminiModelPolicy.allowedModels.map { GeminiModelCheckResult(model: $0, status: "unchecked", latencyMs: 0, checkedAt: "", error: nil, resolvedModel: nil).dictionary }
+            return ["status": "not-configured", "models": models, "eligibleModelCount": GeminiModelPolicy.allowedModels.count, "requiredWorkingModels": GeminiModelPolicy.requiredWorkingModels]
+        }
         await scheduler.reset()
         await scheduler.update(GeminiModelPolicy.allowedModels)
-        var checks: [GeminiModelCheckResult] = []
+        var checks = GeminiModelPolicy.allowedModels.map { GeminiModelCheckResult(model: $0, status: "unchecked", latencyMs: 0, checkedAt: "", error: nil, resolvedModel: nil) }
         var offset = 0
-        while offset < GeminiModelPolicy.allowedModels.count {
-            let chunk = Array(GeminiModelPolicy.allowedModels[offset..<min(offset + GeminiModelPolicy.requiredWorkingModels, GeminiModelPolicy.allowedModels.count)])
+        var readyCount = 0
+        while offset < GeminiModelPolicy.allowedModels.count && readyCount < GeminiModelPolicy.requiredWorkingModels {
+            let count = offset == 0 ? GeminiModelPolicy.requiredWorkingModels : min(GeminiModelPolicy.requiredWorkingModels - readyCount, GeminiModelPolicy.allowedModels.count - offset)
+            let chunk = Array(GeminiModelPolicy.allowedModels[offset..<offset + count])
             let results = await withTaskGroup(of: GeminiModelCheckResult.self, returning: [GeminiModelCheckResult].self) { group in
                 for model in chunk { group.addTask { await self.checkModel(key: key, model: model, onCheck: onCheck) } }
                 var next: [GeminiModelCheckResult] = []
                 for await result in group { next.append(result) }
                 return next
             }
-            checks.append(contentsOf: results)
+            for result in results {
+                if let index = checks.firstIndex(where: { $0.model == result.model }) { checks[index] = result }
+            }
             offset += chunk.count
-            let workingResolved = Set(checks.filter { $0.status == "working" }.map { $0.resolvedModel ?? $0.model })
-            if workingResolved.count >= GeminiModelPolicy.requiredWorkingModels { break }
-        }
-        checks.sort { left, right in
-            let leftIndex = GeminiModelPolicy.allowedModels.firstIndex(of: left.model) ?? Int.max
-            let rightIndex = GeminiModelPolicy.allowedModels.firstIndex(of: right.model) ?? Int.max
-            return leftIndex < rightIndex
+            readyCount = Set(checks.filter { $0.status == "working" }.map { $0.resolvedModel ?? $0.model }).count
         }
         let dictionaries = checks.map(\.dictionary)
         let workingResolved = Set(checks.filter { $0.status == "working" }.map { $0.resolvedModel ?? $0.model })
-        let invalid = checks.contains { $0.error?.contains("401") == true || $0.error?.contains("403") == true }
         let ready = workingResolved.count >= GeminiModelPolicy.requiredWorkingModels
+        await scheduler.setReady(ready)
+        let invalid = checks.contains { $0.error?.range(of: "401|403|API key|permission|unauthorized|forbidden", options: [.caseInsensitive, .regularExpression]) != nil }
         return ["status": ready ? "connected" : invalid ? "invalid" : checks.contains(where: { $0.status == "cooldown" }) ? "rate-limited" : "unavailable", "message": ready ? "Gemini connection verified with three allowed models." : "Fewer than three distinct allowed models passed the structured-output check.", "models": dictionaries, "eligibleModelCount": GeminiModelPolicy.allowedModels.count, "requiredWorkingModels": GeminiModelPolicy.requiredWorkingModels]
     }
 
@@ -820,7 +838,7 @@ private final class GeminiClient {
             }
             return GeminiCandidateGroupResult(slots: slots.map(\.index), candidates: candidates, outcomes: result.outcomes, error: nil)
         } catch {
-            return GeminiCandidateGroupResult(slots: slots.map(\.index), candidates: [:], outcomes: [], error: (error as? NativeError)?.message ?? "Gemini returned an unusable candidate batch.")
+            return GeminiCandidateGroupResult(slots: slots.map(\.index), candidates: [:], outcomes: (error as? NativeError)?.outcomes ?? [], error: (error as? NativeError)?.message ?? "Gemini returned an unusable candidate batch.")
         }
     }
 
@@ -836,7 +854,7 @@ private final class GeminiClient {
             }
             return GeminiGroundedGroupResult(slots: slots.map(\.index), facts: mapped, model: result.model, resolvedModel: result.resolvedModel, outcomes: result.outcomes, error: nil)
         } catch {
-            return GeminiGroundedGroupResult(slots: slots.map(\.index), facts: [:], model: nil, resolvedModel: nil, outcomes: [], error: (error as? NativeError)?.message ?? "Gemini returned an unusable grounded batch.")
+            return GeminiGroundedGroupResult(slots: slots.map(\.index), facts: [:], model: nil, resolvedModel: nil, outcomes: (error as? NativeError)?.outcomes ?? [], error: (error as? NativeError)?.message ?? "Gemini returned an unusable grounded batch.")
         }
     }
 
@@ -897,6 +915,7 @@ private final class GeminiClient {
             }
             try Task.checkCancellation()
             for result in candidateResults {
+                if let error = result.error, isCredentialFailure(error) { throw NativeError(message: error, retryable: false) }
                 outcomes.append(contentsOf: result.outcomes)
                 for index in result.slots {
                     guard let candidate = result.candidates[index], let title = candidate.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
@@ -927,10 +946,12 @@ private final class GeminiClient {
 
             let readyToGround = slots.filter { $0.mode == "grounding" && !$0.sources.isEmpty && accepted[$0.index] == nil }
             let groundingBatches = groundingGroups(readyToGround, sentenceCount: sentenceCount)
+            var groundedCredentialError: String?
             await withTaskGroup(of: GeminiGroundedGroupResult.self) { group in
                 for batch in groundingBatches { group.addTask { await self.generateGrounded(key: key, slots: batch, sentenceCount: sentenceCount) } }
                 for await result in group {
                     if Task.isCancelled { group.cancelAll(); break }
+                    if let error = result.error, isCredentialFailure(error) { groundedCredentialError = error; group.cancelAll(); break }
                     outcomes.append(contentsOf: result.outcomes)
                     for index in result.slots {
                         guard let slotIndex = slots.firstIndex(where: { $0.index == index }), let fact = result.facts[index] else {
@@ -963,6 +984,7 @@ private final class GeminiClient {
                     }
                 }
             }
+            if let groundedCredentialError { throw NativeError(message: groundedCredentialError, retryable: false) }
             try Task.checkCancellation()
         }
 

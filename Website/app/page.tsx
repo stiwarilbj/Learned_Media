@@ -11,7 +11,7 @@ import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
 import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
-import { generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, REQUIRED_WORKING_MODELS, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
+import { ALLOWED_GEMINI_MODELS, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, REQUIRED_WORKING_MODELS, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
@@ -22,7 +22,7 @@ import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudS
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_WORKSPACE, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, relatedYouTubeVideos, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { wikipediaEvidenceLink } from "@/lib/wikipedia";
-import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
+import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const STORAGE_KEY = "learned-media-state";
 const STORAGE_BACKUP_KEY = "learned-media-state-backup";
@@ -74,6 +74,21 @@ function writeWorkspaceState(state: PersistedState) {
   } catch {
     // Local persistence is best effort; a browser quota error must not interrupt reading.
   }
+}
+
+function mergeGeminiModelOutcome(current: GeminiModelCheck[], outcome: GeminiModelOutcome) {
+  const previous = current.find((model) => model.model === outcome.model);
+  const nextCheck: GeminiModelCheck = {
+    model: outcome.model,
+    status: outcome.status === "success" ? "working" : outcome.status,
+    latencyMs: outcome.latencyMs,
+    checkedAt: new Date().toISOString(),
+    ...(outcome.resolvedModel || previous?.resolvedModel ? { resolvedModel: outcome.resolvedModel ?? previous?.resolvedModel } : {}),
+    ...(outcome.error ? { error: outcome.error } : {})
+  };
+  const next = current.filter((model) => model.model !== outcome.model);
+  next.push(nextCheck);
+  return next.sort((left, right) => ALLOWED_GEMINI_MODELS.indexOf(left.model as typeof ALLOWED_GEMINI_MODELS[number]) - ALLOWED_GEMINI_MODELS.indexOf(right.model as typeof ALLOWED_GEMINI_MODELS[number]));
 }
 
 function youtubeActivityOf(workspace: YouTubeWorkspaceState): YouTubeWorkspaceActivity {
@@ -229,7 +244,7 @@ export default function HomePage() {
   const [account, setAccount] = useState<CloudAccount | null>(null);
   const [syncStatus, setSyncStatus] = useState<"signed-out" | "syncing" | "synced" | "offline" | "error">("signed-out");
   const [syncError, setSyncError] = useState("");
-  const [modelChecks, setModelChecks] = useState<GeminiModelCheck[]>([]);
+  const [modelChecks, setModelChecks] = useState<GeminiModelCheck[]>(() => ALLOWED_GEMINI_MODELS.map((model) => ({ model, status: "unchecked" })));
   const [modelChecking, setModelChecking] = useState(false);
   const [generationError, setGenerationError] = useState("");
   const [learnLoading, setLearnLoading] = useState<string | null>(null);
@@ -895,7 +910,12 @@ export default function HomePage() {
           avoid: [],
           signal: controller.signal,
           onProgress: (event) => {
-            if (controller.signal.aborted || requestGeneration.current !== requestId || event.type !== "card") return;
+            if (controller.signal.aborted || requestGeneration.current !== requestId) return;
+            if (event.type === "model") {
+              setModelChecks((current) => mergeGeminiModelOutcome(current, event.outcome));
+              return;
+            }
+            if (event.type !== "card") return;
             const card = normalizeFact(event.card, receivedIds.size);
             if (acceptFact(card)) receivedIds.add(card.id);
           }
@@ -932,13 +952,16 @@ export default function HomePage() {
       await readNdjson(response, (message) => {
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
         if (message.type === "progress") {
-          const event = message.event as { type?: string; card?: Partial<FactCard> };
+          const event = message.event as { type?: string; card?: Partial<FactCard>; outcome?: GeminiModelOutcome };
+          if (event.type === "model" && event.outcome) setModelChecks((current) => mergeGeminiModelOutcome(current, event.outcome!));
           if (event.type === "card" && event.card?.id && event.card.title && event.card.body && event.card.hook && event.card.topicPath?.length && event.card.sources?.length) {
             const card = normalizeFact(event.card, receivedIds.size);
             if (acceptFact(card)) receivedIds.add(card.id);
           }
         } else if (message.type === "complete") {
           finalPayload = message as typeof finalPayload;
+          const modelOutcomes = (message.modelOutcomes as GeminiModelOutcome[] | undefined) ?? [];
+          if (modelOutcomes.length) setModelChecks((current) => modelOutcomes.reduce(mergeGeminiModelOutcome, current));
         } else if (message.type === "error") {
           streamError = String(message.error ?? "Gemini could not complete this batch.");
         }
@@ -1176,7 +1199,7 @@ export default function HomePage() {
     requestGeneration.current += 1;
     setApiKey(value);
     setGeminiStatus("not-configured");
-    setModelChecks([]);
+    setModelChecks(ALLOWED_GEMINI_MODELS.map((model) => ({ model, status: "unchecked" })));
     setModelChecking(false);
     setLoading(false);
     setLearnLoading(null);
@@ -1196,6 +1219,7 @@ export default function HomePage() {
     connectionAbortController.current = controller;
     setModelChecking(true);
     setGeminiStatus("testing");
+    setModelChecks(ALLOWED_GEMINI_MODELS.map((model) => ({ model, status: "unchecked" })));
     try {
       if (isGitHubPagesRuntime()) {
         const result = await testGeminiKey(keyAtStart, controller.signal, sessionIdRef.current, (check, readyCount) => {
@@ -1248,7 +1272,7 @@ export default function HomePage() {
     } catch (error) {
       if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
       setGeminiStatus("unavailable");
-      setModelChecks([]);
+      setModelChecks(ALLOWED_GEMINI_MODELS.map((model) => ({ model, status: "unchecked" })));
       setToast(error instanceof Error ? error.message : "Could not reach the Gemini connection check.");
     } finally {
       if (connectionAbortController.current === controller) {

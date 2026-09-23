@@ -10,7 +10,7 @@
   };
   const TOPIC_CATALOG_VERSION = 23;
   const REQUIRED_WORKING_MODELS = 3;
-  const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Impossible"];
   const PERSISTENCE_VERSION = 2;
@@ -53,7 +53,7 @@
     customTopic: "",
     key: "",
     geminiStatus: "not-configured",
-    modelChecks: [],
+    modelChecks: ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }),
     modelChecking: false,
     youtubeKey: "",
     youtubeStatus: "not-configured",
@@ -1408,22 +1408,23 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Remembered key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Remembered key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain, separate from workspaces, and sent only when Gemini is requested." })));
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
     const workingModels = {};
+    const checkedModels = state.modelChecks.filter(function (model) { return model.status !== "unchecked"; });
     state.modelChecks.forEach(function (model) { if (model.status === "working") workingModels[model.resolvedModel || model.model] = true; });
-    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: state.modelChecks.length ? Object.keys(workingModels).length + " ready of " + state.modelChecks.length + " checked" : "Connect to check available models" })));
+    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: checkedModels.length ? Object.keys(workingModels).length + " ready of " + checkedModels.length + " checked" : state.modelChecks.length ? "Not checked yet" : "Connect to check available models" })));
     modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking" : "Check connection"));
     gemini.appendChild(modelHeading);
     if (state.modelChecks.length) {
       const modelList = node("div", { className: "model-check-list", ariaLive: "polite" });
-      state.modelChecks.forEach(function (model) { modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? "Ready · resolves to " + model.resolvedModel : "Ready for generation") : model.error || "Unavailable" })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") }))); });
+      state.modelChecks.forEach(function (model) { modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: model.status === "unchecked" ? "Not checked" : model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? "Ready · resolves to " + model.resolvedModel : "Ready for generation") : model.error || "Unavailable" })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") }))); });
       gemini.appendChild(modelList);
     }
     gemini.appendChild(node("div", { className: "api-key-guide" }, node("div", { className: "api-key-guide-icon" }, svg("sparkles", 16)), node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a key?" }), node("p", { text: "Create or copy one in Google AI Studio, then paste it here." })), externalLink(AI_STUDIO_URL, "Open AI Studio", "api-key-link")));
@@ -1708,6 +1709,7 @@
       const generationSettings = Object.assign({}, state.settings, { sentenceLength: generationSentenceLength });
       const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], token: state.generationRequestToken });
       if (activeToken !== generationToken) return;
+      mergeGeminiModelOutcomes(result.modelOutcomes);
       (result.cards || []).forEach(function (card) { acceptNewFact(card, generationSentenceLength); });
       const completed = state.batchAccepted;
       state.pendingSlots = Math.max(0, count - completed);
@@ -1726,12 +1728,24 @@
       }
     }
   }
+  function mergeGeminiModelOutcomes(outcomes) {
+    (outcomes || []).forEach(function (outcome) {
+      if (!outcome || !outcome.model) return;
+      const previous = state.modelChecks.find(function (model) { return model.model === outcome.model; });
+      const nextCheck = { model: outcome.model, status: outcome.status === "success" ? "working" : outcome.status, latencyMs: outcome.latencyMs, checkedAt: new Date().toISOString() };
+      if (outcome.resolvedModel || previous && previous.resolvedModel) nextCheck.resolvedModel = outcome.resolvedModel || previous.resolvedModel;
+      if (outcome.error) nextCheck.error = outcome.error;
+      state.modelChecks = state.modelChecks.filter(function (model) { return model.model !== outcome.model; });
+      state.modelChecks.push(nextCheck);
+    });
+    state.modelChecks.sort(function (left, right) { return ALLOWED_GEMINI_MODELS.indexOf(left.model) - ALLOWED_GEMINI_MODELS.indexOf(right.model); });
+  }
   async function testKey() {
     const keyAtStart = state.key.trim();
     if (!keyAtStart) return showToast("Paste your Gemini API key first.");
     state.geminiStatus = "testing";
     state.modelChecking = true;
-    state.modelChecks = [];
+    state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; });
     state.connectionToken += 1;
     const connectionToken = state.connectionToken;
     render();
@@ -1744,7 +1758,7 @@
     } catch (error) {
       if (state.key.trim() !== keyAtStart) return;
       state.geminiStatus = "unavailable";
-      state.modelChecks = [];
+      state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; });
       showToast(error.message);
     }
     if (state.key.trim() === keyAtStart) {

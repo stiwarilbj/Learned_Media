@@ -6,13 +6,13 @@
     obscurity: 5,
     displayMode: "picture-text",
     sentenceLength: 3,
-    surpriseMe: true
+    surpriseMe: false
   };
-  const TOPIC_CATALOG_VERSION = 21;
+  const TOPIC_CATALOG_VERSION = 23;
   const REQUIRED_WORKING_MODELS = 3;
-  const ALLOWED_GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
-  const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Super Duper Hard"];
+  const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Impossible"];
   const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const BEST_SELLING_BOOK_ORDER = [
@@ -35,6 +35,9 @@
     workspaceId: "local-workspace",
     workspaceName: "Local Workspace",
     workspaces: [],
+    renameWorkspaceId: null,
+    renameWorkspaceDraft: "",
+    renameWorkspaceError: "",
     factMemory: [],
     batchAccepted: 0,
     keyEditEpoch: 0,
@@ -50,7 +53,7 @@
     customTopic: "",
     key: "",
     geminiStatus: "not-configured",
-    modelChecks: [],
+    modelChecks: ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }),
     modelChecking: false,
     youtubeKey: "",
     youtubeStatus: "not-configured",
@@ -71,7 +74,8 @@
     youtubeSearchPhase: "idle",
     youtubeSearchError: "",
     connectionToken: 0,
-    generationRequestToken: 0
+    generationRequestToken: 0,
+    activeGenerationSentenceLength: 3
   };
   function normalizeSentenceLength(value) {
     const number = Number(value);
@@ -139,6 +143,9 @@
   let cloudSyncToken = 0;
   let queuedWorkspaceState = null;
   let stopYoutubePlayback = null;
+  let setupCustomizeOpen = false;
+  let feedCustomizeOpen = false;
+  let topicSearchExpansionSuppressed = false;
   let youtubeSyncActive = false;
   let youtubeSearchToken = 0;
   let searchInterpretToken = 0;
@@ -177,7 +184,10 @@
   }
   function titleCaseCatalogLabel(label) {
     const small = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
-    const words = String(label).replace(/\s+/g, " ").trim().split(/(\s+)/);
+    const normalized = String(label).replace(/\s+/g, " ").trim();
+    const scientificName = normalized.match(/^([A-Z][a-z]+) ([a-z][a-z-]+)(?:\s|$)/);
+    if (scientificName && ["Ardipithecus", "Australopithecus", "Homo", "Kenyanthropus", "Orrorin", "Paranthropus", "Sahelanthropus"].indexOf(scientificName[1]) >= 0) return normalized;
+    const words = normalized.split(/(\s+)/);
     const indexes = words.map(function (word, index) { return /^\s+$/.test(word) ? -1 : index; }).filter(function (index) { return index >= 0; });
     const first = indexes[0]; const last = indexes[indexes.length - 1];
     return words.map(function (word, index) {
@@ -335,7 +345,7 @@
     }
     if (message.type === "generationCard" && message.token === state.generationRequestToken && state.started) {
       const raw = message.card;
-      if (!acceptNewFact(raw)) return;
+      if (!acceptNewFact(raw, state.activeGenerationSentenceLength)) return;
       saveState();
       render();
     }
@@ -513,8 +523,8 @@
       return overlap(words(item.body),words(old.body)) >= .78 && (overlap(words(item.title),words(old.title)) >= .5 || item.sourceUrls.some(function (url) { return (old.sourceUrls || []).indexOf(url) >= 0; }));
     });
   }
-  function acceptNewFact(raw) {
-    if (!raw || !raw.id || !raw.body || !hasExactSentenceCount(raw.body, state.settings.sentenceLength) || repeatedFact(raw)) return false;
+  function acceptNewFact(raw, expectedSentenceLength) {
+    if (!raw || !raw.id || !raw.body || !hasExactSentenceCount(raw.body, expectedSentenceLength === undefined ? state.settings.sentenceLength : expectedSentenceLength) || repeatedFact(raw)) return false;
     const card = normalizeCard(raw);
     archiveFacts([card]);
     state.cards.push(card);
@@ -855,7 +865,7 @@
     const hasChildren = Boolean(topic.children && topic.children.length);
     const selection = selectionState(topic);
     const searchExpanded = Boolean(query && topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
-    const childrenVisible = hasChildren && (topic.expanded || searchExpanded);
+    const childrenVisible = hasChildren && (topic.expanded || (searchExpanded && !topicSearchExpansionSuppressed));
     const branchWrap = node("div", { className: "topic-branch" });
     const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + (!hasChildren ? " leaf-row" : "") + (topic.custom ? " custom-row" : "") + " selection-" + selection, dataset: { topicId: topic.id }, onClick: function (event) { if (event.target.closest && event.target.closest("button")) return; toggleTopicSelection(topic.id); saveState(); render(); } });
     row.style.paddingLeft = Math.min(depth, 5) * 20 + 4 + "px";
@@ -886,10 +896,22 @@
     return branchWrap;
   }
   function topicTree() {
+    const picker = node("div", { className: "topic-tree-picker" });
+    const actions = node("div", { className: "topic-tree-actions" });
+    actions.appendChild(node("button", { className: "topic-tree-collapse-button", ariaLabel: "Collapse all topic branches", onClick: function () { topicSearchExpansionSuppressed = true; state.topics = collapseTopicBranches(state.topics); saveState(); render(); } }, "Collapse all"));
+    picker.appendChild(actions);
     const tree = node("div", { className: "topic-tree", role: "tree", ariaLabel: "Topic browser" });
     const query = state.topicQuery.trim();
     state.topics.forEach(function (topic) { const row = topicRow(topic, 0, query); if (row) tree.appendChild(row); });
-    return tree;
+    picker.appendChild(tree);
+    return picker;
+  }
+  function collapseTopicBranches(topics) {
+    return topics.map(function (topic) {
+      const collapsed = Object.assign({}, topic, { expanded: false });
+      if (topic.children) collapsed.children = collapseTopicBranches(topic.children);
+      return collapsed;
+    });
   }
   function cancelWorkspaceOperations() {
     generationToken += 1;
@@ -914,7 +936,7 @@
     state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: normalizeSentenceLength(snapshot.settings && snapshot.settings.sentenceLength) });
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
     state.profile = snapshot.profile || snapshot.learningProfile || {};
-    state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.some(function (card) { return hasExactSentenceCount(card.body, state.settings.sentenceLength); }));
+    state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.length);
     applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube);
   }
   function workspaceMenu() {
@@ -922,19 +944,109 @@
     menu.appendChild(node("span", { className: "workspace-menu-label", text: "All workspaces" }));
     state.workspaces.forEach(function (workspace, index) {
       const row = node("div", { className: "workspace-menu-row" });
-      row.appendChild(node("button", { role: "menuitem", className: workspace.id === state.workspaceId ? "active" : "", onClick: function () { switchWorkspace(workspace.id); } }, workspace.name));
-      const actions = node("div", { className: "workspace-menu-row-actions" });
-      actions.appendChild(node("button", { type: "button", disabled: index === 0, ariaLabel: "Move " + workspace.name + " up", onClick: function () { moveWorkspace(workspace.id, "up"); } }, "↑"));
-      actions.appendChild(node("button", { type: "button", disabled: index === state.workspaces.length - 1, ariaLabel: "Move " + workspace.name + " down", onClick: function () { moveWorkspace(workspace.id, "down"); } }, "↓"));
-      actions.appendChild(node("button", { type: "button", ariaLabel: "Rename " + workspace.name, onClick: function () { renameWorkspace(workspace.id); } }, "Rename"));
-      actions.appendChild(node("button", { type: "button", ariaLabel: "Delete " + workspace.name, onClick: function () { deleteWorkspace(workspace.id); } }, "Delete"));
-      row.appendChild(actions);
+      if (state.renameWorkspaceId === workspace.id) {
+        const form = node("form", { className: "workspace-rename-form" });
+        const input = node("input", {
+          type: "text",
+          maxLength: "48",
+          value: state.renameWorkspaceDraft,
+          ariaLabel: "Rename " + workspace.name,
+          "aria-invalid": state.renameWorkspaceError ? "true" : null,
+          onInput: function (event) {
+            state.renameWorkspaceDraft = event.currentTarget.value;
+            state.renameWorkspaceError = "";
+            event.currentTarget.removeAttribute("aria-invalid");
+            const error = form.querySelector(".workspace-rename-error");
+            if (error) error.textContent = "";
+          },
+          onKeydown: function (event) {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              cancelWorkspaceRename(menu);
+            }
+          }
+        });
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          commitWorkspaceRename(workspace.id, menu);
+        });
+        form.appendChild(input);
+        form.appendChild(node("span", { className: "workspace-rename-error", role: "status", "aria-live": "polite", text: state.renameWorkspaceError }));
+        const renameActions = node("div", { className: "workspace-rename-actions" });
+        renameActions.appendChild(node("button", { type: "submit" }, "Save"));
+        renameActions.appendChild(node("button", { type: "button", onClick: function () { cancelWorkspaceRename(menu); } }, "Cancel"));
+        form.appendChild(renameActions);
+        row.appendChild(form);
+      } else {
+        row.appendChild(node("button", { role: "menuitem", className: workspace.id === state.workspaceId ? "active" : "", onClick: function () { switchWorkspace(workspace.id); } }, workspace.name));
+        const actions = node("div", { className: "workspace-menu-row-actions" });
+        actions.appendChild(node("button", { type: "button", disabled: index === 0, ariaLabel: "Move " + workspace.name + " up", onClick: function () { moveWorkspace(workspace.id, "up"); } }, "↑"));
+        actions.appendChild(node("button", { type: "button", disabled: index === state.workspaces.length - 1, ariaLabel: "Move " + workspace.name + " down", onClick: function () { moveWorkspace(workspace.id, "down"); } }, "↓"));
+        actions.appendChild(node("button", { type: "button", ariaLabel: "Rename " + workspace.name, onClick: function (event) { beginWorkspaceRename(workspace.id, event.currentTarget.closest(".workspace-menu")); } }, "Rename"));
+        actions.appendChild(node("button", { type: "button", ariaLabel: "Delete " + workspace.name, onClick: function () { deleteWorkspace(workspace.id); } }, "Delete"));
+        row.appendChild(actions);
+      }
       menu.appendChild(row);
     });
     const actions = node("div", { className: "workspace-menu-actions" });
     actions.appendChild(node("button", { type: "button", onClick: createWorkspace }, "Create workspace"));
     menu.appendChild(actions);
     return menu;
+  }
+  function nextLocalWorkspaceName() {
+    const highestNumber = state.workspaces.reduce(function (highest, workspace) {
+      const match = workspace.name.trim().match(/^Local Workspace\s+(\d+)$/i);
+      const number = match ? Number(match[1]) : 1;
+      return Number.isSafeInteger(number) ? Math.max(highest, number) : highest;
+    }, 1);
+    return "Local Workspace " + (highestNumber + 1);
+  }
+  function clearWorkspaceRename() {
+    state.renameWorkspaceId = null;
+    state.renameWorkspaceDraft = "";
+    state.renameWorkspaceError = "";
+  }
+  function replaceWorkspaceMenu(menu) {
+    if (menu && menu.isConnected) menu.replaceWith(workspaceMenu());
+  }
+  function beginWorkspaceRename(id, menu) {
+    const target = state.workspaces.find(function (workspace) { return workspace.id === id; });
+    if (!target) return;
+    state.renameWorkspaceId = id;
+    state.renameWorkspaceDraft = target.name;
+    state.renameWorkspaceError = "";
+    replaceWorkspaceMenu(menu);
+    const input = document.querySelector(".workspace-menu .workspace-rename-form input");
+    if (input) { input.focus(); input.select(); }
+  }
+  function cancelWorkspaceRename(menu) {
+    clearWorkspaceRename();
+    replaceWorkspaceMenu(menu);
+  }
+  function commitWorkspaceRename(id, menu) {
+    const nextName = state.renameWorkspaceDraft.trim();
+    const input = menu && menu.querySelector(".workspace-rename-form input");
+    const error = menu && menu.querySelector(".workspace-rename-error");
+    const target = state.workspaces.find(function (workspace) { return workspace.id === id; });
+    let message = "";
+    if (!nextName) message = "Enter a workspace name.";
+    else if (state.workspaces.some(function (workspace) { return workspace.id !== id && workspace.name.toLowerCase() === nextName.toLowerCase(); })) message = "A workspace with that name already exists.";
+    if (message) {
+      state.renameWorkspaceError = message;
+      if (input) { input.setAttribute("aria-invalid", "true"); input.focus(); }
+      if (error) error.textContent = message;
+      return;
+    }
+    if (!target) return;
+    if (!renameWorkspace(id, nextName)) {
+      state.renameWorkspaceError = "This workspace name is unavailable.";
+      if (input) { input.setAttribute("aria-invalid", "true"); input.focus(); }
+      if (error) error.textContent = state.renameWorkspaceError;
+      return;
+    }
+    clearWorkspaceRename();
+    replaceWorkspaceMenu(menu);
   }
   function switchWorkspace(id) {
     if (id === state.workspaceId) return;
@@ -953,11 +1065,8 @@
     render();
   }
   function createWorkspace() {
-    const suggested = "Workspace " + (state.workspaces.length + 1);
-    const requested = window.prompt("Name this workspace", suggested);
-    const name = requested && requested.trim();
-    if (!name) return;
-    if (state.workspaces.some(function (workspace) { return workspace.name.toLowerCase() === name.toLowerCase(); })) return showToast("A workspace with that name already exists.");
+    clearWorkspaceRename();
+    const name = nextLocalWorkspaceName();
     cancelWorkspaceOperations();
     saveState();
     const now = new Date().toISOString();
@@ -974,18 +1083,20 @@
     render();
     showToast(name + " created.");
   }
-  function renameWorkspace(targetId) {
-    const target = state.workspaces.find(function (workspace) { return workspace.id === (targetId || state.workspaceId); });
-    if (!target) return;
-    const name = window.prompt("Name this workspace", target.name);
-    const trimmed = name && name.trim();
-    if (!trimmed || trimmed === target.name) return;
-    if (state.workspaces.some(function (workspace) { return workspace.id !== target.id && workspace.name.toLowerCase() === trimmed.toLowerCase(); })) return showToast("A workspace with that name already exists.");
+  function renameWorkspace(targetId, requestedName) {
+    const target = state.workspaces.find(function (workspace) { return workspace.id === targetId; });
+    const trimmed = String(requestedName || "").trim();
+    if (!target || !trimmed) return false;
+    if (state.workspaces.some(function (workspace) { return workspace.id !== target.id && workspace.name.toLowerCase() === trimmed.toLowerCase(); })) return false;
     target.name = trimmed;
     target.updatedAt = new Date().toISOString();
     if (target.id === state.workspaceId) state.workspaceName = trimmed;
     saveState();
-    render();
+    if (target.id === state.workspaceId) {
+      const accountName = document.querySelector(".profile-copy strong");
+      if (accountName) accountName.textContent = trimmed;
+    }
+    return true;
   }
   function moveWorkspace(id, direction) {
     const index = state.workspaces.findIndex(function (workspace) { return workspace.id === id; });
@@ -1092,13 +1203,15 @@
     document.addEventListener("pointerdown", function (event) {
       const target = event.target;
       if (target && target.closest && (target.closest(".workspace-switcher") || target.closest(".global-search-wrap"))) return;
+      clearWorkspaceRename();
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
     });
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape") return;
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
+      clearWorkspaceRename();
       const active = document.activeElement;
-      if (active && active.blur) active.blur();
+      if (active && active.matches && active.matches(".workspace-rename-form input") && active.blur) active.blur();
     });
   }
   function navigation() {
@@ -1112,14 +1225,14 @@
     const searchWrap = node("div", { className: "top-nav-search" });
     const search = node("div", { className: "global-search-wrap" });
     search.appendChild(svg("search", 17));
-    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts", ariaLabel: "Search topics or facts", onFocus: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); renderGlobalSearchPopover(search); }, onInput: function (event) { state.query = event.target.value; const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); renderGlobalSearchPopover(search); requestSemanticSearch(state.query, search); } }));
+    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts", ariaLabel: "Search topics or facts", onFocus: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } renderGlobalSearchPopover(search); }, onInput: function (event) { state.query = event.target.value; const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); renderGlobalSearchPopover(search); requestSemanticSearch(state.query, search); } }));
     searchWrap.appendChild(search);
     header.appendChild(searchWrap);
     const accountName = state.workspaceName;
     const account = node("div", { className: "top-nav-account" });
-    account.appendChild(node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"));
+    if (state.cards.length || state.loading) account.appendChild(node("button", { className: "nav-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed"));
     const switcher = node("div", { className: "workspace-switcher" });
-    const profile = node("button", { className: "profile-chip", ariaExpanded: false, onClick: function () { const searchPopover = search.querySelector(".search-popover"); if (searchPopover) searchPopover.remove(); const menu = switcher.querySelector(".workspace-menu"); if (menu) menu.remove(); else switcher.appendChild(workspaceMenu()); } }, node("span", { className: "profile-avatar" }, svg("panel", 16)), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.workspaces.length + " " + (state.workspaces.length === 1 ? "workspace" : "workspaces") })), svg("chevronDown", 15));
+    const profile = node("button", { className: "profile-chip", ariaExpanded: false, onClick: function () { const searchPopover = search.querySelector(".search-popover"); if (searchPopover) searchPopover.remove(); const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } else switcher.appendChild(workspaceMenu()); } }, node("span", { className: "profile-avatar" }, svg("panel", 16)), node("span", { className: "profile-copy" }, node("strong", { text: accountName }), node("small", { text: state.workspaces.length + " " + (state.workspaces.length === 1 ? "workspace" : "workspaces") })), svg("chevronDown", 15));
     switcher.appendChild(profile); account.appendChild(switcher); header.appendChild(account);
     renderGlobalSearchPopover(search);
     return header;
@@ -1133,6 +1246,7 @@
   }
   function topicPanel(setup) {
     const aside = node("aside", { className: (setup ? "setup-topics-panel" : "feed-topics-panel") + " surface-panel" });
+    if (!setup && (state.cards.length || state.loading)) aside.appendChild(node("button", { className: "topic-sidebar-reset", onClick: resetFeed }, svg("reset", 14), " Reset feed"));
     const details = node(setup ? "div" : "details", { className: setup ? "setup-topics-details setup-topics-static" : "topics-details" });
     if (setup) {
       details.appendChild(node("div", { className: "setup-topics-heading" }, node("span", { text: "Choose your topics" }), node("div", { className: "setup-topic-heading-actions" }, node("strong", { text: selectedCount() + " selected" }), node("button", { className: "text-button topic-reset-button", onClick: resetTopics }, "Reset"))));
@@ -1147,9 +1261,9 @@
     const difficulty = node("label", { className: "topic-difficulty-control", for: setup ? "setup-difficulty" : "feed-difficulty" });
     difficulty.appendChild(node("span", { className: "control-label" }, node("span", { text: "Fact Difficulty" }), node("strong", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
     difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
-    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Super Duper Hard" })));
+    difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Impossible" })));
     details.appendChild(difficulty);
-    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; render(); } })));
+    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; topicSearchExpansionSuppressed = false; render(); } })));
     details.appendChild(topicTree());
     details.appendChild(customTopicForm(setup ? "custom-topic-form" : "feed-custom-topic"));
     details.appendChild(feedCustomize(setup));
@@ -1158,6 +1272,11 @@
   }
   function feedCustomize(setup) {
     const details = node("details", { className: setup ? "setup-customize" : "feed-customize" });
+    details.open = setup ? setupCustomizeOpen : feedCustomizeOpen;
+    details.addEventListener("toggle", function () {
+      if (setup) setupCustomizeOpen = details.open;
+      else feedCustomizeOpen = details.open;
+    });
     details.appendChild(node("summary", {}, node("span", {}, svg("sliders", 16), " Customize Your Feed", svg("chevronDown", 15))));
     const body = node("div", { className: "setup-customize-body" });
     body.appendChild(node("span", { className: "control-label", text: "Display style" }));
@@ -1171,9 +1290,6 @@
       lengths.appendChild(node("button", { className: state.settings.sentenceLength === length ? "selected" : "", ariaPressed: state.settings.sentenceLength === length, disabled: state.settings.sentenceLength === length, onClick: function () {
         if (state.settings.sentenceLength === length) return;
         state.settings.sentenceLength = length;
-        state.started = false;
-        state.pendingSlots = 10;
-        state.generationError = "";
         saveState();
         render();
       } }, String(length)));
@@ -1190,9 +1306,9 @@
     panel.appendChild(node("div", { className: "start-panel-copy" }, node("span", { className: "eyebrow", text: "Your next feed" }), node("h1", { text: "Ready for a surprise?" }), node("p", { text: hasSelection ? selectedCount() + " topics in your mix, sourced from Wikipedia and shaped by your curiosity." : "Choose at least one topic from the checklist to begin." })));
     panel.appendChild(node("div", { className: "start-orbit" }, svg("sparkles", 24), node("span", { text: "Every card has a source" })));
     panel.appendChild(node("button", { className: "start-button", disabled: !hasSelection || !canStart, onClick: startFeed }, node("span", { text: !hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first" }), svg("arrow", 21)));
-    panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection && canStart ? "shield" : "help", 13), " ", !hasSelection ? "Select a topic to unlock your feed." : canStart ? "Your mix stays yours." : "Connect at least three Gemini models in Settings to begin."));
-    if (!state.key.trim()) {
-      const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Want Gemini-generated facts?" }), node("span", { text: "Add your API key in Settings for the next batch" })));
+    panel.appendChild(node("p", { className: "panel-footnote" }, svg(hasSelection ? "shield" : "help", 13), " ", hasSelection ? "Your mix stays yours." : "Select a topic to unlock your feed."));
+    if (!canStart) {
+      const keyCallout = node("div", { className: "setup-key-callout" }, node("div", { className: "setup-key-callout-icon" }, svg("key", 16)), node("div", {}, node("strong", { text: "Gemini isn’t connected" }), node("span", { text: "Add or connect your API key in Settings to start learning" })));
       keyCallout.appendChild(node("button", { className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Open Settings ", svg("arrow", 14)));
       panel.appendChild(keyCallout);
     }
@@ -1265,8 +1381,8 @@
     const layout = node("div", { className: "feed-layout" });
     layout.appendChild(topicPanel(false));
     const column = node("section", { className: "feed-content-column" });
-    column.appendChild(node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" })), node("button", { className: "toolbar-reset", onClick: resetFeed }, svg("reset", 15), " Reset feed")));
-    const feedCards = state.cards.filter(function (card) { return hasExactSentenceCount(card.body, state.settings.sentenceLength); });
+    column.appendChild(node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" }))));
+    const feedCards = state.cards;
     column.appendChild(node("div", { className: "feed-intro" }, node("div", {}, node("h1", { text: "Keep going." }), node("p", { text: "One small idea at a time. Every card has a place to look next." })), node("span", { className: "feed-count", text: feedCards.length + " cards in this session" })));
     const list = node("div", { className: "fact-feed" });
     feedCards.forEach(function (card, index) {
@@ -1292,22 +1408,23 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = []; state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Remembered key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Remembered key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain, separate from workspaces, and sent only when Gemini is requested." })));
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
     const workingModels = {};
+    const checkedModels = state.modelChecks.filter(function (model) { return model.status !== "unchecked"; });
     state.modelChecks.forEach(function (model) { if (model.status === "working") workingModels[model.resolvedModel || model.model] = true; });
-    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: state.modelChecks.length ? Object.keys(workingModels).length + " ready of " + state.modelChecks.length + " checks" : "Connect to discover models" })));
-    modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking" : "Check all models"));
+    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: checkedModels.length ? Object.keys(workingModels).length + " ready of " + checkedModels.length + " checked" : state.modelChecks.length ? "Not checked yet" : "Connect to check available models" })));
+    modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking" : "Check connection"));
     gemini.appendChild(modelHeading);
     if (state.modelChecks.length) {
       const modelList = node("div", { className: "model-check-list", ariaLive: "polite" });
-      state.modelChecks.forEach(function (model) { modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? "Ready · resolves to " + model.resolvedModel : "Ready for generation") : model.error || "Unavailable" })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") }))); });
+      state.modelChecks.forEach(function (model) { modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: model.status === "unchecked" ? "Not checked" : model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? "Ready · resolves to " + model.resolvedModel : "Ready for generation") : model.error || "Unavailable" })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") }))); });
       gemini.appendChild(modelList);
     }
     gemini.appendChild(node("div", { className: "api-key-guide" }, node("div", { className: "api-key-guide-icon" }, svg("sparkles", 16)), node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a key?" }), node("p", { text: "Create or copy one in Google AI Studio, then paste it here." })), externalLink(AI_STUDIO_URL, "Open AI Studio", "api-key-link")));
@@ -1535,6 +1652,8 @@
     saveState();
     render();
     showToast("Feed reset. Choose a topic and press Start again.");
+    mainScrollTop = 0;
+    window.requestAnimationFrame(function () { window.scrollTo({ top: 0, behavior: "smooth" }); const target = document.querySelector(".main-scroll"); if (target) target.scrollTo({ top: 0, behavior: "smooth" }); });
   }
   function resetTopics() {
     state.topics.forEach(function clear(topic) {
@@ -1582,12 +1701,16 @@
     state.loading = true;
     state.generationError = "";
     const count = Math.max(1, Math.min(10, Number(requestedCount) || 10));
+    const generationSentenceLength = normalizeSentenceLength(state.settings.sentenceLength);
+    state.activeGenerationSentenceLength = generationSentenceLength;
     state.batchAccepted = 0;
     render();
     try {
-      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: state.settings, avoid: state.factMemory || [], token: state.generationRequestToken });
+      const generationSettings = Object.assign({}, state.settings, { sentenceLength: generationSentenceLength });
+      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], token: state.generationRequestToken });
       if (activeToken !== generationToken) return;
-      (result.cards || []).forEach(function (card) { acceptNewFact(card); });
+      mergeGeminiModelOutcomes(result.modelOutcomes);
+      (result.cards || []).forEach(function (card) { acceptNewFact(card, generationSentenceLength); });
       const completed = state.batchAccepted;
       state.pendingSlots = Math.max(0, count - completed);
       if (state.pendingSlots) { state.generationError = completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."; }
@@ -1605,12 +1728,24 @@
       }
     }
   }
+  function mergeGeminiModelOutcomes(outcomes) {
+    (outcomes || []).forEach(function (outcome) {
+      if (!outcome || !outcome.model) return;
+      const previous = state.modelChecks.find(function (model) { return model.model === outcome.model; });
+      const nextCheck = { model: outcome.model, status: outcome.status === "success" ? "working" : outcome.status, latencyMs: outcome.latencyMs, checkedAt: new Date().toISOString() };
+      if (outcome.resolvedModel || previous && previous.resolvedModel) nextCheck.resolvedModel = outcome.resolvedModel || previous.resolvedModel;
+      if (outcome.error) nextCheck.error = outcome.error;
+      state.modelChecks = state.modelChecks.filter(function (model) { return model.model !== outcome.model; });
+      state.modelChecks.push(nextCheck);
+    });
+    state.modelChecks.sort(function (left, right) { return ALLOWED_GEMINI_MODELS.indexOf(left.model) - ALLOWED_GEMINI_MODELS.indexOf(right.model); });
+  }
   async function testKey() {
     const keyAtStart = state.key.trim();
     if (!keyAtStart) return showToast("Paste your Gemini API key first.");
     state.geminiStatus = "testing";
     state.modelChecking = true;
-    state.modelChecks = [];
+    state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; });
     state.connectionToken += 1;
     const connectionToken = state.connectionToken;
     render();
@@ -1623,7 +1758,7 @@
     } catch (error) {
       if (state.key.trim() !== keyAtStart) return;
       state.geminiStatus = "unavailable";
-      state.modelChecks = [];
+      state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; });
       showToast(error.message);
     }
     if (state.key.trim() === keyAtStart) {

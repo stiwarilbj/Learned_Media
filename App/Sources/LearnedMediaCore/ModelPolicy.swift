@@ -3,15 +3,15 @@ import Foundation
 public enum GeminiModelPolicy {
     public static let requiredWorkingModels = 3
     public static let allowedModels: [String] = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash-lite",
+        "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-flash-lite-latest",
-        "gemini-3.1-flash-lite",
         "gemini-3-flash-preview",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite"
+        "gemini-2.5-flash"
     ]
 
     public static func isEligible(id: String, methods: [String]) -> Bool {

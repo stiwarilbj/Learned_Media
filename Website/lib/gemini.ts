@@ -20,15 +20,15 @@ const MAX_CONCURRENT_GENERATION_GROUPS = 2;
 export const REQUIRED_WORKING_MODELS = 3;
 
 export const ALLOWED_GEMINI_MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash-lite",
+  "gemini-3.8-flash",
   "gemini-3.7-flash",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-flash-lite-latest",
-  "gemini-3.1-flash-lite",
   "gemini-3-flash-preview",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite"
+  "gemini-2.5-flash"
 ] as const;
 
 type CandidateFact = {
@@ -49,8 +49,8 @@ type ModelPool = {
   cooldowns: Map<string, number>;
   inFlight: Set<string>;
   inFlightResolved: Set<string>;
-  cursor: number;
   outageCooldownUntil: number;
+  ready: boolean;
 };
 
 type GeminiTextResponse = {
@@ -135,7 +135,15 @@ async function poolFor(_apiKey: string, sessionId = "default-session") {
   activePoolKeys.set(sessionId, key);
   const existing = pools.get(key);
   if (existing) return existing;
-  const created: ModelPool = { models: [...ALLOWED_GEMINI_MODELS], checks: new Map(), cooldowns: new Map(), inFlight: new Set(), inFlightResolved: new Set(), cursor: 0, outageCooldownUntil: 0 };
+  const created: ModelPool = {
+    models: [...ALLOWED_GEMINI_MODELS],
+    checks: new Map(ALLOWED_GEMINI_MODELS.map((model) => [model, { model, status: "unchecked" as const }])),
+    cooldowns: new Map(),
+    inFlight: new Set(),
+    inFlightResolved: new Set(),
+    outageCooldownUntil: 0,
+    ready: false
+  };
   pools.set(key, created);
   return created;
 }
@@ -167,6 +175,10 @@ function classifyFailure(error: unknown) {
   if (error instanceof GeminiFailure) return error;
   const message = error instanceof Error ? error.message : "Gemini request failed.";
   return new GeminiFailure(message, undefined, [], undefined, isTransient(undefined, message));
+}
+
+function isCredentialFailure(error: GeminiFailure) {
+  return error.status === 401 || error.status === 403 || /API key|permission|unauthorized|forbidden/i.test(error.message);
 }
 
 function abortError() {
@@ -239,12 +251,12 @@ async function requestModelText(apiKey: string, model: string, prompt: string, r
   return { text: stripJsonFence(text), resolvedModel: typed.modelVersion };
 }
 
-function workingModels(pool: ModelPool) {
+function availableModels(pool: ModelPool) {
   const now = Date.now();
   const resolved = new Set<string>();
   return pool.models.filter((model) => {
     const status = pool.checks.get(model)?.status;
-    if ((status !== "working" && status !== "cooldown") || (pool.cooldowns.get(model) ?? 0) > now) return false;
+    if (status === "failed" || status === "checking" || (pool.cooldowns.get(model) ?? 0) > now) return false;
     const version = pool.checks.get(model)?.resolvedModel;
     if (version && resolved.has(version)) return false;
     if (version) resolved.add(version);
@@ -260,17 +272,14 @@ function nextRetryAt(pool: ModelPool) {
 function reserveModel(pool: ModelPool, tried: Set<string>) {
   if (pool.inFlight.size >= MAX_CONCURRENT_GEMINI_REQUESTS) return undefined;
   const now = Date.now();
-  const eligible = new Set(workingModels(pool));
-  for (let offset = 0; offset < pool.models.length; offset += 1) {
-    const index = (pool.cursor + offset) % pool.models.length;
-    const model = pool.models[index];
+  const eligible = new Set(availableModels(pool));
+  for (const model of pool.models) {
     if (tried.has(model) || pool.inFlight.has(model)) continue;
     if (!eligible.has(model) || (pool.cooldowns.get(model) ?? 0) > now) continue;
     const resolvedModel = pool.checks.get(model)?.resolvedModel;
     if (resolvedModel && pool.inFlightResolved.has(resolvedModel)) continue;
     pool.inFlight.add(model);
     if (resolvedModel) pool.inFlightResolved.add(resolvedModel);
-    pool.cursor = (index + 1) % pool.models.length;
     return model;
   }
   return undefined;
@@ -296,11 +305,12 @@ function markModelFailure(pool: ModelPool, model: string, error: GeminiFailure) 
 
 async function requestStructured<T>(apiKey: string, sessionId: string, prompt: string, responseSchema: Record<string, unknown>, stage: GeminiModelOutcome["stage"], timeoutMs = GENERATION_TIMEOUT_MS, signal?: AbortSignal, onProgress?: (event: GeminiProgressEvent) => void) {
   const pool = await poolFor(apiKey, sessionId);
-  if (!workingModels(pool).length) {
+  if (!pool.ready) throw new GeminiFailure("Connect Gemini and wait until at least three allowed models pass their structured-output checks.", undefined, [], undefined, false);
+  if (!availableModels(pool).length) {
     const retryAt = nextRetryAt(pool);
     if (retryAt) await delay(Math.max(0, retryAt - Date.now()), signal);
   }
-  if (!workingModels(pool).length) throw new GeminiFailure("No healthy allowed Gemini model is available right now. Recheck the models or retry after the cooldown.", undefined, [], undefined, true);
+  if (!availableModels(pool).length) throw new GeminiFailure("No allowed Gemini model is available right now. Retry after the cooldown.", undefined, [], undefined, true);
   const outcomes: GeminiModelOutcome[] = [];
   let lastError: GeminiFailure | undefined;
   let pass = 0;
@@ -313,7 +323,7 @@ async function requestStructured<T>(apiKey: string, sessionId: string, prompt: s
     }
     const model = reserveModel(pool, tried);
     if (!model) {
-      const remaining = workingModels(pool).some((candidate) => !tried.has(candidate) && !pool.inFlight.has(candidate));
+      const remaining = availableModels(pool).some((candidate) => !tried.has(candidate) && !pool.inFlight.has(candidate));
       if (pool.inFlight.size > 0) {
         await delay(40, signal);
         continue;
@@ -324,7 +334,7 @@ async function requestStructured<T>(apiKey: string, sessionId: string, prompt: s
         await delay(Math.max(0, retryAt - Date.now()), signal);
         continue;
       }
-      if (tried.size === 0) throw new GeminiFailure("Every working Gemini model is busy or cooling down.", undefined, outcomes, undefined, true);
+      if (tried.size === 0) throw new GeminiFailure("Every allowed Gemini model is busy or cooling down.", undefined, outcomes, undefined, true);
       if (!sawRetryableFailure) throw lastError ?? new GeminiFailure("No working Gemini model could complete the request.", undefined, outcomes, undefined, false);
       if (pass < 1) {
         pass += 1;
@@ -359,6 +369,7 @@ async function requestStructured<T>(apiKey: string, sessionId: string, prompt: s
       markModelFailure(pool, model, error);
       outcomes.push(outcome);
       onProgress?.({ type: "model", outcome });
+      if (error.status === 401 || error.status === 403 || /API key|permission|unauthorized|forbidden/i.test(error.message)) throw new GeminiFailure(error.message, error.status, outcomes, error.retryAfterMs, false);
       sawRetryableFailure ||= error.retryable;
       lastError = new GeminiFailure(error.message, error.status, outcomes, error.retryAfterMs, error.retryable);
     }
@@ -589,6 +600,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       } catch (rawError) {
         if (signal?.aborted) throw abortError();
         const error = classifyFailure(rawError);
+        if (isCredentialFailure(error)) throw error;
         for (const slot of group) slot.lastError = error.message;
       }
     });
@@ -653,6 +665,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       } catch (rawError) {
         if (signal?.aborted) throw abortError();
         const error = classifyFailure(rawError);
+        if (isCredentialFailure(error)) throw error;
         for (const slot of group) markRetry(slot, error.message, round, true);
       }
     });
@@ -835,33 +848,39 @@ async function checkOneModel(apiKey: string, model: string, signal?: AbortSignal
 }
 
 export async function testGeminiKey(apiKey: string, signal?: AbortSignal, sessionId = "default-session", onCheck?: (check: GeminiModelCheck, readyCount: number) => void) {
-  if (!apiKey.trim()) return { ok: false as const, status: "not-configured" as const, models: [] as GeminiModelCheck[], eligibleModelCount: 0, requiredWorkingModels: REQUIRED_WORKING_MODELS };
+  if (!apiKey.trim()) return { ok: false as const, status: "not-configured" as const, models: ALLOWED_GEMINI_MODELS.map((model) => ({ model, status: "unchecked" as const })), eligibleModelCount: ALLOWED_GEMINI_MODELS.length, requiredWorkingModels: REQUIRED_WORKING_MODELS };
   const pool = await poolFor(apiKey, sessionId);
   pool.models = [...ALLOWED_GEMINI_MODELS];
   pool.checks.clear();
   pool.cooldowns.clear();
   pool.inFlight.clear();
   pool.inFlightResolved.clear();
-  pool.cursor = 0;
   pool.outageCooldownUntil = 0;
-  pool.models.forEach(model => pool.checks.set(model, { model, status: "checking" }));
-  const checks: GeminiModelCheck[] = new Array(ALLOWED_GEMINI_MODELS.length);
+  pool.ready = false;
+  const checks: GeminiModelCheck[] = ALLOWED_GEMINI_MODELS.map((model) => ({ model, status: "unchecked" }));
+  checks.forEach((check) => pool.checks.set(check.model, check));
   let readyCount = 0;
-  for (let offset = 0; offset < ALLOWED_GEMINI_MODELS.length && readyCount < REQUIRED_WORKING_MODELS && !signal?.aborted; offset += REQUIRED_WORKING_MODELS) {
-    const models = ALLOWED_GEMINI_MODELS.slice(offset, offset + REQUIRED_WORKING_MODELS);
+  let offset = 0;
+  while (offset < ALLOWED_GEMINI_MODELS.length && readyCount < REQUIRED_WORKING_MODELS && !signal?.aborted) {
+    const count = offset === 0 ? REQUIRED_WORKING_MODELS : Math.min(REQUIRED_WORKING_MODELS - readyCount, ALLOWED_GEMINI_MODELS.length - offset);
+    const models = ALLOWED_GEMINI_MODELS.slice(offset, offset + count);
     const results = await Promise.all(models.map(model => checkOneModel(apiKey, model, signal)));
     results.forEach((check, localIndex) => {
       const index = offset + localIndex;
       checks[index] = check;
       pool.checks.set(check.model, check);
+      if (check.status === "cooldown") pool.cooldowns.set(check.model, Date.now() + MODEL_COOLDOWN_MS);
       readyCount = new Set(checks.filter((item) => item?.status === "working").map((item) => item.resolvedModel ?? item.model)).size;
       onCheck?.(check, readyCount);
     });
+    offset += count;
   }
-  const completedChecks = checks.filter((check): check is GeminiModelCheck => Boolean(check));
+  if (signal?.aborted) throw abortError();
+  const completedChecks = checks.filter((check) => check.status !== "unchecked");
   const working = completedChecks.filter((check) => check.status === "working");
   const distinctWorking = new Set(working.map((check) => check.resolvedModel ?? check.model));
   const firstFailure = completedChecks.find((check) => check.status !== "working");
   const status: GeminiStatus = distinctWorking.size >= REQUIRED_WORKING_MODELS ? "connected" : firstFailure?.error && /401|403|key|permission/i.test(firstFailure.error) ? "invalid" : checks.some((check) => check.status === "cooldown") ? "rate-limited" : "unavailable";
-  return { ok: distinctWorking.size >= REQUIRED_WORKING_MODELS, status, models: completedChecks, eligibleModelCount: ALLOWED_GEMINI_MODELS.length, requiredWorkingModels: REQUIRED_WORKING_MODELS };
+  pool.ready = distinctWorking.size >= REQUIRED_WORKING_MODELS;
+  return { ok: pool.ready, status, models: checks, eligibleModelCount: ALLOWED_GEMINI_MODELS.length, requiredWorkingModels: REQUIRED_WORKING_MODELS };
 }

@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		AgvN6StrCAWMDqAPsX3gnHjjty4=
+		9dOD+Z1EaS/GHEFW9PkCVwxXjwY=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -28,13 +28,17 @@
 		<data>
 		QZBUVLJ06rdQ0MvEhaUSEp7+gNc=
 		</data>
+		<key>Resources/frontend/history-science-taxonomy-catalog.js</key>
+		<data>
+		eyVjxIA4VDfiW+FY7Vtz8beDKrU=
+		</data>
 		<key>Resources/frontend/ice-waves.svg</key>
 		<data>
 		mPrO5dhxyq7tgtM0/xmkPK6h4KA=
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		5F6CVmGlSx99mCpEkXhmTMh/9/c=
+		f4Tj1AK/Hf5yrxJ16fnPC+q/0WU=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
@@ -42,7 +46,7 @@
 		</data>
 		<key>Resources/frontend/natural-disaster-catalog.js</key>
 		<data>
-		podH6H1KzZPj+5s9qkMgdL3UvzU=
+		SbokDuYxq7enRuHuzHzKvCH9eic=
 		</data>
 		<key>Resources/frontend/political-history.js</key>
 		<data>
@@ -54,7 +58,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		+l57al3pt3cUO8jS5Rp3shBOV3Y=
+		6tJ7iNsucwCIa9Jqi00rl7IyBY8=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -66,7 +70,7 @@
 		</data>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<data>
-		GM2RjOwRAPzfdzfkTvifh/QRgRI=
+		R0Rf0SIHPKEz/c4HPeuSP0amers=
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
@@ -86,7 +90,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			orYKpkK4A9pJU5yB9AK9B05ysiQz5zW5qNjaCuxY4Kg=
+			MHeZHNeH6LfRXI1/fE+1G9lQnCzphmDaqohhw5sIoLQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -117,6 +121,13 @@
 			I9PC1in8rq6Ej0YKNBCDt23d3EonNqKTddq78HxW3Eg=
 			</data>
 		</dict>
+		<key>Resources/frontend/history-science-taxonomy-catalog.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			uVsEbIVDMYvB1+XlPoPG+ZCJAbNVNb4mwQuhqZZHjOk=
+			</data>
+		</dict>
 		<key>Resources/frontend/ice-waves.svg</key>
 		<dict>
 			<key>hash2</key>
@@ -128,7 +139,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			DfpmrJ9yLs9LyYtCfms+yqCnxPYQC7YQ3lwpapj1j1k=
+			CjD7YqJ9R8a2yLt28d37xzgy/8w7gOlw8M51Nnn15RY=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>
@@ -142,7 +153,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			2YtMXUutZrsHfkHJzHF2aFme0wobHqgj324c2OW0OhQ=
+			1SgiX2rgMERv3A7MW0F5yqFL8JLMk2IG3bz/3kb8mH0=
 			</data>
 		</dict>
 		<key>Resources/frontend/political-history.js</key>
@@ -163,7 +174,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			dFJhOCL6lqQOviwLB43JUWqcmRIDV0K3FvU3q8Xx6g0=
+			5D5d317r9gTDvwWD5twyPkS6oJExijxyxnabK8k7uJ0=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
@@ -184,7 +195,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			YKMA3+8VopAfIgarj/tUCjq4tRkHzUcqzlXkgeezWcE=
+			8inwrHAkWsVd9K4cq8hax4I2CmR1j9o4RZ+AAiqEXD4=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-catalog.js</key>

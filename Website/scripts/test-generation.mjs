@@ -15,7 +15,7 @@ Module._extensions[".ts"] = (module, filename) => {
   module._compile(compiled, filename);
 };
 
-const { generateGeminiFacts, testGeminiKey } = require("../lib/gemini.ts");
+const { ALLOWED_GEMINI_MODELS, generateGeminiFacts, testGeminiKey } = require("../lib/gemini.ts");
 const originalFetch = globalThis.fetch;
 const words = ["amber", "birch", "cobalt", "delta", "ember", "fossil", "granite", "harbor", "indigo", "juniper", "kelp"];
 const factBundles = [
@@ -75,6 +75,9 @@ function installNetworkMock(options = {}) {
     if (url.hostname === "generativelanguage.googleapis.com") {
       const model = decodeURIComponent(url.pathname.split("/models/")[1].split(":")[0]);
       const prompt = body.contents?.[0]?.parts?.[0]?.text ?? "";
+      const failure = prompt.includes('"ok":true') ? options.connectionFailures?.[model] : options.requestFailures?.[model];
+      if (failure) return jsonResponse({ error: { message: `Mock Gemini failure for ${model}` } }, Number(failure));
+      if (options.delayMs && !prompt.includes('"ok":true')) await new Promise(resolve => setTimeout(resolve, options.delayMs));
       let output;
       if (prompt.includes('"ok":true')) {
         output = { ok: true };
@@ -136,7 +139,10 @@ async function connectMock(state) {
   assert.equal(result.status, "connected");
   const checks = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com");
   assert.equal(checks.length, 3, "connection should stop after three distinct working models");
+  assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS.slice(0, 3));
   assert.ok(checks.every(request => request.url.pathname.includes(":generateContent")), "connection must not call model discovery");
+  assert.deepEqual(result.models.map(model => model.model), ALLOWED_GEMINI_MODELS, "Settings should list every model in policy order");
+  assert.ok(result.models.slice(3).every(model => model.status === "unchecked"), "models after the three successful checks stay unchecked");
   state.requests.length = 0;
   return sessionId;
 }
@@ -163,14 +169,61 @@ afterEach(() => {
 });
 
 test("generation request efficiency", async t => {
+await t.test("connection checks only the additional models needed", async () => {
+  const state = installNetworkMock({ connectionFailures: { [ALLOWED_GEMINI_MODELS[0]]: 404 } });
+  const result = await testGeminiKey("test-key", undefined, `model-fallback-${++testNumber}`);
+  assert.equal(result.status, "connected");
+  const checks = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com");
+  assert.equal(checks.length, 4);
+  assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS.slice(0, 4));
+  assert.equal(result.models.filter(model => model.status === "working").length, 3);
+  assert.equal(result.models.filter(model => model.status === "unchecked").length, 5);
+});
+
+await t.test("busy and cooldown models fall back from the top of the policy", async () => {
+  const busyState = installNetworkMock({ delayMs: 5 });
+  const busySession = await connectMock(busyState);
+  const busyResult = await generateGeminiFacts({ ...generationArgs(busySession), requestedCount: 10 });
+  assert.equal(busyResult.completedCount, 10);
+  const busyModels = Array.from(new Set(busyState.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").slice(0, 2).map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]))));
+  assert.deepEqual(busyModels, ALLOWED_GEMINI_MODELS.slice(0, 2), "a concurrent request skips the model already handling the first request");
+
+  const cooldownState = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 429 } });
+  const cooldownSession = await connectMock(cooldownState);
+  const cooldownResult = await generateGeminiFacts({ ...generationArgs(cooldownSession), requestedCount: 1 });
+  assert.equal(cooldownResult.completedCount, 1);
+  const cooldownModels = cooldownState.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]));
+  assert.ok(cooldownModels.includes(ALLOWED_GEMINI_MODELS[1]), "the next model should handle a request while the first is cooling down");
+  assert.ok(!cooldownModels.includes(ALLOWED_GEMINI_MODELS[0]) || cooldownModels.filter(model => model === ALLOWED_GEMINI_MODELS[0]).length === 1, "the cooling model is not retried during its cooldown");
+});
+
+await t.test("unchecked models become fallbacks after connection succeeds", async () => {
+  const state = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 404, [ALLOWED_GEMINI_MODELS[1]]: 404, [ALLOWED_GEMINI_MODELS[2]]: 404 } });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 });
+  assert.equal(result.completedCount, 1);
+  const models = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]));
+  assert.ok(models.includes(ALLOWED_GEMINI_MODELS[3]), "the first unchecked model should be used after checked models fail");
+});
+
+await t.test("an invalid key stops model fallback", async () => {
+  const state = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 401 } });
+  const sessionId = await connectMock(state);
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 }), /Mock Gemini failure/);
+  const generationModels = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]));
+  assert.deepEqual(generationModels, [ALLOWED_GEMINI_MODELS[0]], "an invalid key must not probe lower-priority models");
+});
+
 await t.test("ten three-sentence cards use two candidate and two grounding calls, preserving slot mapping and citations", async () => {
-  const state = installNetworkMock();
+  const state = installNetworkMock({ delayMs: 5 });
   const sessionId = await connectMock(state);
   const streamed = [];
   const errors = [];
   const result = await generateGeminiFacts({ ...generationArgs(sessionId), onProgress: event => { if (event.type === "card") streamed.push(event.card); if (event.type === "slot-error") errors.push({ slot: event.slot, error: event.error }); } });
   assert.deepEqual(errors, []);
   assert.equal(geminiCallCount(state), 4);
+  const generationModels = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]));
+  assert.deepEqual(new Set(generationModels.slice(0, 2)), new Set(ALLOWED_GEMINI_MODELS.slice(0, 2)));
   assert.deepEqual(state.candidatePrompts.map(prompt => candidateAssignments(prompt).length), [5, 5]);
   assert.deepEqual(state.groundingPrompts.map(prompt => groundingSlots(prompt).length), [5, 5]);
   assert.equal(result.completedCount, 10);

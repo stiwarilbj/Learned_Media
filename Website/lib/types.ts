@@ -60,7 +60,7 @@ export type LearningMessage = {
   content: string;
 };
 
-export type GeminiModelCheckStatus = "checking" | "working" | "failed" | "cooldown";
+export type GeminiModelCheckStatus = "unchecked" | "checking" | "working" | "failed" | "cooldown";
 
 export type GeminiModelCheck = {
   model: string;
