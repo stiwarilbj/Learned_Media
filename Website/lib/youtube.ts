@@ -121,7 +121,7 @@ export type YouTubeSearchCandidate = {
 
 export const YOUTUBE_TOPICS: YouTubeTopic[] = ["History", "Politics", "Geography", "Science", "Nature", "Mathematics", "Literature", "Sports", "Culture", "Technology"];
 
-export const YOUTUBE_CATALOG_VERSION = 4;
+export const YOUTUBE_CATALOG_VERSION = 5;
 
 // Pin the approved channel IDs so lookalike channel names cannot redirect an
 // import, and channel resolution does not spend YouTube search quota.
@@ -339,6 +339,29 @@ function parseDuration(value: string | undefined) {
   return Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0);
 }
 
+function hasExplicitShortMarker(title: string, description: string, tags: string[]) {
+  return /(?:^|[^a-z0-9])#shorts?\b/i.test(`${title}\n${description}`)
+    || /\byoutube shorts?\b|\bshorts video\b/i.test(title)
+    || tags.some((tag) => ["shorts", "youtube short", "youtube shorts"].includes(normalized(tag)));
+}
+
+function isYouTubeShortMetadata(video: { title: string; description: string; tags: string[]; publishedAt: string; durationSeconds: number; thumbnails?: Array<YouTubeThumbnail | undefined> }) {
+  if (hasExplicitShortMarker(video.title, video.description, video.tags)) return true;
+
+  // Shorts published before 15 October 2024 are limited to 60 seconds; later
+  // Shorts can be up to three minutes. The Data API has no isShort field, so
+  // combine that duration rule with the aspect ratio reported for thumbnails.
+  const publishedAt = Date.parse(video.publishedAt);
+  const threeMinuteShortsLaunch = Date.parse("2024-10-15T00:00:00Z");
+  const maxShortDuration = publishedAt >= threeMinuteShortsLaunch ? 180 : 60;
+  if (!Number.isFinite(publishedAt) || video.durationSeconds <= 0 || video.durationSeconds > maxShortDuration) return false;
+
+  return (video.thumbnails ?? []).some((thumbnail) => {
+    if (!thumbnail?.width || !thumbnail.height) return false;
+    return thumbnail.width / thumbnail.height <= 1.05;
+  });
+}
+
 function formatDuration(seconds: number) {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -366,8 +389,9 @@ function classifyTopics(channelName: string, title: string, description: string,
 }
 
 type ChannelApiResponse = { items?: Array<{ id?: string; snippet?: { title?: string; customUrl?: string; thumbnails?: { default?: { url?: string } } }; contentDetails?: { relatedPlaylists?: { uploads?: string } } }> };
-type PlaylistApiResponse = { nextPageToken?: string; items?: Array<{ contentDetails?: { videoId?: string }; snippet?: { title?: string; publishedAt?: string; channelId?: string } }> };
-type VideoApiResponse = { items?: Array<{ id?: string; snippet?: { title?: string; description?: string; publishedAt?: string; channelId?: string; channelTitle?: string; tags?: string[]; thumbnails?: { high?: { url?: string }; medium?: { url?: string }; default?: { url?: string } } }; contentDetails?: { duration?: string }; status?: { privacyStatus?: string; embeddable?: boolean } }> };
+type PlaylistApiResponse = { nextPageToken?: string; items?: Array<{ contentDetails?: { videoId?: string }; snippet?: { title?: string; description?: string; publishedAt?: string; channelId?: string } }> };
+type YouTubeThumbnail = { url?: string; width?: number; height?: number };
+type VideoApiResponse = { items?: Array<{ id?: string; snippet?: { title?: string; description?: string; publishedAt?: string; channelId?: string; channelTitle?: string; tags?: string[]; thumbnails?: { high?: YouTubeThumbnail; medium?: YouTubeThumbnail; default?: YouTubeThumbnail; standard?: YouTubeThumbnail; maxres?: YouTubeThumbnail } }; contentDetails?: { duration?: string }; status?: { privacyStatus?: string; embeddable?: boolean } }> };
 type SearchApiResponse = { items?: Array<{ id?: { channelId?: string; videoId?: string }; snippet?: { title?: string; channelTitle?: string; channelId?: string } }> };
 type CatalogJob = { sourceId: string; label: string; kind: "uploads" | "playlist" | "individual"; channel?: YouTubeChannelRecord; playlistId?: string; seed?: ApprovedVideoSeed };
 
@@ -433,7 +457,11 @@ export class YouTubeClient {
         seenPageTokens.add(pageToken);
       }
       const payload = await this.request<PlaylistApiResponse>("playlistItems", { part: "snippet,contentDetails", playlistId, maxResults: "50", ...(pageToken ? { pageToken } : {}) }, signal);
-      for (const item of payload.items ?? []) if (item.contentDetails?.videoId) ids.push(item.contentDetails.videoId);
+      for (const item of payload.items ?? []) {
+        const videoId = item.contentDetails?.videoId;
+        if (!videoId || hasExplicitShortMarker(item.snippet?.title ?? "", item.snippet?.description ?? "", [])) continue;
+        ids.push(videoId);
+      }
       onPage?.(ids.length);
       pageToken = payload.nextPageToken ?? "";
     } while (pageToken);
@@ -445,6 +473,7 @@ export class YouTubeClient {
       const durationSeconds = parseDuration(item.contentDetails?.duration);
       const title = snippet?.title?.trim();
       if (!title || !snippet?.publishedAt) return;
+      if (isYouTubeShortMetadata({ title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, thumbnails: Object.values(snippet.thumbnails ?? {}) })) return;
       mapped.push({ id: item.id, channelId: channel.id, channelName: channel.name, title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, durationLabel: formatDuration(durationSeconds), thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url, embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(channel.name, title, snippet.description ?? "", snippet.tags ?? []), approved: true, sourceIds: [sourceId], metadataRefreshedAt: new Date().toISOString() });
     });
     return mapped;
@@ -455,7 +484,7 @@ export class YouTubeClient {
     return this.importPlaylist(channel, channel.uploadsPlaylistId, `channel:${channel.id}`, signal, onPage);
   }
 
-  private async resolveSpecial(seed: ApprovedVideoSeed, channels: YouTubeChannelRecord[], signal?: AbortSignal) {
+  private async resolveSpecial(seed: ApprovedVideoSeed, channels: YouTubeChannelRecord[], signal?: AbortSignal): Promise<YouTubeVideo | null> {
     let videoId = seed.videoId;
     if (!videoId) {
       const channel = channels.find((item) => normalized(item.name) === normalized(seed.creator));
@@ -469,6 +498,7 @@ export class YouTubeClient {
     if (!item?.id || normalizedApprovedVideoTitle(item.snippet?.title ?? "") !== normalizedApprovedVideoTitle(seed.title) || normalized(item.snippet?.channelTitle ?? "") !== normalized(seed.creator)) throw new YouTubeApiError(`The approved video “${seed.title}” did not match its creator and title.`, undefined, "video-mismatch", false);
     const snippet = item.snippet!;
     const durationSeconds = parseDuration(item.contentDetails?.duration);
+    if (isYouTubeShortMetadata({ title: snippet.title ?? seed.title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt ?? "", durationSeconds, thumbnails: Object.values(snippet.thumbnails ?? {}) })) return null;
     return { id: item.id, channelId: snippet.channelId ?? `special-${normalized(seed.creator).replace(/ /g, "-")}`, channelName: snippet.channelTitle ?? seed.creator, title: snippet.title!, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt ?? new Date().toISOString(), durationSeconds, durationLabel: formatDuration(durationSeconds), ...(snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url ? { thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url } : {}), embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(seed.creator, snippet.title!, snippet.description ?? "", snippet.tags ?? []), approved: true, special: true, sourceIds: [`individual:${item.id}`], metadataRefreshedAt: new Date().toISOString() } as YouTubeVideo;
   }
 
@@ -518,11 +548,13 @@ export class YouTubeClient {
         return { job, videos: [] as YouTubeVideo[], scanned: false, ok: true };
       }
       try {
-        const videos = job.kind === "uploads"
-          ? await this.importChannel(job.channel!, signal)
-          : job.kind === "playlist"
-            ? await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, signal)
-            : [await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), signal)];
+        let videos: YouTubeVideo[];
+        if (job.kind === "uploads") videos = await this.importChannel(job.channel!, signal);
+        else if (job.kind === "playlist") videos = await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, signal);
+        else {
+          const specialVideo = await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), signal);
+          videos = specialVideo ? [specialVideo] : [];
+        }
         progress.importedVideos += videos.length;
         progress.completedSources = (progress.completedSources ?? 0) + 1;
         sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "ready", lastSuccessfulSyncAt: new Date().toISOString(), lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: videos.length };
@@ -763,7 +795,7 @@ export function relatedYouTubeVideos(videos: YouTubeVideo[], current: YouTubeVid
 }
 
 export function isApprovedYouTubeVideo(video: YouTubeVideo) {
-  if (!video.approved) return false;
+  if (!video.approved || hasExplicitShortMarker(video.title, video.description, video.tags ?? [])) return false;
   if (normalized(video.channelName) === normalized("3Blue1Brown") || video.channelId === "UCYO_jab_esuFRV4b17AJtAw") return video.special === true || Boolean(video.sourceIds?.some((sourceId) => APPROVED_3BLUE_PLAYLIST_SOURCE_IDS.has(sourceId)));
   return true;
 }
@@ -792,6 +824,12 @@ export async function loadYouTubeWorkspace() {
         const inferredCatalogVersion = (raw.channels?.length || raw.videos?.length) ? 0 : YOUTUBE_CATALOG_VERSION;
         const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: savedCatalogVersion ?? inferredCatalogVersion, sourceStates: { ...(raw.sourceStates ?? {}) }, prioritizeRecentByChannel: { ...DEFAULT_YOUTUBE_RECENCY_PREFERENCES, ...(raw.prioritizeRecentByChannel ?? {}) } } as YouTubeWorkspaceState;
         workspace.videos = (workspace.videos ?? []).filter(isApprovedYouTubeVideo).map((video) => ({ ...video, sourceIds: video.sourceIds ?? [] }));
+        const availableVideoIds = new Set(workspace.videos.map((video) => video.id));
+        workspace.savedIds = (workspace.savedIds ?? []).filter((id) => availableVideoIds.has(id));
+        workspace.history = (workspace.history ?? []).filter((item) => availableVideoIds.has(item.videoId));
+        workspace.playbackPositions = Object.fromEntries(Object.entries(workspace.playbackPositions ?? {}).filter(([id]) => availableVideoIds.has(id)));
+        workspace.discoverIds = (workspace.discoverIds ?? []).filter((id) => availableVideoIds.has(id));
+        if (workspace.selectedVideoId && !availableVideoIds.has(workspace.selectedVideoId)) workspace.selectedVideoId = undefined;
         if (!raw.prioritizeRecentByChannel && workspace.videos.length) {
           workspace.discoverIds = selectRandomVideos(filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic), 24, [], workspace.prioritizeRecentByChannel).map((video) => video.id);
         }

@@ -113,6 +113,7 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
   }, [onShowMore, smartSearchRan, workspace.activeTab, workspace.discoverIds.length, workspace.searchText, workspace.selectedChannelId, workspace.selectedVideoId, workspace.videos.length]);
 
   if (activeVideo) return <section className="content-view video-workspace">
+    <VideoTabs activeTab={workspace.activeTab} savedCount={workspace.savedIds.length} onTabChange={onTabChange} />
     <button type="button" className="text-button video-back-button" onClick={onBack}><Icon name="chevronRight" size={15} /> Back to videos</button>
     <div className="video-player-layout">
       <div className="video-player-column">

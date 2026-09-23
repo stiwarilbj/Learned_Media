@@ -115,7 +115,19 @@ function youtubeActivityOf(workspace: YouTubeWorkspaceState): YouTubeWorkspaceAc
 }
 
 function applyYouTubeActivity(workspace: YouTubeWorkspaceState, activity?: YouTubeWorkspaceActivity): YouTubeWorkspaceState {
-  return activity ? { ...workspace, ...activity } : workspace;
+  if (!activity) return workspace;
+  const restored = { ...workspace, ...activity };
+  const videoIds = new Set(workspace.videos.map((video) => video.id));
+  const channelIds = new Set(workspace.channels.map((channel) => channel.id));
+  return {
+    ...restored,
+    savedIds: restored.savedIds.filter((id) => videoIds.has(id)),
+    history: restored.history.filter((item) => videoIds.has(item.videoId)),
+    playbackPositions: Object.fromEntries(Object.entries(restored.playbackPositions).filter(([id]) => videoIds.has(id))),
+    discoverIds: restored.discoverIds.filter((id) => videoIds.has(id)),
+    selectedVideoId: restored.selectedVideoId && videoIds.has(restored.selectedVideoId) ? restored.selectedVideoId : undefined,
+    selectedChannelId: restored.selectedChannelId && channelIds.has(restored.selectedChannelId) ? restored.selectedChannelId : undefined
+  };
 }
 
 function makeLocalWorkspace(state: PersistedState): AppWorkspaceRecord {
