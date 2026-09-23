@@ -13,10 +13,10 @@ import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
 import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, REQUIRED_WORKING_MODELS, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
-import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
+import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
-import { rankSearchResults } from "@/lib/search";
+import { normalizeSearchText, rankSearchResults } from "@/lib/search";
 import { createTopicSuggestionIndex, suggestTopics } from "@/lib/topic-suggestions";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
 import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
@@ -1607,8 +1607,50 @@ export default function HomePage() {
     return rankSearchResults(query, collection, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
   };
 
+  const chooseExploreTopic = useCallback((requestedTopic: string) => {
+    if (requestedTopic === "Custom topic") {
+      setFeedStarted(false);
+      setQuery("");
+      setView("feed");
+      setToast("Add a custom topic from setup to start exploring.");
+      return;
+    }
+
+    const normalizedTopic = normalizeSearchText(requestedTopic);
+    const catalogTopics = flattenTopics(topics);
+    const exactMatch = catalogTopics.find((topic) => (
+      normalizeSearchText(topic.label) === normalizedTopic
+      || topic.aliases?.some((alias) => normalizeSearchText(alias) === normalizedTopic)
+    ));
+    const directSuggestion = exactMatch
+      ? undefined
+      : suggestTopics(topicSuggestionIndex, requestedTopic).find((suggestion) => suggestion.group === "keyword");
+    const selectedTopic = exactMatch ?? catalogTopics.find((topic) => topic.id === directSuggestion?.id);
+    const label = selectedTopic?.label ?? titleCaseTopicLabel(requestedTopic);
+
+    if (selectedTopic) {
+      setTopics((current) => {
+        const topic = flattenTopics(current).find((candidate) => candidate.id === selectedTopic.id);
+        return !topic || selectionState(topic) === "selected" ? current : toggleTopicSelection(current, topic.id);
+      });
+    } else {
+      const id = `custom-${slugify(label)}`;
+      setTopics((current) => {
+        const existing = flattenTopics(current).find((topic) => topic.id === id);
+        if (existing) return selectionState(existing) === "selected" ? current : toggleTopicSelection(current, id);
+        return [...current, { id, label, selected: true, expanded: false, weight: 10, custom: true }];
+      });
+    }
+
+    setFeedHasMore(true);
+    setFeedStarted(false);
+    setQuery(label);
+    setView("feed");
+    setToast(`Ready to explore ${label}. Start learning when you're ready.`);
+  }, [topicSuggestionIndex, topics]);
+
   const renderMain = () => {
-    if (view === "explore") return <ExploreView onChoose={(topic) => { if (topic === "Custom topic") { setView("feed"); setToast("Add a custom topic from your learning mix."); } else { setQuery(topic); setView("feed"); } }} />;
+    if (view === "explore") return <ExploreView onChoose={chooseExploreTopic} />;
     if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(filterYouTubeVideos(current.videos, "", topic), 24).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={(id, seconds) => updateYouTubeWorkspace((current) => ({ ...current, playbackPositions: { ...current.playbackPositions, [id]: seconds } }))} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus} syncError={syncError} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} onYoutubeKeyChange={handleYouTubeKeyChange} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
