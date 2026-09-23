@@ -74,7 +74,7 @@ export function SetupWorkspace({ topics, query, onQueryChange, settings, customT
         <section className="setup-start-panel surface-panel">
           <div className="start-panel-copy"><span className="eyebrow">Your next feed</span><h1>Ready for a surprise?</h1><p>{hasSelection ? `${selectedCount} topic${selectedCount === 1 ? "" : "s"} in your mix, sourced from Wikipedia and shaped by your curiosity` : "Choose at least one topic from the checklist to begin"}</p></div>
           <div className="start-orbit"><Icon name="sparkles" size={24} /><span>Every card has a source</span></div>
-          <button type="button" className="start-button" onClick={onStart} disabled={!hasSelection || !canStart}><span>{!hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first"}</span><Icon name="arrow" size={21} /></button>
+          <button type="button" className="start-button" onClick={canStart ? onStart : onOpenSettings} disabled={!hasSelection}><span>{!hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first"}</span><Icon name="arrow" size={21} /></button>
 
           {!hasGeminiKey && <div className="setup-key-callout">
             <div className="setup-key-callout-icon"><Icon name="key" size={16} /></div>
