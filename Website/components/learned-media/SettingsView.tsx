@@ -109,8 +109,8 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             {feedback && <p className="settings-feedback" role="status">{feedback}</p>}
 
             <div className="model-check-heading">
-              <div><strong>Available Gemini models</strong><span>{modelChecks.length ? `${workingModelCount} ready of ${modelChecks.length} checks` : "Connect to discover models"}</span></div>
-              <button type="button" className="ghost-button" onClick={onTestConnection} disabled={modelChecking || !apiKey.trim()}>{modelChecking ? "Checking" : "Check all models"}</button>
+              <div><strong>Available Gemini models</strong><span>{modelChecks.length ? `${workingModelCount} ready of ${modelChecks.length} checked` : "Connect to check available models"}</span></div>
+              <button type="button" className="ghost-button" onClick={onTestConnection} disabled={modelChecking || !apiKey.trim()}>{modelChecking ? "Checking" : "Check connection"}</button>
             </div>
             {modelChecks.length > 0 && <div className="model-check-list" aria-live="polite">{modelChecks.map((model) => <div className="model-check-row" key={model.model}><span className={`model-status-dot ${model.status}`} aria-label={model.status} /><div><strong>{model.model}</strong><small>{model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? `Ready · resolves to ${model.resolvedModel}` : "Ready for generation") : model.error ?? "Unavailable"}</small></div><span className="model-check-meta">{model.latencyMs ? `${model.latencyMs} ms` : "—"}<br />{model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked"}</span></div>)}</div>}
 

@@ -1418,8 +1418,8 @@
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
     const workingModels = {};
     state.modelChecks.forEach(function (model) { if (model.status === "working") workingModels[model.resolvedModel || model.model] = true; });
-    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: state.modelChecks.length ? Object.keys(workingModels).length + " ready of " + state.modelChecks.length + " checks" : "Connect to discover models" })));
-    modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking" : "Check all models"));
+    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: state.modelChecks.length ? Object.keys(workingModels).length + " ready of " + state.modelChecks.length + " checked" : "Connect to check available models" })));
+    modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking" : "Check connection"));
     gemini.appendChild(modelHeading);
     if (state.modelChecks.length) {
       const modelList = node("div", { className: "model-check-list", ariaLive: "polite" });

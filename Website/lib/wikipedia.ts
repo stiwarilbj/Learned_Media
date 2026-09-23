@@ -68,6 +68,16 @@ type SummaryResponse = {
 };
 
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
+type WikipediaPage = NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string];
+export type WikipediaResolutionCache = {
+  pages: Map<string, Promise<WikipediaPage[]>>;
+  searches: Map<string, Promise<string[]>>;
+  images: Map<string, Promise<ImageAttribution | undefined>>;
+};
+
+export function createWikipediaResolutionCache(): WikipediaResolutionCache {
+  return { pages: new Map(), searches: new Map(), images: new Map() };
+}
 
 /**
  * Point a citation at the accepted evidence instead of the top of the article.
@@ -124,23 +134,36 @@ export async function searchWikipedia(query: string, limit = 3, signal?: AbortSi
   return payload?.query?.search?.map((result) => result.title?.trim()).filter(Boolean) as string[] ?? [];
 }
 
-async function fetchPages(titles: string[], signal?: AbortSignal): Promise<Array<NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string]>> {
+async function fetchPages(titles: string[], signal?: AbortSignal, cache?: WikipediaResolutionCache): Promise<WikipediaPage[]> {
   if (!titles.length) return [];
-  // TextExtracts only returns full articles one at a time. All requests share the limiter.
-  if (titles.length > 1) return (await Promise.all(titles.map(title => fetchPages([title], signal)))).flat();
-  const payload = await getJson<PageResponse>(apiUrl({
-    action: "query",
-    titles: titles.join("|"),
-    prop: "info|extracts|pageimages",
-    inprop: "url",
-    redirects: "1",
-    explaintext: "1",
-    exsectionformat: "wiki",
-    piprop: "thumbnail|name|original",
-    pilicense: "free",
-    pithumbsize: "1000"
-  }), signal);
-  return Object.values(payload?.query?.pages ?? {}).filter((page) => page.title && page.fullurl);
+  // TextExtracts only returns full articles one at a time. Reuse in-flight page
+  // requests within a feed batch so different cards do not fetch the same page.
+  const uniqueTitles = Array.from(new Set(titles.map((title) => title.trim()).filter(Boolean)));
+  return (await Promise.all(uniqueTitles.map((title) => {
+    const key = title.toLocaleLowerCase();
+    const pending = cache?.pages.get(key);
+    if (pending) return pending;
+    const request = (async () => {
+      const payload = await getJson<PageResponse>(apiUrl({
+        action: "query",
+        titles: title,
+        prop: "info|extracts|pageimages",
+        inprop: "url",
+        redirects: "1",
+        explaintext: "1",
+        exsectionformat: "wiki",
+        piprop: "thumbnail|name|original",
+        pilicense: "free",
+        pithumbsize: "1000"
+      }), signal);
+      return Object.values(payload?.query?.pages ?? {}).filter((page) => page.title && page.fullurl);
+    })();
+    if (cache) {
+      cache.pages.set(key, request);
+      void request.catch(() => { if (cache.pages.get(key) === request) cache.pages.delete(key); });
+    }
+    return request;
+  }))).flat();
 }
 
 async function fetchImageInfo(pageimage: string, signal?: AbortSignal) {
@@ -229,29 +252,66 @@ async function resolveImage(page: {
   };
 }
 
-export async function resolveWikipediaSources(queries: string[], limit = 3, signal?: AbortSignal): Promise<ResolvedWikipediaSource[]> {
+export async function resolveWikipediaSources(queries: string[], limit = 3, signal?: AbortSignal, options: { includeImages?: boolean; cache?: WikipediaResolutionCache } = {}): Promise<ResolvedWikipediaSource[]> {
   const cleanQueries = Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(0, 5);
   if (!cleanQueries.length) return [];
-  const exact = await fetchPages(cleanQueries.slice(0, limit), signal);
-  const searchedTitles = exact.length ? [] : await Promise.all(cleanQueries.map((query) => searchWikipedia(query, 1, signal)));
+  const cache = options.cache;
+  const exact = await fetchPages(cleanQueries.slice(0, limit), signal, cache);
+  const searchedTitles = exact.length ? [] : await Promise.all(cleanQueries.map((query) => {
+    const key = query.toLocaleLowerCase();
+    const pending = cache?.searches.get(key);
+    if (pending) return pending;
+    const request = searchWikipedia(query, 1, signal);
+    if (cache) {
+      cache.searches.set(key, request);
+      void request.catch(() => { if (cache.searches.get(key) === request) cache.searches.delete(key); });
+    }
+    return request;
+  }));
   const titles = Array.from(new Set(exact.length ? exact.map(page => page.title!) : searchedTitles.flat().filter(Boolean))).slice(0, limit);
-  const pages = exact.length ? exact : await fetchPages(titles, signal);
+  const pages = exact.length ? exact : await fetchPages(titles, signal, cache);
   const pagesByTitle = new Map(pages.map((page) => [page.title?.toLowerCase(), page]));
   const orderedPages = titles.map((title) => pagesByTitle.get(title.toLowerCase())).filter(Boolean) as typeof pages;
-  const resolved = await Promise.all((orderedPages.length ? orderedPages : pages).map(async (page) => ({
-    title: page.title as string,
-    url: page.fullurl as string,
-    canonicalUrl: page.fullurl as string,
-    extract: page.extract?.trim() || undefined,
-    image: await resolveImage({
+  const includeImages = options.includeImages !== false;
+  const resolved = await Promise.all((orderedPages.length ? orderedPages : pages).map(async (page) => {
+    const source: ResolvedWikipediaSource = {
+      title: page.title as string,
+      url: page.fullurl as string,
+      canonicalUrl: page.fullurl as string,
+      extract: page.extract?.trim() || undefined
+    };
+    if (includeImages) source.image = await resolveImage({
       title: page.title as string,
       fullurl: page.fullurl as string,
       pageimage: page.pageimage,
       thumbnail: page.thumbnail,
       original: page.original
-    }, signal)
-  })));
+    }, signal);
+    return source;
+  }));
   return resolved;
+}
+
+export async function resolveWikipediaImage(source: WikipediaSource, signal?: AbortSignal, cache?: WikipediaResolutionCache) {
+  const key = (source.canonicalUrl ?? source.url ?? source.title).toLocaleLowerCase();
+  const pending = cache?.images.get(key);
+  if (pending) return pending;
+  const request = (async () => {
+    const page = (await fetchPages([source.title], signal, cache)).find((candidate) => candidate.title?.toLocaleLowerCase() === source.title.toLocaleLowerCase());
+    if (!page?.title || !page.fullurl) return undefined;
+    return resolveImage({
+      title: page.title,
+      fullurl: page.fullurl,
+      pageimage: page.pageimage,
+      thumbnail: page.thumbnail,
+      original: page.original
+    }, signal);
+  })();
+  if (cache) {
+    cache.images.set(key, request);
+    void request.catch(() => { if (cache.images.get(key) === request) cache.images.delete(key); });
+  }
+  return request;
 }
 
 export async function resolveWikipediaTitle(title: string) {

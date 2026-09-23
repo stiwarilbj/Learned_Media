@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "build:github-pages": "node scripts/build-github-pages.mjs",
+    "test:generation": "node scripts/test-generation.mjs",
     "validate:political": "node scripts/validate-political-catalog.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit",
