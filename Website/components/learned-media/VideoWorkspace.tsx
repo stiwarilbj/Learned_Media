@@ -62,6 +62,7 @@ function VideoList({ videos, workspace, reasons, smartSearchRan, onOpenVideo, on
 export function VideoWorkspace({ workspace, youtubeStatus, progress, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
   const [ended, setEnded] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const showMoreRef = useRef<HTMLDivElement>(null);
   const activeVideo = workspace.selectedVideoId ? workspace.videos.find((video) => video.id === workspace.selectedVideoId) : undefined;
   const activeChannel = workspace.selectedChannelId ? workspace.channels.find((channel) => channel.id === workspace.selectedChannelId) : undefined;
   const channelVideos = useMemo(() => {
@@ -91,6 +92,21 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
     const timer = window.setInterval(requestPosition, 5000);
     return () => { window.removeEventListener("message", onMessage); window.clearInterval(timer); };
   }, [activeVideo?.id, onPlaybackPosition]);
+
+  useEffect(() => {
+    if (workspace.activeTab !== "discover" || workspace.selectedVideoId || workspace.selectedChannelId || workspace.searchText.trim() || smartSearchRan || !workspace.videos.length) return;
+    const sentinel = showMoreRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.unobserve(sentinel);
+      onShowMore();
+    }, { rootMargin: "400px 0px" });
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [onShowMore, smartSearchRan, workspace.activeTab, workspace.discoverIds.length, workspace.searchText, workspace.selectedChannelId, workspace.selectedVideoId, workspace.videos.length]);
 
   if (activeVideo) return <section className="content-view video-workspace">
     <button type="button" className="text-button video-back-button" onClick={onBack}><Icon name="chevronRight" size={15} /> Back to videos</button>
@@ -133,7 +149,7 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
       <div className="video-topic-filters" aria-label="Video topics"><button type="button" className={workspace.selectedTopic === "All" ? "active" : ""} onClick={() => onTopicChange("All")}>All topics</button>{YOUTUBE_TOPICS.map((topic) => <button type="button" key={topic} className={workspace.selectedTopic === topic ? "active" : ""} onClick={() => onTopicChange(topic)}>{topic}</button>)}</div>
     </>}
     {workspace.videos.length ? <VideoList videos={videos} workspace={workspace} reasons={searchReasons} smartSearchRan={smartSearchRan} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /> : <EmptyVideoSetup onOpenSettings={onOpenSettings} />}
-    {workspace.activeTab === "discover" && workspace.videos.length > 0 && <div className="video-show-more"><button type="button" className="small-load-button" onClick={onShowMore}>Show more approved videos</button></div>}
+    {workspace.activeTab === "discover" && workspace.videos.length > 0 && <div className="video-show-more" ref={showMoreRef}><button type="button" className="small-load-button" onClick={onShowMore}>Show more approved videos</button></div>}
     {workspace.videos.length > 0 && <p className="video-library-note">{workspace.videos.length.toLocaleString()} approved videos available · No view, like, or comment counts are shown{workspace.lastSyncAt ? ` · Last refresh ${new Date(workspace.lastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : ""}</p>}
     {void onPlaybackPosition}
   </section>;

@@ -1446,6 +1446,7 @@ export default function HomePage() {
     const current = youtubeWorkspaceRef.current;
     const pool = filterYouTubeVideos(current.videos, "", current.selectedTopic);
     const next = selectRandomVideos(pool, 24, current.discoverIds);
+    if (!next.length) return;
     updateYouTubeWorkspace((workspace) => ({ ...workspace, activeTab: "discover", discoverIds: [...workspace.discoverIds, ...next.map((video) => video.id)] }));
   }, [updateYouTubeWorkspace]);
 
