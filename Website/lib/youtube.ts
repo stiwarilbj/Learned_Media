@@ -121,61 +121,62 @@ export type YouTubeSearchCandidate = {
 
 export const YOUTUBE_TOPICS: YouTubeTopic[] = ["History", "Politics", "Geography", "Science", "Nature", "Mathematics", "Literature", "Sports", "Culture", "Technology"];
 
-// This is the only channel catalog used by the feature. Handles are retained
-// where the user supplied or confirmed them; other IDs are resolved strictly
-// by exact channel-title matching and saved after verification.
+export const YOUTUBE_CATALOG_VERSION = 4;
+
+// Pin the approved channel IDs so lookalike channel names cannot redirect an
+// import, and channel resolution does not spend YouTube search quota.
 export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
-  { name: "History Matters" },
-  { name: "Election History" },
-  { name: "Secret Base" },
-  { name: "Geo History" },
-  { name: "Great Books Explained" },
-  { name: "BooneU" },
-  { name: "Joon Lee" },
-  { name: "TLDR News Global" },
-  { name: "Mr. Beat" },
-  { name: "The Generalist Papers" },
-  { name: "CGP Grey", handle: "@CGPGrey" },
-  { name: "Power Politics" },
-  { name: "Half as Interesting" },
-  { name: "Hoser" },
-  { name: "The History Guy: History Deserves to Be Remembered" },
-  { name: "History Buffs Hub" },
-  { name: "Ceramic", handle: "@ceramic01" },
-  { name: "Reading Through History" },
-  { name: "Atlas Pro" },
-  { name: "African Biographics" },
-  { name: "Phil Edwards" },
-  { name: "Tor’s Cabinet of Curiosities" },
-  { name: "Extra History" },
-  { name: "Justin Portela" },
+  { name: "History Matters", channelId: "UC22BdTgxefuvUivrjesETjg" },
+  { name: "Election History", channelId: "UCKfTfhaihmkvdvPF5DSGaow" },
+  { name: "Secret Base", channelId: "UCDRmGMSgrtZkOsh_NQl4_xw" },
+  { name: "Geo History", channelId: "UC2Cl2g2xFTZoAEldxYVzQFg" },
+  { name: "Great Books Explained", channelId: "UCSzITlgppFAIRbQGIwcInCA" },
+  { name: "BooneU", channelId: "UC7ZwKfpjiQEaZpdPql7VVPA" },
+  { name: "Joon Lee", channelId: "UC8Ks8V76mHziboEtTAwMV8A" },
+  { name: "TLDR News Global", channelId: "UC-uhvujip5deVcEtLxnW8qg" },
+  { name: "Mr. Beat", channelId: "UCmYesELO6axBrCuSpf7S9DQ" },
+  { name: "The Generalist Papers", channelId: "UCN9UPjA8I-uwvAy0-N9maOA" },
+  { name: "CGP Grey", handle: "@CGPGrey", channelId: "UC2C_jShtL725hvbm1arSV9w" },
+  { name: "Power Politics", channelId: "UCy0vqn9lOSWBToKU5ggTOUw" },
+  { name: "Half as Interesting", channelId: "UCuCkxoKLYO_EQ2GeFtbM_bw" },
+  { name: "Hoser", channelId: "UCAiEWppTvoNSHU939xhMb2g" },
+  { name: "The History Guy: History Deserves to Be Remembered", channelId: "UC4sEmXUuWIFlxRIFBRV6VXQ" },
+  { name: "History Buffs Hub", channelId: "UC2P1qb3jXoTnh3D16O1x7hQ" },
+  { name: "Ceramic", handle: "@ceramic01", channelId: "UC01XCPlLs4ysH9LYs6Y4J6A" },
+  { name: "Reading Through History", channelId: "UChyG2JVCWQACzzTbzS3Z3jg" },
+  { name: "Atlas Pro", channelId: "UCz1oFxMrgrQ82-276UCOU9w" },
+  { name: "African Biographics", channelId: "UCJmmxwdAsR7lD8fBA_qbEMw" },
+  { name: "Phil Edwards", channelId: "UCb_MAhL8Thb3HJ_wPkH3gcw" },
+  { name: "Tor’s Cabinet of Curiosities", channelId: "UC8oMvYlwaS7m5VpMwOTvgzw" },
+  { name: "Extra History", channelId: "UCCODtTcd5M1JavPCOr_Uydg" },
+  { name: "Justin Portela", channelId: "UChMicznKldDUO5vxIzu2L0w" },
   { name: "Patrick Kelly", handle: "@PatKellyTeaches", channelId: "UCXGtJRfZ_pmJgKKE67PeCEA" },
-  { name: "Historically" },
-  { name: "Mental Floss" },
+  { name: "Historically", channelId: "UCoZd78hRUdxxsuGiABuHF_A" },
+  { name: "Mental Floss", channelId: "UCpZ5qUqpW4hW4zdfuBxMSJA" },
   { name: "Crash Course", handle: "@crashcourse", channelId: "UCX6b17PVsYBQ0ip5gyeme-Q", titleAliases: ["CrashCourse"] },
-  { name: "SciShow" },
-  { name: "OverSimplified" },
-  { name: "vlogbrothers" },
-  { name: "Sam O’Nella Academy" },
+  { name: "SciShow", channelId: "UCZYTClx2T1of7BRZ86-8fow" },
+  { name: "OverSimplified", channelId: "UCNIuvl7V8zACPpTmmNIqP2A" },
+  { name: "vlogbrothers", channelId: "UCGaVdbSav8xWuFWTadK6loA" },
+  { name: "Sam O’Nella Academy", channelId: "UC1DTYW241WD64ah5BFWn4JA" },
   { name: "3Blue1Brown", channelId: "UCYO_jab_esuFRV4b17AJtAw", playlistIds: ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi", "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"] },
-  { name: "Shawn Grows" },
-  { name: "General Knowledge" },
-  { name: "Jay Hona" },
-  { name: "Veritasium" },
-  { name: "theweeklyjack", handle: "@theweeklyjack1" },
+  { name: "Shawn Grows", channelId: "UCzOXodveGcVO5xqLyc5l_Zg" },
+  { name: "General Knowledge", channelId: "UCnD4jogYqIgUWY1ZYPU-Dew" },
+  { name: "Jay Hona", channelId: "UCxSn-rKHu1FUFxjHyY1nKmw" },
+  { name: "Veritasium", channelId: "UCHnyfMqiRRG1u-2MsSQLbXA" },
+  { name: "theweeklyjack", handle: "@theweeklyjack1", channelId: "UCMWYB9dXQtv_1t_DgyhSWeg" },
   { name: "Jackdaw", handle: "@JackdawJPG", channelId: "UCvhjLch7MMc9O8toGFW0hSg" },
   { name: "Grist", handle: "@Grist", channelId: "UC7ga3FLMFOOpMQwaYoW42bw" },
-  { name: "Bizarre Beasts" },
-  { name: "Ze Frank" },
-  { name: "Make Thing With Hand" },
-  { name: "Be Smart" },
-  { name: "PBS Eons" },
-  { name: "Deep Look" },
-  { name: "MinuteEarth" },
-  { name: "minutephysics" },
-  { name: "Brailor" },
-  { name: "hydn" },
-  { name: "ExtinctZoo", handle: "@ExtinctZoo" },
+  { name: "Bizarre Beasts", channelId: "UC9Lp_AA5M2cMGrlvnnIns-g" },
+  { name: "Ze Frank", channelId: "UCVpankR4HtoAVtYnFDUieYA" },
+  { name: "Make Thing With Hand", channelId: "UCP8HNHLFff9xAtKHS0a0qGQ" },
+  { name: "Be Smart", channelId: "UCH4BNI0-FOK2dMXoFtViWHw" },
+  { name: "PBS Eons", channelId: "UCzR-rom72PHN9Zg7RML9EbA" },
+  { name: "Deep Look", channelId: "UC-3SbfTPJsL8fJAPKiVqBLg" },
+  { name: "MinuteEarth", channelId: "UCeiYXex_fwgYDonaTcSIk6w" },
+  { name: "minutephysics", channelId: "UCUHW94eEFW7hkUMVaZz4eDg" },
+  { name: "Brailor", channelId: "UCufSP4vHIwEWyL5pQ_s1Geg" },
+  { name: "hydn", channelId: "UCc2ujf1IwvhGv0co1FzkDkQ" },
+  { name: "ExtinctZoo", handle: "@ExtinctZoo", channelId: "UC0ggS8bt4v7NiZpDfGqNpZQ" },
   { name: "PBS Terra", handle: "@pbsterra", channelId: "UCpxYSWgxVt3Pyn1ovXsGQ0g" },
   { name: "PolyMatter", handle: "@PolyMatter", channelId: "UCgNg3vwj3xt7QOrcIDaHdFg" },
   { name: "AlternateHistoryHub", handle: "@AlternateHistoryHub", channelId: "UClfEht64_NrzHf8Y0slKEjw" },
@@ -205,7 +206,7 @@ export const APPROVED_INDIVIDUAL_VIDEOS: ApprovedVideoSeed[] = [
 const APPROVED_3BLUE_PLAYLIST_SOURCE_IDS = new Set((APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown")?.playlistIds ?? []).map((id) => `playlist:${id}`));
 
 export const DEFAULT_YOUTUBE_WORKSPACE: YouTubeWorkspaceState = {
-  channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", channelOrder: "newest", discoverIds: [], prioritizeRecentByChannel: DEFAULT_YOUTUBE_RECENCY_PREFERENCES, libraryIncomplete: false, catalogVersion: 3, sourceStates: {}
+  channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", channelOrder: "newest", discoverIds: [], prioritizeRecentByChannel: DEFAULT_YOUTUBE_RECENCY_PREFERENCES, libraryIncomplete: false, catalogVersion: YOUTUBE_CATALOG_VERSION, sourceStates: {}
 };
 
 const YOUTUBE_API_ROOT = "https://www.googleapis.com/youtube/v3";
@@ -292,6 +293,16 @@ function withTimeout(signal: AbortSignal | undefined, timeoutMs = 30_000) {
   return { controller, cleanup: () => { window.clearTimeout(timer); signal?.removeEventListener("abort", abort); } };
 }
 
+function waitBeforeRetry(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) { reject(abortError()); return; }
+    const finish = () => { signal?.removeEventListener("abort", abort); resolve(); };
+    const timer = window.setTimeout(finish, ms);
+    const abort = () => { window.clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(abortError()); };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
 async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Record<string, string>, signal?: AbortSignal): Promise<T> {
   const url = new URL(`${YOUTUBE_API_ROOT}/${resource}`);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
@@ -306,12 +317,16 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
       const error = (payload as { error?: { message?: string; errors?: Array<{ reason?: string }> } }).error;
       const reason = error?.errors?.[0]?.reason;
       const message = error?.message || `YouTube returned HTTP ${response.status}.`;
-      const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-      throw new YouTubeApiError(reason === "quotaExceeded" ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable);
+      const quotaExhausted = reason === "quotaExceeded" || reason === "dailyLimitExceeded";
+      const rateLimited = reason === "rateLimitExceeded" || reason === "userRateLimitExceeded";
+      const retryable = !quotaExhausted && (rateLimited || response.status === 408 || response.status === 429 || response.status >= 500);
+      throw new YouTubeApiError(quotaExhausted ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable);
     }
     return payload as T;
   } catch (error) {
-    if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw abortError();
+    if (signal?.aborted) throw abortError();
+    if (error instanceof DOMException && error.name === "AbortError") throw new YouTubeApiError("YouTube request timed out. Retrying may help.", undefined, "timeout", true);
+    if (error instanceof TypeError) throw new YouTubeApiError("Could not reach YouTube. Check the connection and retry.", undefined, "network", true);
     throw error;
   } finally {
     timeout.cleanup();
@@ -377,8 +392,17 @@ export class YouTubeClient {
 
   private request<T>(resource: string, params: Record<string, string>, signal?: AbortSignal) {
     return this.limiter.run(signal, async () => {
-      if (this.requestOverride) return this.requestOverride(resource, params, signal) as Promise<T>;
-      return fetchYouTubeJson<T>(this.apiKey, resource, params, signal);
+      let attempt = 0;
+      while (true) {
+        try {
+          if (this.requestOverride) return await this.requestOverride(resource, params, signal) as T;
+          return await fetchYouTubeJson<T>(this.apiKey, resource, params, signal);
+        } catch (error) {
+          if (!(error instanceof YouTubeApiError) || !error.retryable || attempt >= 2) throw error;
+          await waitBeforeRetry(500 * (2 ** attempt), signal);
+          attempt += 1;
+        }
+      }
     });
   }
 
@@ -402,7 +426,12 @@ export class YouTubeClient {
   private async importPlaylist(channel: YouTubeChannelRecord, playlistId: string, sourceId: string, signal?: AbortSignal, onPage?: (count: number) => void) {
     const ids: string[] = [];
     let pageToken = "";
+    const seenPageTokens = new Set<string>();
     do {
+      if (pageToken) {
+        if (seenPageTokens.has(pageToken)) throw new YouTubeApiError(`YouTube repeated a page while importing ${channel.name}.`, undefined, "repeated-page", false);
+        seenPageTokens.add(pageToken);
+      }
       const payload = await this.request<PlaylistApiResponse>("playlistItems", { part: "snippet,contentDetails", playlistId, maxResults: "50", ...(pageToken ? { pageToken } : {}) }, signal);
       for (const item of payload.items ?? []) if (item.contentDetails?.videoId) ids.push(item.contentDetails.videoId);
       onPage?.(ids.length);
@@ -411,7 +440,7 @@ export class YouTubeClient {
     const videos = await mapWithConcurrency(Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50)), 4, async (batch) => this.request<VideoApiResponse>("videos", { part: "snippet,contentDetails,status", id: batch.join(",") }, signal));
     const mapped: YouTubeVideo[] = [];
     videos.flatMap((payload) => payload.items ?? []).forEach((item) => {
-      if (!item.id || item.status?.privacyStatus && item.status.privacyStatus !== "public" || item.snippet?.channelId && item.snippet.channelId !== channel.id) return;
+      if (!item.id || item.status?.privacyStatus && item.status.privacyStatus !== "public" || item.snippet?.channelId !== channel.id) return;
       const snippet = item.snippet;
       const durationSeconds = parseDuration(item.contentDetails?.duration);
       const title = snippet?.title?.trim();
@@ -465,7 +494,8 @@ export class YouTubeClient {
         errors.push(message);
         progress.error = errors.slice(0, 3).join(" · ");
         onProgress?.({ ...progress });
-        return { seed, channel: previous?.id ? previous : null };
+        const previousIsPinnedMatch = previous?.id && (!seed.channelId || previous.id === seed.channelId);
+        return { seed, channel: previousIsPinnedMatch ? { ...previous, name: seed.name } : null };
       }
     });
     const verified = channels.filter((entry): entry is { seed: ApprovedChannelSeed; channel: YouTubeChannelRecord } => Boolean(entry.channel));
@@ -481,7 +511,7 @@ export class YouTubeClient {
     const imported = await mapWithConcurrency(jobs, 4, async (job) => {
       progress.currentSource = job.label;
       const prior = sourceStates[job.sourceId];
-      const due = Boolean(options.force || !prior?.lastSuccessfulSyncAt || now - new Date(prior.lastSuccessfulSyncAt).getTime() >= day);
+      const due = Boolean(options.force || prior?.status === "error" || !prior?.lastSuccessfulSyncAt || now - new Date(prior.lastSuccessfulSyncAt).getTime() >= day);
       if (!due) {
         progress.completedSources = (progress.completedSources ?? 0) + 1;
         onProgress?.({ ...progress });
@@ -521,6 +551,17 @@ export class YouTubeClient {
         merged.set(video.id, { ...previous, ...video, sourceIds: Array.from(new Set([...(previous?.sourceIds ?? []), result.job.sourceId])) });
       });
     });
+    if (verified.length === APPROVED_YOUTUBE_CHANNELS.length) {
+      const activeSourceIds = new Set(jobs.map((job) => job.sourceId));
+      merged.forEach((video, id) => {
+        const sourceIds = video.sourceIds ?? [];
+        const retainedSourceIds = sourceIds.filter((sourceId) => !/^(?:channel|playlist):/.test(sourceId) || activeSourceIds.has(sourceId));
+        if (retainedSourceIds.length === sourceIds.length) return;
+        if (retainedSourceIds.length) merged.set(id, { ...video, sourceIds: retainedSourceIds });
+        else merged.delete(id);
+      });
+      Object.keys(sourceStates).forEach((sourceId) => { if (!activeSourceIds.has(sourceId)) delete sourceStates[sourceId]; });
+    }
     const playlistSourceIds = new Set(APPROVED_YOUTUBE_CHANNELS.flatMap((seed) => seed.playlistIds ?? []).map((id) => `playlist:${id}`));
     const threeBlue = APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown");
     const unique = Array.from(merged.values()).filter((video) => {
@@ -747,7 +788,9 @@ export async function loadYouTubeWorkspace() {
       const request = db.transaction("workspace", "readonly").objectStore("workspace").get("state");
       request.onsuccess = () => {
         const raw = request.result ?? {};
-        const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: 3, sourceStates: { ...(raw.sourceStates ?? {}) }, prioritizeRecentByChannel: { ...DEFAULT_YOUTUBE_RECENCY_PREFERENCES, ...(raw.prioritizeRecentByChannel ?? {}) } } as YouTubeWorkspaceState;
+        const savedCatalogVersion = Number.isInteger(raw.catalogVersion) ? raw.catalogVersion : undefined;
+        const inferredCatalogVersion = (raw.channels?.length || raw.videos?.length) ? 0 : YOUTUBE_CATALOG_VERSION;
+        const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: savedCatalogVersion ?? inferredCatalogVersion, sourceStates: { ...(raw.sourceStates ?? {}) }, prioritizeRecentByChannel: { ...DEFAULT_YOUTUBE_RECENCY_PREFERENCES, ...(raw.prioritizeRecentByChannel ?? {}) } } as YouTubeWorkspaceState;
         workspace.videos = (workspace.videos ?? []).filter(isApprovedYouTubeVideo).map((video) => ({ ...video, sourceIds: video.sourceIds ?? [] }));
         if (!raw.prioritizeRecentByChannel && workspace.videos.length) {
           workspace.discoverIds = selectRandomVideos(filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic), 24, [], workspace.prioritizeRecentByChannel).map((video) => video.id);
