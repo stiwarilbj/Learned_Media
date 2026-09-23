@@ -1093,6 +1093,7 @@ body { background: var(--page-gradient); }
   .top-nav-links { display: none; }
   .top-nav-account { margin-left: auto; }
   .nav-reset { display: none; }
+  .feed-topics-panel .topic-sidebar-reset { display: flex; }
   .top-nav-account .profile-chip { min-width: 0; border: 0; padding: 0; background: transparent; }
   .top-nav-account .profile-copy { display: none; }
   .top-navigation + .main-column .topbar { height: 66px; flex-basis: 66px; padding: 0 15px; }
@@ -1111,6 +1112,9 @@ body { background: var(--page-gradient); }
   .feed-content-column .feed-toolbar { margin-top: 2px; }
   .fact-sources { flex-direction: column; gap: 6px; }
 }
+
+.topic-sidebar-reset { display: none; width: 100%; min-height: 34px; margin: 0 0 12px; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--muted); font-size: 10px; font-weight: 800; }
+.topic-sidebar-reset:hover { border-color: var(--primary); background: var(--surface-blue); color: var(--primary); }
 
 @media (max-width: 560px) {
   .nav-brand .brand-wordmark { display: none; }
