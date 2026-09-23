@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { YouTubeChannelRecord, YouTubeImportProgress, YouTubeTopic, YouTubeVideo, YouTubeWorkspaceState } from "@/lib/youtube";
-import { YOUTUBE_TOPICS, filterYouTubeVideos, selectRandomVideos } from "@/lib/youtube";
+import { YOUTUBE_TOPICS, filterYouTubeVideos, relatedYouTubeVideos, selectRandomVideos } from "@/lib/youtube";
 import type { RankedVideoSearchResult } from "@/lib/gemini";
 import { Icon } from "./icons";
 
@@ -70,11 +70,11 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
     const matches = smartSearchRan ? searchResults.filter((video) => video.channelId === activeChannel.id) : filterYouTubeVideos(workspace.videos, workspace.searchText, workspace.selectedTopic, activeChannel.id);
     if (workspace.channelOrder === "newest") return [...matches].sort((left, right) => right.publishedAt.localeCompare(left.publishedAt));
     if (workspace.channelOrder === "oldest") return [...matches].sort((left, right) => left.publishedAt.localeCompare(right.publishedAt));
-    return selectRandomVideos(matches, matches.length);
-  }, [activeChannel, searchResults, smartSearchRan, workspace.channelOrder, workspace.searchText, workspace.selectedTopic, workspace.videos]);
+    return selectRandomVideos(matches, matches.length, [], workspace.prioritizeRecentByChannel);
+  }, [activeChannel, searchResults, smartSearchRan, workspace.channelOrder, workspace.prioritizeRecentByChannel, workspace.searchText, workspace.selectedTopic, workspace.videos]);
   const historyVideos = workspace.history.map((item) => workspace.videos.find((video) => video.id === item.videoId)).filter((video): video is YouTubeVideo => Boolean(video));
   const savedVideos = workspace.videos.filter((video) => workspace.savedIds.includes(video.id));
-  const related = activeVideo ? workspace.videos.filter((video) => video.id !== activeVideo.id && video.topics.some((topic) => activeVideo.topics.includes(topic))).slice(0, 6) : [];
+  const related = activeVideo ? relatedYouTubeVideos(workspace.videos, activeVideo, 6, workspace.prioritizeRecentByChannel) : [];
 
   useEffect(() => {
     setEnded(false);

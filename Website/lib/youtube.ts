@@ -69,6 +69,7 @@ export type YouTubeWorkspaceState = {
   selectedVideoId?: string;
   discoverIds: string[];
   channelOrder: "newest" | "oldest" | "random";
+  prioritizeRecentByChannel: Record<string, boolean>;
   libraryIncomplete: boolean;
   lastSyncAt?: string;
   catalogVersion: number;
@@ -184,6 +185,10 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
   { name: "Jabroni Baseball", handle: "@JabroniBaseball", channelId: "UCfBXZotQqPlpDWXTbRbi2qA" }
 ];
 
+export const DEFAULT_YOUTUBE_RECENCY_PREFERENCES: Record<string, boolean> = Object.fromEntries(
+  APPROVED_YOUTUBE_CHANNELS.map(({ name }) => [name, name === "Crash Course" || name === "Mental Floss"])
+);
+
 // Individual videos are intentionally separate from the channel catalog.
 // Unknown IDs are resolved by an exact title + creator search and never by a
 // broad recommendation query.
@@ -199,7 +204,7 @@ export const APPROVED_INDIVIDUAL_VIDEOS: ApprovedVideoSeed[] = [
 const APPROVED_3BLUE_PLAYLIST_SOURCE_IDS = new Set((APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown")?.playlistIds ?? []).map((id) => `playlist:${id}`));
 
 export const DEFAULT_YOUTUBE_WORKSPACE: YouTubeWorkspaceState = {
-  channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", channelOrder: "newest", discoverIds: [], libraryIncomplete: false, catalogVersion: 3, sourceStates: {}
+  channels: [], videos: [], savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", channelOrder: "newest", discoverIds: [], prioritizeRecentByChannel: DEFAULT_YOUTUBE_RECENCY_PREFERENCES, libraryIncomplete: false, catalogVersion: 3, sourceStates: {}
 };
 
 const YOUTUBE_API_ROOT = "https://www.googleapis.com/youtube/v3";
@@ -523,26 +528,43 @@ export class YouTubeClient {
   }
 }
 
-export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclude: string[] = []) {
+export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclude: string[] = [], prioritizeRecentByChannel: Record<string, boolean> = {}) {
   const excluded = new Set(exclude);
-  const groups = new Map<string, YouTubeVideo[]>();
-  videos.filter((video) => !excluded.has(video.id)).forEach((video) => groups.set(video.channelId, [...(groups.get(video.channelId) ?? []), video]));
-  const groupValues = Array.from(groups.values());
-  groupValues.forEach((group) => { for (let index = group.length - 1; index > 0; index -= 1) { const swap = Math.floor(Math.random() * (index + 1)); [group[index], group[swap]] = [group[swap], group[index]]; } });
-  for (let index = groupValues.length - 1; index > 0; index -= 1) { const swap = Math.floor(Math.random() * (index + 1)); [groupValues[index], groupValues[swap]] = [groupValues[swap], groupValues[index]]; }
-  const result: YouTubeVideo[] = [];
-  let cursor = 0;
-  while (result.length < count && groupValues.length) {
-    let added = false;
-    for (let offset = 0; offset < groupValues.length && result.length < count; offset += 1) {
-      const group = groupValues[(cursor + offset) % groupValues.length];
-      const next = group.shift();
-      if (next) { result.push(next); added = true; }
-    }
-    cursor = (cursor + 1) % Math.max(groupValues.length, 1);
-    if (!added) break;
+  const extraRecentBias = new Set(Object.entries(prioritizeRecentByChannel).filter(([, enabled]) => enabled).map(([name]) => normalized(name)));
+  const currentTime = Date.now();
+  const yearInMs = 365.25 * 24 * 60 * 60 * 1000;
+  const targetCount = Math.max(0, Math.floor(count));
+  const recentPool: YouTubeVideo[] = [];
+  const olderPreferredPool: YouTubeVideo[] = [];
+  videos.filter((video) => !excluded.has(video.id)).forEach((video) => {
+    const publishedAt = Date.parse(video.publishedAt);
+    const ageInYears = Number.isFinite(publishedAt) ? Math.max(0, (currentTime - publishedAt) / yearInMs) : 0;
+    if (extraRecentBias.has(normalized(video.channelName)) && ageInYears > 5) olderPreferredPool.push(video);
+    else recentPool.push(video);
+  });
+
+  const weightedSample = (pool: YouTubeVideo[], sampleCount: number) => pool
+    .map((video) => {
+      const publishedAt = Date.parse(video.publishedAt);
+      const ageInYears = Number.isFinite(publishedAt) ? Math.max(0, (currentTime - publishedAt) / yearInMs) : 0;
+      const halfLifeInYears = extraRecentBias.has(normalized(video.channelName)) ? 1.5 : 8;
+      const recencyWeight = Math.pow(0.5, ageInYears / halfLifeInYears);
+      const random = Math.max(Math.random(), Number.MIN_VALUE);
+      return { video, randomKey: -Math.log(random) / recencyWeight };
+    })
+    .sort((left, right) => left.randomKey - right.randomKey)
+    .slice(0, sampleCount)
+    .map(({ video }) => video);
+
+  const olderVideoLimit = olderPreferredPool.length ? Math.max(1, Math.ceil(targetCount / 24)) : 0;
+  const recentVideos = weightedSample(recentPool, Math.max(0, targetCount - olderVideoLimit));
+  const olderVideos = weightedSample(olderPreferredPool, Math.min(olderVideoLimit, targetCount - recentVideos.length));
+  const selected = [...recentVideos, ...olderVideos];
+  for (let index = selected.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [selected[index], selected[swap]] = [selected[swap], selected[index]];
   }
-  return result;
+  return selected;
 }
 
 const SEARCH_BOILERPLATE = /(?:subscribe|like and subscribe|follow us|social media|patreon|sponsor(?:ed)? by|use code|affiliate|merch(?:andise)?|join the discord|business inquiries|check out my|support the channel|all links? in the description)[^.!?]*(?:[.!?]|$)/gi;
@@ -685,9 +707,9 @@ export function filterYouTubeVideos(videos: YouTubeVideo[], searchText: string, 
   return searchYouTubeCandidates(videos, { terms: [searchText] }, topic, channelId, Math.min(80, videos.length)).map((candidate) => candidate.video);
 }
 
-export function relatedYouTubeVideos(videos: YouTubeVideo[], current: YouTubeVideo, count = 6) {
+export function relatedYouTubeVideos(videos: YouTubeVideo[], current: YouTubeVideo, count = 6, prioritizeRecentByChannel: Record<string, boolean> = {}) {
   const shared = videos.filter((video) => video.id !== current.id && isApprovedYouTubeVideo(video) && video.topics.some((topic) => current.topics.includes(topic)));
-  return selectRandomVideos(shared, count, [current.id]);
+  return selectRandomVideos(shared, count, [current.id], prioritizeRecentByChannel);
 }
 
 export function isApprovedYouTubeVideo(video: YouTubeVideo) {
@@ -716,8 +738,11 @@ export async function loadYouTubeWorkspace() {
       const request = db.transaction("workspace", "readonly").objectStore("workspace").get("state");
       request.onsuccess = () => {
         const raw = request.result ?? {};
-        const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: 3, sourceStates: { ...(raw.sourceStates ?? {}) } } as YouTubeWorkspaceState;
+        const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: 3, sourceStates: { ...(raw.sourceStates ?? {}) }, prioritizeRecentByChannel: { ...DEFAULT_YOUTUBE_RECENCY_PREFERENCES, ...(raw.prioritizeRecentByChannel ?? {}) } } as YouTubeWorkspaceState;
         workspace.videos = (workspace.videos ?? []).filter(isApprovedYouTubeVideo).map((video) => ({ ...video, sourceIds: video.sourceIds ?? [] }));
+        if (!raw.prioritizeRecentByChannel && workspace.videos.length) {
+          workspace.discoverIds = selectRandomVideos(filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic), 24, [], workspace.prioritizeRecentByChannel).map((video) => video.id);
+        }
         resolve(workspace);
       };
       request.onerror = () => reject(request.error);

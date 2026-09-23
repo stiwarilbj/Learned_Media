@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { FactCard, GeminiModelCheck, GeminiStatus } from "@/lib/types";
 import { buildFactExport, downloadBlob, type FactExportFormat } from "@/lib/exports";
-import type { YouTubeImportProgress } from "@/lib/youtube";
+import { APPROVED_YOUTUBE_CHANNELS, type YouTubeImportProgress } from "@/lib/youtube";
 import { Icon } from "./icons";
 
 type SyncStatus = "signed-out" | "syncing" | "synced" | "offline" | "error";
@@ -30,7 +30,9 @@ type SettingsViewProps = {
   youtubeStatus: "not-configured" | "connecting" | "refreshing" | "connected" | "error";
   youtubeProgress: YouTubeImportProgress;
   youtubeLastSyncAt?: string;
+  prioritizeRecentByChannel: Record<string, boolean>;
   onYoutubeKeyChange: (value: string) => void;
+  onYoutubeRecentBiasChange: (channelName: string, enabled: boolean) => void;
   onConnectYoutube: () => void;
   onRemoveYoutubeKey: () => void;
   onPauseYoutubeImport: () => void;
@@ -55,12 +57,13 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn, onGoogleSignOut, account, syncStatus, syncError, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, onYoutubeKeyChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn, onGoogleSignOut, account, syncStatus, syncError, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, prioritizeRecentByChannel, onYoutubeKeyChange, onYoutubeRecentBiasChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
   const workingModelCount = new Set(modelChecks.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
   const checkedModelCount = modelChecks.filter((model) => model.status !== "unchecked").length;
   const [exportCollection, setExportCollection] = useState<"all" | "saved">("all");
   const [exporting, setExporting] = useState<FactExportFormat | null>(null);
   const [exportFeedback, setExportFeedback] = useState("");
+  const prioritizedChannelCount = APPROVED_YOUTUBE_CHANNELS.filter(({ name }) => prioritizeRecentByChannel[name]).length;
   const exportCards = exportCollection === "saved" ? cards.filter((card) => card.saved) : cards;
   async function exportFacts(format: FactExportFormat) {
     if (!exportCards.length || exporting) return;
@@ -138,6 +141,14 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             <label className="field-label" htmlFor="youtube-key">Paste your YouTube API key here</label>
             <div className="key-input-row"><input id="youtube-key" type="password" value={youtubeKey} onChange={(event) => onYoutubeKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onConnectYoutube(); } }} placeholder="Paste your YouTube API key here" autoComplete="new-password" /><div className="key-actions"><button type="button" className="primary-button small" onClick={onConnectYoutube} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}>{youtubeStatus === "connecting" ? "Connecting" : youtubeStatus === "refreshing" ? "Refreshing" : "Connect YouTube"}</button><button type="button" className="ghost-button" onClick={onRefreshYoutube} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}>Refresh videos</button><button type="button" className="ghost-button" onClick={onRemoveYoutubeKey}>Remove key</button></div></div>
             <div className="security-note"><Icon name="shield" size={16} /><span>Your YouTube key is remembered on this device in encrypted browser storage, separate from workspaces and account sync</span></div>
+            <p className="youtube-restriction-note">Videos are randomized with an overall preference for newer uploads. Turn on the stronger setting for channels where you want older videos to appear much less often.</p>
+            <details className="youtube-recency-settings">
+              <summary><span><strong>Channel recency settings</strong><small>{prioritizedChannelCount} of {APPROVED_YOUTUBE_CHANNELS.length} channels strongly favor recent uploads</small></span><Icon name="chevronRight" size={16} /></summary>
+              <div className="youtube-recency-list">{APPROVED_YOUTUBE_CHANNELS.map(({ name }) => {
+                const enabled = Boolean(prioritizeRecentByChannel[name]);
+                return <div className="youtube-recency-row" key={name}><div><strong>{name}</strong><small>{enabled ? "Older videos appear much less often" : "Standard recency mix"}</small></div><button type="button" className={`toggle ${enabled ? "on" : ""}`} aria-label={`${enabled ? "Stop strongly favoring recent uploads from" : "Strongly favor recent uploads from"} ${name}`} aria-pressed={enabled} onClick={() => onYoutubeRecentBiasChange(name, !enabled)}><span /></button></div>;
+              })}</div>
+            </details>
             <div className="api-key-guide youtube-guide"><div className="api-key-guide-icon"><Icon name="image" size={16} /></div><div className="api-key-guide-copy"><strong>Need a YouTube key?</strong><p>1. <a href={YOUTUBE_PROJECT_URL} target="_blank" rel="noreferrer">Create or select a Google Cloud project</a><br />2. <a href={YOUTUBE_LIBRARY_URL} target="_blank" rel="noreferrer">Enable YouTube Data API v3</a><br />3. Open <a href={YOUTUBE_CREDENTIALS_URL} target="_blank" rel="noreferrer">Credentials</a> → Create credentials → API key, then restrict it to YouTube Data API v3<br />4. Copy the key here and connect it</p></div></div>
             <p className="youtube-restriction-note">Website keys may be restricted to this GitHub Pages site. The Mac app needs a key that also permits native requests. If a restriction blocks a request, Google will report it here</p>
             {youtubeLastSyncAt && <p className="youtube-restriction-note">Last successful refresh: {new Date(youtubeLastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</p>}
