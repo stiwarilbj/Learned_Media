@@ -98,7 +98,11 @@ const BOOK_EXPANSION: TopicSeed[] = [
     "Ben-Hur: A Tale of the Christ", "The Young Guard (Молодая гвардия)", "Who Moved My Cheese?", "A Brief History of Time", "Paul et Virginie", "Lust for Life", "The Wind in the Willows", "The 7 Habits of Highly Effective People", "Totto-Chan: The Little Girl at the Window (窓ぎわのトットちゃん)", "Sapiens: A Brief History of Humankind", "Virgin Soil Upturned (Поднятая целина)", "The Celestine Prophecy", "The Fault in Our Stars",
     "The Girl on the Train", "The Shack", "Uncle Styopa (Дядя Стёпа)", "The Godfather", "Love Story", "Catching Fire", "Mockingjay", "Kitchen (キッチン)", "Andromeda Nebula (Туманность Андромеды)", "Gone Girl", "The Bermuda Triangle", "Things Fall Apart", "Wolf Totem (狼圖騰)", "The Happy Hooker: My Own Story", "Jaws",
     "Love You Forever", "The Women's Room", "What to Expect When You're Expecting", "Adventures of Huckleberry Finn", "The Secret Diary of Adrian Mole, Aged 13¾", "Pride and Prejudice", "Kon-Tiki: Across the Pacific in a Raft (Kon-Tiki ekspedisjonen)", "The Good Soldier Švejk (Osudy dobrého vojáka Švejka za světové války)", "Where the Wild Things Are", "The Power of Positive Thinking", "The Secret", "Dune", "Charlie and the Chocolate Factory", "The Naked Ape", "Kokoro (こころ)",
-    "Where the Crawdads Sing", "Follow Your Heart (Va' dove ti porta il cuore)", "Matilda", "The Book Thief", "The Horse Whisperer", "Goodnight Moon", "The Neverending Story (Die unendliche Geschichte)", "All the Light We Cannot See", "Fifty Shades of Grey", "The Outsiders", "Guess How Much I Love You", "Shōgun", "The Poky Little Puppy", "The Pillars of the Earth", "Perfume (Das Parfum)", "The Grapes of Wrath"
+    "Where the Crawdads Sing", "Follow Your Heart (Va' dove ti porta il cuore)", "Matilda", "The Book Thief", "The Horse Whisperer", "Goodnight Moon", "The Neverending Story (Die unendliche Geschichte)", "All the Light We Cannot See", "Fifty Shades of Grey", "The Outsiders", "Guess How Much I Love You", "Shōgun", "The Poky Little Puppy", "The Pillars of the Earth", "Perfume (Das Parfum)", "The Grapes of Wrath",
+    // Requested classics and three well-known Jules Verne novels.
+    "Crime and Punishment", "Jane Eyre", "Wuthering Heights", "Agnes Grey",
+    "Twenty Thousand Leagues Under the Sea", "Journey to the Center of the Earth", "Around the World in Eighty Days",
+    "Moby-Dick", "The Count of Monte Cristo", "Don Quixote", "Frankenstein", "Dracula", "The Brothers Karamazov", "Great Expectations"
   ])
 ];
 
