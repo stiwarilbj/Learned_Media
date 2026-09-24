@@ -12,7 +12,7 @@ import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
 import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
-import { ALLOWED_GEMINI_MODELS, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
+import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
@@ -248,7 +248,7 @@ export default function HomePage() {
   const [cards, setCards] = useState<FactCard[]>([]);
   const [learningProfile, setLearningProfile] = useState<LearningProfile>({});
   const [feedHasMore, setFeedHasMore] = useState(true);
-  const [pendingSlots, setPendingSlots] = useState(10);
+  const [pendingSlots, setPendingSlots] = useState(DEFAULT_CARD_GENERATION_COUNT);
   const [feedStarted, setFeedStarted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
@@ -422,7 +422,7 @@ export default function HomePage() {
     setLearningProfile(target.state.learningProfile ?? {});
     setFeedStarted(Boolean(target.state.feedStarted && restoredCards.length));
     setFeedHasMore(true);
-    setPendingSlots(10);
+    setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setQuery("");
     setCustomTopic("");
     setRabbitHole(null);
@@ -454,7 +454,7 @@ export default function HomePage() {
     setLearningProfile({});
     setFeedStarted(false);
     setFeedHasMore(true);
-    setPendingSlots(10);
+    setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setQuery("");
     setView("feed");
     setYoutubeWorkspace((current) => ({ ...current, savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", selectedChannelId: undefined, selectedVideoId: undefined, discoverIds: [], channelOrder: "newest" }));
@@ -526,7 +526,7 @@ export default function HomePage() {
       setLearningProfile(replacement.state.learningProfile ?? {});
       setFeedStarted(Boolean(replacement.state.feedStarted && replacementCards.length));
       setFeedHasMore(true);
-      setPendingSlots(10);
+      setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
       setQuery("");
       setCustomTopic("");
       setRabbitHole(null);
@@ -989,7 +989,7 @@ export default function HomePage() {
           setToast(result.completedCount + " facts arrived. Retry to fill the remaining slots.");
         } else {
           setFeedHasMore(true);
-          setPendingSlots(10);
+          setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
           setGenerationError("");
         }
         return;
@@ -1037,7 +1037,7 @@ export default function HomePage() {
         setToast(receivedIds.size + " facts arrived. Retry to fill the remaining slots.");
       } else {
         setFeedHasMore(true);
-        setPendingSlots(10);
+        setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
         setGenerationError("");
       }
     } catch (error) {
@@ -1064,7 +1064,7 @@ export default function HomePage() {
     const blankTopics = clearTopicSelections(topics);
     setFeedStarted(false);
     setFeedHasMore(true);
-    setPendingSlots(10);
+    setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setCards([]);
     setLoading(false);
     setRabbitHole(null);
@@ -1088,7 +1088,7 @@ export default function HomePage() {
     const blankTopics = clearTopicSelections(topics);
     setTopics(blankTopics);
     setFeedHasMore(true);
-    setPendingSlots(10);
+    setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setRabbitHole(null);
     setGenerationError("");
     setToast("Topics reset. Choose a topic to start again.");
@@ -1210,7 +1210,7 @@ export default function HomePage() {
     setSettings(DEFAULT_SETTINGS);
     setCards([]);
     setFeedHasMore(true);
-    setPendingSlots(10);
+    setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setLearningProfile({});
     setLearnLoading(null);
     setQuestionLoading(null);
@@ -1685,7 +1685,7 @@ export default function HomePage() {
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus} syncError={syncError} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} onQueryChange={setQuery} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
-    return <FeedView cards={filteredCards} showReset={cards.length > 0 || loading} query={query} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, 10)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
+    return <FeedView cards={filteredCards} showReset={cards.length > 0 || loading} query={query} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, DEFAULT_CARD_GENERATION_COUNT)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
 
   const topicSuggestions = useMemo(

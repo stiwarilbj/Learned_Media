@@ -12,6 +12,7 @@ const GENERATION_TIMEOUT_MS = 45_000;
 const MODEL_COOLDOWN_MS = 45_000;
 const OUTAGE_COOLDOWN_MS = 60_000;
 const MAX_FACTS_PER_BATCH = 10;
+export const DEFAULT_CARD_GENERATION_COUNT = 7;
 const MAX_CONCURRENT_GEMINI_REQUESTS = 5;
 const MAX_CANDIDATE_RETRIES = 3;
 const MAX_CARDS_PER_GROUP = 5;
@@ -524,7 +525,7 @@ function hasAssignedTopic(candidate: CandidateFact, path: string[]) {
   return path.every((part, index) => normalizedText(candidate.topicPath![index]) === normalizedText(part));
 }
 
-export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, requestedCount = MAX_FACTS_PER_BATCH, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: Array<FactMemory | FactAvoidKey | string>; rabbitHole?: string | null; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
+export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, requestedCount = DEFAULT_CARD_GENERATION_COUNT, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: Array<FactMemory | FactAvoidKey | string>; rabbitHole?: string | null; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
   if (!apiKey.trim()) throw new GeminiFailure("Paste your Gemini API key in Settings to generate a fresh batch.", undefined, [], undefined, false);
   if (!topicPaths.length) throw new GeminiFailure("Choose at least one topic before generating a batch.", undefined, [], undefined, false);
   const cards: FactCard[] = [];
