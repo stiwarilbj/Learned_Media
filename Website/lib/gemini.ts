@@ -19,7 +19,7 @@ const MAX_CARDS_PER_GROUP = 5;
 const MAX_SENTENCES_PER_GROUP = 15;
 const MAX_GROUNDING_CONTEXT_CHARS = 48_000;
 const MAX_CONCURRENT_GENERATION_GROUPS = 2;
-export const REQUIRED_WORKING_MODELS = 3;
+export const REQUIRED_WORKING_MODELS = 1;
 
 export const ALLOWED_GEMINI_MODELS = [
   "gemini-3.5-flash-lite",
@@ -307,7 +307,7 @@ function markModelFailure(pool: ModelPool, model: string, error: GeminiFailure) 
 
 async function requestStructured<T>(apiKey: string, sessionId: string, prompt: string, responseSchema: Record<string, unknown>, stage: GeminiModelOutcome["stage"], timeoutMs = GENERATION_TIMEOUT_MS, signal?: AbortSignal, onProgress?: (event: GeminiProgressEvent) => void) {
   const pool = await poolFor(apiKey, sessionId);
-  if (!pool.ready) throw new GeminiFailure("Connect Gemini and wait until at least three allowed models pass their structured-output checks.", undefined, [], undefined, false);
+  if (!pool.ready) throw new GeminiFailure("Connect Gemini and wait until at least one allowed model passes its structured-output checks.", undefined, [], undefined, false);
   if (!availableModels(pool).length) {
     const retryAt = nextRetryAt(pool);
     if (retryAt) await delay(Math.max(0, retryAt - Date.now()), signal);
@@ -384,7 +384,7 @@ export function describeGeminiError(error: unknown) {
   if (failure.status === 401 || failure.status === 403 || /API key|permission|unauthorized|forbidden/i.test(failure.message)) return "Gemini rejected this API key. Check that it is active in Google AI Studio, then paste it again.";
   if (failure.status === 429 || /quota|rate.?limit|resource exhausted/i.test(failure.message)) return "Gemini is rate-limited or out of quota. The app will retry after its cooldown.";
   if (failure.status === 404 || /not found|unsupported model/i.test(failure.message)) return "This requested Gemini model is unavailable for the key. It was skipped without using an unrequested model.";
-  if (/no eligible|verify at least (?:five|three)/i.test(failure.message)) return "Connect Gemini and wait until at least three allowed models pass their structured-output checks.";
+  if (/no eligible|verify at least one/i.test(failure.message)) return "Connect Gemini and wait until at least one allowed model passes its structured-output checks.";
   if (/timed out|timeout/i.test(failure.message)) return "Gemini timed out. The scheduler is trying another allowed model.";
   if (/Wikipedia/i.test(failure.message)) return failure.message;
   if (/malformed|structured/i.test(failure.message)) return "Gemini returned invalid structured output. The scheduler will try another allowed model.";

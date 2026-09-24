@@ -1305,7 +1305,7 @@ export default function HomePage() {
         if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
         setModelChecks(result.models);
         setGeminiStatus(result.status);
-        setToast(result.status === "connected" ? "Gemini connected. At least three allowed models passed." : "Fewer than three allowed models passed. Fix the key or retry the checks.");
+        setToast(result.status === "connected" ? "Gemini connected. At least one allowed model passed; generation will fall back to other available models." : "No allowed model passed. Fix the key or retry the checks.");
         return;
       }
       const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": keyAtStart, "x-learned-media-session": sessionIdRef.current }, signal: controller.signal });
@@ -1337,7 +1337,7 @@ export default function HomePage() {
       if (streamError) throw new Error(streamError);
       if (finalModels) setModelChecks(finalModels);
       setGeminiStatus(finalStatus ?? "unavailable");
-      setToast(finalStatus === "connected" ? "Gemini connected. At least three allowed models passed." : "Fewer than three allowed models passed. Fix the key or retry the checks.");
+      setToast(finalStatus === "connected" ? "Gemini connected. At least one allowed model passed; generation will fall back to other available models." : "No allowed model passed. Fix the key or retry the checks.");
     } catch (error) {
       if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
       setGeminiStatus("unavailable");
