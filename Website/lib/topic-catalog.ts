@@ -113,15 +113,6 @@ const BEST_SELLING_BOOK_ORDER = [
   "Where the Crawdads Sing", "Follow Your Heart", "Matilda", "The Book Thief", "The Horse Whisperer", "Goodnight Moon", "The Neverending Story", "All the Light We Cannot See", "Fifty Shades of Grey", "The Outsiders", "Guess How Much I Love You", "Shōgun", "The Poky Little Puppy", "The Pillars of the Earth", "Perfume", "The Grapes of Wrath"
 ];
 
-// Keep the first 100 individually ranked titles, plus the separately listed
-// books reported at 100 million copies or more, even when their original title
-// uses non-English or non-ASCII characters.
-const TOP_100_BOOK_OVERRIDES = [
-  "Scouting for Boys", "The McGuffey Readers", "Guinness World Records",
-  "六星占術によるあなたの運命 (Rokusei Senjutsu: Six-Star Astrology Tells Your Fortune)",
-  "American Spelling Book (Webster's Dictionary)"
-];
-
 function bookSortKey(seed: TopicSeed) {
   const label = typeof seed === "string" ? seed : seed.label;
   const translated = label === "Paul et Virginie" ? "Paul and Virginia" : label;
@@ -136,19 +127,17 @@ function orderBookSeeds(seeds: TopicSeed[]) {
     .map(({ seed }) => seed);
 }
 
-const TOP_100_BEST_SELLING_BOOK_KEYS = new Set(
-  [...BEST_SELLING_BOOK_ORDER.slice(0, 100), ...TOP_100_BOOK_OVERRIDES].map(bookSortKey)
-);
 const REMOVED_BOOK_LIST_LABELS = new Set<string>();
 
-function isPlainEnglishBookTitle(seed: TopicSeed) {
+function isEnglishBookTitle(seed: TopicSeed) {
   const title = typeof seed === "string" ? seed : seed.label;
-  const mainTitle = title.replace(/\s*\([^)]*\)/g, "").trim();
-  return /^[A-Za-z0-9 ]+$/.test(mainTitle);
+  const englishTitle = englishLiteratureLabel(title);
+  return /[A-Za-z]/.test(englishTitle)
+    && /^[A-Za-z0-9\s'’.,:;!?&—–¾-]+$/.test(englishTitle);
 }
 
 function keepBookFromList(seed: TopicSeed) {
-  return TOP_100_BEST_SELLING_BOOK_KEYS.has(bookSortKey(seed)) || isPlainEnglishBookTitle(seed);
+  return isEnglishBookTitle(seed);
 }
 
 const booksFromList = BOOK_EXPANSION.at(-1);
@@ -156,7 +145,9 @@ if (booksFromList && typeof booksFromList !== "string") {
   const keptBooks = booksFromList.children.filter((seed) => {
     if (keepBookFromList(seed)) return true;
     const title = typeof seed === "string" ? seed : seed.label;
-    REMOVED_BOOK_LIST_LABELS.add(englishLiteratureLabel(title).toLowerCase());
+    REMOVED_BOOK_LIST_LABELS.add(title.toLowerCase());
+    const englishTitle = englishLiteratureLabel(title);
+    if (englishTitle) REMOVED_BOOK_LIST_LABELS.add(englishTitle.toLowerCase());
     return false;
   });
   booksFromList.children = orderBookSeeds(keptBooks);
@@ -424,7 +415,7 @@ export function englishLiteratureLabel(label: string) {
     "六星占術によるあなたの運命 (Rokusei Senjutsu: Six-Star Astrology Tells Your Fortune)": "Six-Star Astrology Tells Your Fortune",
     "六星占術によるあなたの運命": "Six-Star Astrology Tells Your Fortune"
   };
-  return (translated[label] ?? label.replace(/\s*\([^)]*\)/g, "")).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^\x00-\x7F’—–]/g, "").replace(/\s+/g, " ").trim();
+  return (translated[label] ?? label.replace(/\s*\([^)]*\)/g, "")).normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^\x00-\x7F’—–¾]/g, "").replace(/\s+/g, " ").trim();
 }
 
 export function createCatalogTopics(): TopicNode[] {
