@@ -146,6 +146,7 @@ function TopicRow({ node, depth, query, searchIndex, searchExpansionSuppressed, 
 
 export function TopicTree({ nodes, query = "", onToggle, onExpand, onCollapseAll, onWeight, onRemoveCustomTopic }: TopicTreeProps) {
   const treeRef = useRef<HTMLDivElement>(null);
+  const lastAutoScrollQuery = useRef<string | null>(null);
   const [searchExpansionSuppressed, setSearchExpansionSuppressed] = useState(false);
   const searchIndex = useMemo(() => buildTopicSearchIndex(nodes, query), [nodes, query]);
   const hasMatches = !query.trim() || nodes.some((node) => searchIndex.matchingNodes.has(node.id));
@@ -158,6 +159,8 @@ export function TopicTree({ nodes, query = "", onToggle, onExpand, onCollapseAll
     const tree = treeRef.current;
     if (!tree) return;
     const activeQuery = query.trim();
+    if (lastAutoScrollQuery.current === activeQuery) return;
+    lastAutoScrollQuery.current = activeQuery;
     if (!activeQuery) {
       tree.scrollTop = 0;
       return;
