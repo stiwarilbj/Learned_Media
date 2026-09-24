@@ -9,7 +9,7 @@ import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 import { buildGeologyTopic, buildHumanOriginsTopic, buildOrganismsTopic } from "./history-science-taxonomy-catalog";
 
-export const TOPIC_CATALOG_VERSION = 24;
+export const TOPIC_CATALOG_VERSION = 25;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -113,6 +113,15 @@ const BEST_SELLING_BOOK_ORDER = [
   "Where the Crawdads Sing", "Follow Your Heart", "Matilda", "The Book Thief", "The Horse Whisperer", "Goodnight Moon", "The Neverending Story", "All the Light We Cannot See", "Fifty Shades of Grey", "The Outsiders", "Guess How Much I Love You", "Shōgun", "The Poky Little Puppy", "The Pillars of the Earth", "Perfume", "The Grapes of Wrath"
 ];
 
+// Keep the first 100 individually ranked titles, plus the separately listed
+// books reported at 100 million copies or more, even when their original title
+// uses non-English or non-ASCII characters.
+const TOP_100_BOOK_OVERRIDES = [
+  "Scouting for Boys", "The McGuffey Readers", "Guinness World Records",
+  "六星占術によるあなたの運命 (Rokusei Senjutsu: Six-Star Astrology Tells Your Fortune)",
+  "American Spelling Book (Webster's Dictionary)"
+];
+
 function bookSortKey(seed: TopicSeed) {
   const label = typeof seed === "string" ? seed : seed.label;
   const translated = label === "Paul et Virginie" ? "Paul and Virginia" : label;
@@ -127,8 +136,31 @@ function orderBookSeeds(seeds: TopicSeed[]) {
     .map(({ seed }) => seed);
 }
 
+const TOP_100_BEST_SELLING_BOOK_KEYS = new Set(
+  [...BEST_SELLING_BOOK_ORDER.slice(0, 100), ...TOP_100_BOOK_OVERRIDES].map(bookSortKey)
+);
+const REMOVED_BOOK_LIST_LABELS = new Set<string>();
+
+function isPlainEnglishBookTitle(seed: TopicSeed) {
+  const title = typeof seed === "string" ? seed : seed.label;
+  const mainTitle = title.replace(/\s*\([^)]*\)/g, "").trim();
+  return /^[A-Za-z0-9 ]+$/.test(mainTitle);
+}
+
+function keepBookFromList(seed: TopicSeed) {
+  return TOP_100_BEST_SELLING_BOOK_KEYS.has(bookSortKey(seed)) || isPlainEnglishBookTitle(seed);
+}
+
 const booksFromList = BOOK_EXPANSION.at(-1);
-if (booksFromList && typeof booksFromList !== "string") booksFromList.children = orderBookSeeds(booksFromList.children);
+if (booksFromList && typeof booksFromList !== "string") {
+  const keptBooks = booksFromList.children.filter((seed) => {
+    if (keepBookFromList(seed)) return true;
+    const title = typeof seed === "string" ? seed : seed.label;
+    REMOVED_BOOK_LIST_LABELS.add(englishLiteratureLabel(title).toLowerCase());
+    return false;
+  });
+  booksFromList.children = orderBookSeeds(keptBooks);
+}
 
 const BEST_SELLING_BOOK_SERIES: TopicSeed = branch("Best-Selling Book Series", [
   series("Harry Potter"), series("Goosebumps"), series("Perry Mason"), series("Diary of a Wimpy Kid"), series("Choose Your Own Adventure"), series("The Berenstain Bears"), series("Mr. Men and Little Miss"), series("Sweet Valley High"), series("Noddy"), series("Jack Reacher"), series("The Railway Series / Thomas & Friends"), series("Nancy Drew"), series("San-Antonio"), series("Robert Langdon"), series("Geronimo Stilton"), series("Percy Jackson & the Olympians"), series("The Baby-Sitters Club"), series("American Girl"), series("Twilight"), series("Star Wars"),
@@ -505,6 +537,12 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
   };
   flattenTopics(saved).forEach((oldTopic) => {
     const key = oldTopic.path.join("\u0000").toLowerCase();
+    const wasRemovedFromBookList = oldTopic.path.length === 4
+      && oldTopic.path[0].toLowerCase() === "literature"
+      && oldTopic.path[1].toLowerCase() === "books"
+      && oldTopic.path[2].toLowerCase() === "books from your list"
+      && REMOVED_BOOK_LIST_LABELS.has(oldTopic.label.toLowerCase());
+    if (wasRemovedFromBookList) return;
     const migratedPath = POLITICAL_TOPIC_MIGRATIONS[key] ?? POLITICAL_TOPIC_LABEL_MIGRATIONS[oldTopic.label.toLowerCase()];
     const target = (migratedPath ? resolveMigratedPath(migratedPath) : undefined)
       ?? byId.get(oldTopic.id) ?? byPath.get(key)
