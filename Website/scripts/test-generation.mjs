@@ -138,11 +138,12 @@ async function connectMock(state) {
   const result = await testGeminiKey("test-key", undefined, sessionId);
   assert.equal(result.status, "connected");
   const checks = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com");
-  assert.equal(checks.length, ALLOWED_GEMINI_MODELS.length, "connection should check every allowed model");
-  assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS);
+  assert.equal(checks.length, 2, "connection should check only the two primary models");
+  assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS.slice(0, 2));
   assert.ok(checks.every(request => request.url.pathname.includes(":generateContent")), "connection must not call model discovery");
   assert.deepEqual(result.models.map(model => model.model), ALLOWED_GEMINI_MODELS, "Settings should list every model in policy order");
-  assert.ok(result.models.every(model => model.status !== "unchecked"), "every allowed model should receive a check");
+  assert.ok(result.models.slice(0, 2).every(model => model.status !== "unchecked"), "both primary models should receive a check");
+  assert.ok(result.models.slice(2).every(model => model.status === "unchecked"), "fallback models should remain unchecked until needed");
   state.requests.length = 0;
   return sessionId;
 }
@@ -164,37 +165,100 @@ function geminiCallCount(state) {
   return state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").length;
 }
 
+function geminiCalls(state) {
+  return state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => ({
+    model: decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]),
+    prompt: request.body.contents?.[0]?.parts?.[0]?.text ?? ""
+  }));
+}
+
+function assertNoModelRepeatsWithinLogicalRequest(state) {
+  const byPrompt = new Map();
+  for (const call of geminiCalls(state)) {
+    const attempted = byPrompt.get(call.prompt) ?? [];
+    attempted.push(call.model);
+    byPrompt.set(call.prompt, attempted);
+  }
+  for (const attempted of byPrompt.values()) assert.equal(new Set(attempted).size, attempted.length, "a logical prompt must not retry the same model twice");
+}
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
 test("generation request efficiency", async t => {
-await t.test("connection checks every allowed model even after enough models pass", async () => {
+await t.test("connection checks two primary models in order and succeeds when only the secondary works", async () => {
   const state = installNetworkMock({ connectionFailures: { [ALLOWED_GEMINI_MODELS[0]]: 404 } });
   const result = await testGeminiKey("test-key", undefined, `model-fallback-${++testNumber}`);
   assert.equal(result.status, "connected");
   const checks = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com");
-  assert.equal(checks.length, ALLOWED_GEMINI_MODELS.length);
-  assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS);
-  assert.equal(result.models.filter(model => model.status === "working").length, ALLOWED_GEMINI_MODELS.length - 1);
-  assert.equal(result.models.filter(model => model.status === "unchecked").length, 0);
+  assert.equal(checks.length, 2);
+  assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS.slice(0, 2));
+  assert.equal(result.models.filter(model => model.status === "working").length, 1);
+  assert.equal(result.models.filter(model => model.status === "unchecked").length, ALLOWED_GEMINI_MODELS.length - 2);
 });
 
-await t.test("busy and cooldown models fall back from the top of the policy", async () => {
+await t.test("connection stops after one invalid-credential response", async () => {
+  const state = installNetworkMock({ connectionFailures: { [ALLOWED_GEMINI_MODELS[0]]: 403 } });
+  const result = await testGeminiKey("test-key", undefined, `invalid-connect-${++testNumber}`);
+  assert.equal(result.status, "invalid");
+  assert.equal(geminiCallCount(state), 1);
+  assert.equal(result.models[0].status, "failed");
+  assert.equal(result.models[1].status, "unchecked");
+});
+
+await t.test("connection stops after a deterministic request error", async () => {
+  const state = installNetworkMock({ connectionFailures: { [ALLOWED_GEMINI_MODELS[0]]: 400 } });
+  const result = await testGeminiKey("test-key", undefined, `deterministic-connect-${++testNumber}`);
+  assert.equal(result.status, "unavailable");
+  assert.equal(geminiCallCount(state), 1);
+  assert.equal(result.models[0].status, "failed");
+  assert.equal(result.models[1].status, "unchecked");
+});
+
+await t.test("default seven-card generation uses one candidate and one grounding call", async () => {
+  const state = installNetworkMock();
+  const sessionId = await connectMock(state);
+  const args = generationArgs(sessionId);
+  delete args.requestedCount;
+  const result = await generateGeminiFacts(args);
+  assert.equal(result.completedCount, 7);
+  assert.equal(geminiCallCount(state), 2);
+  assert.deepEqual(state.candidatePrompts.map(prompt => candidateAssignments(prompt).length), [7]);
+  assert.deepEqual(state.groundingPrompts.map(prompt => groundingSlots(prompt).length), [7]);
+  assert.deepEqual(geminiCalls(state).map(call => call.model), [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[0]]);
+  assertNoModelRepeatsWithinLogicalRequest(state);
+});
+
+await t.test("serialized requests use a healthy primary and fall back only after its failure", async () => {
+  const primaryState = installNetworkMock({ delayMs: 5 });
+  const primarySession = await connectMock(primaryState);
+  const primaryResult = await generateGeminiFacts({ ...generationArgs(primarySession), requestedCount: 1 });
+  assert.equal(primaryResult.completedCount, 1);
+  assert.deepEqual(geminiCalls(primaryState).map(call => call.model), [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[0]]);
+
+  const fallbackState = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 503 } });
+  const fallbackSession = await connectMock(fallbackState);
+  const fallbackResult = await generateGeminiFacts({ ...generationArgs(fallbackSession), requestedCount: 1 });
+  assert.equal(fallbackResult.completedCount, 1);
+  assert.deepEqual(geminiCalls(fallbackState).map(call => call.model), [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[1], ALLOWED_GEMINI_MODELS[1]]);
+  assertNoModelRepeatsWithinLogicalRequest(fallbackState);
+});
+
+await t.test("concurrent callers share one serialized primary model", async () => {
   const busyState = installNetworkMock({ delayMs: 5 });
   const busySession = await connectMock(busyState);
   const busyResult = await generateGeminiFacts({ ...generationArgs(busySession), requestedCount: 10 });
   assert.equal(busyResult.completedCount, 10);
-  const busyModels = Array.from(new Set(busyState.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").slice(0, 2).map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]))));
-  assert.deepEqual(busyModels, ALLOWED_GEMINI_MODELS.slice(0, 2), "a concurrent request skips the model already handling the first request");
+  assert.deepEqual(new Set(geminiCalls(busyState).map(call => call.model)), new Set([ALLOWED_GEMINI_MODELS[0]]), "the queue prevents concurrent calls from causing model rotation");
 
   const cooldownState = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 429 } });
   const cooldownSession = await connectMock(cooldownState);
   const cooldownResult = await generateGeminiFacts({ ...generationArgs(cooldownSession), requestedCount: 1 });
   assert.equal(cooldownResult.completedCount, 1);
-  const cooldownModels = cooldownState.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]));
-  assert.ok(cooldownModels.includes(ALLOWED_GEMINI_MODELS[1]), "the next model should handle a request while the first is cooling down");
-  assert.ok(!cooldownModels.includes(ALLOWED_GEMINI_MODELS[0]) || cooldownModels.filter(model => model === ALLOWED_GEMINI_MODELS[0]).length === 1, "the cooling model is not retried during its cooldown");
+  const cooldownModels = geminiCalls(cooldownState).map(call => call.model);
+  assert.deepEqual(cooldownModels, [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[1], ALLOWED_GEMINI_MODELS[1]]);
+  assertNoModelRepeatsWithinLogicalRequest(cooldownState);
 });
 
 await t.test("checked models remain available as generation fallbacks", async () => {
@@ -202,30 +266,52 @@ await t.test("checked models remain available as generation fallbacks", async ()
   const sessionId = await connectMock(state);
   const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 });
   assert.equal(result.completedCount, 1);
-  const models = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]));
+  const models = geminiCalls(state).map(call => call.model);
   assert.ok(models.includes(ALLOWED_GEMINI_MODELS[3]), "the first checked fallback model should be used after earlier models fail");
+  assert.ok(!models.includes(ALLOWED_GEMINI_MODELS[4]), "models below the first successful fallback should not be tried");
+  assertNoModelRepeatsWithinLogicalRequest(state);
 });
 
 await t.test("an invalid key stops model fallback", async () => {
   const state = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 401 } });
   const sessionId = await connectMock(state);
   await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 }), /Mock Gemini failure/);
-  const generationModels = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]));
+  const generationModels = geminiCalls(state).map(call => call.model);
   assert.deepEqual(generationModels, [ALLOWED_GEMINI_MODELS[0]], "an invalid key must not probe lower-priority models");
 });
 
-await t.test("ten three-sentence cards use two candidate and two grounding calls, preserving slot mapping and citations", async () => {
+await t.test("a deterministic request error stops without fallback", async () => {
+  const state = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 400 } });
+  const sessionId = await connectMock(state);
+  const statuses = [];
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1, onProgress: event => { if (event.type === "status") statuses.push(event.status); } }), /Mock Gemini failure/);
+  assert.deepEqual(geminiCalls(state).map(call => call.model), [ALLOWED_GEMINI_MODELS[0]]);
+  assert.equal(statuses.at(-1), "unavailable");
+});
+
+await t.test("exhausting all models updates status and tries each model only once", async () => {
+  const requestFailures = Object.fromEntries(ALLOWED_GEMINI_MODELS.map(model => [model, 503]));
+  const state = installNetworkMock({ requestFailures });
+  const sessionId = await connectMock(state);
+  const statuses = [];
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1, onProgress: event => { if (event.type === "status") statuses.push(event.status); } }), /Every available Gemini model failed/);
+  assert.deepEqual(geminiCalls(state).map(call => call.model), ALLOWED_GEMINI_MODELS);
+  assertNoModelRepeatsWithinLogicalRequest(state);
+  assert.equal(statuses.at(-1), "rate-limited");
+});
+
+await t.test("ten three-sentence cards use one candidate and one grounding call, preserving slot mapping and citations", async () => {
   const state = installNetworkMock({ delayMs: 5 });
   const sessionId = await connectMock(state);
   const streamed = [];
   const errors = [];
   const result = await generateGeminiFacts({ ...generationArgs(sessionId), onProgress: event => { if (event.type === "card") streamed.push(event.card); if (event.type === "slot-error") errors.push({ slot: event.slot, error: event.error }); } });
   assert.deepEqual(errors, []);
-  assert.equal(geminiCallCount(state), 4);
-  const generationModels = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]));
-  assert.deepEqual(new Set(generationModels.slice(0, 2)), new Set(ALLOWED_GEMINI_MODELS.slice(0, 2)));
-  assert.deepEqual(state.candidatePrompts.map(prompt => candidateAssignments(prompt).length), [5, 5]);
-  assert.deepEqual(state.groundingPrompts.map(prompt => groundingSlots(prompt).length), [5, 5]);
+  assert.equal(geminiCallCount(state), 2);
+  const generationModels = geminiCalls(state).map(call => call.model);
+  assert.deepEqual(generationModels, [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[0]]);
+  assert.deepEqual(state.candidatePrompts.map(prompt => candidateAssignments(prompt).length), [10]);
+  assert.deepEqual(state.groundingPrompts.map(prompt => groundingSlots(prompt).length), [10]);
   assert.equal(result.completedCount, 10);
   assert.equal(streamed.length, 10);
   assert.deepEqual(new Set(result.cards.map(card => card.topicPath[1])), new Set(generationArgs(sessionId).topicPaths.map(topic => topic.path[1])));
@@ -242,9 +328,9 @@ await t.test("a missing grounded slot retries only grounding and returns all car
   const sessionId = await connectMock(state);
   const result = await generateGeminiFacts(generationArgs(sessionId));
   assert.equal(result.completedCount, 10);
-  assert.equal(geminiCallCount(state), 5);
-  assert.equal(state.candidatePrompts.length, 2, "retry must reuse the failed slot's candidate");
-  assert.equal(state.groundingPrompts.length, 3, "retry should request a new grounded result only for the missing slot");
+  assert.equal(geminiCallCount(state), 3);
+  assert.equal(state.candidatePrompts.length, 1, "retry must reuse the failed slot's candidate");
+  assert.equal(state.groundingPrompts.length, 2, "retry should request a new grounded result only for the missing slot");
 });
 
 await t.test("duplicate content is rejected and only that slot is regenerated", async () => {
@@ -253,9 +339,9 @@ await t.test("duplicate content is rejected and only that slot is regenerated", 
   const result = await generateGeminiFacts(generationArgs(sessionId));
   assert.equal(result.completedCount, 10);
   assert.equal(new Set(result.cards.map(card => `${card.title}:${card.body}`)).size, 10);
-  assert.equal(geminiCallCount(state), 6, "one duplicate slot should add one candidate and one grounding call");
-  assert.equal(state.candidatePrompts.length, 3);
-  assert.equal(state.groundingPrompts.length, 3);
+  assert.equal(geminiCallCount(state), 4, "one duplicate slot should add one candidate and one grounding call");
+  assert.equal(state.candidatePrompts.length, 2);
+  assert.equal(state.groundingPrompts.length, 2);
 });
 
 await t.test("unsupported quotations fail local validation and leave only that slot partial", async () => {
@@ -265,8 +351,8 @@ await t.test("unsupported quotations fail local validation and leave only that s
   assert.equal(result.partial, true);
   assert.equal(result.completedCount, 9);
   assert.equal(result.failedJobs, 1);
-  assert.equal(geminiCallCount(state), 7, "one invalid citation should be retried for three total draft attempts, without running AI review");
-  assert.equal(state.candidatePrompts.length, 3, "only the persistently invalid slot should receive a replacement candidate");
+  assert.equal(geminiCallCount(state), 5, "the invalid citation reuses its candidate once, then retries the unfinished slot");
+  assert.equal(state.candidatePrompts.length, 2, "only the persistently invalid slot should receive a replacement candidate");
   assert.ok(result.cards.every(card => card.evidence?.every(item => card.sources[item.sourceIndex].extract?.includes(item.quote))));
 });
 

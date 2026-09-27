@@ -9,7 +9,8 @@
     surpriseMe: false
   };
   const TOPIC_CATALOG_VERSION = 24;
-  const REQUIRED_WORKING_MODELS = 3;
+  const REQUIRED_WORKING_MODELS = 1;
+  const PRIMARY_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
   const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Impossible"];
@@ -71,7 +72,7 @@
     loadingCard: null,
     errorByCard: {},
     generationError: "",
-    pendingSlots: 10,
+    pendingSlots: 7,
     youtubeSearchPhase: "idle",
     youtubeSearchError: "",
     connectionToken: 0,
@@ -151,6 +152,8 @@
   let youtubeSearchToken = 0;
   let searchInterpretToken = 0;
   let searchInterpretTimer = null;
+  const semanticSearchCache = new Map();
+  const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with"]);
 
   function makeTopics() {
     const tree = TOPICS.map(function (topic, index) { return buildTopicNode(topic, [], 0, index); }).filter(Boolean);
@@ -332,6 +335,12 @@
   };
   window.__nativeEvent = function (message) {
     if (!message || (message.token !== undefined && message.type === "modelCheck" && message.token !== state.connectionToken)) return;
+    if (message.type === "generationStatus" && message.token === state.generationRequestToken) {
+      mergeGeminiModelOutcomes(message.modelOutcomes || []);
+      if (message.status) state.geminiStatus = message.status;
+      render();
+      return;
+    }
     if (message.type === "modelCheck" && state.modelChecking) {
       const check = message.check;
       if (check && check.model) {
@@ -1202,21 +1211,41 @@
     appendGroup("Facts", facts);
     searchWrap.appendChild(popover);
   }
+  function normalizeNaturalSearchText(value) {
+    return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function shouldExpandNaturalSearch(query) {
+    const normalized = normalizeNaturalSearchText(query);
+    const words = normalized.split(" ").filter(Boolean);
+    const contentWords = words.filter(function (word) { return word.length > 1 && !NATURAL_SEARCH_STOP_WORDS.has(word); });
+    const intent = /^(?:who|what|when|where|why|how|explain|find me|tell me|show me|similar to|related to|ideas like)\b/i.test(normalized);
+    return contentWords.length >= 5 || (intent && words.length >= 4 && contentWords.length >= 2);
+  }
   function requestSemanticSearch(query, searchWrap) {
     searchInterpretToken += 1;
     const token = searchInterpretToken;
     if (searchInterpretTimer) window.clearTimeout(searchInterpretTimer);
     state.semanticSearchTerms = [];
-    if (!String(query || "").trim() || !state.key.trim() || state.geminiStatus !== "connected") return;
+    const text = String(query || "").trim();
+    if (!text || !shouldExpandNaturalSearch(text) || !state.key.trim() || state.geminiStatus !== "connected") return;
+    const cacheKey = normalizeNaturalSearchText(text);
+    const cached = semanticSearchCache.get(cacheKey);
+    if (cached) {
+      state.semanticSearchTerms = cached;
+      renderGlobalSearchPopover(searchWrap);
+      return;
+    }
     searchInterpretTimer = window.setTimeout(function () {
-      bridge("searchInterpret", { key: state.key, query: String(query).trim() }).then(function (result) {
+      bridge("searchInterpret", { key: state.key, query: text }).then(function (result) {
         if (token !== searchInterpretToken) return;
         state.semanticSearchTerms = Array.from(new Set((result.terms || []).filter(function (term) { return typeof term === "string" && term.trim(); }).map(function (term) { return term.trim(); }))).slice(0, 24);
+        semanticSearchCache.set(cacheKey, state.semanticSearchTerms);
+        if (semanticSearchCache.size > 60) semanticSearchCache.delete(semanticSearchCache.keys().next().value);
         renderGlobalSearchPopover(searchWrap);
       }).catch(function () {
         if (token === searchInterpretToken) renderGlobalSearchPopover(searchWrap);
       });
-    }, 280);
+    }, 850);
   }
   function installPopoverDismiss() {
     if (window.__learnedMediaPopoverDismiss) return;
@@ -1412,11 +1441,11 @@
     const list = node("div", { className: "fact-feed" });
     feedCards.forEach(function (card, index) {
       if (state.query && !(card.title + " " + card.body).toLowerCase().includes(state.query)) return;
-      if (!state.loading && !state.generationError && index === Math.max(feedCards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 10); } }, "Generate 10 more")));
+      if (!state.loading && !state.generationError && index === Math.max(feedCards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 7); } }, "Generate 7 more")));
       list.appendChild(cardElement(card));
     });
     if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), " Gemini is building the next facts"));
-    if (!state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 10); } }, "Generate 10 more")));
+    if (!state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 7); } }, "Generate 7 more")));
     column.appendChild(list);
     layout.appendChild(column);
     if (state.generationError && !state.loading) {
@@ -1441,15 +1470,18 @@
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain, separate from workspaces, and sent only when Gemini is requested." })));
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
-    const workingModels = {};
-    const checkedModels = state.modelChecks.filter(function (model) { return model.status !== "unchecked"; });
-    state.modelChecks.forEach(function (model) { if (model.status === "working") workingModels[model.resolvedModel || model.model] = true; });
-    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: checkedModels.length ? Object.keys(workingModels).length + " ready of " + checkedModels.length + " checked" : state.modelChecks.length ? "Not checked yet" : "Connect to check available models" })));
+    const checkedPrimaryCount = state.modelChecks.filter(function (model) { return PRIMARY_GEMINI_MODELS.indexOf(model.model) >= 0 && model.status !== "unchecked"; }).length;
+    const workingPrimaryCount = new Set(state.modelChecks.filter(function (model) { return PRIMARY_GEMINI_MODELS.indexOf(model.model) >= 0 && model.status === "working"; }).map(function (model) { return model.resolvedModel || model.model; })).size;
+    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: checkedPrimaryCount ? checkedPrimaryCount + " primary models checked · " + workingPrimaryCount + " ready · unchecked models are automatic fallbacks" : state.modelChecks.length ? "Primary models not checked yet · unchecked models are available automatic fallbacks" : "Connect to check available models" })));
     modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking" : "Check connection"));
     gemini.appendChild(modelHeading);
     if (state.modelChecks.length) {
       const modelList = node("div", { className: "model-check-list", ariaLive: "polite" });
-      state.modelChecks.forEach(function (model) { modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: model.status === "unchecked" ? "Not checked" : model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? "Ready · resolves to " + model.resolvedModel : "Ready for generation") : model.error || "Unavailable" })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") }))); });
+      state.modelChecks.forEach(function (model) {
+        let detail = model.status === "unchecked" ? PRIMARY_GEMINI_MODELS.indexOf(model.model) >= 0 ? "Primary · not checked" : "Automatic fallback · tested if needed" : model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? "Ready · resolves to " + model.resolvedModel : "Ready for generation") : model.error || "Unavailable";
+        if (model.status === "cooldown" && model.retryAt) detail += " · retry after " + new Date(model.retryAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        modelList.appendChild(node("div", { className: "model-check-row" }, node("span", { className: "model-status-dot " + model.status, ariaLabel: model.status }), node("div", {}, node("strong", { text: model.model }), node("small", { text: detail })), node("span", { className: "model-check-meta", text: (model.latencyMs ? model.latencyMs + " ms" : "—") + "\n" + (model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked") })));
+      });
       gemini.appendChild(modelList);
     }
     gemini.appendChild(node("div", { className: "api-key-guide" }, node("div", { className: "api-key-guide-icon" }, svg("sparkles", 16)), node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a key?" }), node("p", { text: "Create or copy one in Google AI Studio, then paste it here." })), externalLink(AI_STUDIO_URL, "Open AI Studio", "api-key-link")));
@@ -1670,13 +1702,13 @@
     const wasStarted = state.started;
     state.started = true;
     if (!wasStarted) state.cards = [];
-    state.pendingSlots = 10;
+    state.pendingSlots = 7;
     state.generationError = "";
     generationToken += 1;
     state.generationRequestToken += 1;
     saveState();
     render();
-    generateBatch(generationToken, 10);
+    generateBatch(generationToken, 7);
   }
   function resetFeed() {
     generationToken += 1;
@@ -1684,7 +1716,7 @@
     bridge("cancelAll", {}).catch(function () {});
     state.started = false;
     state.cards = [];
-    state.pendingSlots = 10;
+    state.pendingSlots = 7;
     state.profile = {};
     state.loading = false;
     state.loadingCard = null;
@@ -1702,7 +1734,7 @@
       topic.selected = false;
       if (topic.children) topic.children.forEach(clear);
     });
-    state.pendingSlots = 10;
+    state.pendingSlots = 7;
     state.generationError = "";
     saveState();
     render();
@@ -1746,7 +1778,7 @@
     if (!state.key.trim() || state.geminiStatus !== "connected") { state.generationError = "Connect Gemini in Settings before generating facts."; state.loading = false; render(); return; }
     state.loading = true;
     state.generationError = "";
-    const count = Math.max(1, Math.min(10, Number(requestedCount) || 10));
+    const count = Math.max(1, Math.min(10, Number(requestedCount) || 7));
     const generationSentenceLength = normalizeSentenceLength(state.settings.sentenceLength);
     state.activeGenerationSentenceLength = generationSentenceLength;
     state.batchAccepted = 0;
@@ -1756,11 +1788,12 @@
       const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], token: state.generationRequestToken });
       if (activeToken !== generationToken) return;
       mergeGeminiModelOutcomes(result.modelOutcomes);
+      if (result.modelStatus) state.geminiStatus = result.modelStatus;
       (result.cards || []).forEach(function (card) { acceptNewFact(card, generationSentenceLength); });
       const completed = state.batchAccepted;
       state.pendingSlots = Math.max(0, count - completed);
       if (state.pendingSlots) { state.generationError = completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."; }
-      else state.pendingSlots = 10;
+      else state.pendingSlots = 7;
     } catch (error) {
       if (activeToken !== generationToken) return;
       state.pendingSlots = Math.max(1, count - state.batchAccepted);
@@ -1781,6 +1814,7 @@
       const nextCheck = { model: outcome.model, status: outcome.status === "success" ? "working" : outcome.status, latencyMs: outcome.latencyMs, checkedAt: new Date().toISOString() };
       if (outcome.resolvedModel || previous && previous.resolvedModel) nextCheck.resolvedModel = outcome.resolvedModel || previous.resolvedModel;
       if (outcome.error) nextCheck.error = outcome.error;
+      if (outcome.retryAt) nextCheck.retryAt = outcome.retryAt;
       state.modelChecks = state.modelChecks.filter(function (model) { return model.model !== outcome.model; });
       state.modelChecks.push(nextCheck);
     });

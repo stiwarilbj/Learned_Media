@@ -2,6 +2,12 @@ import XCTest
 @testable import LearnedMediaCore
 
 final class ModelPolicyTests: XCTestCase {
+    func testPrimaryModelsAreFirstAndOnlyOneHealthyPrimaryIsRequired() {
+        XCTAssertEqual(GeminiModelPolicy.primaryModels, ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"])
+        XCTAssertEqual(Array(GeminiModelPolicy.allowedModels.prefix(2)), GeminiModelPolicy.primaryModels)
+        XCTAssertEqual(GeminiModelPolicy.requiredWorkingModels, 1)
+    }
+
     func testEligibleModelsRequireStructuredTextGeneration() {
         XCTAssertTrue(GeminiModelPolicy.isEligible(id: "models/gemini-2.5-flash", methods: ["generateContent"]))
         XCTAssertTrue(GeminiModelPolicy.isEligible(id: "gemini-3.5-flash-lite", methods: ["generateContent"]))

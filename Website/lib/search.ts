@@ -3,6 +3,17 @@ export function normalizeSearchText(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
+const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with"]);
+
+export function shouldExpandNaturalSearch(query: string) {
+  const normalized = normalizeSearchText(query);
+  if (!normalized) return false;
+  const words = normalized.split(" ").filter(Boolean);
+  const contentWords = words.filter((word) => word.length > 1 && !NATURAL_SEARCH_STOP_WORDS.has(word));
+  const questionOrIntent = /^(?:who|what|when|where|why|how|explain|find me|tell me|show me|similar to|related to|ideas like)\b/i.test(normalized);
+  return contentWords.length >= 5 || (questionOrIntent && words.length >= 4 && contentWords.length >= 2);
+}
+
 function distance(left: string, right: string) {
   if (left === right) return 0;
   if (!left.length) return right.length;

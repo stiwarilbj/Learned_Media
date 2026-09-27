@@ -11,6 +11,7 @@
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLSchemes</key><array><string>learnedmedia</string></array></dict></array>
+  <key>CFBundleURLTypes</key>
+  <array><dict><key>CFBundleURLName</key><string>Learned Media authentication callback</string><key>CFBundleURLSchemes</key><array><string>learnedmedia</string></array></dict></array>
 </dict>
 </plist>

@@ -65,10 +65,12 @@ export type GeminiModelCheckStatus = "unchecked" | "checking" | "working" | "fai
 export type GeminiModelCheck = {
   model: string;
   status: GeminiModelCheckStatus;
+  statusCode?: number;
   latencyMs?: number;
   checkedAt?: string;
   error?: string;
   resolvedModel?: string;
+  retryAt?: string;
   supportedGenerationMethods?: string[];
 };
 
@@ -79,6 +81,7 @@ export type GeminiModelOutcome = {
   status: "success" | "failed" | "cooldown";
   latencyMs?: number;
   error?: string;
+  retryAt?: string;
 };
 
 export type FactCard = {

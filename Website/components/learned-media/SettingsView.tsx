@@ -58,8 +58,9 @@ const statusCopy: Record<GeminiStatus, string> = {
 };
 
 export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn, onGoogleSignOut, account, syncStatus, syncError, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, prioritizeRecentByChannel, onYoutubeKeyChange, onYoutubeRecentBiasChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
-  const workingModelCount = new Set(modelChecks.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
-  const checkedModelCount = modelChecks.filter((model) => model.status !== "unchecked").length;
+  const primaryModels = modelChecks.slice(0, 2);
+  const checkedPrimaryCount = primaryModels.filter((model) => model.status !== "unchecked").length;
+  const workingPrimaryCount = new Set(primaryModels.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
   const [exportCollection, setExportCollection] = useState<"all" | "saved">("all");
   const [exporting, setExporting] = useState<FactExportFormat | null>(null);
   const [exportFeedback, setExportFeedback] = useState("");
@@ -115,10 +116,10 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             {feedback && <p className="settings-feedback" role="status">{feedback}</p>}
 
             <div className="model-check-heading">
-              <div><strong>Available Gemini models</strong><span>{checkedModelCount ? `${workingModelCount} ready of ${checkedModelCount} checked` : modelChecks.length ? "Not checked yet" : "Connect to check available models"}</span></div>
+              <div><strong>Available Gemini models</strong><span>{checkedPrimaryCount ? `${checkedPrimaryCount} primary models checked · ${workingPrimaryCount} ready` : modelChecks.length ? "Primary models not checked yet · other models test automatically if needed" : "Connect to check available models"}</span></div>
               <button type="button" className="ghost-button" onClick={onTestConnection} disabled={modelChecking || !apiKey.trim()}>{modelChecking ? "Checking" : "Check connection"}</button>
             </div>
-            {modelChecks.length > 0 && <div className="model-check-list" aria-live="polite">{modelChecks.map((model) => <div className="model-check-row" key={model.model}><span className={`model-status-dot ${model.status}`} aria-label={model.status} /><div><strong>{model.model}</strong><small>{model.status === "unchecked" ? "Not checked" : model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? `Ready · resolves to ${model.resolvedModel}` : "Ready for generation") : model.error ?? "Unavailable"}</small></div><span className="model-check-meta">{model.latencyMs ? `${model.latencyMs} ms` : "—"}<br />{model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked"}</span></div>)}</div>}
+            {modelChecks.length > 0 && <div className="model-check-list" aria-live="polite">{modelChecks.map((model, index) => <div className="model-check-row" key={model.model}><span className={`model-status-dot ${model.status}`} aria-label={model.status} /><div><strong>{model.model}</strong><small>{model.status === "unchecked" ? index < 2 ? "Primary · not checked" : "Automatic fallback · tested if needed" : model.status === "working" ? (model.resolvedModel && model.resolvedModel !== model.model ? `Ready · resolves to ${model.resolvedModel}` : "Ready on real requests") : model.status === "cooldown" && model.retryAt ? `${model.error ?? "Temporarily limited"} · retry after ${new Date(model.retryAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : model.error ?? "Unavailable"}</small></div><span className="model-check-meta">{model.latencyMs ? `${model.latencyMs} ms` : "—"}<br />{model.checkedAt ? new Date(model.checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "Not checked"}</span></div>)}</div>}
 
             <div className="api-key-guide">
               <div className="api-key-guide-icon"><Icon name="sparkles" size={16} /></div>

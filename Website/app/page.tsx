@@ -16,7 +16,7 @@ import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFac
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
-import { normalizeSearchText, rankSearchResults } from "@/lib/search";
+import { normalizeSearchText, rankSearchResults, shouldExpandNaturalSearch } from "@/lib/search";
 import { createTopicSuggestionIndex, suggestTopics } from "@/lib/topic-suggestions";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
 import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
@@ -92,7 +92,8 @@ function mergeGeminiModelOutcome(current: GeminiModelCheck[], outcome: GeminiMod
     latencyMs: outcome.latencyMs,
     checkedAt: new Date().toISOString(),
     ...(outcome.resolvedModel || previous?.resolvedModel ? { resolvedModel: outcome.resolvedModel ?? previous?.resolvedModel } : {}),
-    ...(outcome.error ? { error: outcome.error } : {})
+    ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.retryAt ? { retryAt: outcome.retryAt } : {})
   };
   const next = current.filter((model) => model.model !== outcome.model);
   next.push(nextCheck);
@@ -291,6 +292,7 @@ export default function HomePage() {
   const youtubeAbortController = useRef<AbortController | null>(null);
   const youtubeSearchAbortController = useRef<AbortController | null>(null);
   const globalSearchAbortController = useRef<AbortController | null>(null);
+  const naturalSearchCache = useRef(new Map<string, string[]>());
   const youtubeSearchCache = useRef(new Map<string, { results: YouTubeVideo[]; reasons: Record<string, RankedVideoSearchResult> }>());
   const youtubeCatalogLoadedRef = useRef(false);
   const apiKeyRef = useRef("");
@@ -821,19 +823,29 @@ export default function HomePage() {
   useEffect(() => {
     globalSearchAbortController.current?.abort();
     const text = query.trim();
-    if (!text || !apiKey.trim() || geminiStatus !== "connected") {
+    if (!text || !apiKey.trim() || geminiStatus !== "connected" || !shouldExpandNaturalSearch(text)) {
       setSemanticSearch({ query: text, terms: [] });
+      return;
+    }
+    const cacheKey = normalizeSearchText(text);
+    const cachedTerms = naturalSearchCache.current.get(cacheKey);
+    if (cachedTerms) {
+      setSemanticSearch({ query: text, terms: cachedTerms });
       return;
     }
     const controller = new AbortController();
     globalSearchAbortController.current = controller;
     const timer = window.setTimeout(() => {
       void interpretNaturalSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: text, signal: controller.signal }).then((result) => {
-        if (!controller.signal.aborted && globalSearchAbortController.current === controller) setSemanticSearch({ query: text, terms: result.terms });
+        if (!controller.signal.aborted && globalSearchAbortController.current === controller) {
+          naturalSearchCache.current.set(cacheKey, result.terms);
+          if (naturalSearchCache.current.size > 60) naturalSearchCache.current.delete(naturalSearchCache.current.keys().next().value!);
+          setSemanticSearch({ query: text, terms: result.terms });
+        }
       }).catch(() => {
         if (!controller.signal.aborted && globalSearchAbortController.current === controller) setSemanticSearch({ query: text, terms: [] });
       });
-    }, 280);
+    }, 850);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
@@ -968,6 +980,11 @@ export default function HomePage() {
             if (controller.signal.aborted || requestGeneration.current !== requestId) return;
             if (event.type === "model") {
               setModelChecks((current) => mergeGeminiModelOutcome(current, event.outcome));
+              if (event.outcome.status === "success") setGeminiStatus("connected");
+              return;
+            }
+            if (event.type === "status") {
+              setGeminiStatus(event.status);
               return;
             }
             if (event.type !== "card") return;
@@ -1007,8 +1024,12 @@ export default function HomePage() {
       await readNdjson(response, (message) => {
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
         if (message.type === "progress") {
-          const event = message.event as { type?: string; card?: Partial<FactCard>; outcome?: GeminiModelOutcome };
-          if (event.type === "model" && event.outcome) setModelChecks((current) => mergeGeminiModelOutcome(current, event.outcome!));
+          const event = message.event as { type?: string; card?: Partial<FactCard>; outcome?: GeminiModelOutcome; status?: GeminiStatus };
+          if (event.type === "model" && event.outcome) {
+            setModelChecks((current) => mergeGeminiModelOutcome(current, event.outcome!));
+            if (event.outcome.status === "success") setGeminiStatus("connected");
+          }
+          if (event.type === "status" && event.status) setGeminiStatus(event.status);
           if (event.type === "card" && event.card?.id && event.card.title && event.card.body && event.card.hook && event.card.topicPath?.length && event.card.sources?.length) {
             const card = normalizeFact(event.card, receivedIds.size);
             if (acceptFact(card)) receivedIds.add(card.id);
@@ -1016,7 +1037,10 @@ export default function HomePage() {
         } else if (message.type === "complete") {
           finalPayload = message as typeof finalPayload;
           const modelOutcomes = (message.modelOutcomes as GeminiModelOutcome[] | undefined) ?? [];
-          if (modelOutcomes.length) setModelChecks((current) => modelOutcomes.reduce(mergeGeminiModelOutcome, current));
+          if (modelOutcomes.length) {
+            setModelChecks((current) => modelOutcomes.reduce(mergeGeminiModelOutcome, current));
+            if (modelOutcomes.some((outcome) => outcome.status === "success")) setGeminiStatus("connected");
+          }
         } else if (message.type === "error") {
           streamError = String(message.error ?? "Gemini could not complete this batch.");
         }
@@ -1305,7 +1329,7 @@ export default function HomePage() {
         if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
         setModelChecks(result.models);
         setGeminiStatus(result.status);
-        setToast(result.status === "connected" ? "Gemini connected. At least one allowed model passed; generation will fall back to other available models." : "No allowed model passed. Fix the key or retry the checks.");
+        setToast(result.status === "connected" ? "Gemini connected. The two primary models were checked; other models will be tested only if needed." : "Neither primary model is ready. Check the key or retry the connection.");
         return;
       }
       const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": keyAtStart, "x-learned-media-session": sessionIdRef.current }, signal: controller.signal });
@@ -1337,7 +1361,7 @@ export default function HomePage() {
       if (streamError) throw new Error(streamError);
       if (finalModels) setModelChecks(finalModels);
       setGeminiStatus(finalStatus ?? "unavailable");
-      setToast(finalStatus === "connected" ? "Gemini connected. At least one allowed model passed; generation will fall back to other available models." : "No allowed model passed. Fix the key or retry the checks.");
+      setToast(finalStatus === "connected" ? "Gemini connected. The two primary models were checked; other models will be tested only if needed." : "Neither primary model is ready. Check the key or retry the connection.");
     } catch (error) {
       if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
       setGeminiStatus("unavailable");
