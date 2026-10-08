@@ -9,7 +9,7 @@
     surpriseMe: false
   };
   const TOPIC_CATALOG_VERSION = 24;
-  const REQUIRED_WORKING_MODELS = 1;
+  const REQUIRED_WORKING_MODELS = 2;
   const PRIMARY_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
   const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
@@ -1640,7 +1640,7 @@
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
     const checkedPrimaryCount = state.modelChecks.filter(function (model) { return PRIMARY_GEMINI_MODELS.indexOf(model.model) >= 0 && model.status !== "unchecked"; }).length;
     const workingPrimaryCount = new Set(state.modelChecks.filter(function (model) { return PRIMARY_GEMINI_MODELS.indexOf(model.model) >= 0 && model.status === "working"; }).map(function (model) { return model.resolvedModel || model.model; })).size;
-    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: checkedPrimaryCount ? checkedPrimaryCount + " primary models checked · " + workingPrimaryCount + " ready · unchecked models are automatic fallbacks" : state.modelChecks.length ? "Primary models not checked yet · unchecked models are available automatic fallbacks" : "Connect to check available models" })));
+    const modelHeading = node("div", { className: "model-check-heading" }, node("div", {}, node("strong", { text: "Available Gemini models" }), node("span", { text: checkedPrimaryCount ? checkedPrimaryCount + " primary models checked · " + workingPrimaryCount + "/2 ready · unchecked models are automatic fallbacks" : state.modelChecks.length ? "Both primary models must pass · unchecked models are automatic fallbacks" : "Connect to check available models" })));
     modelHeading.appendChild(node("button", { className: "ghost-button", disabled: state.modelChecking || !state.key.trim(), onClick: testKey }, state.modelChecking ? "Checking" : "Check connection"));
     gemini.appendChild(modelHeading);
     if (state.modelChecks.length) {

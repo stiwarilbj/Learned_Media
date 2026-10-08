@@ -14,6 +14,8 @@ Learn topics with AI-generated, Wikipedia-grounded fact cards and a curated vide
 
 Gemini is needed for new facts, explanations, questions, and smart video search. The YouTube key is needed to import or refresh the catalog.
 
+Connecting checks only `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite`; both must pass. Facts and questions try the available models once, then recover from temporary failures with two cycles of three alternating Flash Lite pairs followed by the remaining models. Requests run sequentially, honor cooldowns, and stop on success. Invalid credentials, invalid requests, and shared quota limits stop immediately.
+
 ### Run locally
 
 ```bash

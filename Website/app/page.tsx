@@ -1393,7 +1393,7 @@ export default function HomePage() {
         if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
         setModelChecks(result.models);
         setGeminiStatus(result.status);
-        setToast(result.status === "connected" ? "Gemini connected. The two primary models were checked; other models will be tested only if needed." : "Neither primary model is ready. Check the key or retry the connection.");
+        setToast(result.status === "connected" ? "Gemini connected. Both primary Flash Lite models passed; other models are automatic fallbacks." : "Both primary Flash Lite models must pass. Check their status and retry the connection.");
         return;
       }
       const response = await fetch("/api/test-connection", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": keyAtStart, "x-learned-media-session": sessionIdRef.current }, signal: controller.signal });
@@ -1425,7 +1425,7 @@ export default function HomePage() {
       if (streamError) throw new Error(streamError);
       if (finalModels) setModelChecks(finalModels);
       setGeminiStatus(finalStatus ?? "unavailable");
-      setToast(finalStatus === "connected" ? "Gemini connected. The two primary models were checked; other models will be tested only if needed." : "Neither primary model is ready. Check the key or retry the connection.");
+      setToast(finalStatus === "connected" ? "Gemini connected. Both primary Flash Lite models passed; other models are automatic fallbacks." : "Both primary Flash Lite models must pass. Check their status and retry the connection.");
     } catch (error) {
       if (controller.signal.aborted || apiKeyRef.current.trim() !== keyAtStart) return;
       setGeminiStatus("unavailable");

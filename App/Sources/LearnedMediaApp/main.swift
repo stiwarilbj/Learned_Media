@@ -524,21 +524,24 @@ private actor ModelScheduler {
         ready = false
     }
 
-    func reserve(tried: Set<String>, allowedModels: [String]? = nil) -> String? {
-        guard inFlight.count < 5 else { return nil }
-        let allowed = allowedModels.map { Set($0) }
-        let available = availableModels().filter { model in allowed.map { $0.contains(model) } ?? true }
-        guard !available.isEmpty else { return nil }
-        for model in models {
-            if let allowed, !allowed.contains(model) { continue }
-            guard available.contains(model), !tried.contains(model), !inFlight.contains(model) else { continue }
-            if let resolved = resolvedByRequested[model], inFlightResolved.contains(resolved) { continue }
-            inFlight.insert(model)
-            if let resolved = resolvedByRequested[model] { inFlightResolved.insert(resolved) }
-            return model
-        }
-        return nil
+    func reserve(_ model: String) -> Bool {
+        guard inFlight.isEmpty, availableModels().contains(model) else { return false }
+        if let resolved = resolvedByRequested[model], inFlightResolved.contains(resolved) { return false }
+        inFlight.insert(model)
+        if let resolved = resolvedByRequested[model] { inFlightResolved.insert(resolved) }
+        return true
     }
+
+    func retryCandidateModels(allowedModels: [String]? = nil) -> [String] {
+        var resolved = Set<String>()
+        return models.filter { model in
+            guard !failed.contains(model), allowedModels?.contains(model) ?? true else { return false }
+            if let version = resolvedByRequested[model], !resolved.insert(version).inserted { return false }
+            return true
+        }
+    }
+
+    func retryDate(for model: String) -> Date? { cooldowns[model] }
 
     func release(_ model: String) {
         inFlight.remove(model)
@@ -597,12 +600,12 @@ private actor ModelScheduler {
         return projectQuotaCooldown
     }
 
-    private func availableModels() -> [String] {
+    func availableModels(allowedModels: [String]? = nil) -> [String] {
         let now = Date()
         if let projectQuotaCooldown, projectQuotaCooldown > now { return [] }
         var seenResolved = Set<String>()
         return models.filter { model in
-            guard !failed.contains(model), (cooldowns[model] ?? .distantPast) <= now else { return false }
+            guard !failed.contains(model), allowedModels?.contains(model) ?? true, (cooldowns[model] ?? .distantPast) <= now else { return false }
             if let resolved = resolvedByRequested[model] {
                 guard !seenResolved.contains(resolved) else { return false }
                 seenResolved.insert(resolved)
@@ -702,7 +705,7 @@ private final class GeminiClient {
         message.range(of: "401|403|API key|permission|unauthorized|forbidden", options: [.caseInsensitive, .regularExpression]) != nil
     }
 
-    private func retryAfter(_ response: HTTPURLResponse) -> TimeInterval? {
+    private func retryAfter(_ response: HTTPURLResponse, data: Data) -> TimeInterval? {
         if let value = response.value(forHTTPHeaderField: "Retry-After"), let seconds = TimeInterval(value), seconds > 0 { return seconds }
         if let value = response.value(forHTTPHeaderField: "Retry-After") {
             let formatter = DateFormatter()
@@ -711,13 +714,18 @@ private final class GeminiClient {
             formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
             if let date = formatter.date(from: value), date > Date() { return date.timeIntervalSinceNow }
         }
+        let detail = String(data: data, encoding: .utf8) ?? ""
+        if let pattern = try? NSRegularExpression(pattern: #"retryDelay["']?\s*:\s*["'](\d+(?:\.\d+)?)s"#, options: .caseInsensitive),
+           let match = pattern.firstMatch(in: detail, range: NSRange(detail.startIndex..., in: detail)),
+           let range = Range(match.range(at: 1), in: detail),
+           let seconds = TimeInterval(detail[range]), seconds > 0 { return seconds }
         return nil
     }
 
     private func quotaScope(_ status: Int, detail: String) -> String? {
         guard status == 429 else { return nil }
-        if detail.range(of: "per.?model|model[_ -]specific|quota.{0,40}model|model.{0,40}quota|per.project.per.model", options: [.caseInsensitive, .regularExpression]) != nil { return "model" }
         if detail.range(of: "per.?day|daily quota|requests? per day|tokens? per day|project.{0,40}quota|quota.{0,40}project|billing", options: [.caseInsensitive, .regularExpression]) != nil { return "project" }
+        if detail.range(of: "per.?model|model[_ -]specific|quota.{0,40}model|model.{0,40}quota|per.project.per.model", options: [.caseInsensitive, .regularExpression]) != nil { return "model" }
         return "unknown"
     }
 
@@ -740,9 +748,9 @@ private final class GeminiClient {
         if !(200..<300).contains(http.statusCode) {
             let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let detail = ((object?["error"] as? [String: Any])?["message"] as? String) ?? "Gemini returned HTTP \(http.statusCode)."
-            let scope = quotaScope(http.statusCode, detail: detail)
+            let scope = quotaScope(http.statusCode, detail: String(data: data, encoding: .utf8) ?? detail)
             let retryable = [408, 409, 429].contains(http.statusCode) || http.statusCode >= 500
-            throw NativeError(message: "Gemini HTTP \(http.statusCode): \(detail)", retryable: retryable, statusCode: http.statusCode, retryAfter: retryAfter(http), quotaScope: scope)
+            throw NativeError(message: "Gemini HTTP \(http.statusCode): \(detail)", retryable: retryable, statusCode: http.statusCode, retryAfter: retryAfter(http, data: data), quotaScope: scope)
         }
         let payload: GeminiTextResponse
         do {
@@ -763,7 +771,7 @@ private final class GeminiClient {
         do {
             try Task.checkCancellation()
             try await ensureModels(key: key)
-            guard await scheduler.isReady() else { throw NativeError(message: "Connect Gemini and wait until at least one primary model passes its structured-output check.", retryable: false) }
+            guard await scheduler.isReady() else { throw NativeError(message: "Connect Gemini and wait until both primary Flash Lite models pass their structured-output checks.", retryable: false) }
             let schemaData = (try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])) ?? Data()
             let cacheSource = Data("\(key)\u{0}\(stage)\u{0}\(allowedModels?.joined(separator: ",") ?? "all")\u{0}\(maxOutputTokens)\u{0}\(cacheContext)\u{0}\(prompt)".utf8) + schemaData
             let cacheKey = SHA256.hash(data: cacheSource).map { String(format: "%02x", $0) }.joined()
@@ -776,7 +784,7 @@ private final class GeminiClient {
                     return (cached.text, cached.model, cached.resolvedModel, cached.outcomes)
                 }
             }
-            let result = try await performStructured(key: key, prompt: prompt, schema: schema, stage: stage, timeout: timeout, allowedModels: allowedModels, maxOutputTokens: maxOutputTokens)
+            let result = try await performStructured(key: key, prompt: prompt, schema: schema, stage: stage, timeout: timeout, allowedModels: allowedModels, maxOutputTokens: maxOutputTokens, recover: priority == 0)
             if stage == "learning" {
                 structuredCache[cacheKey] = GeminiStructuredCacheEntry(text: result.text, model: result.model, resolvedModel: result.resolvedModel, outcomes: result.outcomes, expiresAt: Date().addingTimeInterval(30 * 60), touchedAt: Date())
                 while structuredCache.count > 100, let oldest = structuredCache.min(by: { $0.value.touchedAt < $1.value.touchedAt })?.key { structuredCache[oldest] = nil }
@@ -789,13 +797,28 @@ private final class GeminiClient {
         }
     }
 
-    private func performStructured(key: String, prompt: String, schema: [String: Any], stage: String, timeout: TimeInterval, allowedModels: [String]?, maxOutputTokens: Int) async throws -> (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]]) {
+    private func performStructured(key: String, prompt: String, schema: [String: Any], stage: String, timeout: TimeInterval, allowedModels: [String]?, maxOutputTokens: Int, recover: Bool) async throws -> (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]]) {
         var outcomes: [[String: Any]] = []
-        var tried = Set<String>()
         var lastError: NativeError?
-        while !Task.isCancelled {
-            if let model = await scheduler.reserve(tried: tried, allowedModels: allowedModels) {
-                tried.insert(model)
+        if let retryAt = await scheduler.projectQuotaRetryDate() {
+            throw NativeError(message: "Gemini's project quota is cooling down. Retry after the displayed time.", retryable: true, status: "rate-limited", statusCode: 429, retryAfter: retryAt.timeIntervalSinceNow)
+        }
+        let candidates = await scheduler.retryCandidateModels(allowedModels: allowedModels)
+        guard !candidates.isEmpty else { throw NativeError(message: "No available Gemini models remain. Reconnect in Settings to check model availability again.", retryable: false, status: "unavailable") }
+        let hadAvailableModels = !(await scheduler.availableModels(allowedModels: allowedModels)).isEmpty
+        let rounds = GeminiModelPolicy.attemptRounds(models: candidates, recover: recover)
+        for (round, models) in rounds.enumerated() {
+            for model in models {
+                if Task.isCancelled { throw NativeError(message: "Gemini request canceled.", retryable: false) }
+                guard await scheduler.retryCandidateModels(allowedModels: allowedModels).contains(model) else { continue }
+                if let retryAt = await scheduler.retryDate(for: model), retryAt > Date() {
+                    if !recover || round == 0 && hadAvailableModels { continue }
+                    while retryAt > Date() {
+                        do { try await Task.sleep(nanoseconds: UInt64(min(60, max(0, retryAt.timeIntervalSinceNow)) * 1_000_000_000)) }
+                        catch { throw NativeError(message: "Gemini request canceled.", retryable: false) }
+                    }
+                }
+                guard await scheduler.reserve(model) else { continue }
                 let started = Date()
                 do {
                     try Task.checkCancellation()
@@ -830,16 +853,15 @@ private final class GeminiClient {
                         throw NativeError(message: message, retryable: false, outcomes: outcomes, status: "unavailable", statusCode: nativeError?.statusCode)
                     }
                     lastError = nativeError ?? NativeError(message: message, retryable: retryable)
-                    continue
                 }
             }
-            break
         }
         if Task.isCancelled { throw NativeError(message: "Gemini request canceled.", retryable: false) }
         let retryDate = await scheduler.nextRetryDate(allowedModels: allowedModels)
         let cooldownOnly = !outcomes.isEmpty && outcomes.allSatisfy { $0["status"] as? String == "cooldown" }
         let status = cooldownOnly || (outcomes.isEmpty && retryDate != nil) ? "rate-limited" : "unavailable"
-        let message = outcomes.isEmpty ? "All available Gemini models are cooling down. Retry after the displayed retry time." : "Every available Gemini model failed this request. \(lastError?.message ?? "Retry after checking the model status in Settings.")"
+        let exhaustion = recover ? "after the initial pass and both recovery cycles" : "this request"
+        let message = outcomes.isEmpty ? "All available Gemini models are cooling down. Retry after the displayed retry time." : "Every available Gemini model failed \(exhaustion). \(lastError?.message ?? "Retry after checking the model status in Settings.")"
         throw NativeError(message: message, retryable: status == "rate-limited", outcomes: outcomes, status: status)
     }
 
@@ -899,7 +921,7 @@ private final class GeminiClient {
         let invalid = primaryChecks.contains { $0.statusCode == 401 || $0.statusCode == 403 || ($0.error.map(isCredentialFailure) ?? false) }
         let status = ready ? "connected" : invalid ? "invalid" : primaryChecks.contains(where: { $0.status == "cooldown" }) ? "rate-limited" : "unavailable"
         await scheduler.releaseRequest()
-        return ["status": status, "message": ready ? "Gemini connected. The two primary models were checked; other models will be tested only if needed." : "Neither primary model is ready. Check the key or retry the connection.", "models": dictionaries, "eligibleModelCount": GeminiModelPolicy.allowedModels.count, "requiredWorkingModels": GeminiModelPolicy.requiredWorkingModels]
+        return ["status": status, "message": ready ? "Gemini connected. Both primary Flash Lite models passed; other models are automatic fallbacks." : "Both primary Flash Lite models must pass. Check their status and retry the connection.", "models": dictionaries, "eligibleModelCount": GeminiModelPolicy.allowedModels.count, "requiredWorkingModels": GeminiModelPolicy.requiredWorkingModels]
     }
 
     private func candidateSchema() -> [String: Any] {

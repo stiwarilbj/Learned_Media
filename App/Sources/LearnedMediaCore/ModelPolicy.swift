@@ -1,7 +1,7 @@
 import Foundation
 
 public enum GeminiModelPolicy {
-    public static let requiredWorkingModels = 1
+    public static let requiredWorkingModels = 2
     public static let primaryModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
     public static let allowedModels: [String] = [
         "gemini-3.5-flash-lite",
@@ -29,5 +29,14 @@ public enum GeminiModelPolicy {
         id.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "^models/", with: "", options: .regularExpression)
             .lowercased()
+    }
+
+    public static func attemptRounds(models: [String], recover: Bool = true) -> [[String]] {
+        let initial = sort(models)
+        guard recover else { return [initial] }
+        let primaries = primaryModels.filter { initial.contains($0) }
+        let others = initial.filter { !primaryModels.contains($0) }
+        let recovery = Array(repeating: primaries, count: 3).flatMap { $0 } + others
+        return [initial, recovery, recovery]
     }
 }

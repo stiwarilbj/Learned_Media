@@ -15,11 +15,12 @@ Module._extensions[".ts"] = (module, filename) => {
   module._compile(compiled, filename);
 };
 
-const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, interpretNaturalSearch, interpretVideoSearch, testGeminiKey } = require("../lib/gemini.ts");
+const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, testGeminiKey } = require("../lib/gemini.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
 const originalFetch = globalThis.fetch;
+const originalDateNow = Date.now;
 const words = ["amber", "birch", "cobalt", "delta", "ember", "fossil", "granite", "harbor", "indigo", "juniper", "kelp"];
 const factBundles = [
   { title: "Larkspur Meteorograph", hook: "A Brass Diaphragm Caught Winter Pressure", claim: "The amber meteorograph at Larkspur recorded a sharp pressure drop during winter calibration.", sentences: ["At the Larkspur observatory, the amber meteorograph registered a sudden pressure drop during a winter calibration.", "Technicians compared its brass diaphragm with three sealed glass standards before accepting the measurement.", "The unusual reading stayed in a logbook used to check later barometer repairs."] },
@@ -84,8 +85,10 @@ function installNetworkMock(options = {}) {
       const model = decodeURIComponent(url.pathname.split("/models/")[1].split(":")[0]);
       const prompt = body.contents?.[0]?.parts?.[0]?.text ?? "";
       const connectionCheck = prompt.includes('"ok":true');
-      const failure = connectionCheck ? state.connectionFailures[model] : state.requestFailures[model];
-      if (failure) return jsonResponse({ error: { message: connectionCheck ? state.connectionFailureMessages[model] ?? `Mock Gemini failure for ${model}` : state.requestFailureMessages[model] ?? `Mock Gemini failure for ${model}` } }, Number(failure));
+      const sequence = options.requestFailureSequences?.[model];
+      const failure = connectionCheck ? state.connectionFailures[model] : sequence ? sequence.shift() ?? 0 : state.requestFailures[model];
+      if (failure) return jsonResponse({ error: { message: connectionCheck ? state.connectionFailureMessages[model] ?? `Mock Gemini failure for ${model}` : state.requestFailureMessages[model] ?? `Mock Gemini failure for ${model}`, ...(options.retryDelay ? { details: [{ retryDelay: options.retryDelay }] } : {}) } }, Number(failure));
+      if (!connectionCheck && options.malformedModels?.includes(model)) return jsonResponse({ candidates: [{ content: { parts: [{ text: "{not valid JSON" }] } }], modelVersion: model });
       if (options.delayMs && !prompt.includes('"ok":true')) await new Promise(resolve => setTimeout(resolve, options.delayMs));
       let output;
       if (prompt.includes('"ok":true')) {
@@ -152,6 +155,7 @@ async function connectMock(state) {
   const sessionId = `request-efficiency-${++testNumber}`;
   const result = await testGeminiKey("test-key", undefined, sessionId);
   assert.equal(result.status, "connected");
+  assert.equal(result.requiredWorkingModels, 2, "connection requires both primary models");
   const checks = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com");
   assert.equal(checks.length, 2, "connection should check only the two primary models");
   assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS.slice(0, 2));
@@ -199,7 +203,13 @@ function assertNoModelRepeatsWithinLogicalRequest(state) {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  Date.now = originalDateNow;
 });
+
+function expireCooldownsWithoutWaiting() {
+  let now = originalDateNow();
+  Date.now = () => { now += 60_000; return now; };
+}
 
 test("generation request efficiency", async t => {
 await t.test("session caches are bounded, expire, and avoid repeating weak local-search calls", async () => {
@@ -289,15 +299,21 @@ await t.test("successful search interpretations coalesce and invalidate by catal
   assert.equal(topicCalls().length, 3, "cached results must not cross credential scopes");
 });
 
-await t.test("connection checks two primary models in order and succeeds when only the secondary works", async () => {
-  const state = installNetworkMock({ connectionFailures: { [ALLOWED_GEMINI_MODELS[0]]: 404 } });
-  const result = await testGeminiKey("test-key", undefined, `model-fallback-${++testNumber}`);
-  assert.equal(result.status, "connected");
-  const checks = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com");
-  assert.equal(checks.length, 2);
-  assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS.slice(0, 2));
-  assert.equal(result.models.filter(model => model.status === "working").length, 1);
-  assert.equal(result.models.filter(model => model.status === "unchecked").length, ALLOWED_GEMINI_MODELS.length - 2);
+await t.test("connection checks only two primary models and requires both to pass", async () => {
+  for (const failedPrimary of ALLOWED_GEMINI_MODELS.slice(0, 2)) {
+    const state = installNetworkMock({ connectionFailures: { [failedPrimary]: 404 } });
+    const result = await testGeminiKey("test-key", undefined, `model-fallback-${++testNumber}`);
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.ok, false);
+    assert.equal(result.requiredWorkingModels, 2);
+    const checks = state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com");
+    assert.equal(checks.length, 2);
+    assert.deepEqual(checks.map(request => decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0])), ALLOWED_GEMINI_MODELS.slice(0, 2));
+    assert.equal(result.models.filter(model => model.status === "working").length, 1);
+    assert.equal(result.models.filter(model => model.status === "unchecked").length, ALLOWED_GEMINI_MODELS.length - 2);
+    await assert.rejects(generateGeminiFacts(generationArgs(`model-fallback-${testNumber}`)), /both primary Flash Lite models/);
+    assert.equal(geminiCallCount(state), 2, "generation should wait for the connection requirement without sending more calls");
+  }
 });
 
 await t.test("connection stops after one invalid-credential response", async () => {
@@ -374,6 +390,14 @@ await t.test("concurrent callers share one serialized primary model", async () =
   assertNoModelRepeatsWithinLogicalRequest(cooldownState);
 });
 
+await t.test("malformed structured output falls back instead of prematurely failing a card", async () => {
+  const state = installNetworkMock({ malformedModels: [ALLOWED_GEMINI_MODELS[0]] });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 });
+  assert.equal(result.completedCount, 1);
+  assert.deepEqual(geminiCalls(state).map(call => call.model), [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[1], ALLOWED_GEMINI_MODELS[1]]);
+});
+
 await t.test("project-wide quota stops fallback and suppresses follow-up calls", async () => {
   const state = installNetworkMock();
   const sessionId = await connectMock(state);
@@ -413,15 +437,70 @@ await t.test("a deterministic request error stops without fallback", async () =>
   assert.equal(statuses.at(-1), "unavailable");
 });
 
-await t.test("exhausting all models updates status and tries each model only once", async () => {
+await t.test("all-model failures run both complete recovery cycles before declaring failure", async () => {
   const requestFailures = Object.fromEntries(ALLOWED_GEMINI_MODELS.map(model => [model, 503]));
   const state = installNetworkMock({ requestFailures });
   const sessionId = await connectMock(state);
+  expireCooldownsWithoutWaiting();
   const statuses = [];
   await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1, onProgress: event => { if (event.type === "status") statuses.push(event.status); } }), /Every available Gemini model failed/);
-  assert.deepEqual(geminiCalls(state).map(call => call.model), ALLOWED_GEMINI_MODELS);
-  assertNoModelRepeatsWithinLogicalRequest(state);
+  const recovery = [...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(2)];
+  assert.deepEqual(geminiCalls(state).map(call => call.model), [...ALLOWED_GEMINI_MODELS, ...recovery, ...recovery]);
+  assert.equal(geminiCallCount(state), 35);
   assert.equal(statuses.at(-1), "rate-limited");
+});
+
+await t.test("a successful Flash Lite retry stops recovery and finishes the original cards", async () => {
+  const requestFailures = Object.fromEntries(ALLOWED_GEMINI_MODELS.map(model => [model, 503]));
+  const state = installNetworkMock({ requestFailures, requestFailureSequences: { [ALLOWED_GEMINI_MODELS[0]]: [503, 503, 503, 503, 503, 0] } });
+  const sessionId = await connectMock(state);
+  expireCooldownsWithoutWaiting();
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 });
+  assert.equal(result.completedCount, 1);
+  const recovery = [...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(2)];
+  assert.deepEqual(geminiCalls(state).map(call => call.model), [...ALLOWED_GEMINI_MODELS, ...recovery, ...recovery.slice(0, 3), ALLOWED_GEMINI_MODELS[0]]);
+  assert.equal(result.modelOutcomes.at(-1).status, "success");
+});
+
+await t.test("permanently unavailable models are skipped in both recovery cycles", async () => {
+  const missingModel = ALLOWED_GEMINI_MODELS[2];
+  const requestFailures = Object.fromEntries(ALLOWED_GEMINI_MODELS.map(model => [model, model === missingModel ? 404 : 503]));
+  const state = installNetworkMock({ requestFailures });
+  const sessionId = await connectMock(state);
+  expireCooldownsWithoutWaiting();
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 }), /both recovery cycles/);
+  const recovery = [...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(2).filter(model => model !== missingModel)];
+  assert.deepEqual(geminiCalls(state).map(call => call.model), [...ALLOWED_GEMINI_MODELS, ...recovery, ...recovery]);
+});
+
+await t.test("learning questions receive the same complete recovery sequence", async () => {
+  const state = installNetworkMock({ requestFailures: Object.fromEntries(ALLOWED_GEMINI_MODELS.map(model => [model, 503])) });
+  const sessionId = await connectMock(state);
+  expireCooldownsWithoutWaiting();
+  const fact = factBundles[0];
+  const card = { id: "learning-retry-card", hook: fact.hook, title: fact.title, body: fact.sentences.join(" "), topicPath: ["Science"], difficulty: 5, accent: "blue", sources: [{ title: "Shared Article", url: "https://en.wikipedia.org/wiki/Shared_Article", extract: articleExtract() }] };
+  await assert.rejects(generateLearningResponse({ apiKey: "test-key", sessionId, action: "question", card, question: "How did this instrument measure pressure?" }), /both recovery cycles/);
+  const recovery = [...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(2)];
+  assert.deepEqual(geminiCalls(state).map(call => call.model), [...ALLOWED_GEMINI_MODELS, ...recovery, ...recovery]);
+});
+
+await t.test("recovery honors server retry times and can be canceled while waiting", async () => {
+  const state = installNetworkMock({ requestFailures: Object.fromEntries(ALLOWED_GEMINI_MODELS.map(model => [model, 503])), retryDelay: "120.5s" });
+  const sessionId = await connectMock(state);
+  const controller = new AbortController();
+  let cooldown;
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1, signal: controller.signal, onProgress: event => {
+    if (event.type === "cooldown") { cooldown = event; controller.abort(); }
+  } }), /canceled/i);
+  assert.ok(Date.parse(cooldown.until) - Date.now() > 119_500, "recovery must honor the server's fractional retry delay");
+  assert.deepEqual(geminiCalls(state).map(call => call.model), ALLOWED_GEMINI_MODELS, "cancellation should prevent every queued recovery attempt");
+});
+
+await t.test("optional search enrichment keeps its small request budget after model failures", async () => {
+  const state = installNetworkMock({ requestFailures: Object.fromEntries(ALLOWED_GEMINI_MODELS.map(model => [model, 503])) });
+  const sessionId = await connectMock(state);
+  await assert.rejects(interpretNaturalSearch({ apiKey: "test-key", sessionId, query: "why do some stars explode" }), /Every available Gemini model failed/);
+  assert.deepEqual(geminiCalls(state).map(call => call.model), ALLOWED_GEMINI_MODELS.slice(0, 2));
 });
 
 await t.test("ten three-sentence cards use one candidate and one grounding call, preserving slot mapping and citations", async () => {
