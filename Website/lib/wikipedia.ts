@@ -69,14 +69,39 @@ type SummaryResponse = {
 
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
 type WikipediaPage = NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string];
+type CachedRequest<T> = { promise: Promise<T>; expiresAt: number };
 export type WikipediaResolutionCache = {
-  pages: Map<string, Promise<WikipediaPage[]>>;
-  searches: Map<string, Promise<string[]>>;
-  images: Map<string, Promise<ImageAttribution | undefined>>;
+  pages: Map<string, CachedRequest<WikipediaPage[]>>;
+  searches: Map<string, CachedRequest<string[]>>;
+  images: Map<string, CachedRequest<ImageAttribution | undefined>>;
 };
 
 export function createWikipediaResolutionCache(): WikipediaResolutionCache {
   return { pages: new Map(), searches: new Map(), images: new Map() };
+}
+
+export const sharedWikipediaResolutionCache = createWikipediaResolutionCache();
+const WIKIPEDIA_CACHE_TTL_MS = 60 * 60 * 1000;
+const MAX_WIKIPEDIA_CACHE_ENTRIES = 100;
+
+function cachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string) {
+  const entry = entries.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    entries.delete(key);
+    return undefined;
+  }
+  entries.delete(key);
+  entries.set(key, entry);
+  return entry;
+}
+
+function storeCachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string, promise: Promise<T>) {
+  const entry = { promise, expiresAt: Date.now() + WIKIPEDIA_CACHE_TTL_MS };
+  entries.set(key, entry);
+  while (entries.size > MAX_WIKIPEDIA_CACHE_ENTRIES) entries.delete(entries.keys().next().value!);
+  void promise.catch(() => { if (entries.get(key) === entry) entries.delete(key); });
+  return entry;
 }
 
 /**
@@ -141,8 +166,8 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
   const uniqueTitles = Array.from(new Set(titles.map((title) => title.trim()).filter(Boolean)));
   return (await Promise.all(uniqueTitles.map((title) => {
     const key = title.toLocaleLowerCase();
-    const pending = cache?.pages.get(key);
-    if (pending) return pending;
+    const pending = cache && cachedRequest(cache.pages, key);
+    if (pending) return pending.promise;
     const request = (async () => {
       const payload = await getJson<PageResponse>(apiUrl({
         action: "query",
@@ -159,8 +184,7 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
       return Object.values(payload?.query?.pages ?? {}).filter((page) => page.title && page.fullurl);
     })();
     if (cache) {
-      cache.pages.set(key, request);
-      void request.catch(() => { if (cache.pages.get(key) === request) cache.pages.delete(key); });
+      storeCachedRequest(cache.pages, key, request);
     }
     return request;
   }))).flat();
@@ -255,16 +279,15 @@ async function resolveImage(page: {
 export async function resolveWikipediaSources(queries: string[], limit = 3, signal?: AbortSignal, options: { includeImages?: boolean; cache?: WikipediaResolutionCache } = {}): Promise<ResolvedWikipediaSource[]> {
   const cleanQueries = Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean))).slice(0, 5);
   if (!cleanQueries.length) return [];
-  const cache = options.cache;
+  const cache = options.cache ?? sharedWikipediaResolutionCache;
   const exact = await fetchPages(cleanQueries.slice(0, limit), signal, cache);
   const searchedTitles = exact.length ? [] : await Promise.all(cleanQueries.map((query) => {
     const key = query.toLocaleLowerCase();
-    const pending = cache?.searches.get(key);
-    if (pending) return pending;
+    const pending = cachedRequest(cache.searches, key);
+    if (pending) return pending.promise;
     const request = searchWikipedia(query, 1, signal);
     if (cache) {
-      cache.searches.set(key, request);
-      void request.catch(() => { if (cache.searches.get(key) === request) cache.searches.delete(key); });
+      storeCachedRequest(cache.searches, key, request);
     }
     return request;
   }));
@@ -293,9 +316,10 @@ export async function resolveWikipediaSources(queries: string[], limit = 3, sign
 }
 
 export async function resolveWikipediaImage(source: WikipediaSource, signal?: AbortSignal, cache?: WikipediaResolutionCache) {
+  cache ??= sharedWikipediaResolutionCache;
   const key = (source.canonicalUrl ?? source.url ?? source.title).toLocaleLowerCase();
-  const pending = cache?.images.get(key);
-  if (pending) return pending;
+  const pending = cachedRequest(cache.images, key);
+  if (pending) return pending.promise;
   const request = (async () => {
     const page = (await fetchPages([source.title], signal, cache)).find((candidate) => candidate.title?.toLocaleLowerCase() === source.title.toLocaleLowerCase());
     if (!page?.title || !page.fullurl) return undefined;
@@ -307,10 +331,7 @@ export async function resolveWikipediaImage(source: WikipediaSource, signal?: Ab
       original: page.original
     }, signal);
   })();
-  if (cache) {
-    cache.images.set(key, request);
-    void request.catch(() => { if (cache.images.get(key) === request) cache.images.delete(key); });
-  }
+  storeCachedRequest(cache.images, key, request);
   return request;
 }
 

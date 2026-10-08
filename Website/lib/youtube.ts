@@ -719,11 +719,52 @@ function fieldMatches(term: string, fields: Array<{ name: string; value: string 
 }
 
 function broadTokenScore(term: string, fields: Array<{ name: string; value: string }>) {
-  const words = normalized(term).split(" ").filter((word) => word.length > 2);
+  const words = meaningfulVideoWords(term);
   if (!words.length) return 0;
   const searchableWords = normalized(fields.map((field) => field.value).join(" ")).split(" ").filter(Boolean);
   const matched = words.filter((word) => tokenMatches(word, searchableWords));
   return matched.length / words.length;
+}
+
+const VIDEO_QUERY_STOP_WORDS = new Set(["about", "after", "again", "all", "and", "are", "before", "best", "by", "can", "did", "do", "does", "for", "from", "how", "in", "into", "is", "it", "like", "me", "of", "on", "or", "show", "similar", "some", "that", "the", "their", "them", "this", "to", "video", "videos", "what", "when", "where", "which", "who", "why", "with"]);
+
+function meaningfulVideoWords(value: string) {
+  return normalized(value).split(" ").filter((word) => word.length > 2 && !VIDEO_QUERY_STOP_WORDS.has(word));
+}
+
+function strongTermMatch(term: string, video: YouTubeVideo) {
+  const words = meaningfulVideoWords(term);
+  if (!words.length) return false;
+  const metadata = normalized([
+    video.title,
+    searchableDescription(video),
+    video.tags.join(" "),
+    video.topics.join(" ")
+  ].join(" "));
+  if (` ${metadata} `.includes(` ${normalized(term)} `)) return true;
+  const metadataWords = metadata.split(" ").filter(Boolean);
+  const matched = words.filter((word) => metadataWords.some((candidate) => candidate === word || (word.length >= 5 && candidate.length >= 5 && (candidate.startsWith(word) || word.startsWith(candidate)) && Math.abs(candidate.length - word.length) <= 2)));
+  const minimumCoverage = words.length === 1 ? 1 : Math.ceil(words.length * 0.67);
+  return matched.length >= minimumCoverage;
+}
+
+/** Keep local results that mention the query's meaningful concepts in metadata. */
+export function strongLocalVideoCandidates(query: string, candidates: YouTubeSearchCandidate[]) {
+  return candidates.filter((candidate) => candidate.matchedFields.length > 0 && !candidate.matchedFields.includes("semantic-fallback") && strongTermMatch(query, candidate.video));
+}
+
+/** Apply semantic coverage after the interpreted plan's strict filters ran locally. */
+export function strongLocalVideoPlanCandidates(plan: YouTubeSearchPlanLike, candidates: YouTubeSearchCandidate[]) {
+  const coreTerms = (plan.terms ?? []).filter(Boolean);
+  const requiredTerms = (plan.include ?? []).filter(Boolean);
+  const groups = (plan.conceptGroups ?? []).filter((group) => group.required !== false && group.terms.length);
+  return candidates.filter((candidate) => {
+    if (!candidate.matchedFields.length || candidate.matchedFields.includes("semantic-fallback")) return false;
+    if (coreTerms.length && !coreTerms.some((term) => strongTermMatch(term, candidate.video))) return false;
+    if (requiredTerms.some((term) => !strongTermMatch(term, candidate.video))) return false;
+    if (groups.some((group) => !group.terms.some((term) => strongTermMatch(term, candidate.video)))) return false;
+    return true;
+  });
 }
 
 export function searchYouTubeCandidates(videos: YouTubeVideo[], plan: YouTubeSearchPlanLike, topic: YouTubeTopic | "All" = "All", channelId?: string, limit = 80, excludedIds: string[] = [], expanded = false) {

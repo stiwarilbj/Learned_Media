@@ -133,15 +133,15 @@ export function selectEvidence(extract: string, focus: string, difficulty: numbe
     if (heading) { section = heading[1]; continue; }
     if (/^(References|Notes|External links|Further reading|Bibliography|See also)$/i.test(section) || paragraph.trim().length < 90) continue;
     if (difficulty >= 5 && section === "Introduction") continue;
-    for (let offset = 0; offset < paragraph.length; offset += 1800) {
-      const text = paragraph.slice(offset, offset + 1800).trim();
+    for (let offset = 0; offset < paragraph.length; offset += 1200) {
+      const text = paragraph.slice(offset, offset + 1200).trim();
       if (text.length < 90) continue;
       passages.push({text, section, score: overlap(words, tokens(text + " " + section)) * 5 + (section !== "Introduction" ? .3 : difficulty >= 5 ? -3 : .4) + random() * .15});
     }
   }
   const ranked = passages.sort((a,b) => b.score - a.score);
   const selected = ranked[0]
-    ? ranked.filter(item => item.section === ranked[0].section).slice(0, difficulty >= 10 ? 2 : difficulty >= 9 ? 4 : difficulty >= 5 ? 5 : 7)
+    ? ranked.filter(item => item.section === ranked[0].section).slice(0, difficulty >= 10 ? 2 : difficulty >= 9 ? 3 : difficulty >= 5 ? 3 : 4)
     : [];
   return selected.map(item => `[Section: ${item.section}]\n${item.text}`).join("\n\n");
 }

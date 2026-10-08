@@ -152,7 +152,11 @@
   let youtubeSearchToken = 0;
   let searchInterpretToken = 0;
   let searchInterpretTimer = null;
-  const semanticSearchCache = new Map();
+  let searchInterpretRequest = null;
+  let youtubeSearchRequests = [];
+  const semanticSearchCache = createSessionCache(100, 30 * 60 * 1000);
+  const youtubeSmartSearchCache = createSessionCache(100, 30 * 60 * 1000);
+  const learningResponseCache = createSessionCache(100, 30 * 60 * 1000);
   const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with"]);
 
   function makeTopics() {
@@ -315,15 +319,42 @@
     if (PERIOD_FREE_UI_COPY.has(value) || /^Your (saved|likes|history) discoveries\.$/.test(value) || /^As you explore, your (saved|likes|history) facts will appear here\.$/.test(value) || /^\d+ topics in your mix, sourced from Wikipedia and shaped by your curiosity\.$/.test(value)) return value.slice(0, -1);
     return value;
   }
+  function createSessionCache(maxEntries, ttlMs) {
+    const entries = new Map();
+    return {
+      get: function (key) {
+        const entry = entries.get(key);
+        if (!entry) return undefined;
+        if (entry.expiresAt <= Date.now()) { entries.delete(key); return undefined; }
+        entries.delete(key); entries.set(key, entry); return entry.value;
+      },
+      set: function (key, value) {
+        entries.delete(key); entries.set(key, { value: value, expiresAt: Date.now() + ttlMs });
+        while (entries.size > maxEntries) entries.delete(entries.keys().next().value);
+      },
+      clear: function () { entries.clear(); }
+    };
+  }
+  function scopedCacheKey(secret, parts) {
+    const text = String(secret || "") + "\u0000" + JSON.stringify(parts);
+    let left = 2166136261, right = 0x9e3779b9;
+    for (let index = 0; index < text.length; index += 1) { left = Math.imul(left ^ text.charCodeAt(index), 16777619); right = Math.imul(right ^ text.charCodeAt(index), 2246822519); }
+    return (left >>> 0).toString(16) + (right >>> 0).toString(16);
+  }
+  function clearSessionSearchCaches() {
+    semanticSearchCache.clear(); youtubeSmartSearchCache.clear(); learningResponseCache.clear();
+  }
   function bridge(action, payload) {
     if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.native) {
       return Promise.reject(new Error("The native application bridge is unavailable."));
     }
     const id = "r" + (++requestID);
-    return new Promise(function (resolve, reject) {
+    const task = new Promise(function (resolve, reject) {
       pending.set(id, { resolve: resolve, reject: reject });
       window.webkit.messageHandlers.native.postMessage({ id: id, action: action, payload: payload || {} });
     });
+    task.cancel = function () { if (pending.has(id)) bridge("cancelRequest", { taskId: id }).catch(function () {}); };
+    return task;
   }
   window.__learnedMediaNativeRequest = bridge;
   window.__nativeResolve = function (message) {
@@ -336,6 +367,12 @@
   window.__nativeEvent = function (message) {
     if (!message || (message.token !== undefined && message.type === "modelCheck" && message.token !== state.connectionToken)) return;
     if (message.type === "generationStatus" && message.token === state.generationRequestToken) {
+      mergeGeminiModelOutcomes(message.modelOutcomes || []);
+      if (message.status) state.geminiStatus = message.status;
+      render();
+      return;
+    }
+    if (message.type === "operationStatus") {
       mergeGeminiModelOutcomes(message.modelOutcomes || []);
       if (message.status) state.geminiStatus = message.status;
       render();
@@ -715,7 +752,7 @@
     state.youtube.history = [{ videoId: id, watchedAt: new Date().toISOString() }].concat(state.youtube.history.filter(function (item) { return item.videoId !== id; })).slice(0, 200);
     saveState(); render();
   }
-  function youtubeOpenChannel(id) { youtubeSearchToken += 1; state.youtube.selectedChannelId = id; state.youtube.selectedVideoId = null; state.youtube.tab = "channels"; state.youtube.searchText = ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; render(); }
+  function youtubeOpenChannel(id) { cancelYoutubeSearch(); state.youtube.selectedChannelId = id; state.youtube.selectedVideoId = null; state.youtube.tab = "channels"; state.youtube.searchText = ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; render(); }
   function youtubeVideoCard(video) {
     const card = node("article", { className: "video-card" });
     const main = node("button", { className: "video-card-main", ariaLabel: "Watch " + video.title, onClick: function () { youtubeOpenVideo(video.id); } });
@@ -755,41 +792,151 @@
       state.youtube = Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: 3, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : (result.lastSyncAt || new Date().toISOString()), discoverIds: preserved.length ? preserved : window.LEARNED_MEDIA_YOUTUBE.shuffle(result.videos, 24, []).map(function (video) { return video.id; }) }); state.youtubeStatus = result.incomplete ? "error" : "connected"; state.youtubeError = result.progress.error || ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; saveState(); render(); showToast(result.incomplete ? "YouTube connected, but some approved sources need a retry." : "YouTube connected. Your approved video library is ready.");
     }).catch(function (error) { if (token !== state.connectionToken) return; state.youtubeStatus = "error"; state.youtubeProgress.phase = "error"; state.youtubeError = error.message || "YouTube import failed."; render(); showToast(state.youtubeError); }).finally(function () { youtubeSyncActive = false; });
   }
+  function normalizedVideoSearch(value) { return normalizeNaturalSearchText(value).split(" ").filter(Boolean); }
+  function meaningfulVideoTokens(value) { return normalizedVideoSearch(value).filter(function (word) { return word.length > 2 && !NATURAL_SEARCH_STOP_WORDS.has(word) && !["video", "videos", "youtube", "interesting", "best", "good", "about"].includes(word); }); }
+  function videoCandidateStrength(candidate, query, interpreted) {
+    if (!candidate || !candidate.video || (candidate.matchedFields || []).includes("semantic-fallback") || !(candidate.score > 0)) return false;
+    const fields = candidate.matchedFields || [];
+    const trustedField = fields.some(function (field) { return ["title", "tags", "topics"].includes(field); });
+    if (!trustedField) return false;
+    if (interpreted) return candidate.score >= 2.5;
+    const tokens = meaningfulVideoTokens(query);
+    if (!tokens.length) return false;
+    const metadata = normalizedVideoSearch([candidate.video.title, (candidate.video.tags || []).join(" "), (candidate.video.topics || []).join(" "), candidate.video.description || ""].join(" "));
+    const covered = tokens.filter(function (word) { return metadata.some(function (item) { return item === word || word.length >= 5 && item.length >= 5 && item.indexOf(word) === 0; }); }).length;
+    return tokens.length === 1 ? covered === 1 : covered / tokens.length >= .5;
+  }
+  function localVideoReason(candidate) {
+    const video = candidate.video;
+    const fields = (candidate.matchedFields || []).filter(function (field) { return ["title", "tags", "topics", "description"].includes(field); });
+    const labels = { title: "title", tags: "tags", topics: "topic labels", description: "description" };
+    const fieldNames = fields.map(function (field) { return labels[field]; });
+    const metadata = { title: video.title, tags: (video.tags || []).slice(0, 8).join(", "), topics: (video.topics || []).join(", "), description: String(video.description || "").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0, 180) };
+    const support = fields.map(function (field) { return metadata[field]; }).filter(Boolean).slice(0, 3);
+    const excerpt = support[0] ? ": " + support[0].slice(0, 180) : ".";
+    const explanation = fieldNames.length ? "Matched approved video " + fieldNames.join(", ") + excerpt : "Matched the approved video's catalog metadata.";
+    return { relevance: fields.includes("title") ? "direct" : "strong", support: support, explanation: explanation };
+  }
+  function makeLocalVideoPlan(query) {
+    let core = String(query || "");
+    const plan = { terms: [], include: [], alternatives: [], exclude: [], topics: [], conceptGroups: [], channelId: state.youtube.selectedChannelId || undefined, sort: "relevance" };
+    const remove = function (pattern, apply) {
+      core = core.replace(pattern, function () { const match = arguments[0]; if (apply) apply.apply(null, Array.from(arguments).slice(1, -2)); return " "; });
+    };
+    remove(/\b(?:without|excluding|exclude)\s+([a-z0-9]+(?:\s+[a-z0-9]+){0,2})\b/i, function (term) { const clean = String(term).trim(); if (clean) plan.exclude.push(clean); });
+    remove(/\b(uploaded|posted|published|since|from|after)\s+(?:in\s+)?(\d{4})\b/i, function (source, year) {
+      const value = Number(year);
+      plan.dateIntent = "upload";
+      plan.minDate = (/\bafter\b/i.test(source) ? value + 1 : value) + "-01-01";
+    });
+    remove(/\bbefore\s+(\d{4})\b/i, function (year) { plan.dateIntent = "upload"; plan.maxDate = (Number(year) - 1) + "-12-31"; });
+    remove(/\b(?:under|below|shorter than|less than)\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b/i, function (amount, unit) { plan.maxDurationSeconds = Number(amount) * (/^h/i.test(unit) ? 3600 : 60); });
+    remove(/\b(?:over|above|longer than|more than)\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b/i, function (amount, unit) { plan.minDurationSeconds = Number(amount) * (/^h/i.test(unit) ? 3600 : 60); });
+    remove(/\b(?:within\s+)?last\s+(week|month|year)\b/i, function (unit) {
+      const days = unit.toLowerCase() === "week" ? 7 : unit.toLowerCase() === "month" ? 31 : 366;
+      const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      plan.dateIntent = "upload";
+      plan.minDate = date.toISOString().slice(0, 10);
+    });
+    const namedChannel = state.youtube.channels.find(function (channel) { return normalizeNaturalSearchText(query).includes(normalizeNaturalSearchText(channel.name)); });
+    const mentionsChannel = /\b(?:channel|from|by)\s+\w+/i.test(query);
+    if (namedChannel) { plan.channelId = state.youtube.selectedChannelId || namedChannel.id; const channelIndex = core.toLowerCase().indexOf(namedChannel.name.toLowerCase()); if (channelIndex >= 0) core = core.slice(0, channelIndex) + " " + core.slice(channelIndex + namedChannel.name.length); }
+    plan.unmatchedChannel = mentionsChannel && !namedChannel && !state.youtube.selectedChannelId;
+    if (/\bnewest|latest|recent\b/i.test(query)) plan.sort = "newest";
+    else if (/\boldest|earliest|oldest\b/i.test(query)) plan.sort = "oldest";
+    else if (/\brandom\b/i.test(query)) plan.sort = "random";
+    core = core.replace(/\b(?:videos?|youtube|channel|uploaded|posted|published|since|from|after|before|under|below|shorter|less|over|above|longer|more|than|minutes?|mins?|hours?|hrs?|newest|latest|recent|oldest|earliest|random|within|last|week|month|year)\b/gi, " ").replace(/\b\d{4}\b/g, " ").replace(/\s+/g, " ").trim();
+    plan.terms = [core || query];
+    return { plan: plan, coreQuery: core || query };
+  }
+  function cancelYoutubeSearchRequests() {
+    youtubeSearchRequests.forEach(function (request) { if (request && typeof request.cancel === "function") request.cancel(); });
+    youtubeSearchRequests = [];
+  }
+  function trackedYoutubeSearchBridge(action, payload) {
+    const request = bridge(action, payload);
+    youtubeSearchRequests.push(request);
+    return request;
+  }
   async function youtubeSmartSearch() {
     const query = state.youtube.searchText.trim();
     if (!query) return;
-    if (!state.key.trim() || state.geminiStatus !== "connected") { state.view = "settings"; showToast("Connect Gemini in Settings before using Smart search. Ordinary video search works without it."); return; }
+    cancelYoutubeSearchRequests();
     const token = ++youtubeSearchToken;
-    state.youtubeSmartLoading = true; state.youtubeSearchPhase = "interpreting"; state.youtubeSearchError = ""; state.youtube.smartRan = true; state.youtube.smartIds = []; state.youtube.smartReasons = {}; render();
+    const localPlan = makeLocalVideoPlan(query);
+    const initialPlan = localPlan.plan;
+    const initial = localPlan.plan.unmatchedChannel ? [] : window.LEARNED_MEDIA_YOUTUBE.searchCandidates(state.youtube.videos, initialPlan, state.youtube.topic, state.youtube.selectedChannelId, 80, [], false);
+    const initialStrong = initial.filter(function (candidate) { return videoCandidateStrength(candidate, localPlan.coreQuery, false); });
+    const requiresPlan = /\b(channel|from|since|before|after|uploaded|posted|last week|last month|last year|under \d+|over \d+|longer than|shorter than|between)\b/i.test(query);
+    const canInterpret = Boolean(state.key.trim()) && state.geminiStatus === "connected" && (meaningfulVideoTokens(query).length >= 2 || requiresPlan);
+    const cacheKey = scopedCacheKey(state.key, ["youtube-search-v2", state.youtube.catalogVersion, state.youtube.videos.length, state.youtube.lastSyncAt, state.youtube.topic, state.youtube.selectedChannelId, query.toLowerCase().trim()]);
+    state.youtubeSmartLoading = false;
+    state.youtubeSearchPhase = "idle";
+    const cached = youtubeSmartSearchCache.get(cacheKey);
+    if (cached) {
+      state.youtube.smartIds = cached.ids.slice(); state.youtube.smartReasons = cached.reasons; state.youtube.smartRan = true; state.youtubeSearchPhase = "idle"; state.youtubeSearchError = ""; saveState(); render(); return;
+    }
+    state.youtubeSmartLoading = canInterpret && (initialStrong.length < 6 || requiresPlan);
+    state.youtubeSearchPhase = state.youtubeSmartLoading ? "interpreting" : "idle";
+    state.youtubeSearchError = ""; state.youtube.smartRan = true; state.youtube.smartIds = []; state.youtube.smartReasons = {}; render();
+    let plan = initialPlan;
+    let interpreted = false;
+    let candidates = initial;
+    const selected = new Map();
+    initialStrong.forEach(function (candidate) { selected.set(candidate.video.id, candidate); });
     try {
-      const plan = await bridge("videoSearch", { key: state.key.trim(), query: query });
-      if (token !== youtubeSearchToken) return;
-      const namedChannel = plan.channelId ? state.youtube.channels.find(function (channel) { return channel.id === plan.channelId; }) : plan.channel ? state.youtube.channels.find(function (channel) { return channel.name.toLowerCase().includes(String(plan.channel).toLowerCase()); }) : null;
-      if ((plan.channel || plan.channelId) && !namedChannel) { state.youtube.smartIds = []; state.youtube.smartReasons = {}; state.youtubeSearchPhase = "idle"; state.youtubeSearchError = "That channel is not in the approved catalog."; state.youtubeSmartLoading = false; showToast(state.youtubeSearchError); render(); return; }
-      const effectivePlan = Object.assign({}, plan, { terms: plan.terms && plan.terms.length || plan.include && plan.include.length || plan.conceptGroups && plan.conceptGroups.length ? plan.terms : [query], channelId: state.youtube.selectedChannelId || (namedChannel && namedChannel.id) || undefined });
-      state.youtubeSearchPhase = "checking"; render();
-      async function rankPass(candidates) {
-        const chunks = []; for (let index = 0; index < candidates.length; index += 40) chunks.push(candidates.slice(index, index + 40));
-        const ranked = await Promise.all(chunks.map(function (chunk) { return bridge("videoSearchRank", { key: state.key.trim(), query: query, plan: effectivePlan, candidates: chunk.map(function (item) { return { video: item.video, score: item.score, matchedFields: item.matchedFields, supportingText: item.supportingText }; }) }); }));
-        return ranked.reduce(function (all, batch) { return all.concat(batch.results || []); }, []);
+      if (state.youtubeSmartLoading) {
+        try {
+          const result = await trackedYoutubeSearchBridge("videoSearch", { key: state.key.trim(), query: query, catalogVersion: state.youtube.catalogVersion || 0 });
+          if (token !== youtubeSearchToken) return;
+          mergeGeminiModelOutcomes(result.modelOutcomes || []);
+          const namedChannel = result.channelId ? state.youtube.channels.find(function (channel) { return channel.id === result.channelId; }) : result.channel ? state.youtube.channels.find(function (channel) { return channel.name.toLowerCase().includes(String(result.channel).toLowerCase()); }) : null;
+          if ((result.channel || result.channelId) && !namedChannel) throw new Error("That channel is not in the approved catalog.");
+          plan = Object.assign({}, result, { terms: result.terms && result.terms.length || result.include && result.include.length || result.conceptGroups && result.conceptGroups.length ? result.terms : [query], channelId: state.youtube.selectedChannelId || (namedChannel && namedChannel.id) || undefined });
+          interpreted = true;
+        } catch (error) {
+          if (token !== youtubeSearchToken) return;
+          if (/not in the approved catalog/i.test(error.message || "")) throw error;
+          plan = initialPlan;
+        }
       }
-      const initial = window.LEARNED_MEDIA_YOUTUBE.searchCandidates(state.youtube.videos, effectivePlan, state.youtube.topic, state.youtube.selectedChannelId, 80, [], false);
-      let ranked = await rankPass(initial);
-      if (ranked.length < 6 && token === youtubeSearchToken) {
-        state.youtubeSearchPhase = "expanding"; render();
-        const expanded = window.LEARNED_MEDIA_YOUTUBE.searchCandidates(state.youtube.videos, effectivePlan, state.youtube.topic, state.youtube.selectedChannelId, 80, initial.map(function (item) { return item.video.id; }), true);
-        const more = await rankPass(expanded); const seen = {}; ranked.forEach(function (item) { seen[item.videoId] = true; }); ranked = ranked.concat(more.filter(function (item) { return !seen[item.videoId]; }));
+      if (interpreted) {
+        candidates = window.LEARNED_MEDIA_YOUTUBE.searchCandidates(state.youtube.videos, plan, state.youtube.topic, state.youtube.selectedChannelId, 80, [], true);
+        candidates.filter(function (candidate) { return videoCandidateStrength(candidate, query, true); }).forEach(function (candidate) { if (!selected.has(candidate.video.id)) selected.set(candidate.video.id, candidate); });
+        if (selected.size < 6 && candidates.length) {
+          state.youtubeSearchPhase = "checking"; render();
+          const uncertain = candidates.filter(function (candidate) { return !videoCandidateStrength(candidate, query, true); }).slice(0, 40);
+          if (uncertain.length) {
+            try {
+              const result = await trackedYoutubeSearchBridge("videoSearchRank", { key: state.key.trim(), query: query, catalogVersion: state.youtube.catalogVersion || 0, plan: plan, candidates: uncertain.map(function (item) { return { video: item.video, score: item.score, matchedFields: item.matchedFields, supportingText: item.supportingText }; }) });
+              if (token !== youtubeSearchToken) return;
+              mergeGeminiModelOutcomes(result.modelOutcomes || []);
+              const byId = new Map(uncertain.map(function (candidate) { return [candidate.video.id, candidate]; }));
+              (result.results || []).forEach(function (match) { const candidate = byId.get(match.videoId); if (candidate && !selected.has(match.videoId)) selected.set(match.videoId, candidate); });
+            } catch (_) { /* Local matches remain available when optional verification is unavailable. */ }
+          }
+        }
       }
       if (token !== youtubeSearchToken) return;
-      const byId = {}; state.youtube.videos.forEach(function (video) { byId[video.id] = video; }); const valid = ranked.filter(function (item) { return byId[item.videoId] && item.videoId.indexOf("demo-") !== 0; }).sort(function (a, b) { return a.relevance === b.relevance ? 0 : a.relevance === "direct" ? -1 : 1; }); let ids = valid.map(function (item) { return item.videoId; });
-      if (plan.sort === "newest") ids.sort(function (a, b) { return byId[b].publishedAt.localeCompare(byId[a].publishedAt); });
-      if (plan.sort === "oldest") ids.sort(function (a, b) { return byId[a].publishedAt.localeCompare(byId[b].publishedAt); });
-      if (plan.sort === "random") ids = window.LEARNED_MEDIA_YOUTUBE.shuffle(ids.map(function (id) { return byId[id]; }), ids.length, []).map(function (video) { return video.id; });
-      const reasons = {}; valid.forEach(function (item) { reasons[item.videoId] = item; }); state.youtube.smartIds = ids; state.youtube.smartReasons = reasons; state.youtube.smartRan = true; state.youtubeSearchPhase = "idle"; saveState(); showToast(ids.length + " relevant approved video" + (ids.length === 1 ? "" : "s") + " matched your search.");
-    } catch (error) { if (token === youtubeSearchToken) { state.youtubeSearchPhase = "error"; state.youtubeSearchError = error.message || "Smart video search could not complete."; showToast(state.youtubeSearchError); } }
-    if (token === youtubeSearchToken) { state.youtubeSmartLoading = false; render(); }
+      const byId = new Map(state.youtube.videos.map(function (video) { return [video.id, video]; }));
+      const valid = Array.from(selected.values()).filter(function (candidate) { return byId.has(candidate.video.id) && candidate.video.id.indexOf("demo-") !== 0; });
+      let ids = valid.map(function (candidate) { return candidate.video.id; });
+      if (plan.sort === "newest") ids.sort(function (a, b) { return byId.get(b).publishedAt.localeCompare(byId.get(a).publishedAt); });
+      if (plan.sort === "oldest") ids.sort(function (a, b) { return byId.get(a).publishedAt.localeCompare(byId.get(b).publishedAt); });
+      if (plan.sort === "random") ids = window.LEARNED_MEDIA_YOUTUBE.shuffle(ids.map(function (id) { return byId.get(id); }), ids.length, []).map(function (video) { return video.id; });
+      const reasons = {};
+      valid.forEach(function (candidate) { reasons[candidate.video.id] = localVideoReason(candidate); });
+      state.youtube.smartIds = ids; state.youtube.smartReasons = reasons; state.youtube.smartRan = true; state.youtubeSearchPhase = "idle"; state.youtubeSearchError = "";
+      youtubeSmartSearchCache.set(cacheKey, { ids: ids, reasons: reasons });
+      saveState(); showToast(ids.length + " relevant approved video" + (ids.length === 1 ? "" : "s") + " matched your search.");
+    } catch (error) {
+      if (token === youtubeSearchToken) { state.youtubeSearchPhase = "error"; state.youtubeSearchError = error.message || "Smart video search could not complete."; showToast(state.youtubeSearchError); }
+    } finally {
+      if (token === youtubeSearchToken) { state.youtubeSmartLoading = false; state.youtubeSearchPhase = "idle"; render(); }
+      if (token === youtubeSearchToken) youtubeSearchRequests = [];
+    }
   }
-  function cancelYoutubeSearch() { youtubeSearchToken += 1; state.youtubeSmartLoading = false; state.youtubeSearchPhase = "idle"; state.youtubeSearchError = ""; bridge("cancelAll", {}).catch(function () {}); render(); }
+  function cancelYoutubeSearch() { youtubeSearchToken += 1; cancelYoutubeSearchRequests(); state.youtubeSmartLoading = false; state.youtubeSearchPhase = "idle"; state.youtubeSearchError = ""; render(); }
   function youtubeFilteredVideos() {
     const all = state.youtube.videos || [];
     if (state.youtube.tab === "saved") return all.filter(function (video) { return state.youtube.savedIds.indexOf(video.id) >= 0; });
@@ -847,11 +994,11 @@
   function videosView() {
     const section = node("section", { className: "content-view video-workspace" });
     if (state.youtube.selectedVideoId) { const selected = state.youtube.videos.find(function (video) { return video.id === state.youtube.selectedVideoId; }); if (selected) return youtubeDetail(selected); }
-    if (state.youtube.selectedChannelId) { const channel = state.youtube.channels.find(function (item) { return item.id === state.youtube.selectedChannelId; }); section.appendChild(node("button", { className: "text-button video-back-button", onClick: function () { state.youtube.selectedChannelId = null; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; render(); } }, svg("chevronRight", 15), " All channels")); section.appendChild(node("div", { className: "view-heading video-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Channel catalog" }), node("h1", { text: channel ? channel.name : "Channel" }), node("p", { text: channel ? channel.videoCount.toLocaleString() + " imported videos from this approved channel" : "" })))); const controls = node("div", { className: "video-controls" }); controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { value: state.youtube.searchText, placeholder: "Search this channel", ariaLabel: "Search this channel", onInput: function (event) { state.youtube.searchText = event.target.value; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtubeSearchError = ""; render(); } }))); controls.appendChild(node("button", { className: "ghost-button", disabled: Boolean(state.youtubeSmartLoading) || !state.youtube.searchText.trim(), onClick: youtubeSmartSearch }, state.youtubeSmartLoading ? "Searching" : "Smart search")); controls.appendChild(node("select", { value: state.youtube.order, ariaLabel: "Sort channel videos", onChange: function (event) { state.youtube.order = event.target.value; render(); } }, node("option", { value: "newest", text: "Newest" }), node("option", { value: "oldest", text: "Oldest" }), node("option", { value: "random", text: "Random" }))); section.appendChild(controls); if (state.youtubeSmartLoading) section.appendChild(node("div", { className: "video-search-progress", role: "status" }, node("span", { text: state.youtubeSearchPhase === "interpreting" ? "Understanding your search" : state.youtubeSearchPhase === "expanding" ? "Looking more broadly" : "Checking matches" }), node("button", { className: "text-button", onClick: cancelYoutubeSearch }, "Cancel"))); if (state.youtubeSearchPhase === "error" && state.youtubeSearchError) section.appendChild(node("p", { className: "video-search-error", text: state.youtubeSearchError })); section.appendChild(youtubeList(youtubeFilteredVideos())); return section; }
+    if (state.youtube.selectedChannelId) { const channel = state.youtube.channels.find(function (item) { return item.id === state.youtube.selectedChannelId; }); section.appendChild(node("button", { className: "text-button video-back-button", onClick: function () { cancelYoutubeSearch(); state.youtube.selectedChannelId = null; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; render(); } }, svg("chevronRight", 15), " All channels")); section.appendChild(node("div", { className: "view-heading video-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Channel catalog" }), node("h1", { text: channel ? channel.name : "Channel" }), node("p", { text: channel ? channel.videoCount.toLocaleString() + " imported videos from this approved channel" : "" })))); const controls = node("div", { className: "video-controls" }); controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { value: state.youtube.searchText, placeholder: "Search this channel", ariaLabel: "Search this channel", onInput: function (event) { if (state.youtubeSmartLoading) cancelYoutubeSearch(); state.youtube.searchText = event.target.value; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtubeSearchError = ""; render(); } }))); controls.appendChild(node("button", { className: "ghost-button", disabled: Boolean(state.youtubeSmartLoading) || !state.youtube.searchText.trim(), onClick: youtubeSmartSearch }, state.youtubeSmartLoading ? "Searching" : "Smart search")); controls.appendChild(node("select", { value: state.youtube.order, ariaLabel: "Sort channel videos", onChange: function (event) { state.youtube.order = event.target.value; render(); } }, node("option", { value: "newest", text: "Newest" }), node("option", { value: "oldest", text: "Oldest" }), node("option", { value: "random", text: "Random" }))); section.appendChild(controls); if (state.youtubeSmartLoading) section.appendChild(node("div", { className: "video-search-progress", role: "status" }, node("span", { text: state.youtubeSearchPhase === "interpreting" ? "Understanding your search" : state.youtubeSearchPhase === "expanding" ? "Looking more broadly" : "Checking matches" }), node("button", { className: "text-button", onClick: cancelYoutubeSearch }, "Cancel"))); if (state.youtubeSearchPhase === "error" && state.youtubeSearchError) section.appendChild(node("p", { className: "video-search-error", text: state.youtubeSearchError })); section.appendChild(youtubeList(youtubeFilteredVideos())); return section; }
     section.appendChild(node("div", { className: "view-heading video-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Learned Media Videos" }), node("h1", { text: state.youtube.tab === "saved" ? "Saved videos" : state.youtube.tab === "history" ? "Watch history" : "A calmer way to find something good." }), node("p", { text: "Discover approved creators, search their imported catalogs, and watch without leaving your workspace." })), node("div", { className: "video-heading-actions" }, node("button", { className: "secondary-button", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: function () { youtubeConnect(true); } }, svg("reset", 15), " Refresh videos"), node("button", { className: "secondary-button", disabled: !state.youtube.videos.length, onClick: function () { state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; }); state.youtube.tab = "discover"; render(); } }, svg("reset", 15), " Shuffle"), node("button", { className: "primary-button small", disabled: !state.youtube.videos.length, onClick: function () { const next = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, state.youtube.discoverIds); state.youtube.discoverIds = state.youtube.discoverIds.concat(next.map(function (video) { return video.id; })); render(); } }, svg("plus", 15), " Show more"))));
     if ((state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing" || state.youtubeStatus === "error" || state.youtube.incomplete) && state.youtubeProgress.phase !== "idle") section.appendChild(youtubeImportNotice());
     const tabs = node("div", { className: "video-tabs", role: "tablist" }); [["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]].forEach(function (item) { tabs.appendChild(node("button", { className: state.youtube.tab === item[0] ? "active" : "", role: "tab", ariaSelected: state.youtube.tab === item[0], onClick: function () { state.youtube.tab = item[0]; state.youtube.selectedChannelId = null; state.youtube.selectedVideoId = null; render(); } }, item[1], item[0] === "saved" && state.youtube.savedIds.length ? " " + state.youtube.savedIds.length : "")); }); section.appendChild(tabs);
-    if (state.youtube.tab === "discover") { const controls = node("div", { className: "video-controls" }); controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { value: state.youtube.searchText, placeholder: "Search approved videos", ariaLabel: "Search approved videos", onInput: function (event) { state.youtube.searchText = event.target.value; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtubeSearchError = ""; render(); } }))); controls.appendChild(node("button", { className: "ghost-button", disabled: Boolean(state.youtubeSmartLoading) || !state.youtube.searchText.trim(), onClick: youtubeSmartSearch }, state.youtubeSmartLoading ? "Searching" : "Smart search")); if (state.youtubeSmartLoading) controls.appendChild(node("button", { className: "text-button", onClick: cancelYoutubeSearch }, "Cancel")); section.appendChild(controls); if (state.youtubeSearchPhase === "error" && state.youtubeSearchError) section.appendChild(node("p", { className: "video-search-error", text: state.youtubeSearchError })); const filters = node("div", { className: "video-topic-filters" }); ["All"].concat(window.LEARNED_MEDIA_YOUTUBE.TOPICS).forEach(function (topic) { filters.appendChild(node("button", { className: state.youtube.topic === topic ? "active" : "", onClick: function () { state.youtube.topic = topic; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtubeSearchError = ""; state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; }); render(); } }, topic === "All" ? "All topics" : topic)); }); section.appendChild(filters); }
+    if (state.youtube.tab === "discover") { const controls = node("div", { className: "video-controls" }); controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { value: state.youtube.searchText, placeholder: "Search approved videos", ariaLabel: "Search approved videos", onInput: function (event) { if (state.youtubeSmartLoading) cancelYoutubeSearch(); state.youtube.searchText = event.target.value; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtubeSearchError = ""; render(); } }))); controls.appendChild(node("button", { className: "ghost-button", disabled: Boolean(state.youtubeSmartLoading) || !state.youtube.searchText.trim(), onClick: youtubeSmartSearch }, state.youtubeSmartLoading ? "Searching" : "Smart search")); if (state.youtubeSmartLoading) controls.appendChild(node("button", { className: "text-button", onClick: cancelYoutubeSearch }, "Cancel")); section.appendChild(controls); if (state.youtubeSearchPhase === "error" && state.youtubeSearchError) section.appendChild(node("p", { className: "video-search-error", text: state.youtubeSearchError })); const filters = node("div", { className: "video-topic-filters" }); ["All"].concat(window.LEARNED_MEDIA_YOUTUBE.TOPICS).forEach(function (topic) { filters.appendChild(node("button", { className: state.youtube.topic === topic ? "active" : "", onClick: function () { if (state.youtubeSmartLoading) cancelYoutubeSearch(); state.youtube.topic = topic; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtubeSearchError = ""; state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; }); render(); } }, topic === "All" ? "All topics" : topic)); }); section.appendChild(filters); }
     if (state.youtube.tab === "channels") { if (state.youtube.channels.length) { const channels = node("div", { className: "channel-grid" }); state.youtube.channels.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (channel) { channels.appendChild(node("button", { className: "channel-card", onClick: function () { youtubeOpenChannel(channel.id); } }, channel.thumbnailUrl ? node("img", { src: channel.thumbnailUrl, alt: "" }) : node("span", { className: "channel-avatar", text: channel.name.slice(0, 1) }), node("span", {}, node("strong", { text: channel.name }), node("small", { text: channel.videoCount.toLocaleString() + " videos" })), svg("chevronRight", 17))); }); section.appendChild(channels); } else section.appendChild(node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("image", 24)), node("h2", { text: "Connect YouTube to start discovering" }), node("p", { text: "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos." }), node("button", { className: "primary-button", onClick: function () { state.view = "settings"; render(); } }, "Open video settings"))); }
     else if (state.youtube.videos.length) section.appendChild(youtubeList(youtubeFilteredVideos()));
     else section.appendChild(node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("image", 24)), node("h2", { text: "Connect YouTube to start discovering" }), node("p", { text: "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos." }), node("button", { className: "primary-button", onClick: function () { state.view = "settings"; render(); } }, "Open video settings")));
@@ -943,6 +1090,7 @@
     state.connectionToken += 1;
     state.generationRequestToken += 1;
     youtubeSearchToken += 1;
+    cancelPendingSemanticSearch();
     state.loading = false;
     state.loadingCard = null;
     state.youtubeSmartLoading = false;
@@ -1214,21 +1362,37 @@
   function normalizeNaturalSearchText(value) {
     return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
   }
-  function shouldExpandNaturalSearch(query) {
+  function meaningfulTopicMatchCount(query) {
+    const words = normalizeNaturalSearchText(query).split(" ").filter(function (word) { return word.length > 2 && !NATURAL_SEARCH_STOP_WORDS.has(word); });
+    if (!words.length) return 0;
+    return flatTopics().filter(function (topic) {
+      const haystack = normalizeNaturalSearchText((topic.path || []).join(" ") + " " + topic.label + " " + (topic.aliases || []).join(" "));
+      const covered = words.filter(function (word) { return haystack.split(" ").some(function (candidate) { return candidate === word || word.length >= 5 && candidate.length >= 5 && candidate.indexOf(word) === 0; }); }).length;
+      const minimum = words.length === 1 ? 1 : Math.max(2, Math.ceil(words.length * .55));
+      return covered >= minimum;
+    }).length;
+  }
+  function shouldExpandNaturalSearch(query, meaningfulLocalMatches) {
     const normalized = normalizeNaturalSearchText(query);
     const words = normalized.split(" ").filter(Boolean);
     const contentWords = words.filter(function (word) { return word.length > 1 && !NATURAL_SEARCH_STOP_WORDS.has(word); });
     const intent = /^(?:who|what|when|where|why|how|explain|find me|tell me|show me|similar to|related to|ideas like)\b/i.test(normalized);
-    return contentWords.length >= 5 || (intent && words.length >= 4 && contentWords.length >= 2);
+    return Number(meaningfulLocalMatches || 0) < 8 && (contentWords.length >= 5 || (intent && words.length >= 4 && contentWords.length >= 2));
+  }
+  function cancelPendingSemanticSearch() {
+    if (searchInterpretTimer) { window.clearTimeout(searchInterpretTimer); searchInterpretTimer = null; }
+    if (searchInterpretRequest && typeof searchInterpretRequest.cancel === "function") searchInterpretRequest.cancel();
+    searchInterpretRequest = null;
   }
   function requestSemanticSearch(query, searchWrap) {
+    cancelPendingSemanticSearch();
     searchInterpretToken += 1;
     const token = searchInterpretToken;
-    if (searchInterpretTimer) window.clearTimeout(searchInterpretTimer);
     state.semanticSearchTerms = [];
     const text = String(query || "").trim();
-    if (!text || !shouldExpandNaturalSearch(text) || !state.key.trim() || state.geminiStatus !== "connected") return;
-    const cacheKey = normalizeNaturalSearchText(text);
+    const localMatches = meaningfulTopicMatchCount(text);
+    if (!text || !shouldExpandNaturalSearch(text, localMatches) || !state.key.trim() || state.geminiStatus !== "connected") return;
+    const cacheKey = scopedCacheKey(state.key, [TOPIC_CATALOG_VERSION, normalizeNaturalSearchText(text)]);
     const cached = semanticSearchCache.get(cacheKey);
     if (cached) {
       state.semanticSearchTerms = cached;
@@ -1236,16 +1400,20 @@
       return;
     }
     searchInterpretTimer = window.setTimeout(function () {
-      bridge("searchInterpret", { key: state.key, query: text }).then(function (result) {
+      searchInterpretTimer = null;
+      const request = bridge("searchInterpret", { key: state.key, query: text, catalogVersion: TOPIC_CATALOG_VERSION });
+      searchInterpretRequest = request;
+      request.then(function (result) {
         if (token !== searchInterpretToken) return;
         state.semanticSearchTerms = Array.from(new Set((result.terms || []).filter(function (term) { return typeof term === "string" && term.trim(); }).map(function (term) { return term.trim(); }))).slice(0, 24);
         semanticSearchCache.set(cacheKey, state.semanticSearchTerms);
-        if (semanticSearchCache.size > 60) semanticSearchCache.delete(semanticSearchCache.keys().next().value);
         renderGlobalSearchPopover(searchWrap);
       }).catch(function () {
         if (token === searchInterpretToken) renderGlobalSearchPopover(searchWrap);
+      }).finally(function () {
+        if (searchInterpretRequest === request) searchInterpretRequest = null;
       });
-    }, 850);
+    }, 1500);
   }
   function installPopoverDismiss() {
     if (window.__learnedMediaPopoverDismiss) return;
@@ -1462,10 +1630,10 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Remembered key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Remembered key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain, separate from workspaces, and sent only when Gemini is requested." })));
@@ -1808,7 +1976,8 @@
     }
   }
   function mergeGeminiModelOutcomes(outcomes) {
-    (outcomes || []).forEach(function (outcome) {
+    const values = outcomes || [];
+    values.forEach(function (outcome) {
       if (!outcome || !outcome.model) return;
       const previous = state.modelChecks.find(function (model) { return model.model === outcome.model; });
       const nextCheck = { model: outcome.model, status: outcome.status === "success" ? "working" : outcome.status, latencyMs: outcome.latencyMs, checkedAt: new Date().toISOString() };
@@ -1819,6 +1988,7 @@
       state.modelChecks.push(nextCheck);
     });
     state.modelChecks.sort(function (left, right) { return ALLOWED_GEMINI_MODELS.indexOf(left.model) - ALLOWED_GEMINI_MODELS.indexOf(right.model); });
+    if (values.some(function (outcome) { return outcome && outcome.status === "success"; })) state.geminiStatus = "connected";
   }
   async function testKey() {
     const keyAtStart = state.key.trim();
@@ -1849,6 +2019,9 @@
   async function learnMore(id) {
     const card = state.cards.find(function (item) { return item.id === id; });
     if (!card || card.learnMore || state.loadingCard) return;
+    const learningKey = scopedCacheKey(state.key, ["learn", card.topicPath, card.hook, card.title, card.body, card.claim, (card.sources || []).map(function (source) { return [source.canonicalUrl || source.url, source.extract || ""]; })]);
+    const cached = learningResponseCache.get(learningKey);
+    if (cached) { card.learnMore = cached.answer; card.answerSources = cached.citations || []; saveState(); render(); return; }
     const activeToken = generationToken;
     state.loadingCard = id;
     state.errorByCard[id] = "";
@@ -1856,8 +2029,10 @@
     try {
       const result = await bridge("learn", { action: "learn", card: card });
       if (activeToken === generationToken) {
+        mergeGeminiModelOutcomes(result.modelOutcomes || []);
         card.learnMore = result.answer;
         card.answerSources = result.citations || [];
+        learningResponseCache.set(learningKey, { answer: card.learnMore, citations: card.answerSources });
       }
     } catch (error) {
       state.errorByCard[id] = error.message;
@@ -1870,17 +2045,27 @@
     const card = state.cards.find(function (item) { return item.id === id; });
     const question = String(value || "").trim();
     if (!card || !question || state.loadingCard) return;
+    const history = card.questionHistory || [];
+    const learningKey = scopedCacheKey(state.key, ["question", card.topicPath, card.hook, card.title, card.body, card.claim, (card.sources || []).map(function (source) { return [source.canonicalUrl || source.url, source.extract || ""]; }), question, Boolean(card.answerDetailed), history]);
+    const cached = learningResponseCache.get(learningKey);
+    if (cached) {
+      card.question = question; card.answer = cached.answer; card.answerSources = cached.citations || [];
+      card.questionHistory = history.concat([{ role: "user", content: question }, { role: "assistant", content: card.answer }]);
+      saveState(); render(); return;
+    }
     const activeToken = generationToken;
     state.loadingCard = id;
     state.errorByCard[id] = "";
     render();
     try {
-      const result = await bridge("learn", { action: "question", card: card, question: question, detailed: Boolean(card.answerDetailed), history: card.questionHistory || [] });
+      const result = await bridge("learn", { action: "question", card: card, question: question, detailed: Boolean(card.answerDetailed), history: history });
       if (activeToken === generationToken) {
+        mergeGeminiModelOutcomes(result.modelOutcomes || []);
         card.question = question;
         card.answer = result.answer;
         card.answerSources = result.citations || [];
         card.questionHistory = (card.questionHistory || []).concat([{ role: "user", content: question }, { role: "assistant", content: card.answer }]);
+        learningResponseCache.set(learningKey, { answer: card.answer, citations: card.answerSources });
       }
     } catch (error) {
       state.errorByCard[id] = error.message;

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { describeGeminiError, generateLearningResponse } from "@/lib/gemini";
+import { describeGeminiError, geminiFailureDetails, generateLearningResponse } from "@/lib/gemini";
 import type { FactCard, LearningMessage } from "@/lib/types";
 
 export async function POST(request: Request) {
@@ -32,6 +32,7 @@ export async function POST(request: Request) {
     });
     return NextResponse.json(result);
   } catch (error) {
-    return NextResponse.json({ error: describeGeminiError(error) }, { status: 502 });
+    const failure = geminiFailureDetails(error);
+    return NextResponse.json({ error: describeGeminiError(error), modelOutcomes: failure.outcomes, modelStatus: failure.status }, { status: 502 });
   }
 }

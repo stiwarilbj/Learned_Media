@@ -65,17 +65,38 @@ public enum FactQuality {
             if paragraph.hasPrefix("==") { section = paragraph.trimmingCharacters(in: CharacterSet(charactersIn: "= ")); continue }
             if ["References", "Notes", "External links", "Further reading", "Bibliography", "See also"].contains(section) || paragraph.count < 90 { continue }
             if level >= 5 && section == "Introduction" { continue }
-            var remaining = paragraph[...]
-            while !remaining.isEmpty {
-                let text = String(remaining.prefix(1800)); remaining = remaining.dropFirst(min(1800,remaining.count))
-                if text.count < 90 { continue }
-                let match = overlap(terms, words(text + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
-                passages.append((section,text,match))
+            var sentences: [String] = []
+            paragraph.enumerateSubstrings(in: paragraph.startIndex..<paragraph.endIndex, options: .bySentences) { sentence, _, _, _ in
+                if let sentence { sentences.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            }
+            if sentences.isEmpty { sentences = [paragraph] }
+            var chunk = ""
+            for sentence in sentences {
+                if !chunk.isEmpty && chunk.count + sentence.count + 1 > 1200 {
+                    if chunk.count >= 90 {
+                        let match = overlap(terms, words(chunk + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
+                        passages.append((section, chunk, match))
+                    }
+                    chunk = ""
+                }
+                if sentence.count > 1200 {
+                    if chunk.count >= 90 {
+                        let match = overlap(terms, words(chunk + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
+                        passages.append((section, chunk, match))
+                    }
+                    chunk = ""
+                    let match = overlap(terms, words(sentence + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
+                    passages.append((section, sentence, match))
+                } else { chunk += (chunk.isEmpty ? "" : " ") + sentence }
+            }
+            if chunk.count >= 90 {
+                let match = overlap(terms, words(chunk + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
+                passages.append((section, chunk, match))
             }
         }
         let ranked = passages.shuffled().sorted { $0.2 > $1.2 }
         let selected: [(String, String, Double)]
-        if let first = ranked.first { selected = ranked.filter { $0.0 == first.0 }.prefix(level >= 10 ? 2 : level >= 9 ? 4 : level >= 5 ? 5 : 7).map { $0 } }
+        if let first = ranked.first { selected = ranked.filter { $0.0 == first.0 }.prefix(level >= 10 ? 2 : level >= 9 ? 3 : level >= 5 ? 3 : 4).map { $0 } }
         else { selected = [] }
         return selected.map { "[Section: \($0.0)]\n\($0.1)" }.joined(separator: "\n\n")
     }

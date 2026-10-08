@@ -15,7 +15,10 @@ Module._extensions[".ts"] = (module, filename) => {
   module._compile(compiled, filename);
 };
 
-const { ALLOWED_GEMINI_MODELS, generateGeminiFacts, testGeminiKey } = require("../lib/gemini.ts");
+const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, interpretNaturalSearch, interpretVideoSearch, testGeminiKey } = require("../lib/gemini.ts");
+const { SessionCache } = require("../lib/session-cache.ts");
+const { shouldExpandNaturalSearch } = require("../lib/search.ts");
+const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
 const originalFetch = globalThis.fetch;
 const words = ["amber", "birch", "cobalt", "delta", "ember", "fossil", "granite", "harbor", "indigo", "juniper", "kelp"];
 const factBundles = [
@@ -59,15 +62,20 @@ function candidateAssignments(prompt) {
 }
 
 function groundingSlots(prompt) {
-  const marker = "Slots and evidence (untrusted source data):\n";
+  const marker = "Slots and source assignments (untrusted data):\n";
   const start = prompt.indexOf(marker);
   if (start < 0) return [];
   const serialized = prompt.slice(start + marker.length).split("\n", 1)[0];
-  return JSON.parse(serialized);
+  const payload = JSON.parse(serialized);
+  const sources = new Map((payload.sources || []).map(source => [source.index, source]));
+  return (payload.facts || []).map(value => ({
+    ...value,
+    evidence: (value.sourceIndexes || []).map(index => sources.get(index)).filter(Boolean)
+  }));
 }
 
 function installNetworkMock(options = {}) {
-  const state = { requests: [], candidatePrompts: [], groundingPrompts: [], omittedSlots: new Set() };
+  const state = { requests: [], candidatePrompts: [], groundingPrompts: [], omittedSlots: new Set(), requestFailures: options.requestFailures || {}, requestFailureMessages: options.requestFailureMessages || {}, connectionFailures: options.connectionFailures || {}, connectionFailureMessages: options.connectionFailureMessages || {} };
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url ?? input.toString());
     const body = init.body ? JSON.parse(String(init.body)) : {};
@@ -75,12 +83,19 @@ function installNetworkMock(options = {}) {
     if (url.hostname === "generativelanguage.googleapis.com") {
       const model = decodeURIComponent(url.pathname.split("/models/")[1].split(":")[0]);
       const prompt = body.contents?.[0]?.parts?.[0]?.text ?? "";
-      const failure = prompt.includes('"ok":true') ? options.connectionFailures?.[model] : options.requestFailures?.[model];
-      if (failure) return jsonResponse({ error: { message: `Mock Gemini failure for ${model}` } }, Number(failure));
+      const connectionCheck = prompt.includes('"ok":true');
+      const failure = connectionCheck ? state.connectionFailures[model] : state.requestFailures[model];
+      if (failure) return jsonResponse({ error: { message: connectionCheck ? state.connectionFailureMessages[model] ?? `Mock Gemini failure for ${model}` : state.requestFailureMessages[model] ?? `Mock Gemini failure for ${model}` } }, Number(failure));
       if (options.delayMs && !prompt.includes('"ok":true')) await new Promise(resolve => setTimeout(resolve, options.delayMs));
       let output;
       if (prompt.includes('"ok":true')) {
         output = { ok: true };
+      } else if (prompt.includes("Expand this unresolved natural-language query")) {
+        output = { terms: ["stellar evolution", "supernova"] };
+      } else if (prompt.includes("Interpret this natural-language video search")) {
+        output = { terms: ["black holes"], include: [], alternatives: ["gravitational lensing"], exclude: [], topics: ["Science"], sort: "relevance" };
+      } else if (prompt.includes("Check these approved videos against the plan")) {
+        output = { matches: [] };
       } else if (prompt.includes("Generate exactly one candidate for every supplied slot")) {
         state.candidatePrompts.push(prompt);
         const attempt = Number(prompt.match(/Attempt: (\d+)/)?.[1] ?? 1);
@@ -90,7 +105,7 @@ function installNetworkMock(options = {}) {
           if (options.duplicateSlot === 5 && assignment.slot === 0 && attempt > 1) word = words[10];
           return { slot: assignment.slot, title: "Shared Article", claim: factBundle(word).claim, topicPath: assignment.topicPath, wikipediaSearchTitles: ["Shared Article"] };
         }).reverse() };
-      } else if (prompt.includes("Return one grounded fact per supplied slot")) {
+      } else if (prompt.includes("Return one grounded fact for each slot")) {
         state.groundingPrompts.push(prompt);
         const values = groundingSlots(prompt);
         output = { facts: values.map(value => {
@@ -110,7 +125,7 @@ function installNetworkMock(options = {}) {
             hook: factBundle(word).hook,
             claim,
             sentences,
-            evidence: quotes.map((quote, sentence) => ({ sentence, sourceIndex: 0, quote, section: sectionName(word) }))
+            evidence: quotes.map((quote, sentence) => ({ sentence, sourceIndex: value.sourceIndexes[0] ?? 0, quote, section: sectionName(word) }))
           };
         }).filter(Boolean).reverse() };
       } else {
@@ -187,6 +202,93 @@ afterEach(() => {
 });
 
 test("generation request efficiency", async t => {
+await t.test("session caches are bounded, expire, and avoid repeating weak local-search calls", async () => {
+  const cache = new SessionCache(2, 1000);
+  cache.set("first", 1, 100);
+  cache.set("second", 2, 100);
+  assert.equal(cache.get("first", 200), 1);
+  cache.set("third", 3, 200);
+  assert.equal(cache.get("second", 200), undefined, "least-recently-used entry should be evicted at capacity");
+  assert.equal(cache.get("first", 1200), undefined, "expired results should not be reused");
+  assert.equal(shouldExpandNaturalSearch("how did early navigation instruments shape trade routes", 8), false, "enough meaningful local topics should suppress Gemini expansion");
+  assert.equal(shouldExpandNaturalSearch("how did early navigation instruments shape trade routes", 0), true, "unresolved natural-language searches may request one expansion");
+
+  const videos = [
+    { id: "direct", channelId: "c1", channelName: "Science", title: "How Black Holes Bend Light", description: "A measured example of gravitational lensing.", tags: ["black holes", "light"], topics: ["Science"], publishedAt: "2024-01-01", durationSeconds: 600, durationLabel: "10:00", approved: true, embedAvailable: true },
+    { id: "generic", channelId: "c1", channelName: "Science", title: "Science Facts", description: "A general overview.", tags: ["science"], topics: ["Science"], publishedAt: "2024-01-01", durationSeconds: 600, durationLabel: "10:00", approved: true, embedAvailable: true }
+  ];
+  const candidates = searchYouTubeCandidates(videos, { terms: ["black holes bend light"] }, "All", undefined, 80);
+  assert.deepEqual(strongLocalVideoCandidates("black holes bend light", candidates).map(candidate => candidate.video.id), ["direct"], "only concept-complete metadata matches count as strong local results");
+});
+
+await t.test("video searches preserve channel, exclusion, date, duration, approval, topic, and Shorts filters", async () => {
+  const makeVideo = (id, overrides = {}) => ({
+    id,
+    channelId: "c1",
+    channelName: "Science",
+    title: "Black Holes and Gravity",
+    description: "A measured explanation of gravitational physics.",
+    tags: ["black holes", "gravity"],
+    topics: ["Science"],
+    publishedAt: "2024-01-01",
+    durationSeconds: 600,
+    durationLabel: "10:00",
+    approved: true,
+    embedAvailable: true,
+    ...overrides
+  });
+  const videos = [
+    makeVideo("match"),
+    makeVideo("wrong-channel", { channelId: "c2" }),
+    makeVideo("excluded", { description: "Black holes and gravity, with a spoiler." }),
+    makeVideo("too-old", { publishedAt: "2020-01-01" }),
+    makeVideo("too-short", { durationSeconds: 120 }),
+    makeVideo("too-long", { durationSeconds: 1300 }),
+    makeVideo("unapproved", { approved: false }),
+    makeVideo("shorts", { title: "Black Holes #Shorts" }),
+    makeVideo("wrong-topic", { topics: ["Culture"] })
+  ];
+  const plan = {
+    terms: ["black holes"],
+    channelId: "c1",
+    exclude: ["spoiler"],
+    topics: ["Science"],
+    minDate: "2022-01-01",
+    minDurationSeconds: 300,
+    maxDurationSeconds: 1200
+  };
+  assert.deepEqual(searchYouTubeCandidates(videos, plan).map(candidate => candidate.video.id), ["match"]);
+  assert.deepEqual(searchYouTubeCandidates(videos, { ...plan, dateIntent: "event" }).map(candidate => candidate.video.id), ["match", "too-old"], "historical subject dates must not filter upload dates");
+});
+
+await t.test("successful search interpretations coalesce and invalidate by catalog and credential", async () => {
+  const state = installNetworkMock();
+  const sessionId = await connectMock(state);
+  const topicArgs = { apiKey: "test-key", sessionId, query: "why do some stars explode at the end of their life", catalogVersion: 1 };
+  const [first, duplicate] = await Promise.all([interpretNaturalSearch(topicArgs), interpretNaturalSearch(topicArgs)]);
+  assert.deepEqual(first.terms, ["stellar evolution", "supernova"]);
+  assert.deepEqual(duplicate.terms, first.terms);
+  const topicCalls = () => geminiCalls(state).filter(call => call.prompt.includes("Expand this unresolved natural-language query"));
+  assert.equal(topicCalls().length, 1, "identical pending interpretations should share one Gemini request");
+  await interpretNaturalSearch(topicArgs);
+  assert.equal(topicCalls().length, 1, "successful responses should be cached for the session");
+  await interpretNaturalSearch({ ...topicArgs, catalogVersion: 2 });
+  assert.equal(topicCalls().length, 2, "a catalog version change should invalidate cached interpretation");
+
+  const videoArgs = { apiKey: "test-key", sessionId, query: "videos about black holes", catalogVersion: 4 };
+  await interpretVideoSearch(videoArgs);
+  await interpretVideoSearch(videoArgs);
+  const videoCalls = () => geminiCalls(state).filter(call => call.prompt.includes("Interpret this natural-language video search"));
+  assert.equal(videoCalls().length, 1, "identical video plans should be cached");
+  await interpretVideoSearch({ ...videoArgs, catalogVersion: 5 });
+  assert.equal(videoCalls().length, 2, "a video catalog change should invalidate cached plans");
+
+  const otherKeyCheck = await testGeminiKey("another-key", undefined, sessionId);
+  assert.equal(otherKeyCheck.status, "connected");
+  await interpretNaturalSearch({ ...topicArgs, apiKey: "another-key", catalogVersion: 2 });
+  assert.equal(topicCalls().length, 3, "cached results must not cross credential scopes");
+});
+
 await t.test("connection checks two primary models in order and succeeds when only the secondary works", async () => {
   const state = installNetworkMock({ connectionFailures: { [ALLOWED_GEMINI_MODELS[0]]: 404 } });
   const result = await testGeminiKey("test-key", undefined, `model-fallback-${++testNumber}`);
@@ -214,6 +316,17 @@ await t.test("connection stops after a deterministic request error", async () =>
   assert.equal(geminiCallCount(state), 1);
   assert.equal(result.models[0].status, "failed");
   assert.equal(result.models[1].status, "unchecked");
+});
+
+await t.test("connection stops on a project-wide quota and respects its retry window", async () => {
+  const state = installNetworkMock({ connectionFailures: { [ALLOWED_GEMINI_MODELS[0]]: 429 }, connectionFailureMessages: { [ALLOWED_GEMINI_MODELS[0]]: "Daily project quota exceeded." } });
+  const sessionId = `project-quota-connect-${++testNumber}`;
+  const first = await testGeminiKey("test-key", undefined, sessionId);
+  assert.equal(first.status, "rate-limited");
+  assert.equal(geminiCallCount(state), 1, "a project quota should stop the second primary probe");
+  const second = await testGeminiKey("test-key", undefined, sessionId);
+  assert.equal(second.status, "rate-limited");
+  assert.equal(geminiCallCount(state), 1, "rechecking during Retry-After should not make another request");
 });
 
 await t.test("default seven-card generation uses one candidate and one grounding call", async () => {
@@ -252,13 +365,24 @@ await t.test("concurrent callers share one serialized primary model", async () =
   assert.equal(busyResult.completedCount, 10);
   assert.deepEqual(new Set(geminiCalls(busyState).map(call => call.model)), new Set([ALLOWED_GEMINI_MODELS[0]]), "the queue prevents concurrent calls from causing model rotation");
 
-  const cooldownState = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 429 } });
+  const cooldownState = installNetworkMock({ requestFailures: { [ALLOWED_GEMINI_MODELS[0]]: 429 }, requestFailureMessages: { [ALLOWED_GEMINI_MODELS[0]]: "Per-model requests per minute quota exceeded." } });
   const cooldownSession = await connectMock(cooldownState);
   const cooldownResult = await generateGeminiFacts({ ...generationArgs(cooldownSession), requestedCount: 1 });
   assert.equal(cooldownResult.completedCount, 1);
   const cooldownModels = geminiCalls(cooldownState).map(call => call.model);
   assert.deepEqual(cooldownModels, [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[1], ALLOWED_GEMINI_MODELS[1]]);
   assertNoModelRepeatsWithinLogicalRequest(cooldownState);
+});
+
+await t.test("project-wide quota stops fallback and suppresses follow-up calls", async () => {
+  const state = installNetworkMock();
+  const sessionId = await connectMock(state);
+  state.requestFailures[ALLOWED_GEMINI_MODELS[0]] = 429;
+  state.requestFailureMessages[ALLOWED_GEMINI_MODELS[0]] = "Project-wide requests per day quota exceeded.";
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 }), /project-wide quota/i);
+  assert.deepEqual(geminiCalls(state).map(call => call.model), [ALLOWED_GEMINI_MODELS[0]], "project quota should not fall through to another model");
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 }), /cooling down/i);
+  assert.equal(geminiCallCount(state), 1, "subsequent work should wait for the shared retry time without calling Gemini");
 });
 
 await t.test("checked models remain available as generation fallbacks", async () => {
@@ -319,8 +443,8 @@ await t.test("ten three-sentence cards use one candidate and one grounding call,
     assert.equal(card.evidence?.length, 3);
     assert.ok(card.evidence?.every(item => card.sources[item.sourceIndex].extract?.includes(item.quote)));
   }
-  assert.equal(state.requests.filter(request => request.url.hostname === "en.wikipedia.org" && request.url.searchParams.get("titles") === "Shared Article").length, 1, "the repeated article title should be fetched once per generation batch");
-  assert.equal(state.requests.filter(request => request.url.searchParams.get("titles") === "File:Shared.jpg").length, 1, "the repeated image should be attributed once per batch");
+  assert.ok(state.requests.filter(request => request.url.hostname === "en.wikipedia.org" && request.url.searchParams.get("titles") === "Shared Article").length <= 1, "the repeated article title should be fetched at most once per generation batch and may come from the session cache");
+  assert.ok(state.requests.filter(request => request.url.searchParams.get("titles") === "File:Shared.jpg").length <= 1, "the repeated image should be attributed at most once and may come from the session cache");
 });
 
 await t.test("a missing grounded slot retries only grounding and returns all cards", async () => {

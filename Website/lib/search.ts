@@ -5,7 +5,8 @@ export function normalizeSearchText(value: string) {
 
 const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with"]);
 
-export function shouldExpandNaturalSearch(query: string) {
+export function shouldExpandNaturalSearch(query: string, meaningfulLocalMatches = 0) {
+  if (meaningfulLocalMatches >= 8) return false;
   const normalized = normalizeSearchText(query);
   if (!normalized) return false;
   const words = normalized.split(" ").filter(Boolean);

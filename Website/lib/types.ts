@@ -66,6 +66,7 @@ export type GeminiModelCheck = {
   model: string;
   status: GeminiModelCheckStatus;
   statusCode?: number;
+  quotaScope?: "model" | "project" | "unknown";
   latencyMs?: number;
   checkedAt?: string;
   error?: string;

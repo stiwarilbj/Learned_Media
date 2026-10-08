@@ -12,17 +12,18 @@ import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
 import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
-import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
+import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
 import { normalizeSearchText, rankSearchResults, shouldExpandNaturalSearch } from "@/lib/search";
+import { requestCacheKey, requestCacheScope, SessionCache } from "@/lib/session-cache";
 import { createTopicSuggestionIndex, suggestTopics } from "@/lib/topic-suggestions";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
 import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
-import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
+import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, strongLocalVideoCandidates, strongLocalVideoPlanCandidates, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -32,6 +33,8 @@ const LEGACY_STORAGE_KEY = "learned-media-demo-state";
 const THEME_MIGRATION_KEY = "learned-media-light-theme-v1";
 const TEN_LEVEL_DIFFICULTY_MIGRATION_KEY = "learned-media-ten-level-difficulty-v1";
 const PERSISTENCE_VERSION = 2;
+const SEARCH_CACHE_TTL_MS = 30 * 60 * 1000;
+const MIN_STRONG_VIDEO_RESULTS = 6;
 const KNOWN_DEMO_IDS = new Set([
   "roman-dodecahedron", "mouse-wood", "roman-concrete", "venus-day", "blue-banana", "antarctic-dry-valleys", "mantis-shrimp", "paper-clip", "honey-never-spoils", "fermi-paradox", "antikythera-mechanism", "quipu", "tyrian-purple", "mechanical-turk", "harvard-mark-ii-bug", "oklo-reactor", "lake-vostok", "axolotl-regeneration", "ada-lovelace-notes", "sagittarius-b2-alcohol", "brinicle", "volcanic-lightning",
   "demo-dodecahedron", "demo-antikythera", "demo-blue-hole", "demo-wasp", "demo-concrete", "demo-jellyfish", "demo-mouse", "demo-whistle"
@@ -239,6 +242,19 @@ function migrateLearningProfile(profile: LearningProfile): LearningProfile {
   return Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, { ...value, targetDifficulty: migrateLegacyDifficulty(value.targetDifficulty) }])) as LearningProfile;
 }
 
+function learningResponseCacheKey(sessionId: string, apiKey: string, action: "learn" | "question", card: FactCard, question = "", detailed = false, history: LearningMessage[] = []) {
+  const identity = {
+    id: card.id,
+    title: card.title,
+    hook: card.hook,
+    body: card.body,
+    topicPath: card.topicPath,
+    claim: card.claim,
+    sources: card.sources.map((source) => ({ title: source.title, url: source.canonicalUrl ?? source.url, extract: source.extract }))
+  };
+  return requestCacheKey(requestCacheScope(sessionId, apiKey), "learning-response", action, identity, question.trim(), detailed, history.slice(-6));
+}
+
 export default function HomePage() {
   const [workspaceId, setWorkspaceId] = useState("local-workspace");
   const [workspaceName, setWorkspaceName] = useState("Local Workspace");
@@ -292,8 +308,9 @@ export default function HomePage() {
   const youtubeAbortController = useRef<AbortController | null>(null);
   const youtubeSearchAbortController = useRef<AbortController | null>(null);
   const globalSearchAbortController = useRef<AbortController | null>(null);
-  const naturalSearchCache = useRef(new Map<string, string[]>());
-  const youtubeSearchCache = useRef(new Map<string, { results: YouTubeVideo[]; reasons: Record<string, RankedVideoSearchResult> }>());
+  const naturalSearchCache = useRef(new SessionCache<string[]>(100, SEARCH_CACHE_TTL_MS));
+  const youtubeSearchCache = useRef(new SessionCache<{ results: YouTubeVideo[]; reasons: Record<string, RankedVideoSearchResult> }>(100, SEARCH_CACHE_TTL_MS));
+  const learningResponseCache = useRef(new SessionCache<{ answer: string; citations: WikipediaSource[] }>(100, SEARCH_CACHE_TTL_MS));
   const youtubeCatalogLoadedRef = useRef(false);
   const apiKeyRef = useRef("");
   const sessionIdRef = useRef("browser-" + Math.random().toString(36).slice(2));
@@ -311,6 +328,15 @@ export default function HomePage() {
   const cloudEpoch = useRef(0);
   const cloudUserId = useRef<string | null>(null);
   const mainScrollRef = useRef<HTMLDivElement>(null);
+  const recordGeminiOutcomes = useCallback((outcomes: GeminiModelOutcome[], finalStatus?: GeminiStatus) => {
+    if (outcomes.length) setModelChecks((current) => outcomes.reduce(mergeGeminiModelOutcome, current));
+    const status = finalStatus ?? (outcomes.some((outcome) => outcome.status === "success") ? "connected" : outcomes.length ? outcomes.every((outcome) => outcome.status === "cooldown") ? "rate-limited" : "unavailable" : undefined);
+    if (status) setGeminiStatus(status);
+  }, []);
+  const recordGeminiFailure = useCallback((error: unknown) => {
+    const details = geminiFailureDetails(error);
+    recordGeminiOutcomes(details.outcomes, details.status);
+  }, [recordGeminiOutcomes]);
   // This history is used only on this device. It is never supplied to Gemini.
   const archiveFacts = useCallback((incoming: FactCard[]) => {
     factMemoryRef.current = mergeFactMemory(factMemoryRef.current, incoming.map(rememberFact));
@@ -820,14 +846,21 @@ export default function HomePage() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const selectedCount = useMemo(() => selectedLeafCount(topics), [topics]);
+  const allTopicResults = useMemo(() => flattenTopics(topics), [topics]);
+  const topicSuggestionIndex = useMemo(() => createTopicSuggestionIndex(allTopicResults), [allTopicResults]);
+  const localTopicSuggestions = useMemo(() => suggestTopics(topicSuggestionIndex, query), [topicSuggestionIndex, query]);
+  const meaningfulLocalTopicMatches = localTopicSuggestions.filter((suggestion) => suggestion.group !== "explore").length;
+
   useEffect(() => {
     globalSearchAbortController.current?.abort();
     const text = query.trim();
-    if (!text || !apiKey.trim() || geminiStatus !== "connected" || !shouldExpandNaturalSearch(text)) {
+    if (!text || !apiKey.trim() || geminiStatus !== "connected" || !shouldExpandNaturalSearch(text, meaningfulLocalTopicMatches)) {
       setSemanticSearch({ query: text, terms: [] });
       return;
     }
-    const cacheKey = normalizeSearchText(text);
+    const scope = requestCacheScope(sessionIdRef.current, apiKey.trim());
+    const cacheKey = requestCacheKey(scope, "topic-search", TOPIC_CATALOG_VERSION, normalizeSearchText(text));
     const cachedTerms = naturalSearchCache.current.get(cacheKey);
     if (cachedTerms) {
       setSemanticSearch({ query: text, terms: cachedTerms });
@@ -836,26 +869,25 @@ export default function HomePage() {
     const controller = new AbortController();
     globalSearchAbortController.current = controller;
     const timer = window.setTimeout(() => {
-      void interpretNaturalSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: text, signal: controller.signal }).then((result) => {
+      void interpretNaturalSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: text, catalogVersion: TOPIC_CATALOG_VERSION, signal: controller.signal }).then((result) => {
         if (!controller.signal.aborted && globalSearchAbortController.current === controller) {
           naturalSearchCache.current.set(cacheKey, result.terms);
-          if (naturalSearchCache.current.size > 60) naturalSearchCache.current.delete(naturalSearchCache.current.keys().next().value!);
+          recordGeminiOutcomes(result.modelOutcomes);
           setSemanticSearch({ query: text, terms: result.terms });
         }
-      }).catch(() => {
-        if (!controller.signal.aborted && globalSearchAbortController.current === controller) setSemanticSearch({ query: text, terms: [] });
+      }).catch((error) => {
+        if (!controller.signal.aborted && globalSearchAbortController.current === controller) {
+          recordGeminiFailure(error);
+          setSemanticSearch({ query: text, terms: [] });
+        }
       });
-    }, 850);
+    }, 1500);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
       if (globalSearchAbortController.current === controller) globalSearchAbortController.current = null;
     };
-  }, [apiKey, geminiStatus, query]);
-
-  const selectedCount = useMemo(() => selectedLeafCount(topics), [topics]);
-  const allTopicResults = useMemo(() => flattenTopics(topics), [topics]);
-  const topicSuggestionIndex = useMemo(() => createTopicSuggestionIndex(allTopicResults), [allTopicResults]);
+  }, [apiKey, geminiStatus, meaningfulLocalTopicMatches, query, recordGeminiFailure, recordGeminiOutcomes]);
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => {
     const nextSentenceLength = next.sentenceLength === undefined ? settings.sentenceLength : normalizeSentenceLength(next.sentenceLength);
@@ -1121,6 +1153,12 @@ export default function HomePage() {
   const learnMore = useCallback(async (id: string) => {
     const card = cards.find((item) => item.id === id);
     if (!card || card.learnMore || learnLoading) return;
+    const cacheKey = learningResponseCacheKey(sessionIdRef.current, apiKey.trim(), "learn", card);
+    const cached = learningResponseCache.current.get(cacheKey);
+    if (cached) {
+      setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: cached.answer, answerSources: cached.citations } : item));
+      return;
+    }
     const requestId = requestGeneration.current;
     const controller = new AbortController();
     learningAbortController.current?.abort();
@@ -1131,7 +1169,9 @@ export default function HomePage() {
       if (isGitHubPagesRuntime()) {
         const payload = await generateLearningResponse({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, action: "learn", card, signal: controller.signal });
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-        setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer } : item));
+        recordGeminiOutcomes(payload.modelOutcomes);
+        learningResponseCache.current.set(cacheKey, { answer: payload.answer, citations: payload.citations });
+        setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer, answerSources: payload.citations } : item));
         return;
       }
       const response = await fetch("/api/learn", {
@@ -1140,11 +1180,17 @@ export default function HomePage() {
         body: JSON.stringify({ action: "learn", card }),
         signal: controller.signal
       });
-      const payload = await response.json() as { answer?: string; error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Gemini could not expand this fact.");
+      const payload = await response.json() as { answer?: string; citations?: WikipediaSource[]; modelOutcomes?: GeminiModelOutcome[]; modelStatus?: GeminiStatus; error?: string };
+      if (!response.ok) {
+        recordGeminiOutcomes(payload.modelOutcomes ?? [], payload.modelStatus);
+        throw new Error(payload.error ?? "Gemini could not expand this fact.");
+      }
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-      setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer } : item));
+      recordGeminiOutcomes(payload.modelOutcomes ?? []);
+      learningResponseCache.current.set(cacheKey, { answer: payload.answer ?? "", citations: payload.citations ?? [] });
+      setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer, answerSources: payload.citations } : item));
     } catch (error) {
+      recordGeminiFailure(error);
       if (!controller.signal.aborted && requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [`${id}:learn`]: error instanceof Error ? error.message : "Gemini could not expand this fact." }));
     } finally {
       if (learningAbortController.current === controller) {
@@ -1152,22 +1198,31 @@ export default function HomePage() {
         if (requestGeneration.current === requestId) setLearnLoading(null);
       }
     }
-  }, [apiKey, cards, learnLoading]);
+  }, [apiKey, cards, learnLoading, recordGeminiFailure, recordGeminiOutcomes]);
 
   const askQuestion = useCallback(async (id: string, question: string, detailed: boolean) => {
     const card = cards.find((item) => item.id === id);
     if (!card || questionLoading) return;
+    const history: LearningMessage[] = card.questionHistory ?? [];
+    const cacheKey = learningResponseCacheKey(sessionIdRef.current, apiKey.trim(), "question", card, question, detailed, history);
+    const cached = learningResponseCache.current.get(cacheKey);
+    if (cached) {
+      const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: cached.answer }];
+      setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: cached.answer, answerDetailed: detailed, answerSources: cached.citations, questionHistory: nextHistory } : item));
+      return;
+    }
     const requestId = requestGeneration.current;
     const controller = new AbortController();
     questionAbortController.current?.abort();
     questionAbortController.current = controller;
-    const history: LearningMessage[] = card.questionHistory ?? [];
     setQuestionLoading(id);
     setLearningErrors((current) => ({ ...current, [id]: undefined }));
     try {
       if (isGitHubPagesRuntime()) {
         const payload = await generateLearningResponse({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, action: "question", card, question, detailed, history, signal: controller.signal });
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
+        recordGeminiOutcomes(payload.modelOutcomes);
+        learningResponseCache.current.set(cacheKey, { answer: payload.answer, citations: payload.citations });
         const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: payload.answer }];
         setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: payload.answer, answerDetailed: detailed, answerSources: payload.citations, questionHistory: nextHistory } : item));
         return;
@@ -1178,12 +1233,18 @@ export default function HomePage() {
         body: JSON.stringify({ action: "question", card, question, detailed, history }),
         signal: controller.signal
       });
-      const payload = await response.json() as { answer?: string; citations?: FactCard["sources"]; error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Gemini could not answer this question.");
+      const payload = await response.json() as { answer?: string; citations?: FactCard["sources"]; modelOutcomes?: GeminiModelOutcome[]; modelStatus?: GeminiStatus; error?: string };
+      if (!response.ok) {
+        recordGeminiOutcomes(payload.modelOutcomes ?? [], payload.modelStatus);
+        throw new Error(payload.error ?? "Gemini could not answer this question.");
+      }
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
+      recordGeminiOutcomes(payload.modelOutcomes ?? []);
+      learningResponseCache.current.set(cacheKey, { answer: payload.answer ?? "", citations: payload.citations ?? [] });
       const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: payload.answer ?? "" }];
       setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: payload.answer, answerDetailed: detailed, answerSources: payload.citations, questionHistory: nextHistory } : item));
     } catch (error) {
+      recordGeminiFailure(error);
       if (!controller.signal.aborted && requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [id]: error instanceof Error ? error.message : "Gemini could not answer this question." }));
     } finally {
       if (questionAbortController.current === controller) {
@@ -1191,7 +1252,7 @@ export default function HomePage() {
         if (requestGeneration.current === requestId) setQuestionLoading(null);
       }
     }
-  }, [apiKey, cards, questionLoading]);
+  }, [apiKey, cards, questionLoading, recordGeminiFailure, recordGeminiOutcomes]);
 
   const handleCardAction = useCallback((id: string, action: FactCardAction) => {
     if (action === "rabbit") {
@@ -1290,7 +1351,10 @@ export default function HomePage() {
     learningAbortController.current?.abort();
     questionAbortController.current?.abort();
     youtubeSearchAbortController.current?.abort();
+    globalSearchAbortController.current?.abort();
     youtubeSearchCache.current.clear();
+    naturalSearchCache.current.clear();
+    learningResponseCache.current.clear();
     requestGeneration.current += 1;
     setApiKey(value);
     setGeminiStatus("not-configured");
@@ -1514,11 +1578,6 @@ export default function HomePage() {
   const smartVideoSearch = useCallback(async () => {
     const queryText = youtubeWorkspaceRef.current.searchText.trim();
     if (!queryText) return;
-    if (!apiKey.trim() || geminiStatus !== "connected") {
-      setToast("Connect Gemini in Settings before using Smart search. Ordinary video search works without it.");
-      setView("settings");
-      return;
-    }
     youtubeSearchAbortController.current?.abort();
     const controller = new AbortController();
     youtubeSearchAbortController.current = controller;
@@ -1529,12 +1588,12 @@ export default function HomePage() {
     setYoutubeError("");
     setYoutubeSearchReasons({});
     try {
-      const workspaceBeforeInterpretation = youtubeWorkspaceRef.current;
-      const recencyPreferences = Object.entries(workspaceBeforeInterpretation.prioritizeRecentByChannel ?? {})
+      const workspace = youtubeWorkspaceRef.current;
+      const recencyPreferences = Object.entries(workspace.prioritizeRecentByChannel ?? {})
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([name, enabled]) => `${name}:${enabled ? "1" : "0"}`)
         .join(",");
-      const cacheKey = [queryText.toLocaleLowerCase().replace(/\s+/g, " "), workspaceBeforeInterpretation.selectedTopic, workspaceBeforeInterpretation.selectedChannelId ?? "all", workspaceBeforeInterpretation.catalogVersion, recencyPreferences].join("|");
+      const cacheKey = requestCacheKey(requestCacheScope(sessionIdRef.current, apiKey.trim()), "smart-video-search", YOUTUBE_CATALOG_VERSION, workspace.catalogVersion, normalizeSearchText(queryText), workspace.selectedTopic, workspace.selectedChannelId ?? "all", recencyPreferences);
       const cached = youtubeSearchCache.current.get(cacheKey);
       if (cached) {
         setYoutubeSearchResults(cached.results);
@@ -1544,46 +1603,87 @@ export default function HomePage() {
         setToast(`${cached.results.length} relevant approved video${cached.results.length === 1 ? "" : "s"} matched your search.`);
         return;
       }
-      const interpreted = await interpretVideoSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: queryText, signal: controller.signal });
-      if (controller.signal.aborted) return;
-      const workspace = youtubeWorkspaceRef.current;
-      const namedChannel = interpreted.plan.channelId
-        ? workspace.channels.find((channel) => channel.id === interpreted.plan.channelId)
-        : interpreted.plan.channel
-          ? workspace.channels.find((channel) => channel.name.toLocaleLowerCase().includes(interpreted.plan.channel!.toLocaleLowerCase()))
-          : undefined;
-      if ((interpreted.plan.channel || interpreted.plan.channelId) && !namedChannel) {
-        setYoutubeSearchResults([]);
-        setYoutubeSmartSearchRan(false);
-        setYoutubeSearchPhase("idle");
-        setYoutubeSmartSearchLoading(false);
-        setToast("That channel is not in the approved catalog.");
-        return;
+      const localPlan: VideoSearchPlan = { terms: [queryText], channelId: workspace.selectedChannelId };
+      let plan = localPlan;
+      let candidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80);
+      let strongCandidates = strongLocalVideoCandidates(queryText, candidates);
+      let interpretationOutcomes: GeminiModelOutcome[] = [];
+      const hasStructuredIntent = /\b(after|before|since|posted|uploaded|newest|latest|oldest|recent|channel|under|over|shorter|longer|duration|without|exclude|excluding|not)\b/i.test(queryText);
+      const needsInterpretation = hasStructuredIntent || strongCandidates.length < MIN_STRONG_VIDEO_RESULTS;
+      if (needsInterpretation && apiKey.trim() && geminiStatus === "connected") {
+        setYoutubeSearchPhase("interpreting");
+        try {
+          const interpreted = await interpretVideoSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: queryText, catalogVersion: `${YOUTUBE_CATALOG_VERSION}:${workspace.catalogVersion}`, signal: controller.signal });
+          if (controller.signal.aborted) return;
+          interpretationOutcomes = interpreted.modelOutcomes;
+          recordGeminiOutcomes(interpreted.modelOutcomes);
+          const namedChannel = interpreted.plan.channelId
+            ? workspace.channels.find((channel) => channel.id === interpreted.plan.channelId)
+            : interpreted.plan.channel
+              ? workspace.channels.find((channel) => channel.name.toLocaleLowerCase().includes(interpreted.plan.channel!.toLocaleLowerCase()))
+              : undefined;
+          if ((interpreted.plan.channel || interpreted.plan.channelId) && !namedChannel) {
+            setYoutubeSearchResults([]);
+            setYoutubeSmartSearchRan(true);
+            setYoutubeSearchPhase("idle");
+            setToast("That channel is not in the approved catalog.");
+            return;
+          }
+          plan = { ...interpreted.plan, terms: interpreted.plan.terms?.length || interpreted.plan.include?.length || interpreted.plan.conceptGroups?.length ? interpreted.plan.terms : [queryText], channelId: workspace.selectedChannelId ?? namedChannel?.id };
+          candidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80);
+          strongCandidates = strongLocalVideoPlanCandidates(plan, candidates);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          recordGeminiFailure(error);
+          plan = localPlan;
+          candidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80);
+          strongCandidates = strongLocalVideoCandidates(queryText, candidates);
+        }
       }
-      const plan: VideoSearchPlan = { ...interpreted.plan, terms: interpreted.plan.terms?.length || interpreted.plan.include?.length || interpreted.plan.conceptGroups?.length ? interpreted.plan.terms : [queryText], channelId: workspace.selectedChannelId ?? namedChannel?.id };
-      setYoutubeSearchPhase("checking");
-      const rankPass = async (candidates: YouTubeSearchCandidate[]) => {
-        const chunks = Array.from({ length: Math.ceil(candidates.length / 40) }, (_, index) => candidates.slice(index * 40, index * 40 + 40));
-        const ranked = await Promise.all(chunks.map((chunk) => rankVideoSearchCandidates({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: queryText, plan, candidates: chunk, signal: controller.signal })));
-        return ranked.flatMap((batch) => batch.results);
+      if (controller.signal.aborted) return;
+      const reasonForLocalCandidate = (candidate: YouTubeSearchCandidate): RankedVideoSearchResult => {
+        const fields = candidate.matchedFields.filter((field) => field !== "semantic-fallback");
+        const values: Record<string, string> = {
+          title: candidate.video.title,
+          description: candidate.supportingText.find((value) => value !== candidate.video.title) ?? "",
+          tags: candidate.video.tags.join(", "),
+          topics: candidate.video.topics.join(", ")
+        };
+        const support = Array.from(new Set([candidate.video.title, ...fields.map((field) => values[field]).filter(Boolean)])).slice(0, 3);
+        const readableFields = fields.map((field) => field === "topics" ? "topic" : field).join(" and ");
+        return { videoId: candidate.video.id, relevance: fields.includes("title") ? "direct" : "strong", support, explanation: `Matches ${readableFields || "the video metadata"} for “${queryText}”.`, localScore: candidate.score };
       };
-      const initialCandidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80);
-      const candidateScores = new Map(initialCandidates.map((candidate) => [candidate.video.id, candidate.score]));
-      let ranked = await rankPass(initialCandidates);
-      if (ranked.length < 6 && !controller.signal.aborted) {
-        setYoutubeSearchPhase("expanding");
-        const expandedCandidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80, initialCandidates.map(({ video }) => video.id), true);
-        expandedCandidates.forEach((candidate) => candidateScores.set(candidate.video.id, candidate.score));
-        const expanded = await rankPass(expandedCandidates);
-        const seen = new Set(ranked.map((match) => match.videoId));
-        ranked = ranked.concat(expanded.filter((match) => !seen.has(match.videoId)));
+      let ranked: RankedVideoSearchResult[] = strongCandidates.map(reasonForLocalCandidate);
+      if (ranked.length < MIN_STRONG_VIDEO_RESULTS && interpretationOutcomes.length && apiKey.trim() && geminiStatus === "connected") {
+        setYoutubeSearchPhase("checking");
+        const expanded = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80, candidates.map(({ video }) => video.id), true);
+        const strongIds = new Set(strongCandidates.map((candidate) => candidate.video.id));
+        const uncertain = [...candidates.filter((candidate) => !strongIds.has(candidate.video.id)), ...expanded];
+        const seen = new Set<string>();
+        const verificationBatch = uncertain.filter((candidate) => {
+          if (seen.has(candidate.video.id)) return false;
+          seen.add(candidate.video.id);
+          return true;
+        }).slice(0, 40);
+        if (verificationBatch.length) {
+          try {
+            const verified = await rankVideoSearchCandidates({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: queryText, plan, candidates: verificationBatch, catalogVersion: workspace.catalogVersion, signal: controller.signal });
+            if (controller.signal.aborted) return;
+            recordGeminiOutcomes(verified.modelOutcomes);
+            const known = new Set(ranked.map((match) => match.videoId));
+            ranked = ranked.concat(verified.results.filter((match) => !known.has(match.videoId)));
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            recordGeminiFailure(error);
+          }
+        }
       }
       if (controller.signal.aborted) return;
       const byId = new Map(workspace.videos.map((video) => [video.id, video]));
       const accepted = ranked.filter((match) => byId.has(match.videoId) && !match.videoId.startsWith("demo-"));
       const orderedMatches = [...accepted].sort((left, right) => {
         if (left.relevance !== right.relevance) return left.relevance === "direct" ? -1 : 1;
-        return (candidateScores.get(right.videoId) ?? right.localScore) - (candidateScores.get(left.videoId) ?? left.localScore) || right.support.length - left.support.length;
+        return right.localScore - left.localScore || right.support.length - left.support.length;
       });
       let orderedVideos = orderedMatches.map((match) => byId.get(match.videoId)).filter((video): video is YouTubeVideo => Boolean(video));
       if (plan.sort === "newest") orderedVideos = [...orderedVideos].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
@@ -1594,10 +1694,10 @@ export default function HomePage() {
       youtubeSearchCache.current.set(cacheKey, { results: orderedVideos, reasons: Object.fromEntries(accepted.map((match) => [match.videoId, match])) });
       setYoutubeSmartSearchRan(true);
       setYoutubeSearchPhase("idle");
-      setYoutubeStatus((current) => current === "not-configured" ? "connected" : current);
       setToast(`${orderedVideos.length} relevant approved video${orderedVideos.length === 1 ? "" : "s"} matched your search.`);
     } catch (error) {
       if (controller.signal.aborted) return;
+      recordGeminiFailure(error);
       setYoutubeSmartSearchRan(false);
       setYoutubeSearchResults([]);
       setYoutubeError(error instanceof Error ? error.message : "Smart video search could not complete.");
@@ -1609,7 +1709,7 @@ export default function HomePage() {
         setYoutubeSmartSearchLoading(false);
       }
     }
-  }, [apiKey, geminiStatus, updateYouTubeWorkspace]);
+  }, [apiKey, geminiStatus, recordGeminiFailure, recordGeminiOutcomes, updateYouTubeWorkspace]);
 
   const cancelSmartVideoSearch = useCallback(() => {
     youtubeSearchAbortController.current?.abort();
