@@ -6,13 +6,18 @@ import { createTopicSuggestionIndex, suggestTopics, type TopicSuggestionIndex } 
 import type { TopicNode } from "@/lib/types";
 import type { TopicSearchWorkerReply } from "@/lib/topic-search-types";
 
-type Request = { type: "initialize"; customTopics: TopicNode[]; catalogRevision: number } | { type: "search"; query: string; semanticTerms: string[]; catalogRevision: number };
+type Request = { type: "initialize"; customTopics: TopicNode[]; catalogRevision: number } | { type: "search"; requestId: number; query: string; semanticTerms: string[]; catalogRevision: number } | { type: "cancel"; requestId: number };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 let catalogRevision = -1;
 let suggestionIndex: TopicSuggestionIndex | null = null;
 let searchable = new Map<string, { label: string; aliases: string[]; parent?: string; children: string[]; order: number }>();
 const resultCache = new Map<string, TopicSearchWorkerReply>();
+let latestSearchRequestId = 0;
+
+function yieldToWorker() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
 
 function scoreTopic(query: string, label: string, aliases: string[]) {
   if (query.length < 2) return 0;
@@ -51,21 +56,33 @@ function initialize(customTopics: TopicNode[], revision: number) {
   for (const [id, item] of searchable) for (const child of item.children) parentByChild.set(child, id);
   for (const [id, item] of searchable) item.parent = parentByChild.get(id);
   catalogRevision = revision;
+  latestSearchRequestId = 0;
   resultCache.clear();
   workerScope.postMessage({ type: "ready", catalogRevision } satisfies TopicSearchWorkerReply);
 }
 
-function search(query: string, semanticTerms: string[], revision: number) {
+async function search(requestId: number, query: string, semanticTerms: string[], revision: number) {
   if (revision !== catalogRevision || !suggestionIndex) return;
+  latestSearchRequestId = requestId;
   const normalized = normalizeSearchText(query);
   const cacheKey = `${revision}\u0000${normalized}\u0000${semanticTerms.map(normalizeSearchText).join("\u0001")}`;
   const cached = resultCache.get(cacheKey);
-  if (cached) { workerScope.postMessage(cached); return; }
+  if (cached) {
+    workerScope.postMessage({ ...cached, query, requestId });
+    return;
+  }
 
   const scores = new Map<string, number>();
+  let processed = 0;
   for (const [id, item] of searchable) {
+    if (requestId !== latestSearchRequestId || revision !== catalogRevision) return;
     const score = scoreTopic(normalized, item.label, item.aliases);
     if (score) scores.set(id, score);
+    processed += 1;
+    if (processed % 800 === 0) {
+      await yieldToWorker();
+      if (requestId !== latestSearchRequestId || revision !== catalogRevision) return;
+    }
   }
   const visibleIds = new Set<string>();
   const matchingDescendants = new Set<string>();
@@ -79,17 +96,18 @@ function search(query: string, semanticTerms: string[], revision: number) {
     }
   }
   const reply: TopicSearchWorkerReply = {
-    type: "results", query, catalogRevision: revision,
+    type: "results", query, requestId, catalogRevision: revision,
     suggestions: suggestTopics(suggestionIndex, query, semanticTerms),
     visibleIds: [...visibleIds], matchingDescendants: [...matchingDescendants], directScores: [...scores]
   };
-  resultCache.set(cacheKey, reply);
+  resultCache.set(cacheKey, { ...reply, requestId: undefined });
   if (resultCache.size > 100) resultCache.delete(resultCache.keys().next().value!);
-  workerScope.postMessage(reply);
+  if (requestId === latestSearchRequestId && revision === catalogRevision) workerScope.postMessage(reply);
 }
 
 workerScope.onmessage = (event: MessageEvent<Request>) => {
   const request = event.data;
   if (request.type === "initialize") initialize(request.customTopics, request.catalogRevision);
-  else search(request.query, request.semanticTerms, request.catalogRevision);
+  else if (request.type === "cancel") latestSearchRequestId = request.requestId;
+  else void search(request.requestId, request.query, request.semanticTerms, request.catalogRevision);
 };

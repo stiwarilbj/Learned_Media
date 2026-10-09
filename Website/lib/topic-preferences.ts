@@ -9,7 +9,11 @@ export type CompactTopicPreferences = {
   custom: TopicNode[];
 };
 
+const compactPreferencesByTree = new WeakMap<TopicNode[], CompactTopicPreferences>();
+
 export function compactTopicPreferences(nodes: TopicNode[]): CompactTopicPreferences {
+  const cached = compactPreferencesByTree.get(nodes);
+  if (cached) return cached;
   const selected: string[] = [];
   const expanded: string[] = [];
   const weights: Record<string, number> = {};
@@ -27,7 +31,9 @@ export function compactTopicPreferences(nodes: TopicNode[]): CompactTopicPrefere
     }
   };
   visit(nodes);
-  return { format: "learned-media-topic-preferences-v1", selected, expanded, weights, custom };
+  const compact = { format: "learned-media-topic-preferences-v1" as const, selected, expanded, weights, custom };
+  compactPreferencesByTree.set(nodes, compact);
+  return compact;
 }
 
 export function restoreTopicPreferences(value: unknown, collapseExpanded = false, catalogTopics?: TopicNode[]): TopicNode[] | null {

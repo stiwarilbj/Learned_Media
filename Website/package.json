@@ -8,6 +8,7 @@
     "build:github-pages": "node scripts/build-github-pages.mjs",
     "test:generation": "node scripts/test-generation.mjs",
     "test:responsive-data": "node scripts/test-responsive-data.mjs",
+    "test:search-workers": "node scripts/test-search-workers.mjs",
     "validate:political": "node scripts/validate-political-catalog.mjs",
     "start": "next start",
     "typecheck": "tsc --noEmit",

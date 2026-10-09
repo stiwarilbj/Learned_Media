@@ -11,6 +11,7 @@ export type TopicSearchIndex = {
 
 export type TopicSearchWorkerReply = {
   type: "ready" | "results";
+  requestId?: number;
   query?: string;
   catalogRevision?: number;
   suggestions?: TopicSuggestion[];

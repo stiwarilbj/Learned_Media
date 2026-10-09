@@ -88,7 +88,9 @@ export function VideoWorkspace({ workspace, videoById, channelById, videosByChan
   const channelVideos = useMemo(() => {
     if (!activeChannel) return [];
     const channelPool = videosByChannel.get(activeChannel.id) ?? [];
-    const matches = smartSearchRan ? searchResults.filter((video) => video.channelId === activeChannel.id) : filterYouTubeVideos(channelPool, deferredSearchText, workspace.selectedTopic, activeChannel.id);
+    const matches = smartSearchRan || deferredSearchText.trim()
+      ? searchResults.filter((video) => video.channelId === activeChannel.id)
+      : filterYouTubeVideos(channelPool, "", workspace.selectedTopic, activeChannel.id);
     if (workspace.channelOrder === "newest") return [...matches].sort((left, right) => right.publishedAt.localeCompare(left.publishedAt));
     if (workspace.channelOrder === "oldest") return [...matches].sort((left, right) => left.publishedAt.localeCompare(right.publishedAt));
     return selectRandomVideos(matches, matches.length, [], workspace.prioritizeRecentByChannel);

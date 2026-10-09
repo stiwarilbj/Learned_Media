@@ -2,7 +2,7 @@
 
 import type { TopicNode } from "@/lib/types";
 import type { TopicSearchIndex } from "@/lib/topic-search-types";
-import type { CSSProperties, RefCallback } from "react";
+import type { RefCallback } from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { selectionState } from "@/lib/topic-tree";
 import { normalizeSearchText } from "@/lib/search";
@@ -91,16 +91,18 @@ function visibleTopics(nodes: TopicNode[], query: string, searchIndex: TopicSear
 }
 
 type RowProps = Pick<TopicTreeProps, "onToggle" | "onExpand" | "onWeight" | "onRemoveCustomTopic"> & {
-  entry: VisibleTopic;
+  node: TopicNode;
+  depth: number;
+  root: boolean;
   query: string;
   searchIndex: TopicSearchIndex;
-  style: CSSProperties;
+  top: number;
+  height: number;
   onFocusTopic: (id: string) => void;
   onMeasure: (id: string, height: number) => void;
 };
 
-const TopicRow = memo(function TopicRow({ entry, query, searchIndex, style, onFocusTopic, onMeasure, onToggle, onExpand, onWeight, onRemoveCustomTopic }: RowProps) {
-  const { node, depth, root } = entry;
+const TopicRow = memo(function TopicRow({ node, depth, root, query, searchIndex, top, height, onFocusTopic, onMeasure, onToggle, onExpand, onWeight, onRemoveCustomTopic }: RowProps) {
   const activeQuery = query.trim();
   const directSearchScore = searchIndex.directScores.get(node.id) ?? 0;
   const hasChildren = Boolean(node.children?.length);
@@ -116,7 +118,7 @@ const TopicRow = memo(function TopicRow({ entry, query, searchIndex, style, onFo
     return () => observer.disconnect();
   }, [node.id, onMeasure]);
 
-  return <div ref={setMeasureRef} className="topic-virtual-row" style={style}>
+  return <div ref={setMeasureRef} className="topic-virtual-row" style={{ top, minHeight: height }}>
     <div
       data-topic-search-score={directSearchScore || undefined}
       className={`topic-row ${root ? "root-row" : "leaf-row"} ${node.custom ? "custom-row" : ""} selection-${state}`}
@@ -169,6 +171,8 @@ export function TopicTree({ nodes, query = "", catalogRevision, searchIndex: wor
   const [focusedTopicId, setFocusedTopicId] = useState<string | null>(null);
   const [measuredHeights, setMeasuredHeights] = useState<Map<string, number>>(() => new Map());
   const pendingAnchor = useRef<{ id: string; viewportOffset: number } | null>(null);
+  const rowsRef = useRef<VisibleTopic[]>([]);
+  const offsetsRef = useRef<number[]>([0]);
   const fallbackSearchIndex = useMemo(() => workerSearchIndex ? null : makeFallbackIndex(nodes, query, catalogRevision), [catalogRevision, nodes, query, workerSearchIndex]);
   const searchIndex = workerSearchIndex ?? fallbackSearchIndex ?? makeFallbackIndex([], "", catalogRevision);
   const isSearchReady = !query.trim() || searchIndex.ready !== false && searchIndex.query === query.trim() && searchIndex.catalogRevision === catalogRevision;
@@ -180,6 +184,8 @@ export function TopicTree({ nodes, query = "", catalogRevision, searchIndex: wor
     for (let index = 0; index < rows.length; index += 1) result[index + 1] = result[index] + (measuredHeights.get(rows[index].node.id) ?? (rows[index].root ? 47 : 42));
     return result;
   }, [measuredHeights, rows]);
+  rowsRef.current = rows;
+  offsetsRef.current = offsets;
   const visibleRange = useMemo(() => {
     const overscan = Math.max(180, viewportHeight);
     const start = Math.max(0, lowerBound(offsets, Math.max(0, scrollTop - overscan)));
@@ -197,17 +203,19 @@ export function TopicTree({ nodes, query = "", catalogRevision, searchIndex: wor
     setMeasuredHeights((current) => {
       const prior = current.get(id);
       if (prior !== undefined && Math.abs(prior - height) < 1) return current;
-      if (!pendingAnchor.current && rows.length) {
+      const currentRows = rowsRef.current;
+      const currentOffsets = offsetsRef.current;
+      if (!pendingAnchor.current && currentRows.length) {
         const tree = treeRef.current;
-        const top = tree?.scrollTop ?? scrollTop;
-        const anchorIndex = Math.min(rows.length - 1, lowerBound(offsets, top));
-        pendingAnchor.current = { id: rows[anchorIndex].node.id, viewportOffset: offsets[anchorIndex] - top };
+        const top = tree?.scrollTop ?? 0;
+        const anchorIndex = Math.min(currentRows.length - 1, lowerBound(currentOffsets, top));
+        pendingAnchor.current = { id: currentRows[anchorIndex].node.id, viewportOffset: currentOffsets[anchorIndex] - top };
       }
       const next = new Map(current);
       next.set(id, height);
       return next;
     });
-  }, [offsets, rows, scrollTop]);
+  }, []);
 
   useLayoutEffect(() => {
     const anchor = pendingAnchor.current;
@@ -254,7 +262,7 @@ export function TopicTree({ nodes, query = "", catalogRevision, searchIndex: wor
           : <div className="topic-virtual-content" style={{ height: offsets.at(-1) ?? 0 }}>
             {renderIndexes.map((index) => {
               const entry = rows[index];
-              return <TopicRow key={entry.node.id} entry={entry} query={query} searchIndex={searchIndex} style={{ top: offsets[index], minHeight: measuredHeights.get(entry.node.id) ?? (entry.root ? 47 : 42) }} onFocusTopic={setFocusedTopicId} onMeasure={onMeasure} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />;
+              return <TopicRow key={entry.node.id} node={entry.node} depth={entry.depth} root={entry.root} query={query} searchIndex={searchIndex} top={offsets[index]} height={measuredHeights.get(entry.node.id) ?? (entry.root ? 47 : 42)} onFocusTopic={setFocusedTopicId} onMeasure={onMeasure} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />;
             })}
           </div>}
     </div>

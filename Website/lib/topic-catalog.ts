@@ -722,11 +722,26 @@ export function selectedLeafCount(nodes: TopicNode[]) {
 }
 
 export function summarizeSelection(nodes: TopicNode[]) {
-  const roots = nodes.filter((node) => selectionState(node) === "selected").map((node) => node.label);
-  const leaves = selectedLeafTopics(nodes).map((topic) => topic.path.join(" / "));
-  const visible = roots.length ? roots : leaves;
-  if (!visible.length) return "No topics selected";
-  return visible.slice(0, 3).join(" · ") + (visible.length > 3 ? ` +${visible.length - 3} more` : "");
+  const selectedRoots = nodes.filter((node) => selectionState(node) === "selected");
+  if (selectedRoots.length) {
+    return selectedRoots.slice(0, 3).map((node) => node.label).join(" · ")
+      + (selectedRoots.length > 3 ? ` +${selectedRoots.length - 3} more` : "");
+  }
+
+  const selectedCount = selectedLeafCount(nodes);
+  if (!selectedCount) return "No topics selected";
+  const paths: string[] = [];
+  const visit = (items: TopicNode[], parentPath: string[]) => {
+    for (const node of items) {
+      if (!leafStats(node).selected || paths.length >= 3) continue;
+      const path = [...parentPath, node.label];
+      if (node.children?.length) visit(node.children, path);
+      else if (node.selected) paths.push(path.join(" / "));
+      if (paths.length >= 3) break;
+    }
+  };
+  visit(nodes, []);
+  return paths.join(" · ") + (selectedCount > paths.length ? ` +${selectedCount - paths.length} more` : "");
 }
 
 export function selectWeightedTopicPaths(nodes: TopicNode[], limit = 10) {

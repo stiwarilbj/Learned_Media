@@ -9,14 +9,15 @@ function scrollHost() {
   const element = document.querySelector<HTMLElement>(".main-scroll");
   if (!element) return null;
   const overflow = getComputedStyle(element).overflowY;
-  return (overflow === "auto" || overflow === "scroll") && element.scrollHeight > element.clientHeight + 2 ? element : null;
+  return overflow === "auto" || overflow === "scroll" ? element : null;
 }
 
-function metrics() {
+function metrics(content?: HTMLElement | null) {
   const host = scrollHost();
   const rootTop = host?.getBoundingClientRect().top ?? 0;
   const scrollTop = host?.scrollTop ?? window.scrollY;
-  return { host, rootTop, scrollTop, height: host?.clientHeight ?? window.innerHeight };
+  const listTop = content ? content.getBoundingClientRect().top + scrollTop - rootTop : 0;
+  return { host, rootTop, scrollTop, listTop, relativeTop: Math.max(0, scrollTop - listTop), height: host?.clientHeight ?? window.innerHeight };
 }
 
 function lowerBound(offsets: number[], target: number) {
@@ -73,6 +74,7 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
   const [measured, setMeasured] = useState<Map<string, number>>(() => new Map());
   const [pinnedRowKey, setPinnedRowKey] = useState<string | null>(null);
   const offsetsRef = useRef<number[]>([0]);
+  const rowsRef = useRef<VirtualRow<T>[]>([]);
   const rows = useMemo<VirtualRow<T>[]>(() => {
     const result: VirtualRow<T>[] = [];
     for (let start = 0; start < items.length; start += columns) {
@@ -89,6 +91,8 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
     offsetsRef.current = result;
     return result;
   }, [estimatedHeight, gap, measured, rows]);
+  rowsRef.current = rows;
+  offsetsRef.current = offsets;
   const range = useMemo(() => {
     const overscan = Math.max(320, scrollPosition.height);
     const start = Math.max(0, lowerBound(offsets, Math.max(0, scrollPosition.top - overscan)));
@@ -103,23 +107,28 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
   }, [pinnedRowIndex, range]);
 
   useEffect(() => {
-    const validKeys = new Set(rows.map((row) => row.key));
     setMeasured((current) => {
-      if (Array.from(current.keys()).every((key) => validKeys.has(key))) return current;
-      return new Map(Array.from(current).filter(([key]) => validKeys.has(key)));
+      let changed = false;
+      const next = new Map<string, number>();
+      for (const [key, height] of current) {
+        if (rowIndexes.has(key)) next.set(key, height);
+        else changed = true;
+      }
+      return changed ? next : current;
     });
-    if (pinnedRowKey && !validKeys.has(pinnedRowKey)) setPinnedRowKey(null);
-  }, [pinnedRowKey, rows]);
+    if (pinnedRowKey && !rowIndexes.has(pinnedRowKey)) setPinnedRowKey(null);
+  }, [pinnedRowKey, rowIndexes]);
   const pendingAnchor = useRef<Anchor | null>(null);
 
   const captureAnchor = useCallback(() => {
     const content = contentRef.current;
-    if (!content || !rows.length) return null;
-    const { rootTop, scrollTop } = metrics();
-    const listTop = content.getBoundingClientRect().top + scrollTop - rootTop;
-    const index = Math.min(rows.length - 1, lowerBound(offsetsRef.current, Math.max(0, scrollTop - listTop)));
-    return { key: rows[index].key, offset: offsetsRef.current[index], viewportTop: listTop + offsetsRef.current[index] - scrollTop };
-  }, [rows]);
+    const currentRows = rowsRef.current;
+    if (!content || !currentRows.length) return null;
+    const { relativeTop, listTop, scrollTop } = metrics(content);
+    const offsets = offsetsRef.current;
+    const index = Math.min(currentRows.length - 1, lowerBound(offsets, relativeTop));
+    return { key: currentRows[index].key, offset: offsets[index], viewportTop: listTop + offsets[index] - scrollTop };
+  }, []);
 
   const onMeasure = useCallback((key: string, height: number) => {
     setMeasured((current) => {
@@ -130,7 +139,7 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
       next.set(key, height);
       return next;
     });
-  }, [captureAnchor]);
+  }, []);
 
   useLayoutEffect(() => {
     const anchor = pendingAnchor.current;
@@ -140,7 +149,7 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
     if (!content) return;
     const index = rows.findIndex((row) => row.key === anchor.key);
     if (index < 0) return;
-    const { host, rootTop, scrollTop } = metrics();
+    const { host, rootTop, scrollTop } = metrics(content);
     const listTop = content.getBoundingClientRect().top + scrollTop - rootTop;
     const newViewportTop = listTop + offsets[index] - scrollTop;
     const delta = newViewportTop - anchor.viewportTop;
@@ -154,17 +163,21 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const { scrollTop, height } = metrics();
-        setScrollPosition((current) => current.top === scrollTop && current.height === height ? current : { top: scrollTop, height });
+        const { relativeTop, height } = metrics(contentRef.current);
+        setScrollPosition((current) => current.top === relativeTop && current.height === height ? current : { top: relativeTop, height });
       });
     };
     const host = scrollHost();
     window.addEventListener("scroll", update, { passive: true });
     window.addEventListener("resize", update, { passive: true });
     host?.addEventListener("scroll", update, { passive: true });
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    if (contentRef.current) resizeObserver?.observe(contentRef.current);
+    if (host) resizeObserver?.observe(host);
     update();
     return () => {
       cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
       window.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
       host?.removeEventListener("scroll", update);

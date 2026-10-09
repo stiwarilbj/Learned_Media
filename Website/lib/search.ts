@@ -37,9 +37,7 @@ function tokenScore(queryToken: string, textToken: string) {
   return queryToken.length >= 4 && textToken.length >= 4 && distance(queryToken, textToken) <= limit ? 7 : 0;
 }
 
-export function searchScore(query: string, text: string) {
-  const normalizedQuery = normalizeSearchText(query);
-  const normalizedText = normalizeSearchText(text);
+export function searchScoreNormalized(normalizedQuery: string, normalizedText: string) {
   if (!normalizedQuery || !normalizedText) return 0;
   if (normalizedText.includes(normalizedQuery)) return 100 + normalizedQuery.length;
   const queryTokens = normalizedQuery.split(" ").filter((token) => token.length > 1);
@@ -58,6 +56,10 @@ export function searchScore(query: string, text: string) {
   const coverage = matched / queryTokens.length;
   if (coverage < (queryTokens.length > 1 ? 0.5 : 1)) return 0;
   return score * coverage + (matched === queryTokens.length ? 12 : 0);
+}
+
+export function searchScore(query: string, text: string) {
+  return searchScoreNormalized(normalizeSearchText(query), normalizeSearchText(text));
 }
 
 export function rankSearchResults<T>(query: string, items: T[], getText: (item: T) => string, limit = items.length) {

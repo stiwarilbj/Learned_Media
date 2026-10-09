@@ -63,6 +63,9 @@ type YouTubeWorkspaceActivity = YouTubeActivityState;
 
 type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
+type CardSearchWorkerReply = { type: "ready"; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey: string; ids: string[] };
+type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
+type YouTubeWorkerSearchRequest = { query: string; plan: VideoSearchPlan; topic: YouTubeTopic | "All"; channelId?: string; limit: number; excludedIds?: string[]; expanded?: boolean; viewKey?: string };
 type ConfirmationRequest = {
   title: string;
   message: string;
@@ -70,15 +73,38 @@ type ConfirmationRequest = {
   action: () => void | Promise<void>;
 };
 
+const compactStateCache = new WeakMap<PersistedState, PersistedState>();
+const compactRecordCache = new WeakMap<AppWorkspaceRecord, AppWorkspaceRecord>();
+
 function compactStateForLocalStorage(state: PersistedState) {
+  const cached = compactStateCache.get(state);
+  if (cached) return cached;
   const topics = Array.isArray(state.topics) ? compactTopicPreferences(state.topics) : state.topics;
-  return { ...state, persistenceVersion: PERSISTENCE_VERSION, topics };
+  const compact = { ...state, persistenceVersion: PERSISTENCE_VERSION, topics };
+  compactStateCache.set(state, compact as unknown as PersistedState);
+  return compact;
+}
+
+function semanticSearchStateMatches(state: { query: string; terms: string[] }, query: string, terms: string[]) {
+  return normalizeSearchText(state.query) === normalizeSearchText(query)
+    && state.terms.length === terms.length
+    && state.terms.every((term, index) => normalizeSearchText(term) === normalizeSearchText(terms[index]));
+}
+
+function cardSearchText(card: FactCard) {
+  return `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`;
 }
 
 function compactWorkspaceStoreForLocalStorage(store: AppWorkspaceStore): WorkspaceStore<PersistedState> {
   return {
     ...store,
-    records: store.records.map((record) => ({ ...record, state: compactStateForLocalStorage(record.state) as unknown as PersistedState }))
+    records: store.records.map((record) => {
+      const cached = compactRecordCache.get(record);
+      if (cached) return cached;
+      const compact = { ...record, state: compactStateForLocalStorage(record.state) as unknown as PersistedState };
+      compactRecordCache.set(record, compact);
+      return compact;
+    })
   };
 }
 
@@ -375,6 +401,8 @@ export default function HomePage() {
   });
   const [settings, setSettings] = useState<FeedSettings>(DEFAULT_SETTINGS);
   const [cards, setCards] = useState<FactCard[]>([]);
+  const cardsRef = useRef(cards);
+  cardsRef.current = cards;
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, { text?: string; detailed?: boolean }>>({});
   const [learningProfile, setLearningProfile] = useState<LearningProfile>({});
   const [feedHasMore, setFeedHasMore] = useState(true);
@@ -438,10 +466,36 @@ export default function HomePage() {
   const [showGoToTop, setShowGoToTop] = useState(false);
   const [topicWorkerReadyRevision, setTopicWorkerReadyRevision] = useState(-1);
   const [topicSearchReply, setTopicSearchReply] = useState<TopicSearchWorkerReply>({ type: "ready", catalogRevision: -1 });
+  const [cardSearchWorkerReadyState, setCardSearchWorkerReadyState] = useState(false);
+  const [cardSearchWorkerFailed, setCardSearchWorkerFailed] = useState(false);
+  const [cardSearchIndexRevision, setCardSearchIndexRevision] = useState(0);
+  const [cardSearchReply, setCardSearchReply] = useState<CardSearchWorkerReply | null>(null);
+  const [youtubeSearchWorkerReadyState, setYoutubeSearchWorkerReadyState] = useState(false);
+  const [youtubeSearchWorkerFailed, setYoutubeSearchWorkerFailed] = useState(false);
+  const [youtubeSearchIndexRevision, setYoutubeSearchIndexRevision] = useState(0);
+  const [youtubeLocalSearchReply, setYoutubeLocalSearchReply] = useState<YouTubeSearchWorkerReply | null>(null);
   const requestGeneration = useRef(0);
   const topicCatalogRevision = useRef(0);
   const catalogTopicListCache = useRef<{ revision: number; topics: Array<TopicNode & { path: string[] }> } | null>(null);
+  const catalogSuggestionIndexCache = useRef<{ revision: number; index: ReturnType<typeof createTopicSuggestionIndex> } | null>(null);
   const topicSearchWorker = useRef<Worker | null>(null);
+  const topicSearchRequestId = useRef(0);
+  const topicSearchSignature = useRef("");
+  const cardSearchWorker = useRef<Worker | null>(null);
+  const cardSearchWorkerReady = useRef(false);
+  const cardSearchIndexedCards = useRef(new Map<string, { card: FactCard; text: string }>());
+  const cardSearchRevision = useRef(0);
+  const cardSearchRequestId = useRef(0);
+  const cardSearchSignature = useRef("");
+  const youtubeSearchWorker = useRef<Worker | null>(null);
+  const youtubeSearchWorkerReady = useRef(false);
+  const youtubeSearchWorkerReadyWaiters = useRef<Array<() => void>>([]);
+  const youtubeSearchWorkerIndexedVideos = useRef<Map<string, YouTubeVideo> | null>(null);
+  const youtubeSearchWorkerPendingVideos = useRef<YouTubeVideo[] | null>(null);
+  const youtubeSearchWorkerRevision = useRef(0);
+  const youtubeSearchRequestId = useRef(0);
+  const youtubeLocalSearchSignature = useRef("");
+  const youtubeSearchPending = useRef(new Map<number, { resolve: (reply: YouTubeSearchWorkerReply) => void; reject: (error: unknown) => void; signal: AbortSignal; onAbort: () => void }>());
   const currentQueryRef = useRef(query);
   currentQueryRef.current = query;
   const generationAbortController = useRef<AbortController | null>(null);
@@ -1075,11 +1129,178 @@ export default function HomePage() {
     if (catalogTopicListCache.current?.revision !== catalogRevision) catalogTopicListCache.current = { revision: catalogRevision, topics: flattenTopics(topics) };
     return catalogTopicListCache.current.topics;
   }, [catalogRevision, topics]);
+  const getCatalogSuggestionIndex = useCallback(() => {
+    if (catalogSuggestionIndexCache.current?.revision !== catalogRevision) {
+      catalogSuggestionIndexCache.current = { revision: catalogRevision, index: createTopicSuggestionIndex(getCatalogTopicList()) };
+    }
+    return catalogSuggestionIndexCache.current.index;
+  }, [catalogRevision, getCatalogTopicList]);
   const localTopicSuggestions = topicSearchReply.query?.trim() === query.trim() && topicSearchReply.catalogRevision === catalogRevision
     ? topicSearchReply.suggestions ?? []
     : [];
   const meaningfulLocalTopicMatches = localTopicSuggestions.filter((suggestion) => suggestion.group !== "explore").length;
   const catalogCustomTopics = useMemo(() => topics.filter((topic) => topic.custom), [catalogRevision]);
+  const syncCardSearchIndex = useCallback((nextCards: FactCard[]) => {
+    const worker = cardSearchWorker.current;
+    if (!worker || !cardSearchWorkerReady.current) return;
+    const indexed = cardSearchIndexedCards.current;
+    const currentIds = new Set<string>();
+    const upserts: Array<{ id: string; text: string }> = [];
+    for (const card of nextCards) {
+      currentIds.add(card.id);
+      const text = cardSearchText(card);
+      const prior = indexed.get(card.id);
+      if (!prior || prior.card !== card && prior.text !== text) upserts.push({ id: card.id, text });
+      indexed.set(card.id, { card, text });
+    }
+    const removeIds: string[] = [];
+    for (const id of indexed.keys()) if (!currentIds.has(id)) { indexed.delete(id); removeIds.push(id); }
+    if (!upserts.length && !removeIds.length) return;
+    const revision = ++cardSearchRevision.current;
+    worker.postMessage({ type: "update", revision, upserts, removeIds });
+    setCardSearchIndexRevision(revision);
+    cardSearchSignature.current = "";
+  }, []);
+
+  const syncYouTubeSearchIndex = useCallback((nextVideos: YouTubeVideo[]) => {
+    const worker = youtubeSearchWorker.current;
+    if (!worker || !youtubeSearchWorkerReady.current) {
+      youtubeSearchWorkerPendingVideos.current = nextVideos;
+      return;
+    }
+    const indexed = youtubeSearchWorkerIndexedVideos.current;
+    if (!indexed) return;
+    const currentIds = new Set<string>();
+    const upserts: YouTubeVideo[] = [];
+    for (const video of nextVideos) {
+      currentIds.add(video.id);
+      if (indexed.get(video.id) !== video) upserts.push(video);
+    }
+    const removeIds: string[] = [];
+    for (const id of indexed.keys()) if (!currentIds.has(id)) removeIds.push(id);
+    if (!upserts.length && !removeIds.length) return;
+    for (const id of removeIds) indexed.delete(id);
+    for (const video of upserts) indexed.set(video.id, video);
+    const revision = ++youtubeSearchWorkerRevision.current;
+    worker.postMessage({ type: "update", revision, upserts, removeIds });
+    setYoutubeSearchIndexRevision(revision);
+    youtubeLocalSearchSignature.current = "";
+  }, []);
+
+  const requestYouTubeWorkerSearch = useCallback(async (request: YouTubeWorkerSearchRequest, signal: AbortSignal) => {
+    const worker = youtubeSearchWorker.current;
+    if (!worker) throw new Error("The local video search worker is unavailable.");
+    if (!youtubeSearchWorkerReady.current) {
+      await new Promise<void>((resolve, reject) => {
+        const waiter = () => { signal.removeEventListener("abort", onAbort); resolve(); };
+        const onAbort = () => {
+          const index = youtubeSearchWorkerReadyWaiters.current.indexOf(waiter);
+          if (index >= 0) youtubeSearchWorkerReadyWaiters.current.splice(index, 1);
+          reject(new DOMException("Search canceled", "AbortError"));
+        };
+        if (signal.aborted) { onAbort(); return; }
+        youtubeSearchWorkerReadyWaiters.current.push(waiter);
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+    if (signal.aborted) throw new DOMException("Search canceled", "AbortError");
+    const currentWorker = youtubeSearchWorker.current;
+    if (!currentWorker) throw new Error("The local video search worker is unavailable.");
+    const requestId = ++youtubeSearchRequestId.current;
+    return new Promise<YouTubeSearchWorkerReply>((resolve, reject) => {
+      const onAbort = () => {
+        youtubeSearchPending.current.delete(requestId);
+        currentWorker.postMessage({ type: "cancel", requestId });
+        reject(new DOMException("Search canceled", "AbortError"));
+      };
+      if (signal.aborted) { onAbort(); return; }
+      youtubeSearchPending.current.set(requestId, { resolve, reject, signal, onAbort });
+      signal.addEventListener("abort", onAbort, { once: true });
+      currentWorker.postMessage({ type: "search", ...request, requestId, revision: youtubeSearchWorkerRevision.current });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || !query.trim() || typeof Worker === "undefined" || cardSearchWorker.current) return;
+    let worker: Worker;
+    try { worker = new Worker(new URL("../workers/card-search.worker.ts", import.meta.url), { type: "module" }); }
+    catch { setCardSearchWorkerFailed(true); return; }
+    cardSearchWorker.current = worker;
+    cardSearchSignature.current = "";
+    const initialCards = cardsRef.current;
+    cardSearchIndexedCards.current = new Map(initialCards.map((card) => [card.id, { card, text: cardSearchText(card) }]));
+    worker.onmessage = (event: MessageEvent<CardSearchWorkerReply>) => {
+      const reply = event.data;
+      if (reply.type === "ready") {
+        cardSearchWorkerReady.current = true;
+        setCardSearchWorkerReadyState(true);
+        syncCardSearchIndex(cardsRef.current);
+      } else if (reply.requestId === cardSearchRequestId.current && reply.query.trim() === currentQueryRef.current.trim()) {
+        setCardSearchReply(reply);
+      }
+    };
+    worker.onerror = () => {
+      worker.terminate();
+      if (cardSearchWorker.current === worker) cardSearchWorker.current = null;
+      cardSearchWorkerReady.current = false;
+      setCardSearchWorkerReadyState(false);
+      setCardSearchWorkerFailed(true);
+      cardSearchSignature.current = "";
+    };
+    worker.postMessage({ type: "initialize", revision: cardSearchRevision.current, documents: initialCards.map((card) => ({ id: card.id, text: cardSearchText(card) })) });
+  }, [hydrated, query, syncCardSearchIndex]);
+
+  useEffect(() => {
+    if (cardSearchWorkerReadyState) syncCardSearchIndex(cards);
+  }, [cardSearchWorkerReadyState, cards, syncCardSearchIndex]);
+
+  useEffect(() => {
+    if (!hydrated || view !== "videos" || typeof Worker === "undefined" || youtubeSearchWorker.current) return;
+    let worker: Worker;
+    try { worker = new Worker(new URL("../workers/youtube-search.worker.ts", import.meta.url), { type: "module" }); }
+    catch { setYoutubeSearchWorkerFailed(true); return; }
+    youtubeSearchWorker.current = worker;
+    youtubeSearchWorkerReady.current = false;
+    const initialVideos = youtubeWorkspace.videos;
+    youtubeSearchWorkerIndexedVideos.current = new Map(initialVideos.map((video) => [video.id, video]));
+    worker.onmessage = (event: MessageEvent<YouTubeSearchWorkerReply>) => {
+      const reply = event.data;
+      if (reply.type === "ready") {
+        youtubeSearchWorkerReady.current = true;
+        setYoutubeSearchWorkerReadyState(true);
+        const pendingVideos = youtubeSearchWorkerPendingVideos.current;
+        youtubeSearchWorkerPendingVideos.current = null;
+        if (pendingVideos) syncYouTubeSearchIndex(pendingVideos);
+        for (const waiter of youtubeSearchWorkerReadyWaiters.current.splice(0)) waiter();
+        return;
+      }
+      const pending = youtubeSearchPending.current.get(reply.requestId);
+      if (!pending) return;
+      youtubeSearchPending.current.delete(reply.requestId);
+      pending.signal.removeEventListener("abort", pending.onAbort);
+      if (reply.type === "stale" || reply.type === "results" && reply.revision !== youtubeSearchWorkerRevision.current) pending.reject(new Error("Video catalog changed during search."));
+      else pending.resolve(reply);
+    };
+    worker.onerror = () => {
+      worker.terminate();
+      if (youtubeSearchWorker.current === worker) youtubeSearchWorker.current = null;
+      youtubeSearchWorkerReady.current = false;
+      setYoutubeSearchWorkerReadyState(false);
+      setYoutubeSearchWorkerFailed(true);
+      for (const waiter of youtubeSearchWorkerReadyWaiters.current.splice(0)) waiter();
+      for (const [requestId, pending] of youtubeSearchPending.current) {
+        youtubeSearchPending.current.delete(requestId);
+        pending.signal.removeEventListener("abort", pending.onAbort);
+        pending.reject(new Error("Local video search stopped unexpectedly."));
+      }
+    };
+    worker.postMessage({ type: "initialize", revision: youtubeSearchWorkerRevision.current, videos: initialVideos });
+  }, [hydrated, view, syncYouTubeSearchIndex, youtubeWorkspace.videos]);
+
+  useEffect(() => {
+    if (youtubeSearchWorker.current) syncYouTubeSearchIndex(youtubeWorkspace.videos);
+  }, [syncYouTubeSearchIndex, youtubeWorkspace.videos]);
+
   const topicTreeSearchIndex = useMemo<TopicSearchIndex | undefined>(() => {
     if (topicSearchReply.type !== "results" || topicSearchReply.query?.trim() !== query.trim() || topicSearchReply.catalogRevision !== catalogRevision) {
       return query.trim() ? { query: query.trim(), catalogRevision, ready: false, visibleIds: new Set(), matchingDescendants: new Set(), directScores: new Map() } : undefined;
@@ -1100,7 +1321,8 @@ export default function HomePage() {
     let active = true;
     const timer = window.setTimeout(() => {
       if (topicSearchWorker.current) return;
-      void searchTopicsWithYieldingFallback(topics, text, semanticSearch.query === text ? semanticSearch.terms : [], catalogRevision, () => active && topicCatalogRevision.current === catalogRevision && currentQueryRef.current.trim() === text).then((reply) => {
+      const terms = normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.terms : [];
+      void searchTopicsWithYieldingFallback(topics, text, terms, catalogRevision, () => active && topicCatalogRevision.current === catalogRevision && currentQueryRef.current.trim() === text).then((reply) => {
         if (reply && active && topicCatalogRevision.current === catalogRevision && currentQueryRef.current.trim() === text) setTopicSearchReply(reply);
       });
     }, 0);
@@ -1116,11 +1338,12 @@ export default function HomePage() {
       return;
     }
     topicSearchWorker.current = worker;
+    topicSearchSignature.current = "";
     worker.onmessage = (event: MessageEvent<TopicSearchWorkerReply>) => {
       const reply = event.data;
       if (reply.catalogRevision !== topicCatalogRevision.current) return;
       if (reply.type === "ready") setTopicWorkerReadyRevision(reply.catalogRevision);
-      else if (reply.query?.trim() === currentQueryRef.current.trim()) setTopicSearchReply(reply);
+      else if (reply.requestId === topicSearchRequestId.current && reply.query?.trim() === currentQueryRef.current.trim()) setTopicSearchReply(reply);
     };
     worker.onerror = () => {
       worker.terminate();
@@ -1137,8 +1360,18 @@ export default function HomePage() {
   useEffect(() => {
     const worker = topicSearchWorker.current;
     const text = query.trim();
-    if (!worker || !text || topicWorkerReadyRevision !== catalogRevision) return;
-    worker.postMessage({ type: "search", query: text, semanticTerms: semanticSearch.query === text ? semanticSearch.terms : [], catalogRevision });
+    if (!worker || topicWorkerReadyRevision !== catalogRevision) return;
+    if (!text) {
+      topicSearchSignature.current = "";
+      worker.postMessage({ type: "cancel", requestId: ++topicSearchRequestId.current });
+      return;
+    }
+    const semanticTerms = normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.terms : [];
+    const signature = JSON.stringify([catalogRevision, text, semanticTerms.map(normalizeSearchText)]);
+    if (topicSearchSignature.current === signature) return;
+    topicSearchSignature.current = signature;
+    const requestId = ++topicSearchRequestId.current;
+    worker.postMessage({ type: "search", requestId, query: text, semanticTerms, catalogRevision });
   }, [catalogRevision, query, semanticSearch, topicWorkerReadyRevision]);
 
   useEffect(() => {
@@ -1146,14 +1379,14 @@ export default function HomePage() {
     const text = query.trim();
     if (text && (topicWorkerReadyRevision !== catalogRevision || topicSearchReply.query?.trim() !== text || topicSearchReply.catalogRevision !== catalogRevision)) return;
     if (!text || !apiKey.trim() || geminiStatus !== "connected" || !shouldExpandNaturalSearch(text, meaningfulLocalTopicMatches)) {
-      setSemanticSearch({ query: text, terms: [] });
+      setSemanticSearch((current) => semanticSearchStateMatches(current, text, []) ? current : { query: text, terms: [] });
       return;
     }
     const scope = requestCacheScope(sessionIdRef.current, apiKey.trim());
     const cacheKey = requestCacheKey(scope, "topic-search", TOPIC_CATALOG_VERSION, normalizeSearchText(text));
     const cachedTerms = naturalSearchCache.current.get(cacheKey);
     if (cachedTerms) {
-      setSemanticSearch({ query: text, terms: cachedTerms });
+      setSemanticSearch((current) => semanticSearchStateMatches(current, text, cachedTerms) ? current : { query: text, terms: cachedTerms });
       return;
     }
     const controller = new AbortController();
@@ -1163,12 +1396,12 @@ export default function HomePage() {
         if (!controller.signal.aborted && globalSearchAbortController.current === controller) {
           naturalSearchCache.current.set(cacheKey, result.terms);
           recordGeminiOutcomes(result.modelOutcomes);
-          setSemanticSearch({ query: text, terms: result.terms });
+          setSemanticSearch((current) => semanticSearchStateMatches(current, text, result.terms) ? current : { query: text, terms: result.terms });
         }
       }).catch((error) => {
         if (!controller.signal.aborted && globalSearchAbortController.current === controller) {
           recordGeminiFailure(error);
-          setSemanticSearch({ query: text, terms: [] });
+          setSemanticSearch((current) => semanticSearchStateMatches(current, text, []) ? current : { query: text, terms: [] });
         }
       });
     }, 1500);
@@ -1941,7 +2174,24 @@ export default function HomePage() {
       }
       const localPlan: VideoSearchPlan = { terms: [queryText], channelId: workspace.selectedChannelId };
       let plan = localPlan;
-      let candidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80);
+      const getLocalCandidates = async (candidatePlan: VideoSearchPlan, excludedIds: string[] = [], expanded = false) => {
+        try {
+          const reply = await requestYouTubeWorkerSearch({ query: queryText, plan: candidatePlan, topic: workspace.selectedTopic, channelId: workspace.selectedChannelId, limit: 80, excludedIds, expanded }, controller.signal);
+          if (controller.signal.aborted || reply.type !== "results") return [];
+          return reply.candidates.flatMap((candidate) => {
+            const video = youtubeIndexes.videoById.get(candidate.videoId);
+            return video ? [{ video, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText }] : [];
+          });
+        } catch (error) {
+          if (controller.signal.aborted) throw error;
+          if (error instanceof Error && error.message === "Video catalog changed during search.") {
+            controller.abort();
+            throw error;
+          }
+          return searchYouTubeCandidates(workspace.videos, candidatePlan, workspace.selectedTopic, workspace.selectedChannelId, 80, excludedIds, expanded);
+        }
+      };
+      let candidates = await getLocalCandidates(plan);
       let strongCandidates = strongLocalVideoCandidates(queryText, candidates);
       let interpretationOutcomes: GeminiModelOutcome[] = [];
       const hasStructuredIntent = /\b(after|before|since|posted|uploaded|newest|latest|oldest|recent|channel|under|over|shorter|longer|duration|without|exclude|excluding|not)\b/i.test(queryText);
@@ -1966,13 +2216,13 @@ export default function HomePage() {
             return;
           }
           plan = { ...interpreted.plan, terms: interpreted.plan.terms?.length || interpreted.plan.include?.length || interpreted.plan.conceptGroups?.length ? interpreted.plan.terms : [queryText], channelId: workspace.selectedChannelId ?? namedChannel?.id };
-          candidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80);
+          candidates = await getLocalCandidates(plan);
           strongCandidates = strongLocalVideoPlanCandidates(plan, candidates);
         } catch (error) {
           if (controller.signal.aborted) return;
           recordGeminiFailure(error);
           plan = localPlan;
-          candidates = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80);
+          candidates = await getLocalCandidates(plan);
           strongCandidates = strongLocalVideoCandidates(queryText, candidates);
         }
       }
@@ -1992,7 +2242,7 @@ export default function HomePage() {
       let ranked: RankedVideoSearchResult[] = strongCandidates.map(reasonForLocalCandidate);
       if (ranked.length < MIN_STRONG_VIDEO_RESULTS && interpretationOutcomes.length && apiKey.trim() && geminiStatus === "connected") {
         setYoutubeSearchPhase("checking");
-        const expanded = searchYouTubeCandidates(workspace.videos, plan, workspace.selectedTopic, workspace.selectedChannelId, 80, candidates.map(({ video }) => video.id), true);
+        const expanded = await getLocalCandidates(plan, candidates.map(({ video }) => video.id), true);
         const strongIds = new Set(strongCandidates.map((candidate) => candidate.video.id));
         const uncertain = [...candidates.filter((candidate) => !strongIds.has(candidate.video.id)), ...expanded];
         const seen = new Set<string>();
@@ -2045,7 +2295,7 @@ export default function HomePage() {
         setYoutubeSmartSearchLoading(false);
       }
     }
-  }, [apiKey, geminiStatus, recordGeminiFailure, recordGeminiOutcomes, updateYouTubeWorkspace]);
+  }, [apiKey, geminiStatus, recordGeminiFailure, recordGeminiOutcomes, requestYouTubeWorkerSearch, updateYouTubeWorkspace, youtubeIndexes.videoById]);
 
   const cancelSmartVideoSearch = useCallback(() => {
     youtubeSearchAbortController.current?.abort();
@@ -2082,22 +2332,86 @@ export default function HomePage() {
   }, [updateYouTubeWorkspace]);
 
   const deferredVideoSearchText = useDeferredValue(youtubeWorkspace.searchText);
+  const youtubeSearchBaseKey = JSON.stringify([youtubeSearchIndexRevision, youtubeWorkspace.catalogVersion, youtubeWorkspace.selectedTopic, youtubeWorkspace.selectedChannelId ?? "all"]);
+  const videoSearchRequestKey = JSON.stringify([youtubeSearchBaseKey, deferredVideoSearchText.trim()]);
+
+  useEffect(() => {
+    const text = deferredVideoSearchText.trim();
+    if (!text || view !== "videos" || !hydrated || youtubeSmartSearchLoading || youtubeSmartSearchRan || !youtubeSearchWorkerReadyState) {
+      if (!text || youtubeSmartSearchLoading || youtubeSmartSearchRan) youtubeLocalSearchSignature.current = "";
+      return;
+    }
+    if (youtubeLocalSearchSignature.current === videoSearchRequestKey) return;
+    youtubeLocalSearchSignature.current = videoSearchRequestKey;
+    const controller = new AbortController();
+    const plan: VideoSearchPlan = { terms: [text], channelId: youtubeWorkspace.selectedChannelId };
+    void requestYouTubeWorkerSearch({ query: text, plan, topic: youtubeWorkspace.selectedTopic, channelId: youtubeWorkspace.selectedChannelId, limit: 80, viewKey: youtubeSearchBaseKey }, controller.signal)
+      .then((reply) => {
+        if (controller.signal.aborted || reply.type !== "results" || reply.requestId !== youtubeSearchRequestId.current) return;
+        setYoutubeLocalSearchReply(reply);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted && !(error instanceof Error && error.message === "Video catalog changed during search.")) setToast(error instanceof Error ? error.message : "Video search could not complete.");
+      });
+    return () => controller.abort();
+  }, [deferredVideoSearchText, hydrated, requestYouTubeWorkerSearch, view, videoSearchRequestKey, youtubeSearchBaseKey, youtubeSearchWorkerReadyState, youtubeSmartSearchLoading, youtubeSmartSearchRan, youtubeWorkspace.selectedChannelId, youtubeWorkspace.selectedTopic]);
+
+  useEffect(() => {
+    const text = query.trim();
+    if (!text || !hydrated || !cardSearchWorkerReadyState || (view !== "feed" && view !== "saved" && view !== "likes" && view !== "history")) {
+      if (cardSearchSignature.current) {
+        cardSearchSignature.current = "";
+        if (cardSearchWorkerReady.current) cardSearchWorker.current?.postMessage({ type: "cancel", requestId: ++cardSearchRequestId.current });
+      }
+      return;
+    }
+    const eligibleCards = view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : cards;
+    const eligibleIds = eligibleCards.map((card) => card.id);
+    const signature = JSON.stringify([cardSearchRevision.current, view, text, eligibleIds]);
+    if (cardSearchSignature.current === signature) return;
+    cardSearchSignature.current = signature;
+    const requestId = ++cardSearchRequestId.current;
+    cardSearchWorker.current?.postMessage({ type: "search", requestId, revision: cardSearchRevision.current, query: text, eligibleIds, viewKey: view });
+  }, [cardSearchIndexRevision, cardSearchWorkerReadyState, cards, hydrated, query, view]);
+
+  const cardById = useMemo(() => new Map(cards.map((card) => [card.id, card])), [cards]);
+  const collectionBase = useMemo(() => view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : view === "history" ? cards : [], [cards, view]);
+  const cardSearchResult = cardSearchReply?.type === "results" ? cardSearchReply : null;
+  const matchingCardIds = cardSearchResult
+    && cardSearchResult.revision === cardSearchIndexRevision
+    && cardSearchResult.viewKey === view
+    ? cardSearchResult.ids
+    : null;
+  const workerCanSearchCards = typeof Worker !== "undefined" && !cardSearchWorkerFailed;
   const videoSearchResults = useMemo(() => {
-    if (deferredVideoSearchText.trim()) return youtubeSmartSearchRan ? youtubeSearchResults : filterYouTubeVideos(youtubeWorkspace.videos, deferredVideoSearchText, youtubeWorkspace.selectedTopic, youtubeWorkspace.selectedChannelId);
+    if (deferredVideoSearchText.trim()) {
+      if (youtubeSmartSearchRan) return youtubeSearchResults;
+      const reply = youtubeLocalSearchReply?.type === "results" && youtubeLocalSearchReply.viewKey === youtubeSearchBaseKey ? youtubeLocalSearchReply : null;
+      if (reply) return reply.candidates.map(({ videoId }) => youtubeIndexes.videoById.get(videoId)).filter((video): video is YouTubeVideo => Boolean(video));
+      if (typeof Worker === "undefined" || youtubeSearchWorkerFailed) return filterYouTubeVideos(youtubeWorkspace.videos, deferredVideoSearchText, youtubeWorkspace.selectedTopic, youtubeWorkspace.selectedChannelId);
+      return [];
+    }
     return youtubeWorkspace.discoverIds.map((id) => youtubeIndexes.videoById.get(id)).filter((video): video is YouTubeVideo => Boolean(video));
-  }, [deferredVideoSearchText, youtubeSearchResults, youtubeSmartSearchRan, youtubeWorkspace.videos, youtubeWorkspace.selectedTopic, youtubeWorkspace.selectedChannelId, youtubeWorkspace.discoverIds, youtubeIndexes]);
+  }, [deferredVideoSearchText, youtubeSearchResults, youtubeSmartSearchRan, youtubeLocalSearchReply, youtubeSearchBaseKey, youtubeSearchWorkerFailed, youtubeWorkspace.videos, youtubeWorkspace.selectedTopic, youtubeWorkspace.selectedChannelId, youtubeWorkspace.discoverIds, youtubeIndexes]);
 
   const filteredCards = useMemo(() => {
     if (!query.trim()) return cards;
-    return rankSearchResults(query, cards, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
-  }, [cards, query]);
+    if (workerCanSearchCards) {
+      const ids = matchingCardIds && cardSearchResult?.viewKey === "feed" ? matchingCardIds : null;
+      return ids ? ids.map((id) => cardById.get(id)).filter((card): card is FactCard => Boolean(card)) : cards;
+    }
+    return rankSearchResults(query, cards, cardSearchText);
+  }, [cardById, cardSearchReply, cards, matchingCardIds, query, workerCanSearchCards]);
 
   const collectionCards = useMemo(() => {
     if (view !== "saved" && view !== "likes" && view !== "history") return [];
-    const collection = view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : cards;
-    if (!query.trim()) return collection;
-    return rankSearchResults(query, collection, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
-  }, [cards, query, view]);
+    if (!query.trim()) return collectionBase;
+    if (workerCanSearchCards) {
+      const ids = matchingCardIds && cardSearchResult?.viewKey === view ? matchingCardIds : null;
+      return ids ? ids.map((id) => cardById.get(id)).filter((card): card is FactCard => Boolean(card)) : collectionBase;
+    }
+    return rankSearchResults(query, collectionBase, cardSearchText);
+  }, [cardById, cardSearchReply, collectionBase, matchingCardIds, query, view, workerCanSearchCards]);
 
   const chooseExploreTopic = useCallback((requestedTopic: string, requestedId?: string) => {
     if (requestedTopic === "Custom topic") {
@@ -2118,7 +2432,7 @@ export default function HomePage() {
       ));
       const directSuggestion = exactMatch
         ? undefined
-        : suggestTopics(createTopicSuggestionIndex(catalogTopics), requestedTopic).find((suggestion) => suggestion.group === "keyword");
+        : suggestTopics(getCatalogSuggestionIndex(), requestedTopic).find((suggestion) => suggestion.group === "keyword");
       selectedTopic = exactMatch ?? catalogTopics.find((topic) => topic.id === directSuggestion?.id);
     }
     const label = selectedTopic?.label ?? titleCaseTopicLabel(requestedTopic);
@@ -2143,7 +2457,7 @@ export default function HomePage() {
     setQuery(label);
     setView("feed");
     setToast(`Ready to explore ${label}. Start learning when you're ready.`);
-  }, [getCatalogTopicList, topicSearchReply, catalogRevision, topics]);
+  }, [getCatalogSuggestionIndex, getCatalogTopicList, catalogRevision, topics]);
 
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={chooseExploreTopic} />;
