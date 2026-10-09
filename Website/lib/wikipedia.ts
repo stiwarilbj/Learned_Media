@@ -2,32 +2,43 @@ import type { ImageAttribution, WikipediaSource } from "./types";
 
 const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
 const MAX_CONCURRENT_WIKIPEDIA_REQUESTS = 4;
+const WIKIPEDIA_REQUEST_TIMEOUT_MS = 20_000;
 let wikipediaInFlight = 0;
-const wikipediaWaiters: Array<() => void> = [];
+let wikipediaWaiterOrder = 0;
+type WikipediaWaiter = { priority: number; order: number; resolve: () => void; reject: (error: Error) => void; signal?: AbortSignal; onAbort: () => void };
+const wikipediaWaiters: WikipediaWaiter[] = [];
 
-async function acquireWikipediaSlot(signal?: AbortSignal) {
+async function acquireWikipediaSlot(signal?: AbortSignal, priority = 0) {
   if (signal?.aborted) throw new DOMException("Wikipedia request canceled.", "AbortError");
-  if (wikipediaInFlight >= MAX_CONCURRENT_WIKIPEDIA_REQUESTS) {
-    await new Promise<void>((resolve, reject) => {
-      const waiter = () => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve();
-      };
-      const onAbort = () => {
+  if (wikipediaInFlight < MAX_CONCURRENT_WIKIPEDIA_REQUESTS && wikipediaWaiters.length === 0) { wikipediaInFlight += 1; return; }
+  await new Promise<void>((resolve, reject) => {
+    const waiter: WikipediaWaiter = {
+      priority,
+      order: wikipediaWaiterOrder++,
+      resolve: () => { signal?.removeEventListener("abort", waiter.onAbort); resolve(); },
+      reject,
+      signal,
+      onAbort: () => {
         const index = wikipediaWaiters.indexOf(waiter);
         if (index >= 0) wikipediaWaiters.splice(index, 1);
         reject(new DOMException("Wikipedia request canceled.", "AbortError"));
-      };
-      wikipediaWaiters.push(waiter);
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-  wikipediaInFlight += 1;
+      }
+    };
+    wikipediaWaiters.push(waiter);
+    signal?.addEventListener("abort", waiter.onAbort, { once: true });
+    if (signal?.aborted) waiter.onAbort();
+  });
 }
 
 function releaseWikipediaSlot() {
-  wikipediaInFlight = Math.max(0, wikipediaInFlight - 1);
-  wikipediaWaiters.shift()?.();
+  const nextIndex = wikipediaWaiters.reduce<number | undefined>((best, current, index) => {
+    if (best === undefined) return index;
+    const previous = wikipediaWaiters[best];
+    return current.priority < previous.priority || current.priority === previous.priority && current.order < previous.order ? index : best;
+  }, undefined);
+  if (nextIndex === undefined) { wikipediaInFlight = Math.max(0, wikipediaInFlight - 1); return; }
+  const [next] = wikipediaWaiters.splice(nextIndex, 1);
+  next.resolve();
 }
 
 type SearchResponse = {
@@ -124,13 +135,18 @@ function apiUrl(params: Record<string, string>) {
   return url.toString();
 }
 
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T | null> {
-  await acquireWikipediaSlot(signal);
+async function getJson<T>(url: string, signal?: AbortSignal, priority = 0): Promise<T | null> {
+  await acquireWikipediaSlot(signal, priority);
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  const timeout = setTimeout(() => controller.abort(), WIKIPEDIA_REQUEST_TIMEOUT_MS);
+  signal?.addEventListener("abort", abortFromCaller, { once: true });
   try {
+    if (signal?.aborted) throw new DOMException("Wikipedia request canceled.", "AbortError");
     const response = await fetch(url, {
       headers: { accept: "application/json", "user-agent": "LearnedMedia/0.2 (knowledge-feed)" },
       next: { revalidate: 3600 },
-      signal
+      signal: controller.signal
     });
     if (!response.ok) return null;
     return await response.json() as T;
@@ -138,6 +154,8 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T | null> 
     if (signal?.aborted) throw error;
     return null;
   } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromCaller);
     releaseWikipediaSlot();
   }
 }
@@ -159,7 +177,7 @@ export async function searchWikipedia(query: string, limit = 3, signal?: AbortSi
   return payload?.query?.search?.map((result) => result.title?.trim()).filter(Boolean) as string[] ?? [];
 }
 
-async function fetchPages(titles: string[], signal?: AbortSignal, cache?: WikipediaResolutionCache): Promise<WikipediaPage[]> {
+async function fetchPages(titles: string[], signal?: AbortSignal, cache?: WikipediaResolutionCache, priority = 0): Promise<WikipediaPage[]> {
   if (!titles.length) return [];
   // TextExtracts only returns full articles one at a time. Reuse in-flight page
   // requests within a feed batch so different cards do not fetch the same page.
@@ -180,7 +198,7 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
         piprop: "thumbnail|name|original",
         pilicense: "free",
         pithumbsize: "1000"
-      }), signal);
+      }), signal, priority);
       return Object.values(payload?.query?.pages ?? {}).filter((page) => page.title && page.fullurl);
     })();
     if (cache) {
@@ -190,21 +208,21 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
   }))).flat();
 }
 
-async function fetchImageInfo(pageimage: string, signal?: AbortSignal) {
+async function fetchImageInfo(pageimage: string, signal?: AbortSignal, priority = 1) {
   const payload = await getJson<ImageInfoResponse>(apiUrl({
     action: "query",
     titles: `File:${pageimage}`,
     prop: "imageinfo",
     iiprop: "url|extmetadata",
     iiurlwidth: "1400"
-  }), signal);
+  }), signal, priority);
   return Object.values(payload?.query?.pages ?? {})[0]?.imageinfo?.[0];
 }
 
-async function fetchSummary(title: string, signal?: AbortSignal) {
+async function fetchSummary(title: string, signal?: AbortSignal, priority = 1) {
   const normalizedTitle = title.trim().replace(/\s+/g, "_");
   if (!normalizedTitle) return null;
-  return getJson<SummaryResponse>(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(normalizedTitle)}`, signal);
+  return getJson<SummaryResponse>(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(normalizedTitle)}`, signal, priority);
 }
 
 function imageFileName(imageUrl: string) {
@@ -232,10 +250,10 @@ async function resolveImage(page: {
   pageimage?: string;
   thumbnail?: { source?: string };
   original?: { source?: string };
-}, signal?: AbortSignal): Promise<ImageAttribution | undefined> {
+}, signal?: AbortSignal, priority = 1): Promise<ImageAttribution | undefined> {
   const fallbackUrl = page.thumbnail?.source ?? page.original?.source;
   if (page.pageimage) {
-    const image = await fetchImageInfo(page.pageimage, signal);
+    const image = await fetchImageInfo(page.pageimage, signal, priority);
     const metadata = image?.extmetadata;
     const url = image?.thumburl ?? fallbackUrl ?? image?.url;
     if (url) {
@@ -261,7 +279,7 @@ async function resolveImage(page: {
       credit: "Wikipedia image"
     };
   }
-  const summary = await fetchSummary(page.title, signal);
+  const summary = await fetchSummary(page.title, signal, priority);
   const summaryUrl = summary?.thumbnail?.source ?? summary?.originalimage?.source;
   if (!summary || !summaryUrl) return undefined;
   const summaryPageUrl = summary.content_urls?.desktop?.page ?? page.fullurl;
@@ -309,7 +327,7 @@ export async function resolveWikipediaSources(queries: string[], limit = 3, sign
       pageimage: page.pageimage,
       thumbnail: page.thumbnail,
       original: page.original
-    }, signal);
+    }, signal, 1);
     return source;
   }));
   return resolved;
@@ -321,7 +339,7 @@ export async function resolveWikipediaImage(source: WikipediaSource, signal?: Ab
   const pending = cachedRequest(cache.images, key);
   if (pending) return pending.promise;
   const request = (async () => {
-    const page = (await fetchPages([source.title], signal, cache)).find((candidate) => candidate.title?.toLocaleLowerCase() === source.title.toLocaleLowerCase());
+    const page = (await fetchPages([source.title], signal, cache, 1)).find((candidate) => candidate.title?.toLocaleLowerCase() === source.title.toLocaleLowerCase());
     if (!page?.title || !page.fullurl) return undefined;
     return resolveImage({
       title: page.title,
@@ -329,7 +347,7 @@ export async function resolveWikipediaImage(source: WikipediaSource, signal?: Ab
       pageimage: page.pageimage,
       thumbnail: page.thumbnail,
       original: page.original
-    }, signal);
+    }, signal, 1);
   })();
   storeCachedRequest(cache.images, key, request);
   return request;

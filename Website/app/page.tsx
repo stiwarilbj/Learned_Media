@@ -24,7 +24,7 @@ import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWo
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, strongLocalVideoCandidates, strongLocalVideoPlanCandidates, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
-import { wikipediaEvidenceLink } from "@/lib/wikipedia";
+import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const STORAGE_KEY = "learned-media-state";
@@ -302,6 +302,10 @@ export default function HomePage() {
   const [showGoToTop, setShowGoToTop] = useState(false);
   const requestGeneration = useRef(0);
   const generationAbortController = useRef<AbortController | null>(null);
+  const imageHydrationControllers = useRef(new Map<string, AbortController>());
+  const imageHydrationQueue = useRef<Array<{ card: FactCard; requestId: number; workspaceId: string; epoch: number }>>([]);
+  const imageHydrationEpoch = useRef(0);
+  const imageHydrationActive = useRef(false);
   const connectionAbortController = useRef<AbortController | null>(null);
   const learningAbortController = useRef<AbortController | null>(null);
   const questionAbortController = useRef<AbortController | null>(null);
@@ -328,6 +332,7 @@ export default function HomePage() {
   const cloudEpoch = useRef(0);
   const cloudUserId = useRef<string | null>(null);
   const mainScrollRef = useRef<HTMLDivElement>(null);
+  const displayModeRef = useRef(settings.displayMode);
   const recordGeminiOutcomes = useCallback((outcomes: GeminiModelOutcome[], finalStatus?: GeminiStatus) => {
     if (outcomes.length) setModelChecks((current) => outcomes.reduce(mergeGeminiModelOutcome, current));
     const status = finalStatus ?? (outcomes.some((outcome) => outcome.status === "success") ? "connected" : outcomes.length ? outcomes.every((outcome) => outcome.status === "cooldown") ? "rate-limited" : "unavailable" : undefined);
@@ -351,6 +356,39 @@ export default function HomePage() {
     return true;
   }, [archiveFacts, settings.sentenceLength]);
 
+  const enqueueImageHydration = useCallback((incoming: FactCard[], requestId: number, workspaceId: string) => {
+    if (displayModeRef.current !== "picture-text") return;
+    const epoch = imageHydrationEpoch.current;
+    incoming.forEach(card => {
+      if (!card.sources?.[0] || card.image || imageHydrationControllers.current.has(card.id) || imageHydrationQueue.current.some(job => job.card.id === card.id)) return;
+      imageHydrationQueue.current.push({ card, requestId, workspaceId, epoch });
+    });
+    if (imageHydrationActive.current) return;
+    imageHydrationActive.current = true;
+    void (async () => {
+      try {
+        while (imageHydrationQueue.current.length) {
+          const job = imageHydrationQueue.current.shift()!;
+          if (job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || displayModeRef.current !== "picture-text") continue;
+          const controller = new AbortController();
+          imageHydrationControllers.current.set(job.card.id, controller);
+          try {
+            const image = await resolveWikipediaImage(job.card.sources[0], controller.signal);
+            if (!image || controller.signal.aborted || job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || displayModeRef.current !== "picture-text") continue;
+            setCards(current => current.some(item => item.id === job.card.id) ? current.map(item => item.id === job.card.id ? { ...item, image } : item) : current);
+          } catch {
+            // Images are optional and do not affect verified text cards.
+          } finally {
+            if (imageHydrationControllers.current.get(job.card.id) === controller) imageHydrationControllers.current.delete(job.card.id);
+          }
+        }
+      } finally {
+        imageHydrationActive.current = false;
+        if (imageHydrationQueue.current.length) enqueueImageHydration([], requestGeneration.current, workspaceIdRef.current);
+      }
+    })();
+  }, []);
+
   const cancelGeneration = useCallback(() => {
     generationAbortController.current?.abort();
     generationAbortController.current = null;
@@ -366,6 +404,10 @@ export default function HomePage() {
     youtubeSearchAbortController.current?.abort();
     globalSearchAbortController.current?.abort();
     cloudAbortController.current?.abort();
+    imageHydrationControllers.current.forEach(controller => controller.abort());
+    imageHydrationControllers.current.clear();
+    imageHydrationEpoch.current += 1;
+    imageHydrationQueue.current = [];
     if (cloudSaveTimer.current !== null) window.clearTimeout(cloudSaveTimer.current);
     cloudSaveTimer.current = null;
     requestGeneration.current += 1;
@@ -644,6 +686,16 @@ export default function HomePage() {
   }, [hydrated, scheduleCloudSave, youtubeWorkspace]);
 
   useEffect(() => {
+    displayModeRef.current = settings.displayMode;
+    if (settings.displayMode === "text") {
+      imageHydrationEpoch.current += 1;
+      imageHydrationQueue.current = [];
+      imageHydrationControllers.current.forEach(controller => controller.abort());
+      imageHydrationControllers.current.clear();
+    }
+  }, [settings.displayMode]);
+
+  useEffect(() => {
     let active = true;
     const normalizeSavedState = (parsed: Partial<PersistedState> | null, collapseInitial: boolean): PersistedState => {
       const restoredTopics = parsed?.topics ? migrateTopicTree(parsed.topics, collapseInitial, (parsed?.topicCatalogVersion ?? 0) < 11) : createDefaultTopics();
@@ -891,12 +943,23 @@ export default function HomePage() {
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => {
     const nextSentenceLength = next.sentenceLength === undefined ? settings.sentenceLength : normalizeSentenceLength(next.sentenceLength);
+    if (next.displayMode) {
+      displayModeRef.current = next.displayMode;
+      if (next.displayMode === "text") {
+        imageHydrationEpoch.current += 1;
+        imageHydrationQueue.current = [];
+        imageHydrationControllers.current.forEach(controller => controller.abort());
+        imageHydrationControllers.current.clear();
+      } else if (next.displayMode === "picture-text") {
+        enqueueImageHydration(cards, requestGeneration.current, workspaceIdRef.current);
+      }
+    }
     setSettings((current) => ({ ...current, ...next, sentenceLength: nextSentenceLength }));
     if (next.obscurity !== undefined) {
       const difficulty = normalizeDifficulty(next.obscurity);
       setLearningProfile((current) => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, { ...value, unknownStreak: 0, targetDifficulty: difficulty }])) as LearningProfile);
     }
-  }, [settings.sentenceLength]);
+  }, [cards, enqueueImageHydration, settings.sentenceLength]);
 
   const handleGoogleSignIn = useCallback(() => {
     if (!supabaseConfigured) {
@@ -985,6 +1048,7 @@ export default function HomePage() {
     }
     const controller = new AbortController();
     const requestId = requestGeneration.current;
+    const imageWorkspaceId = workspaceIdRef.current;
     generationAbortController.current = controller;
     setView("feed");
     setFeedStarted(true);
@@ -994,6 +1058,13 @@ export default function HomePage() {
     const activeRabbitHole = rabbitHoleOverride ?? rabbitHole;
     const count = Math.max(1, Math.min(10, Math.round(requestedCount || 10)));
     const receivedIds = new Set<string>();
+    const receivedCards = new Map<string, FactCard>();
+    const acceptGeneratedCard = (card: FactCard) => {
+      if (!acceptFact(card)) return false;
+      receivedIds.add(card.id);
+      receivedCards.set(card.id, card);
+      return true;
+    };
     let finalPayload: { cards?: Partial<FactCard>[]; partial?: boolean; retryGuidance?: string } | undefined;
     let streamError = "";
     try {
@@ -1021,11 +1092,11 @@ export default function HomePage() {
             }
             if (event.type !== "card") return;
             const card = normalizeFact(event.card, receivedIds.size);
-            if (acceptFact(card)) receivedIds.add(card.id);
+            acceptGeneratedCard(card);
           }
         });
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-        result.cards.forEach((card, index) => { const normalized = normalizeFact(card, index); if (!receivedIds.has(normalized.id) && acceptFact(normalized)) receivedIds.add(normalized.id); });
+        result.cards.forEach((card, index) => { const normalized = normalizeFact(card, index); if (!receivedIds.has(normalized.id)) acceptGeneratedCard(normalized); });
         if (!result.completedCount) {
           setFeedHasMore(false);
           setPendingSlots(count);
@@ -1064,7 +1135,7 @@ export default function HomePage() {
           if (event.type === "status" && event.status) setGeminiStatus(event.status);
           if (event.type === "card" && event.card?.id && event.card.title && event.card.body && event.card.hook && event.card.topicPath?.length && event.card.sources?.length) {
             const card = normalizeFact(event.card, receivedIds.size);
-            if (acceptFact(card)) receivedIds.add(card.id);
+            acceptGeneratedCard(card);
           }
         } else if (message.type === "complete") {
           finalPayload = message as typeof finalPayload;
@@ -1080,7 +1151,7 @@ export default function HomePage() {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       if (streamError) throw new Error(streamError);
       const generated = (finalPayload?.cards ?? []).filter((card) => Boolean(card.id && card.title?.trim() && card.body?.trim() && card.hook?.trim() && card.topicPath?.length && card.sources?.length)).map((card, index) => normalizeFact(card, index));
-      generated.forEach((card) => { if (!receivedIds.has(card.id) && acceptFact(card)) receivedIds.add(card.id); });
+      generated.forEach((card) => { if (!receivedIds.has(card.id)) acceptGeneratedCard(card); });
       if (!receivedIds.size) {
         setFeedHasMore(false);
         setPendingSlots(count);
@@ -1104,12 +1175,13 @@ export default function HomePage() {
       setGenerationError(message);
       setToast(message);
     } finally {
+      if (!controller.signal.aborted && requestGeneration.current === requestId && displayModeRef.current === "picture-text") enqueueImageHydration(Array.from(receivedCards.values()), requestId, imageWorkspaceId);
       if (generationAbortController.current === controller) {
         generationAbortController.current = null;
         setLoading(false);
       }
     }
-  }, [apiKey, cards, geminiStatus, learningProfile, loading, pendingSlots, rabbitHole, selectedCount, settings, topics]);
+  }, [apiKey, cards, enqueueImageHydration, geminiStatus, learningProfile, loading, pendingSlots, rabbitHole, selectedCount, settings, topics]);
 
   const resetFeed = useCallback(() => {
     archiveFacts(cards);

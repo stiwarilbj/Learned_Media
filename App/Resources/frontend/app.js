@@ -154,6 +154,11 @@
   let searchInterpretTimer = null;
   let searchInterpretRequest = null;
   let youtubeSearchRequests = [];
+  let imageHydrationEpoch = 0;
+  let imageHydrationActive = false;
+  const imageHydrationQueue = [];
+  const imageHydrationQueued = new Set();
+  const imageHydrationRequests = new Map();
   const semanticSearchCache = createSessionCache(100, 30 * 60 * 1000);
   const youtubeSmartSearchCache = createSessionCache(100, 30 * 60 * 1000);
   const learningResponseCache = createSessionCache(100, 30 * 60 * 1000);
@@ -1098,6 +1103,7 @@
     cloudSaveQueued = false;
     if (cloudSaveTimer) { window.clearTimeout(cloudSaveTimer); cloudSaveTimer = null; }
     if (stopYoutubePlayback) stopYoutubePlayback();
+    cancelImageHydrations();
     bridge("cancelAll", {}).catch(function () {});
   }
   function applyWorkspaceSnapshot(record) {
@@ -1503,8 +1509,8 @@
     const body = node("div", { className: "setup-customize-body" });
     body.appendChild(node("span", { className: "control-label", text: "Display style" }));
     const display = node("div", { className: "feed-display-options" });
-    display.appendChild(node("button", { className: state.settings.displayMode === "picture-text" ? "selected" : "", onClick: function () { state.settings.displayMode = "picture-text"; saveState(); render(); } }, "Image + text"));
-    display.appendChild(node("button", { className: state.settings.displayMode === "text" ? "selected" : "", onClick: function () { state.settings.displayMode = "text"; saveState(); render(); } }, "Text only"));
+    display.appendChild(node("button", { className: state.settings.displayMode === "picture-text" ? "selected" : "", onClick: function () { state.settings.displayMode = "picture-text"; saveState(); hydrateCardImages(state.cards, generationToken); render(); } }, "Image + text"));
+    display.appendChild(node("button", { className: state.settings.displayMode === "text" ? "selected" : "", onClick: function () { state.settings.displayMode = "text"; cancelImageHydrations(); saveState(); render(); } }, "Text only"));
     body.appendChild(display);
     body.appendChild(node("span", { className: "control-label", text: "Description length (sentences):" }));
     const lengths = node("div", { className: "feed-length-options", role: "group", ariaLabel: "Description length in sentences" });
@@ -1940,6 +1946,56 @@
   function deleteData() {
     requestConfirmation("Delete learning data?", "Saved facts, likes, history, and the current feed will be removed from this workspace.", "Confirm", performDeleteData);
   }
+  function cancelImageHydrations() {
+    imageHydrationEpoch += 1;
+    imageHydrationQueue.length = 0;
+    imageHydrationQueued.clear();
+    imageHydrationRequests.forEach(function (request) { if (request && typeof request.cancel === "function") request.cancel(); });
+    imageHydrationRequests.clear();
+  }
+  function hydrateCardImages(cards, token) {
+    if (state.settings.displayMode === "text") return;
+    const epoch = imageHydrationEpoch;
+    (cards || []).forEach(function (card) {
+      if (!card || !card.id || card.image || !(card.sources || []).length || imageHydrationQueued.has(card.id) || imageHydrationRequests.has(card.id)) return;
+      imageHydrationQueued.add(card.id);
+      imageHydrationQueue.push({ card: card, token: token, epoch: epoch, workspaceId: state.workspaceId });
+    });
+    void drainImageHydrationQueue();
+  }
+  async function drainImageHydrationQueue() {
+    if (imageHydrationActive) return;
+    imageHydrationActive = true;
+    try {
+      while (imageHydrationQueue.length) {
+        const job = imageHydrationQueue.shift();
+        imageHydrationQueued.delete(job.card.id);
+        if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || state.settings.displayMode === "text") continue;
+        const card = state.cards.find(function (item) { return item.id === job.card.id; });
+        if (!card || card.image || !(card.sources || []).length) continue;
+        const request = bridge("resolveFactImage", { cardId: card.id, source: card.sources[0] });
+        imageHydrationRequests.set(card.id, request);
+        try {
+          const result = await request;
+          if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || state.settings.displayMode === "text" || !result || !result.image) continue;
+          const current = state.cards.find(function (item) { return item.id === result.cardId; });
+          if (!current) continue;
+          current.image = result.image;
+          saveState();
+          var scrollTop = window.scrollY;
+          render();
+          window.scrollTo(0, scrollTop);
+        } catch (_) {
+          // Images are optional and do not affect the completed text cards.
+        } finally {
+          if (imageHydrationRequests.get(card.id) === request) imageHydrationRequests.delete(card.id);
+        }
+      }
+    } finally {
+      imageHydrationActive = false;
+      if (imageHydrationQueue.length) void drainImageHydrationQueue();
+    }
+  }
   async function generateBatch(token, requestedCount) {
     if (state.loading || !selectedCount()) return;
     const activeToken = token || generationToken;
@@ -1947,6 +2003,7 @@
     state.loading = true;
     state.generationError = "";
     const count = Math.max(1, Math.min(10, Number(requestedCount) || 7));
+    const existingCardIds = new Set(state.cards.map(function (card) { return card.id; }));
     const generationSentenceLength = normalizeSentenceLength(state.settings.sentenceLength);
     state.activeGenerationSentenceLength = generationSentenceLength;
     state.batchAccepted = 0;
@@ -1969,6 +2026,7 @@
       showToast(state.generationError);
     } finally {
       if (activeToken === generationToken) {
+        hydrateCardImages(state.cards.filter(function (card) { return !existingCardIds.has(card.id); }), activeToken);
         state.loading = false;
         saveState();
         render();

@@ -19,6 +19,10 @@ const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateL
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
+const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
+const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
+const { completeSentenceChunks } = require("../lib/fact-quality.ts");
+const { sharedWikipediaResolutionCache } = require("../lib/wikipedia.ts");
 const originalFetch = globalThis.fetch;
 const originalDateNow = Date.now;
 const words = ["amber", "birch", "cobalt", "delta", "ember", "fossil", "granite", "harbor", "indigo", "juniper", "kelp"];
@@ -63,20 +67,39 @@ function candidateAssignments(prompt) {
 }
 
 function groundingSlots(prompt) {
-  const marker = "Slots and source assignments (untrusted data):\n";
+  const marker = "Slots and evidence spans (untrusted data):\n";
   const start = prompt.indexOf(marker);
   if (start < 0) return [];
   const serialized = prompt.slice(start + marker.length).split("\n", 1)[0];
   const payload = JSON.parse(serialized);
-  const sources = new Map((payload.sources || []).map(source => [source.index, source]));
+  const spans = new Map((payload.evidence || []).map(source => [source.id, source]));
   return (payload.facts || []).map(value => ({
     ...value,
-    evidence: (value.sourceIndexes || []).map(index => sources.get(index)).filter(Boolean)
+    evidence: (value.evidenceIds || []).map(id => spans.get(id)).filter(Boolean),
+    allEvidence: payload.evidence || []
   }));
 }
 
+function streamedJsonResponse(output, model, delayMs = 0, onComplete = () => {}) {
+  const encoded = JSON.stringify(output);
+  const fragments = Array.isArray(output.facts)
+    ? ["{\"facts\":[", ...output.facts.flatMap((fact, index) => [JSON.stringify(fact), index < output.facts.length - 1 ? "," : ""]), "]}"]
+    : [encoded];
+  let index = 0;
+  const body = new ReadableStream({
+    async pull(controller) {
+      if (index >= fragments.length) { onComplete(); controller.close(); return; }
+      const text = fragments[index++];
+      const event = JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }], modelVersion: model });
+      controller.enqueue(new TextEncoder().encode("data: " + event + "\n\n"));
+      if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  });
+  return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
 function installNetworkMock(options = {}) {
-  const state = { requests: [], candidatePrompts: [], groundingPrompts: [], omittedSlots: new Set(), requestFailures: options.requestFailures || {}, requestFailureMessages: options.requestFailureMessages || {}, connectionFailures: options.connectionFailures || {}, connectionFailureMessages: options.connectionFailureMessages || {} };
+  const state = { requests: [], candidatePrompts: [], groundingPrompts: [], omittedSlots: new Set(), candidateStreamCompletedAt: 0, wikipediaStartedAt: 0, requestFailures: options.requestFailures || {}, requestFailureMessages: options.requestFailureMessages || {}, connectionFailures: options.connectionFailures || {}, connectionFailureMessages: options.connectionFailureMessages || {} };
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url ?? input.toString());
     const body = init.body ? JSON.parse(String(init.body)) : {};
@@ -122,23 +145,35 @@ function installNetworkMock(options = {}) {
           }
           const sentences = sentenceSet(word);
           const quotes = options.invalidSlot === slot ? sentences.map((quote, index) => index === 0 ? "This quotation does not occur in the supplied Wikipedia passage." : quote) : sentences;
+          const evidence = sentences.map((quote, sentence) => {
+            const match = value.evidence.find(span => span.text === quote);
+            const fallback = value.evidence.find(span => span.text.includes(quote.slice(0, 40)));
+            const selected = match || fallback;
+            const invalidId = (options.invalidEvidenceIdSlot === slot || options.invalidSlot === slot) && sentence === 0;
+            return { sentence, evidenceIds: invalidId ? ["unknown-evidence-id"] : selected ? [selected.id] : ["unknown-evidence-id"] };
+          });
           return {
             slot,
             title: factBundle(word).title,
             hook: factBundle(word).hook,
             claim,
             sentences,
-            evidence: quotes.map((quote, sentence) => ({ sentence, sourceIndex: value.sourceIndexes[0] ?? 0, quote, section: sectionName(word) }))
+            evidence
           };
         }).filter(Boolean).reverse() };
       } else {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
+      }
+      if (url.pathname.includes(":streamGenerateContent")) {
+        const candidateStream = prompt.includes("Generate exactly one candidate for every supplied slot");
+        return streamedJsonResponse(output, model, candidateStream ? options.streamChunkDelayMs || 0 : 0, candidateStream ? () => { state.candidateStreamCompletedAt = performance.now(); } : undefined);
       }
       return jsonResponse({ candidates: [{ content: { parts: [{ text: JSON.stringify(output) }] } }], modelVersion: model });
     }
     if (url.hostname === "en.wikipedia.org" && url.pathname === "/w/api.php") {
       const action = url.searchParams.get("action");
       const title = url.searchParams.get("titles") ?? "";
+      if (action === "query" && !title.startsWith("File:")) state.wikipediaStartedAt ||= performance.now();
       if (action === "query" && title.startsWith("File:")) {
         return jsonResponse({ query: { pages: { "-1": { imageinfo: [{ url: "https://upload.wikimedia.org/shared.jpg", thumburl: "https://upload.wikimedia.org/shared-thumb.jpg", descriptionurl: "https://commons.wikimedia.org/wiki/File:Shared.jpg", extmetadata: { Artist: { value: "Test Artist" } } }] } } } });
       }
@@ -229,6 +264,24 @@ await t.test("session caches are bounded, expire, and avoid repeating weak local
   ];
   const candidates = searchYouTubeCandidates(videos, { terms: ["black holes bend light"] }, "All", undefined, 80);
   assert.deepEqual(strongLocalVideoCandidates("black holes bend light", candidates).map(candidate => candidate.video.id), ["direct"], "only concept-complete metadata matches count as strong local results");
+});
+
+await t.test("stream parsing preserves object boundaries, nested values, escapes, and sentence chunks", async () => {
+  const parser = new JsonArrayItemStreamParser("facts");
+  const source = JSON.stringify({ ignored: [{ value: 1 }], facts: [{ slot: 2, title: 'A } quoted "title"', nested: { values: [1, 2] } }, { slot: 7, title: "Second" }] });
+  const parsed = [];
+  for (let index = 0; index < source.length; index += 3) parsed.push(...parser.push(source.slice(index, index + 3)));
+  assert.deepEqual(parsed.map(item => item.slot), [2, 7]);
+  assert.equal(parsed[0].nested.values[1], 2);
+  assert.equal(parsed[0].title, 'A } quoted "title"');
+  parser.reset();
+  assert.deepEqual(parser.push('{"facts":[{"slot":9}]}').map(item => item.slot), [9], "a retry must reset the candidate parser");
+
+  const sourceSentences = "First sentence ends here. The second sentence stays together! Third sentence follows?";
+  const chunks = completeSentenceChunks(sourceSentences, 45);
+  assert.ok(chunks.every(chunk => chunk.endsWith(".") || chunk.endsWith("!") || chunk.endsWith("?")), "evidence chunks should end at sentence boundaries");
+  assert.ok(chunks.join(" ").includes("The second sentence stays together!"));
+  assert.deepEqual([transientRetryDelayMs(1), transientRetryDelayMs(2), transientRetryDelayMs(3), transientRetryDelayMs(9), transientRetryDelayMs(1, 12_500)], [2000, 4000, 8000, 8000, 12_500]);
 });
 
 await t.test("video searches preserve channel, exclusion, date, duration, approval, topic, and Shorts filters", async () => {
@@ -357,6 +410,20 @@ await t.test("default seven-card generation uses one candidate and one grounding
   assert.deepEqual(state.groundingPrompts.map(prompt => groundingSlots(prompt).length), [7]);
   assert.deepEqual(geminiCalls(state).map(call => call.model), [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[0]]);
   assertNoModelRepeatsWithinLogicalRequest(state);
+});
+
+await t.test("candidate lookups overlap streamed output and image requests stay off the generation path", async () => {
+  sharedWikipediaResolutionCache.pages.clear();
+  sharedWikipediaResolutionCache.searches.clear();
+  sharedWikipediaResolutionCache.images.clear();
+  const state = installNetworkMock({ streamChunkDelayMs: 8 });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 7 });
+  assert.equal(result.completedCount, 7);
+  assert.equal(geminiCallCount(state), 2);
+  assert.ok(state.wikipediaStartedAt > 0 && state.candidateStreamCompletedAt > 0, `expected both timestamps; Wikipedia=${state.wikipediaStartedAt}, candidate stream=${state.candidateStreamCompletedAt}`);
+  assert.ok(state.wikipediaStartedAt < state.candidateStreamCompletedAt, "Wikipedia should start while later candidate objects are still streaming");
+  assert.equal(state.requests.filter(request => request.url.searchParams.get("titles")?.startsWith("File:")).length, 0, "image metadata must not be fetched before generation returns");
 });
 
 await t.test("serialized requests use a healthy primary and fall back only after its failure", async () => {
@@ -523,7 +590,7 @@ await t.test("ten three-sentence cards use one candidate and one grounding call,
     assert.ok(card.evidence?.every(item => card.sources[item.sourceIndex].extract?.includes(item.quote)));
   }
   assert.ok(state.requests.filter(request => request.url.hostname === "en.wikipedia.org" && request.url.searchParams.get("titles") === "Shared Article").length <= 1, "the repeated article title should be fetched at most once per generation batch and may come from the session cache");
-  assert.ok(state.requests.filter(request => request.url.searchParams.get("titles") === "File:Shared.jpg").length <= 1, "the repeated image should be attributed at most once and may come from the session cache");
+  assert.equal(state.requests.filter(request => request.url.searchParams.get("titles") === "File:Shared.jpg").length, 0, "generation must return before requesting card images");
 });
 
 await t.test("a missing grounded slot retries only grounding and returns all cards", async () => {
@@ -547,7 +614,7 @@ await t.test("duplicate content is rejected and only that slot is regenerated", 
   assert.equal(state.groundingPrompts.length, 2);
 });
 
-await t.test("unsupported quotations fail local validation and leave only that slot partial", async () => {
+await t.test("unknown evidence IDs fail local validation and leave only that slot partial", async () => {
   const state = installNetworkMock({ invalidSlot: 9 });
   const sessionId = await connectMock(state);
   const result = await generateGeminiFacts(generationArgs(sessionId));

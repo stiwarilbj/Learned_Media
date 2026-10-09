@@ -18,6 +18,27 @@ export function hasExactSentenceCount(text: string, expected: SentenceLength | n
   return countSentences(text) === normalizeSentenceLength(expected);
 }
 
+export function completeSentenceChunks(text: string, maxCharacters = 1200) {
+  const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locale: string, options: { granularity: "sentence" }) => { segment: (value: string) => Iterable<{ segment: string }> } }).Segmenter;
+  const pieces = Segmenter
+    ? Array.from(new Segmenter("en", { granularity: "sentence" }).segment(text), item => item.segment.trim()).filter(Boolean)
+    : (text.match(/[^.!?]+[.!?]+[”’\"')\]]*(?=\s|$)|[^.!?]+$/g) ?? []).map(item => item.trim()).filter(Boolean);
+  const chunks: string[] = [];
+  let current = "";
+  for (const sentence of pieces) {
+    const next = current ? current + " " + sentence : sentence;
+    if (current && next.length > maxCharacters) {
+      chunks.push(current);
+      current = sentence;
+    } else current = next;
+  }
+  if (current) {
+    if (current.length < 90 && chunks.length) chunks[chunks.length - 1] += " " + current;
+    else chunks.push(current);
+  }
+  return chunks;
+}
+
 export function factWritingRules(sentenceCount: SentenceLength | number = 3) {
   const count = normalizeSentenceLength(sentenceCount);
   const structure = {
@@ -133,8 +154,7 @@ export function selectEvidence(extract: string, focus: string, difficulty: numbe
     if (heading) { section = heading[1]; continue; }
     if (/^(References|Notes|External links|Further reading|Bibliography|See also)$/i.test(section) || paragraph.trim().length < 90) continue;
     if (difficulty >= 5 && section === "Introduction") continue;
-    for (let offset = 0; offset < paragraph.length; offset += 1200) {
-      const text = paragraph.slice(offset, offset + 1200).trim();
+    for (const text of completeSentenceChunks(paragraph, 1200)) {
       if (text.length < 90) continue;
       passages.push({text, section, score: overlap(words, tokens(text + " " + section)) * 5 + (section !== "Introduction" ? .3 : difficulty >= 5 ? -3 : .4) + random() * .15});
     }
