@@ -3,6 +3,7 @@
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
 import type { DisplayMode, FeedSettings, TopicNode } from "@/lib/types";
+import type { TopicSearchIndex } from "@/lib/topic-search-types";
 import { selectedLeafCount, summarizeSelection } from "@/lib/topic-tree";
 import { Icon } from "./icons";
 import { TopicTree } from "./TopicTree";
@@ -10,6 +11,8 @@ import { TopicTree } from "./TopicTree";
 type SetupWorkspaceProps = {
   topics: TopicNode[];
   query: string;
+  catalogRevision: number;
+  searchIndex?: TopicSearchIndex;
   onQueryChange: (value: string) => void;
   settings: FeedSettings;
   customTopic: string;
@@ -33,7 +36,7 @@ const modeCopy: Array<{ id: DisplayMode; label: string; icon: "list" | "lightbul
   { id: "text", label: "Text only", icon: "lightbulb" }
 ];
 
-export function SetupWorkspace({ topics, query, onQueryChange, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
+export function SetupWorkspace({ topics, query, catalogRevision, searchIndex, onQueryChange, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
   const selectedCount = selectedLeafCount(topics);
   const hasSelection = selectedCount > 0;
   const selectionSummary = summarizeSelection(topics);
@@ -63,7 +66,7 @@ export function SetupWorkspace({ topics, query, onQueryChange, settings, customT
               </label>
               <button type="button" className="text-button" onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={15} /> {settings.surpriseMe ? "Surprise me is on" : "Surprise me is off"}</button>
             </div>
-            <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onCollapseAll={onCollapseTopics} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
+            <TopicTree nodes={topics} query={query} catalogRevision={catalogRevision} searchIndex={searchIndex} onToggle={onToggleTopic} onExpand={onExpandTopic} onCollapseAll={onCollapseTopics} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
             <button type="button" className="start-button start-button-mobile" onClick={canStart ? onStart : onOpenSettings} disabled={!hasSelection}><span>{!hasSelection ? "Choose a topic first" : canStart ? "Start learning" : "Connect Gemini first"}</span><Icon name="arrow" size={21} /></button>
             <div className="custom-topic-form">
               <div><strong>Add a custom topic</strong><span>Make the feed as specific as you are</span></div>

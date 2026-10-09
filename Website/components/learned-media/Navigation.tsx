@@ -14,7 +14,7 @@ type NavigationProps = {
   query: string;
   onQueryChange: (query: string) => void;
   topicSuggestions: TopicSuggestion[];
-  onChooseTopic: (label: string) => void;
+  onChooseTopic: (label: string, id?: string) => void;
   workspaceId: string;
   workspaceName: string;
   workspaces: WorkspaceSummary[];
@@ -68,11 +68,6 @@ export function Navigation({ view, onNavigate, onReset, showReset, query, onQuer
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, []);
-  const chooseTopic = (label: string) => {
-    setSearchOpen(false);
-    setWorkspaceOpen(false);
-    onChooseTopic(label);
-  };
   const navigate = (nextView: View) => {
     setSearchOpen(false);
     setWorkspaceOpen(false);
@@ -124,7 +119,7 @@ export function Navigation({ view, onNavigate, onReset, showReset, query, onQuer
                 const label = group === "keyword" ? "Keyword matches" : group === "related" ? "Related topics" : "Explore more";
                 return <section className="search-suggestion-group" key={group} aria-label={`${label}: ${groupSuggestions.length}`}>
                   <span className="search-group-label">{label} <span className="search-group-count">{groupSuggestions.length}</span></span>
-                  {groupSuggestions.map((topic) => <button type="button" key={topic.id} title={topic.path.join(" → ")} aria-label={topic.path.join(" → ")} onClick={() => chooseTopic(topic.label)}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}
+                  {groupSuggestions.map((topic) => <button type="button" key={topic.id} title={topic.path.join(" → ")} aria-label={topic.path.join(" → ")} onClick={() => { setSearchOpen(false); setWorkspaceOpen(false); onChooseTopic(topic.label, topic.id); }}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}
                 </section>;
               })}
             </div>}

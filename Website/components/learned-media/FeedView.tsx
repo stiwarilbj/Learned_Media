@@ -1,18 +1,22 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
 import type { DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, TopicNode } from "@/lib/types";
+import type { TopicSearchIndex } from "@/lib/topic-search-types";
 import { selectedLeafCount } from "@/lib/topic-tree";
 import { FactCard } from "./FactCard";
 import { Icon } from "./icons";
 import { TopicTree } from "./TopicTree";
+import { VirtualizedRows } from "./VirtualizedRows";
 
 type FeedViewProps = {
   cards: FactCardType[];
   showReset: boolean;
   query?: string;
+  catalogRevision: number;
+  topicSearchIndex?: TopicSearchIndex;
   settings: FeedSettings;
   topics: TopicNode[];
   customTopic: string;
@@ -23,10 +27,13 @@ type FeedViewProps = {
   toast?: string;
   learnLoading: string | null;
   questionLoading: string | null;
+  questionDrafts: Record<string, { text?: string; detailed?: boolean }>;
   learningErrors: Record<string, string | undefined>;
   onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
   onAskQuestion: (id: string, question: string, detailed: boolean) => void;
+  onQuestionDraft: (id: string, value: string) => void;
+  onQuestionDetailed: (id: string, value: boolean) => void;
   onReset: () => void;
   onRetry: () => void;
   onLoadMore: () => void;
@@ -44,7 +51,9 @@ function SkeletonCard() {
   return <div className="skeleton-card"><div className="skeleton-media shimmer" /><div className="skeleton-line wide shimmer" /><div className="skeleton-line shimmer" /><div className="skeleton-line short shimmer" /></div>;
 }
 
-function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onReset, showReset }: Pick<FeedViewProps, "topics" | "query" | "customTopic" | "settings" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onCollapseTopics" | "onWeightTopic" | "onRemoveCustomTopic" | "onSettingsChange" | "onReset" | "showReset">) {
+const cardRowKey = (card: FactCardType) => card.id;
+
+function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, customTopic, settings, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onReset, showReset }: Pick<FeedViewProps, "topics" | "query" | "catalogRevision" | "topicSearchIndex" | "customTopic" | "settings" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onCollapseTopics" | "onWeightTopic" | "onRemoveCustomTopic" | "onSettingsChange" | "onReset" | "showReset">) {
   const [topicsOpen, setTopicsOpen] = useState(true);
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
@@ -61,7 +70,7 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
           <input id="feed-obscurity" className="feed-range" type="range" min="1" max="10" step="1" value={settings.obscurity} onChange={(event) => onSettingsChange({ obscurity: Number(event.target.value) })} />
           <span className="range-ends"><span>A Little Hard</span><span>Impossible</span></span>
         </label>
-        <TopicTree nodes={topics} query={query} onToggle={onToggleTopic} onExpand={onExpandTopic} onCollapseAll={onCollapseTopics} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
+        <TopicTree nodes={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicSearchIndex} onToggle={onToggleTopic} onExpand={onExpandTopic} onCollapseAll={onCollapseTopics} onWeight={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} />
         <div className="feed-custom-topic">
           <input value={customTopic} onChange={(event) => onCustomTopicChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onAddCustomTopic()} placeholder="Add a topic" aria-label="Add a custom topic" />
           <button type="button" onClick={onAddCustomTopic} aria-label="Add custom topic"><Icon name="plus" size={15} /></button>
@@ -85,23 +94,21 @@ function TopicSidebar({ topics, query = "", customTopic, settings, onCustomTopic
   );
 }
 
-export function FeedView({ cards, showReset, query = "", settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, learningErrors, onAction, onLearnMore, onAskQuestion, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+export function FeedView({ cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, questionDrafts, learningErrors, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+  const renderCard = useCallback((card: FactCardType) => <FactCard card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} />, [learnLoading, learningErrors, onAction, onAskQuestion, onLearnMore, onQuestionDetailed, onQuestionDraft, questionDrafts, questionLoading, settings.displayMode]);
   return (
     <div className="feed-workspace">
       {rabbitHole && <div className="rabbit-banner"><div><Icon name="arrow" size={16} /><span>Rabbit Hole Mode <strong>→ {rabbitHole}</strong></span></div><button type="button" onClick={onReset}>Exit rabbit hole</button></div>}
       {toast && <div className="feed-toast"><Icon name="check" size={15} /> {toast}</div>}
       <div className="feed-layout">
-          <TopicSidebar topics={topics} query={query} customTopic={customTopic} settings={settings} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onCollapseTopics={onCollapseTopics} onWeightTopic={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} onSettingsChange={onSettingsChange} onReset={onReset} showReset={showReset} />
+          <TopicSidebar topics={topics} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicSearchIndex} customTopic={customTopic} settings={settings} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onCollapseTopics={onCollapseTopics} onWeightTopic={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} onSettingsChange={onSettingsChange} onReset={onReset} showReset={showReset} />
         <section className="feed-content-column">
           <div className="feed-toolbar">
             <div className="active-topics"><span className="toolbar-label">Your feed</span></div>
           </div>
           <div className="feed-intro"><div><h1>Keep going</h1><p>One small idea at a time. Every card has a place to look next</p></div><span className="feed-count">{cards.length} cards in this session</span></div>
           <div className="fact-feed">
-            {cards.map((card, index) => <Fragment key={card.id}>
-              {canLoadMore && index === Math.max(cards.length - 3, 0) && <div className="feed-load-more-nearby"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 10 more</button></div>}
-              <FactCard card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} />
-            </Fragment>)}
+            <VirtualizedRows items={cards} columns={1} estimatedHeight={settings.displayMode === "text" ? 490 : 660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} />
             {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> Gemini is building the next facts</div>}
             {generationError && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry} disabled={loading} aria-busy={loading}>Retry missing facts</button></div>}
             {canLoadMore && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 10 more</button></div>}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import { DIFFICULTY_LABELS } from "@/lib/recommendations";
 import type { DisplayMode, FactCard as FactCardType, FactCardAction } from "@/lib/types";
 import { Icon } from "./icons";
@@ -12,15 +12,19 @@ type FactCardProps = {
   questionLoading?: boolean;
   learnError?: string;
   questionError?: string;
+  questionDraft?: string;
+  questionDetailed?: boolean;
   onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
   onAskQuestion: (id: string, question: string, detailed: boolean) => void;
+  onQuestionDraft: (id: string, value: string) => void;
+  onQuestionDetailed: (id: string, value: boolean) => void;
 };
 
-export function FactCard({ card, displayMode, learnLoading, questionLoading, learnError, questionError, onAction, onLearnMore, onAskQuestion }: FactCardProps) {
+export const FactCard = memo(function FactCard({ card, displayMode, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed }: FactCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
-  const [question, setQuestion] = useState(card.question ?? "");
-  const [detailed, setDetailed] = useState(false);
+  const question = questionDraft ?? card.question ?? "";
+  const detailed = questionDetailed ?? Boolean(card.questionDetailed);
   const showImage = displayMode === "picture-text";
 
   function submitQuestion() {
@@ -35,7 +39,7 @@ export function FactCard({ card, displayMode, learnLoading, questionLoading, lea
       {showImage && (
         <div className={`fact-image ${card.image && !imageFailed ? "has-image" : "no-image"}`}>
           {card.image && !imageFailed ? (
-            <img src={card.image.url} alt={card.image.alt} loading="lazy" onError={() => setImageFailed(true)} />
+            <img src={card.image.url} alt={card.image.alt} loading="lazy" decoding="async" width="960" height="540" onError={() => setImageFailed(true)} />
           ) : (
             <div className="image-unavailable"><Icon name="image" size={25} /><span>Image unavailable</span></div>
           )}
@@ -66,12 +70,12 @@ export function FactCard({ card, displayMode, learnLoading, questionLoading, lea
           <div className="question-row">
             <input
               value={question}
-              onChange={(event) => setQuestion(event.target.value)}
+              onChange={(event) => onQuestionDraft(card.id, event.target.value)}
               onKeyDown={(event) => event.key === "Enter" && submitQuestion()}
               placeholder="Ask a question about this fact"
               aria-label={`Ask a question about ${card.title}`}
             />
-            <button type="button" className={`details-toggle ${detailed ? "selected" : ""}`} onClick={() => setDetailed((value) => !value)} aria-pressed={detailed}>More Details</button>
+            <button type="button" className={`details-toggle ${detailed ? "selected" : ""}`} onClick={() => onQuestionDetailed(card.id, !detailed)} aria-pressed={detailed}>More Details</button>
             <button type="button" className="question-send" onClick={submitQuestion} disabled={!question.trim() || questionLoading} aria-label="Send question"><Icon name="arrow" size={16} /></button>
           </div>
           {card.answer && <div className="learning-answer question-answer"><span className="answer-label"><Icon name="message" size={14} /> {card.answerDetailed ? "Detailed answer" : "Answer"}</span><p>{card.answer}</p><div className="answer-sources">{card.answerSources?.map((source) => <a href={source.url} key={source.url} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={11} /></a>)}</div></div>}
@@ -96,4 +100,4 @@ export function FactCard({ card, displayMode, learnLoading, questionLoading, lea
       </div>
     </article>
   );
-}
+});

@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { YouTubeChannelRecord, YouTubeImportProgress, YouTubeTopic, YouTubeVideo, YouTubeWorkspaceState } from "@/lib/youtube";
 import { YOUTUBE_TOPICS, filterYouTubeVideos, relatedYouTubeVideos, selectRandomVideos } from "@/lib/youtube";
 import type { RankedVideoSearchResult } from "@/lib/gemini";
 import { Icon } from "./icons";
+import { VirtualizedRows } from "./VirtualizedRows";
 
 type VideoWorkspaceProps = {
   workspace: YouTubeWorkspaceState;
+  videoById: ReadonlyMap<string, YouTubeVideo>;
+  channelById: ReadonlyMap<string, YouTubeChannelRecord>;
+  videosByChannel: ReadonlyMap<string, YouTubeVideo[]>;
   youtubeStatus: "not-configured" | "connecting" | "refreshing" | "connected" | "error";
   progress: YouTubeImportProgress;
   error?: string;
@@ -42,43 +46,56 @@ function formatDate(value: string) {
 }
 
 function videoUrl(id: string) { return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`; }
+const videoRowKey = (video: YouTubeVideo) => video.id;
 
-function VideoCard({ video, saved, reason, onOpen, onSave }: { video: YouTubeVideo; saved: boolean; reason?: RankedVideoSearchResult; onOpen: () => void; onSave: () => void }) {
+const VideoCard = memo(function VideoCard({ video, saved, reason, onOpenVideo, onSaveVideo }: { video: YouTubeVideo; saved: boolean; reason?: RankedVideoSearchResult; onOpenVideo: (id: string) => void; onSaveVideo: (id: string) => void }) {
   return <article className="video-card">
-    <button type="button" className="video-card-main" onClick={onOpen} aria-label={`Watch ${video.title}`}>
-      <div className="video-thumbnail">{video.thumbnailUrl ? <img src={video.thumbnailUrl} alt="" loading="lazy" /> : <span><Icon name="image" size={22} /></span>}<small>{video.durationLabel}</small></div>
+    <button type="button" className="video-card-main" onClick={() => onOpenVideo(video.id)} aria-label={`Watch ${video.title}`}>
+      <div className="video-thumbnail">{video.thumbnailUrl ? <img src={video.thumbnailUrl} alt="" loading="lazy" decoding="async" width="320" height="180" /> : <span><Icon name="image" size={22} /></span>}<small>{video.durationLabel}</small></div>
       <div className="video-card-copy"><h3>{video.title}</h3><p>{video.channelName}</p><time dateTime={video.publishedAt}>{formatDate(video.publishedAt)}</time></div>
     </button>
-    <button type="button" className={`video-save-button ${saved ? "saved" : ""}`} onClick={onSave} aria-label={saved ? "Remove from saved videos" : "Save video"}><Icon name="bookmark" size={16} /></button>
+    <button type="button" className={`video-save-button ${saved ? "saved" : ""}`} onClick={() => onSaveVideo(video.id)} aria-label={saved ? "Remove from saved videos" : "Save video"}><Icon name="bookmark" size={16} /></button>
     {reason && <details className="video-match-reason"><summary>Why this matches</summary><p>{reason.explanation}</p><small>{reason.support.join(" · ")}</small></details>}
   </article>;
-}
+});
 
-function VideoList({ videos, workspace, reasons, smartSearchRan, onOpenVideo, onSaveVideo }: { videos: YouTubeVideo[]; workspace: YouTubeWorkspaceState; reasons?: Record<string, RankedVideoSearchResult>; smartSearchRan?: boolean; onOpenVideo: (id: string) => void; onSaveVideo: (id: string) => void }) {
+function VideoList({ videos, savedIds, reasons, smartSearchRan, onOpenVideo, onSaveVideo }: { videos: YouTubeVideo[]; savedIds: ReadonlySet<string>; reasons?: Record<string, RankedVideoSearchResult>; smartSearchRan?: boolean; onOpenVideo: (id: string) => void; onSaveVideo: (id: string) => void }) {
+  const [viewportWidth, setViewportWidth] = useState(1200);
+  useEffect(() => {
+    const update = () => setViewportWidth(window.innerWidth);
+    update();
+    window.addEventListener("resize", update, { passive: true });
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  const renderVideo = useCallback((video: YouTubeVideo) => <VideoCard video={video} saved={savedIds.has(video.id)} reason={reasons?.[video.id]} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} />, [onOpenVideo, onSaveVideo, reasons, savedIds]);
   if (!videos.length) return <div className="video-empty"><div className="empty-orbit"><Icon name="search" size={24} /></div><h2>{smartSearchRan ? "No relevant approved videos found" : "No approved videos match that yet"}</h2><p>{smartSearchRan ? "Gemini could not support a match in the approved catalog. Try another phrase or remove a conflicting filter" : "Try another phrase, topic, or channel. The search stays inside the approved collection"}</p></div>;
-  return <div className="video-grid">{videos.map((video) => <VideoCard key={video.id} video={video} saved={workspace.savedIds.includes(video.id)} reason={reasons?.[video.id]} onOpen={() => onOpenVideo(video.id)} onSave={() => onSaveVideo(video.id)} />)}</div>;
+  const columns = viewportWidth > 900 ? 3 : viewportWidth > 620 ? 2 : 1;
+  return <VirtualizedRows items={videos} columns={columns} estimatedHeight={viewportWidth <= 620 ? 285 : 260} gap={13} className="video-grid" getKey={videoRowKey} renderItem={renderVideo} />;
 }
 
 function VideoTabs({ activeTab, savedCount, onTabChange }: { activeTab: YouTubeWorkspaceState["activeTab"]; savedCount: number; onTabChange: (tab: YouTubeWorkspaceState["activeTab"]) => void }) {
   return <div className="video-tabs" role="tablist" aria-label="Video views">{([["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]] as const).map(([tab, label]) => <button type="button" role="tab" aria-selected={activeTab === tab} className={activeTab === tab ? "active" : ""} key={tab} onClick={() => onTabChange(tab)}>{label}{tab === "saved" && savedCount ? <small>{savedCount}</small> : null}</button>)}</div>;
 }
 
-export function VideoWorkspace({ workspace, youtubeStatus, progress, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
+export function VideoWorkspace({ workspace, videoById, channelById, videosByChannel, youtubeStatus, progress, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
   const [ended, setEnded] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const showMoreRef = useRef<HTMLDivElement>(null);
-  const activeVideo = workspace.selectedVideoId ? workspace.videos.find((video) => video.id === workspace.selectedVideoId) : undefined;
-  const activeChannel = workspace.selectedChannelId ? workspace.channels.find((channel) => channel.id === workspace.selectedChannelId) : undefined;
+  const savedIds = useMemo(() => new Set(workspace.savedIds), [workspace.savedIds]);
+  const deferredSearchText = useDeferredValue(workspace.searchText);
+  const activeVideo = workspace.selectedVideoId ? videoById.get(workspace.selectedVideoId) : undefined;
+  const activeChannel = workspace.selectedChannelId ? channelById.get(workspace.selectedChannelId) : undefined;
   const channelVideos = useMemo(() => {
     if (!activeChannel) return [];
-    const matches = smartSearchRan ? searchResults.filter((video) => video.channelId === activeChannel.id) : filterYouTubeVideos(workspace.videos, workspace.searchText, workspace.selectedTopic, activeChannel.id);
+    const channelPool = videosByChannel.get(activeChannel.id) ?? [];
+    const matches = smartSearchRan ? searchResults.filter((video) => video.channelId === activeChannel.id) : filterYouTubeVideos(channelPool, deferredSearchText, workspace.selectedTopic, activeChannel.id);
     if (workspace.channelOrder === "newest") return [...matches].sort((left, right) => right.publishedAt.localeCompare(left.publishedAt));
     if (workspace.channelOrder === "oldest") return [...matches].sort((left, right) => left.publishedAt.localeCompare(right.publishedAt));
     return selectRandomVideos(matches, matches.length, [], workspace.prioritizeRecentByChannel);
-  }, [activeChannel, searchResults, smartSearchRan, workspace.channelOrder, workspace.prioritizeRecentByChannel, workspace.searchText, workspace.selectedTopic, workspace.videos]);
-  const historyVideos = workspace.history.map((item) => workspace.videos.find((video) => video.id === item.videoId)).filter((video): video is YouTubeVideo => Boolean(video));
-  const savedVideos = workspace.videos.filter((video) => workspace.savedIds.includes(video.id));
-  const related = activeVideo ? relatedYouTubeVideos(workspace.videos, activeVideo, 6, workspace.prioritizeRecentByChannel) : [];
+  }, [activeChannel, deferredSearchText, searchResults, smartSearchRan, videosByChannel, workspace.channelOrder, workspace.prioritizeRecentByChannel, workspace.selectedTopic]);
+  const historyVideos = useMemo(() => workspace.history.map((item) => videoById.get(item.videoId)).filter((video): video is YouTubeVideo => Boolean(video)), [videoById, workspace.history]);
+  const savedVideos = useMemo(() => workspace.savedIds.map((id) => videoById.get(id)).filter((video): video is YouTubeVideo => Boolean(video)), [videoById, workspace.savedIds]);
+  const related = useMemo(() => activeVideo ? relatedYouTubeVideos(workspace.videos, activeVideo, 6, workspace.prioritizeRecentByChannel) : [], [activeVideo, workspace.prioritizeRecentByChannel, workspace.videos]);
 
   useEffect(() => {
     setEnded(false);
@@ -120,7 +137,7 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
         <div className="video-player-shell">{activeVideo.embedAvailable ? <iframe ref={iframeRef} title={activeVideo.title} src={`https://www.youtube.com/embed/${encodeURIComponent(activeVideo.id)}?enablejsapi=1&origin=https%3A%2F%2Fstiwarilbj.github.io&rel=0&playsinline=1${workspace.playbackPositions[activeVideo.id] ? `&start=${Math.max(0, Math.floor(workspace.playbackPositions[activeVideo.id]))}` : ""}`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" /> : <div className="video-unavailable"><Icon name="external" size={24} /><strong>Watch this one on YouTube</strong><a href={videoUrl(activeVideo.id)} target="_blank" rel="noreferrer">Open video</a></div>}</div>
         <div className="video-player-heading"><div><span className="eyebrow">Now watching</span><h1>{activeVideo.title}</h1><p>{activeVideo.channelName} · {formatDate(activeVideo.publishedAt)} · {activeVideo.durationLabel}</p></div><button type="button" className={`secondary-button ${workspace.savedIds.includes(activeVideo.id) ? "selected" : ""}`} onClick={() => onSaveVideo(activeVideo.id)}><Icon name="bookmark" size={15} /> {workspace.savedIds.includes(activeVideo.id) ? "Saved" : "Save video"}</button></div>
         <div className="video-player-links"><a className="ghost-button" href={videoUrl(activeVideo.id)} target="_blank" rel="noreferrer">Watch on YouTube <Icon name="external" size={13} /></a><span>{activeVideo.topics.join(" · ")}</span></div>
-        {ended && related.length > 0 && <section className="video-related"><div className="section-heading"><div><span className="eyebrow">Up next to explore</span><h2>More like this</h2></div></div><VideoList videos={related} workspace={workspace} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /></section>}
+        {ended && related.length > 0 && <section className="video-related"><div className="section-heading"><div><span className="eyebrow">Up next to explore</span><h2>More like this</h2></div></div><VideoList videos={related} savedIds={savedIds} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /></section>}
       </div>
     </div>
   </section>;
@@ -132,7 +149,7 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
     <div className="video-controls"><label className="video-search"><Icon name="search" size={16} /><input type="search" value={workspace.searchText} onChange={(event) => onSearchChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onSmartSearch(); } }} placeholder="Search this channel" aria-label="Search this channel" enterKeyHint="search" /></label><button type="button" className="ghost-button" onClick={onSmartSearch} disabled={smartSearchLoading || !workspace.searchText.trim()} title="Use Gemini to search by meaning">{smartSearchLoading ? "Searching" : "Smart search"}</button><select value={workspace.channelOrder} onChange={(event) => onChannelOrder(event.target.value as YouTubeWorkspaceState["channelOrder"])} aria-label="Sort channel videos"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="random">Random</option></select></div>
     <SearchProgress loading={smartSearchLoading} phase={searchPhase} onCancel={onCancelSearch} />
     {searchPhase === "error" && error && <p className="video-search-error" role="alert">{error}</p>}
-    <VideoList videos={channelVideos} workspace={workspace} reasons={searchReasons} smartSearchRan={smartSearchRan} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} />
+    <VideoList videos={channelVideos} savedIds={savedIds} reasons={searchReasons} smartSearchRan={smartSearchRan} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} />
   </section>;
 
   const sortedChannels = [...workspace.channels].sort((a, b) => a.name.localeCompare(b.name));
@@ -154,7 +171,7 @@ export function VideoWorkspace({ workspace, youtubeStatus, progress, error, sear
       {searchPhase === "error" && error && <p className="video-search-error" role="alert">{error}</p>}
       <div className="video-topic-filters" aria-label="Video topics"><button type="button" className={workspace.selectedTopic === "All" ? "active" : ""} onClick={() => onTopicChange("All")}>All topics</button>{YOUTUBE_TOPICS.map((topic) => <button type="button" key={topic} className={workspace.selectedTopic === topic ? "active" : ""} onClick={() => onTopicChange(topic)}>{topic}</button>)}</div>
     </>}
-    {workspace.videos.length ? <VideoList videos={videos} workspace={workspace} reasons={searchReasons} smartSearchRan={smartSearchRan} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /> : <EmptyVideoSetup onOpenSettings={onOpenSettings} />}
+    {workspace.videos.length ? <VideoList videos={videos} savedIds={savedIds} reasons={searchReasons} smartSearchRan={smartSearchRan} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /> : <EmptyVideoSetup onOpenSettings={onOpenSettings} />}
     {workspace.activeTab === "discover" && workspace.videos.length > 0 && <div className="video-show-more" ref={showMoreRef}><button type="button" className="small-load-button" onClick={onShowMore}>Show more approved videos</button></div>}
     {workspace.videos.length > 0 && <p className="video-library-note">{workspace.videos.length.toLocaleString()} approved videos available · No view, like, or comment counts are shown{workspace.lastSyncAt ? ` · Last refresh ${new Date(workspace.lastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : ""}</p>}
     {void onPlaybackPosition}

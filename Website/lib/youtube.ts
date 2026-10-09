@@ -77,6 +77,8 @@ export type YouTubeWorkspaceState = {
   sourceStates: Record<string, YouTubeSourceState>;
 };
 
+export type YouTubeActivityState = Pick<YouTubeWorkspaceState, "savedIds" | "history" | "playbackPositions" | "searchText" | "selectedTopic" | "activeTab" | "selectedChannelId" | "selectedVideoId" | "discoverIds" | "channelOrder" | "prioritizeRecentByChannel">;
+
 export type YouTubeImportProgress = {
   phase: "idle" | "resolving" | "importing" | "complete" | "paused" | "error";
   completedChannels: number;
@@ -617,27 +619,58 @@ export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclud
   const currentTime = Date.now();
   const yearInMs = 365.25 * 24 * 60 * 60 * 1000;
   const targetCount = Math.max(0, Math.floor(count));
-  const recentPool: YouTubeVideo[] = [];
-  const olderPreferredPool: YouTubeVideo[] = [];
-  videos.filter((video) => !excluded.has(video.id)).forEach((video) => {
+  const recentPool: Array<{ video: YouTubeVideo; ageInYears: number; halfLifeInYears: number }> = [];
+  const olderPreferredPool: Array<{ video: YouTubeVideo; ageInYears: number; halfLifeInYears: number }> = [];
+  for (const video of videos) {
+    if (excluded.has(video.id)) continue;
     const publishedAt = Date.parse(video.publishedAt);
     const ageInYears = Number.isFinite(publishedAt) ? Math.max(0, (currentTime - publishedAt) / yearInMs) : 0;
-    if (extraRecentBias.has(normalized(video.channelName)) && ageInYears > 5) olderPreferredPool.push(video);
-    else recentPool.push(video);
-  });
+    const recentBias = extraRecentBias.has(normalized(video.channelName));
+    const candidate = { video, ageInYears, halfLifeInYears: recentBias ? 1.5 : 8 };
+    if (recentBias && ageInYears > 5) olderPreferredPool.push(candidate);
+    else recentPool.push(candidate);
+  }
 
-  const weightedSample = (pool: YouTubeVideo[], sampleCount: number) => pool
-    .map((video) => {
-      const publishedAt = Date.parse(video.publishedAt);
-      const ageInYears = Number.isFinite(publishedAt) ? Math.max(0, (currentTime - publishedAt) / yearInMs) : 0;
-      const halfLifeInYears = extraRecentBias.has(normalized(video.channelName)) ? 1.5 : 8;
+  // The feed needs only a small random sample from a potentially large
+  // imported catalog. A full sort here made choosing the first 24 videos
+  // increasingly expensive as the library grew. Keep only the best weighted
+  // random keys in a max heap, which bounds work to O(library * log(sample)).
+  const weightedSample = (pool: Array<{ video: YouTubeVideo; ageInYears: number; halfLifeInYears: number }>, sampleCount: number) => {
+    const limit = Math.min(pool.length, Math.max(0, sampleCount));
+    if (!limit) return [];
+    if (limit === pool.length) return pool.map(({ video }) => video);
+
+    const heap: Array<{ video: YouTubeVideo; randomKey: number }> = [];
+    for (const { video, ageInYears, halfLifeInYears } of pool) {
       const recencyWeight = Math.pow(0.5, ageInYears / halfLifeInYears);
       const random = Math.max(Math.random(), Number.MIN_VALUE);
-      return { video, randomKey: -Math.log(random) / recencyWeight };
-    })
-    .sort((left, right) => left.randomKey - right.randomKey)
-    .slice(0, sampleCount)
-    .map(({ video }) => video);
+      const candidate = { video, randomKey: -Math.log(random) / recencyWeight };
+      if (heap.length < limit) {
+        let index = heap.push(candidate) - 1;
+        while (index > 0) {
+          const parent = Math.floor((index - 1) / 2);
+          if (heap[parent].randomKey >= heap[index].randomKey) break;
+          [heap[parent], heap[index]] = [heap[index], heap[parent]];
+          index = parent;
+        }
+        continue;
+      }
+      if (candidate.randomKey >= heap[0].randomKey) continue;
+      heap[0] = candidate;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let largest = index;
+        if (left < heap.length && heap[left].randomKey > heap[largest].randomKey) largest = left;
+        if (right < heap.length && heap[right].randomKey > heap[largest].randomKey) largest = right;
+        if (largest === index) break;
+        [heap[index], heap[largest]] = [heap[largest], heap[index]];
+        index = largest;
+      }
+    }
+    return heap.map(({ video }) => video);
+  };
 
   const olderVideoLimit = olderPreferredPool.length ? Math.max(1, Math.ceil(targetCount / 24)) : 0;
   const recentVideos = weightedSample(recentPool, Math.max(0, targetCount - olderVideoLimit));
@@ -844,6 +877,34 @@ export function isApprovedYouTubeVideo(video: YouTubeVideo) {
 
 const DB_NAME = "learned-media-youtube";
 const DB_VERSION = 1;
+const YOUTUBE_ACTIVITY_KEY_PREFIX = "activity:";
+
+function youtubeCatalogOf(workspace: YouTubeWorkspaceState) {
+  return {
+    channels: workspace.channels,
+    videos: workspace.videos,
+    libraryIncomplete: workspace.libraryIncomplete,
+    lastSyncAt: workspace.lastSyncAt,
+    catalogVersion: workspace.catalogVersion,
+    sourceStates: workspace.sourceStates
+  };
+}
+
+function youtubeActivityOf(workspace: YouTubeWorkspaceState): YouTubeActivityState {
+  return {
+    savedIds: workspace.savedIds,
+    history: workspace.history,
+    playbackPositions: workspace.playbackPositions,
+    searchText: workspace.searchText,
+    selectedTopic: workspace.selectedTopic,
+    activeTab: workspace.activeTab,
+    selectedChannelId: workspace.selectedChannelId,
+    selectedVideoId: workspace.selectedVideoId,
+    discoverIds: workspace.discoverIds,
+    channelOrder: workspace.channelOrder,
+    prioritizeRecentByChannel: workspace.prioritizeRecentByChannel
+  };
+}
 
 function openYouTubeDb() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -854,42 +915,76 @@ function openYouTubeDb() {
   });
 }
 
-export async function loadYouTubeWorkspace() {
+export async function loadYouTubeActivity(workspaceId: string, fallback?: Partial<YouTubeActivityState>): Promise<Partial<YouTubeActivityState> | null> {
+  if (typeof window === "undefined" || !window.indexedDB) return fallback ?? null;
+  try {
+    const db = await openYouTubeDb();
+    const stored = await new Promise<Partial<YouTubeActivityState> | null>((resolve, reject) => {
+      const request = db.transaction("workspace", "readonly").objectStore("workspace").get(`${YOUTUBE_ACTIVITY_KEY_PREFIX}${workspaceId}`);
+      request.onsuccess = () => resolve((request.result as Partial<YouTubeActivityState> | undefined) ?? null);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return stored ?? fallback ?? null;
+  } catch { return fallback ?? null; }
+}
+
+export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fallbackActivity?: Partial<YouTubeActivityState>) {
   if (typeof window === "undefined" || !window.indexedDB) return { ...DEFAULT_YOUTUBE_WORKSPACE };
   try {
     const db = await openYouTubeDb();
-    return await new Promise<YouTubeWorkspaceState>((resolve, reject) => {
-      const request = db.transaction("workspace", "readonly").objectStore("workspace").get("state");
-      request.onsuccess = () => {
-        const raw = request.result ?? {};
-        const savedCatalogVersion = Number.isInteger(raw.catalogVersion) ? raw.catalogVersion : undefined;
-        const inferredCatalogVersion = (raw.channels?.length || raw.videos?.length) ? 0 : YOUTUBE_CATALOG_VERSION;
-        const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, catalogVersion: savedCatalogVersion ?? inferredCatalogVersion, sourceStates: { ...(raw.sourceStates ?? {}) }, prioritizeRecentByChannel: { ...DEFAULT_YOUTUBE_RECENCY_PREFERENCES, ...(raw.prioritizeRecentByChannel ?? {}) } } as YouTubeWorkspaceState;
-        workspace.videos = (workspace.videos ?? []).filter(isApprovedYouTubeVideo).map((video) => ({ ...video, sourceIds: video.sourceIds ?? [] }));
-        const availableVideoIds = new Set(workspace.videos.map((video) => video.id));
-        workspace.savedIds = (workspace.savedIds ?? []).filter((id) => availableVideoIds.has(id));
-        workspace.history = (workspace.history ?? []).filter((item) => availableVideoIds.has(item.videoId));
-        workspace.playbackPositions = Object.fromEntries(Object.entries(workspace.playbackPositions ?? {}).filter(([id]) => availableVideoIds.has(id)));
-        workspace.discoverIds = (workspace.discoverIds ?? []).filter((id) => availableVideoIds.has(id));
-        if (workspace.selectedVideoId && !availableVideoIds.has(workspace.selectedVideoId)) workspace.selectedVideoId = undefined;
-        if (!raw.prioritizeRecentByChannel && workspace.videos.length) {
-          workspace.discoverIds = selectRandomVideos(filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic), 24, [], workspace.prioritizeRecentByChannel).map((video) => video.id);
-        }
-        resolve(workspace);
-      };
-      request.onerror = () => reject(request.error);
+    const saved = await new Promise<{ catalog: Record<string, unknown> | null; legacy: Record<string, unknown> | null; activity: Partial<YouTubeActivityState> | null }>((resolve, reject) => {
+      const store = db.transaction("workspace", "readonly").objectStore("workspace");
+      const catalogRequest = store.get("catalog");
+      const legacyRequest = store.get("state");
+      const activityRequest = store.get(`${YOUTUBE_ACTIVITY_KEY_PREFIX}${workspaceId}`);
+      let remaining = 3;
+      const complete = () => { remaining -= 1; if (!remaining) resolve({ catalog: catalogRequest.result ?? null, legacy: legacyRequest.result ?? null, activity: activityRequest.result ?? null }); };
+      for (const request of [catalogRequest, legacyRequest, activityRequest]) {
+        request.onsuccess = complete;
+        request.onerror = () => reject(request.error);
+      }
     });
+    db.close();
+    const raw = saved.catalog ?? saved.legacy ?? {};
+    const savedActivity = saved.activity ?? fallbackActivity ?? saved.legacy as Partial<YouTubeActivityState> | undefined;
+    const savedCatalogVersion = typeof raw.catalogVersion === "number" && Number.isInteger(raw.catalogVersion) ? raw.catalogVersion : undefined;
+    const catalogWasValidatedAtCurrentVersion = Boolean(saved.catalog) && savedCatalogVersion !== undefined && savedCatalogVersion >= YOUTUBE_CATALOG_VERSION;
+    const inferredCatalogVersion = (Array.isArray(raw.channels) && raw.channels.length || Array.isArray(raw.videos) && raw.videos.length) ? 0 : YOUTUBE_CATALOG_VERSION;
+    const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, ...(savedActivity ?? {}), catalogVersion: savedCatalogVersion ?? inferredCatalogVersion, sourceStates: { ...(raw.sourceStates ?? {}) }, prioritizeRecentByChannel: { ...DEFAULT_YOUTUBE_RECENCY_PREFERENCES, ...(raw.prioritizeRecentByChannel ?? {}) } } as YouTubeWorkspaceState;
+    workspace.videos = catalogWasValidatedAtCurrentVersion
+      ? (workspace.videos ?? [])
+      : (workspace.videos ?? []).filter(isApprovedYouTubeVideo).map((video) => ({ ...video, sourceIds: video.sourceIds ?? [] }));
+    const availableVideoIds = new Set<string>();
+    for (const video of workspace.videos) availableVideoIds.add(video.id);
+    workspace.savedIds = (workspace.savedIds ?? []).filter((id) => availableVideoIds.has(id));
+    workspace.history = (workspace.history ?? []).filter((item) => availableVideoIds.has(item.videoId));
+    workspace.playbackPositions = Object.fromEntries(Object.entries(workspace.playbackPositions ?? {}).filter(([id]) => availableVideoIds.has(id)));
+    workspace.discoverIds = (workspace.discoverIds ?? []).filter((id) => availableVideoIds.has(id));
+    if (workspace.selectedVideoId && !availableVideoIds.has(workspace.selectedVideoId)) workspace.selectedVideoId = undefined;
+    if (!saved.catalog && saved.legacy && workspace.videos.length) void saveYouTubeWorkspace(workspace, { catalog: true, activity: true, workspaceId });
+    if (!raw.prioritizeRecentByChannel && !saved.catalog && workspace.videos.length) {
+      workspace.discoverIds = selectRandomVideos(filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic), 24, [], DEFAULT_YOUTUBE_RECENCY_PREFERENCES).map((video) => video.id);
+    }
+    return workspace;
   } catch { return { ...DEFAULT_YOUTUBE_WORKSPACE }; }
 }
 
-export async function saveYouTubeWorkspace(workspace: YouTubeWorkspaceState) {
+export async function saveYouTubeWorkspace(workspace: YouTubeWorkspaceState, options: { catalog?: boolean; activity?: boolean; workspaceId?: string } = {}) {
   if (typeof window === "undefined" || !window.indexedDB) return;
+  const { catalog = false, activity = false, workspaceId = "local-workspace" } = options;
+  if (!catalog && !activity) return;
   try {
     const db = await openYouTubeDb();
     await new Promise<void>((resolve, reject) => {
-      const request = db.transaction("workspace", "readwrite").objectStore("workspace").put(workspace, "state");
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+      const transaction = db.transaction("workspace", "readwrite");
+      const store = transaction.objectStore("workspace");
+      if (catalog) store.put(youtubeCatalogOf(workspace), "catalog");
+      if (activity) store.put(youtubeActivityOf(workspace), `${YOUTUBE_ACTIVITY_KEY_PREFIX}${workspaceId}`);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     });
+    db.close();
   } catch { /* IndexedDB is best effort; the active session remains usable. */ }
 }

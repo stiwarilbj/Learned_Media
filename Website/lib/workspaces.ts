@@ -89,12 +89,15 @@ export async function accountWorkspaceBackup<T>(ownerId: string, value?: Workspa
   } finally { database.close(); }
 }
 
-export async function writeWorkspaceStore<T>(store: WorkspaceStore<T>): Promise<void> {
+export async function writeWorkspaceStore<T>(store: WorkspaceStore<T>, options: { writeRecovery?: boolean } = {}): Promise<void> {
   if (typeof window === "undefined") return;
+  const { writeRecovery = true } = options;
   const snapshot = structuredClone(store);
   // The synchronous recovery record includes every workspace, not just the active one.
   let recoverySaved = false;
-  try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(snapshot)); recoverySaved = true; } catch { /* IndexedDB is authoritative when the recovery copy is too large. */ }
+  if (writeRecovery) {
+    try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(snapshot)); recoverySaved = true; } catch { /* IndexedDB is authoritative when the recovery copy is too large. */ }
+  }
   if (!window.indexedDB) { if (!recoverySaved) throw new Error("Local storage is unavailable."); return; }
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {

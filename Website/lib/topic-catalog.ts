@@ -543,7 +543,98 @@ export function createCatalogTopics(): TopicNode[] {
     const children = node.children?.map(clean).filter((child): child is TopicNode => Boolean(child));
     return {...node, label, aliases: Array.from(new Set([...(node.aliases ?? []), node.label])), children};
   };
-  return TOPIC_SEEDS.map((seed, index) => buildNode(seed, [], 0, index)).filter((node): node is TopicNode => Boolean(node)).map(node => node.label === "Literature" ? clean(node) : node).filter((node): node is TopicNode => Boolean(node));
+  const topics = TOPIC_SEEDS.map((seed, index) => buildNode(seed, [], 0, index)).filter((node): node is TopicNode => Boolean(node)).map(node => node.label === "Literature" ? clean(node) : node).filter((node): node is TopicNode => Boolean(node));
+  primeTopicTreeMetadata(topics);
+  return topics;
+}
+
+const topicLeafStats = new WeakMap<TopicNode, { selected: number; total: number }>();
+const topicPathIndexes = new WeakMap<TopicNode[], Map<string, number[]>>();
+
+function primeTopicTreeMetadata(nodes: TopicNode[]) {
+  const index = new Map<string, number[]>();
+  const visit = (node: TopicNode, path: number[]): { selected: number; total: number } => {
+    index.set(node.id, path);
+    if (!node.children?.length) {
+      const stats = { selected: node.selected ? 1 : 0, total: 1 };
+      topicLeafStats.set(node, stats);
+      return stats;
+    }
+    const stats = { selected: 0, total: 0 };
+    node.children.forEach((child, childIndex) => {
+      const childStats = visit(child, [...path, childIndex]);
+      stats.selected += childStats.selected;
+      stats.total += childStats.total;
+    });
+    topicLeafStats.set(node, stats);
+    return stats;
+  };
+  nodes.forEach((node, rootIndex) => visit(node, [rootIndex]));
+  topicPathIndexes.set(nodes, index);
+  return index;
+}
+
+function topicPathForId(nodes: TopicNode[], id: string) {
+  let index = topicPathIndexes.get(nodes) ?? primeTopicTreeMetadata(nodes);
+  let path = index.get(id);
+  if (path) {
+    let level = nodes;
+    let node: TopicNode | undefined;
+    for (const position of path) {
+      node = level[position];
+      if (!node) break;
+      level = node.children ?? [];
+    }
+    if (node?.id === id) return path;
+    index = primeTopicTreeMetadata(nodes);
+    path = index.get(id);
+  }
+  if (!path) {
+    index = primeTopicTreeMetadata(nodes);
+    path = index.get(id);
+  }
+  return path;
+}
+
+export function findTopicById(nodes: TopicNode[], id: string) {
+  const path = topicPathForId(nodes, id);
+  if (!path) return undefined;
+  let level = nodes;
+  let node: TopicNode | undefined;
+  for (const position of path) {
+    node = level[position];
+    if (!node) return undefined;
+    level = node.children ?? [];
+  }
+  return node?.id === id ? node : undefined;
+}
+
+export function preserveTopicPathIndex<T extends TopicNode[]>(previous: TopicNode[], next: T): T {
+  const index = topicPathIndexes.get(previous);
+  if (index) topicPathIndexes.set(next, index);
+  return next;
+}
+
+export function updateTopicTreeById(nodes: TopicNode[], id: string, update: (node: TopicNode) => TopicNode) {
+  const path = topicPathForId(nodes, id);
+  if (!path) return nodes;
+  const visit = (list: TopicNode[], depth: number): TopicNode[] => {
+    const position = path[depth];
+    const node = list[position];
+    if (!node) return list;
+    let updated: TopicNode;
+    if (depth === path.length - 1) updated = preserveTopicSelectionStats(node, update(node));
+    else {
+      const children = visit(node.children ?? [], depth + 1);
+      if (children === node.children) return list;
+      updated = preserveTopicSelectionStats(node, { ...node, children });
+    }
+    if (updated === node) return list;
+    const next = list.slice();
+    next[position] = updated;
+    return next;
+  };
+  return preserveTopicPathIndex(nodes, visit(nodes, 0));
 }
 
 export function flattenTopics(nodes: TopicNode[], parentPath: string[] = []): Array<TopicNode & { path: string[] }> {
@@ -556,11 +647,26 @@ export function flattenTopics(nodes: TopicNode[], parentPath: string[] = []): Ar
 export type SelectionState = "selected" | "mixed" | "none";
 
 function leafStats(node: TopicNode): { selected: number; total: number } {
-  if (!node.children?.length) return { selected: node.selected ? 1 : 0, total: 1 };
-  return node.children.reduce((stats, child) => {
-    const next = leafStats(child);
-    return { selected: stats.selected + next.selected, total: stats.total + next.total };
-  }, { selected: 0, total: 0 });
+  const cached = topicLeafStats.get(node);
+  if (cached) return cached;
+  let stats: { selected: number; total: number };
+  if (!node.children?.length) stats = { selected: node.selected ? 1 : 0, total: 1 };
+  else {
+    stats = { selected: 0, total: 0 };
+    for (const child of node.children) {
+      const childStats = leafStats(child);
+      stats.selected += childStats.selected;
+      stats.total += childStats.total;
+    }
+  }
+  topicLeafStats.set(node, stats);
+  return stats;
+}
+
+export function preserveTopicSelectionStats<T extends TopicNode>(previous: TopicNode, next: T): T {
+  const stats = topicLeafStats.get(previous);
+  if (stats) topicLeafStats.set(next, stats);
+  return next;
 }
 
 export function selectionState(node: TopicNode): SelectionState {
@@ -568,22 +674,43 @@ export function selectionState(node: TopicNode): SelectionState {
   return stats.selected === 0 ? "none" : stats.selected === stats.total ? "selected" : "mixed";
 }
 
-function setBranchSelected(node: TopicNode, selected: boolean): TopicNode {
-  return { ...node, selected, children: node.children?.map((child) => setBranchSelected(child, selected)) };
-}
-
-function syncParentSelection(node: TopicNode): TopicNode {
-  const children = node.children?.map(syncParentSelection);
-  const next = children ? { ...node, children } : node;
-  return { ...next, selected: selectionState(next) === "selected" };
+function setBranchSelected(node: TopicNode, selected: boolean): { node: TopicNode; stats: { selected: number; total: number } } {
+  const children = node.children?.map((child) => setBranchSelected(child, selected));
+  const stats = children?.length
+    ? children.reduce((total, child) => ({ selected: total.selected + child.stats.selected, total: total.total + child.stats.total }), { selected: 0, total: 0 })
+    : { selected: selected ? 1 : 0, total: 1 };
+  if (node.selected === selected && (!children || children.every((child, index) => child.node === node.children?.[index]))) {
+    topicLeafStats.set(node, stats);
+    return { node, stats };
+  }
+  const next = { ...node, selected, children: children?.map((child) => child.node) };
+  topicLeafStats.set(next, stats);
+  return { node: next, stats };
 }
 
 export function toggleTopicSelection(nodes: TopicNode[], id: string): TopicNode[] {
-  const visit = (list: TopicNode[]): TopicNode[] => list.map((node) => {
-    if (node.id === id) return setBranchSelected(node, selectionState(node) !== "selected");
-    return node.children ? { ...node, children: visit(node.children) } : node;
-  }).map(syncParentSelection);
-  return visit(nodes);
+  const path = topicPathForId(nodes, id);
+  if (!path) return nodes;
+  const visit = (list: TopicNode[], depth: number): TopicNode[] => {
+    const position = path[depth];
+    const node = list[position];
+    if (!node) return list;
+    let next: TopicNode;
+    if (depth === path.length - 1) next = setBranchSelected(node, !node.selected).node;
+    else {
+      const children = visit(node.children ?? [], depth + 1);
+      if (children === node.children) return list;
+      const updated = { ...node, children };
+      const stats = leafStats(updated);
+      next = { ...updated, selected: stats.selected === stats.total };
+      topicLeafStats.set(next, stats);
+    }
+    if (next === node) return list;
+    const result = list.slice();
+    result[position] = next;
+    return result;
+  };
+  return preserveTopicPathIndex(nodes, visit(nodes, 0));
 }
 
 export function selectedLeafTopics(nodes: TopicNode[]) {
@@ -591,7 +718,7 @@ export function selectedLeafTopics(nodes: TopicNode[]) {
 }
 
 export function selectedLeafCount(nodes: TopicNode[]) {
-  return selectedLeafTopics(nodes).length;
+  return nodes.reduce((count, node) => count + leafStats(node).selected, 0);
 }
 
 export function summarizeSelection(nodes: TopicNode[]) {
@@ -603,13 +730,16 @@ export function summarizeSelection(nodes: TopicNode[]) {
 }
 
 export function selectWeightedTopicPaths(nodes: TopicNode[], limit = 10) {
-  const pool = selectedLeafTopics(nodes).map((topic) => ({
-    path: topic.path,
-    weight: Math.max(1, Math.round(topic.path.reduce((total, label) => {
-      const parent = flattenTopics(nodes).find((candidate) => candidate.path.join("\u0000") === [...topic.path.slice(0, topic.path.indexOf(label) + 1)].join("\u0000"));
-      return total * ((parent?.weight ?? 10) / 10);
-    }, 10)))
-  }));
+  const pool: Array<{ path: string[]; weight: number }> = [];
+  const visit = (items: TopicNode[], parentPath: string[], parentWeight: number) => {
+    for (const node of items) {
+      const path = [...parentPath, node.label];
+      const weight = parentWeight * (node.weight / 10);
+      if (node.children?.length) visit(node.children, path, weight);
+      else if (node.selected) pool.push({ path, weight: Math.max(1, Math.round(weight)) });
+    }
+  };
+  visit(nodes, [], 10);
   const selected: Array<{ path: string[]; weight: number }> = [];
   while (pool.length && selected.length < limit) {
     const total = pool.reduce((sum, item) => sum + item.weight, 0);
@@ -618,12 +748,6 @@ export function selectWeightedTopicPaths(nodes: TopicNode[], limit = 10) {
     selected.push(pool.splice(index < 0 ? pool.length - 1 : index, 1)[0]);
   }
   return selected;
-}
-
-function updateById(nodes: TopicNode[], id: string, update: (node: TopicNode) => TopicNode): TopicNode[] {
-  return nodes.map((node) => node.id === id
-    ? update(node)
-    : node.children ? { ...node, children: updateById(node.children, id, update) } : node);
 }
 
 export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial = false, migrateLegacyRootWeights = false): TopicNode[] {
@@ -638,6 +762,7 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
   fresh.forEach((topic) => (topic.aliases ?? []).forEach((alias) => byAlias.set(alias.toLowerCase(), [...(byAlias.get(alias.toLowerCase()) ?? []), topic])));
   const missingCustom = new Map<string, TopicNode>();
   const selectedIds = new Set<string>();
+  const updates = new Map<string, Partial<TopicNode>>();
   const legacySeriesParents = new Map<string, { selected: boolean; weight?: number }>();
   const resolveMigratedPath = (path: string[]): (typeof fresh)[number] | undefined => {
     const key = path.join("\u0000").toLowerCase();
@@ -658,7 +783,7 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
       ?? (byAlias.get(oldTopic.label.toLowerCase())?.length === 1 ? byAlias.get(oldTopic.label.toLowerCase())?.[0] : undefined);
     if (target) {
       const isLegacyBuiltInRoot = migrateLegacyRootWeights && oldTopic.path.length === 1 && [30, 25, 20, 25].includes(oldTopic.weight ?? 10);
-      next = updateById(next, target.id, (node) => ({ ...node, weight: isLegacyBuiltInRoot ? 10 : (oldTopic.weight || node.weight), expanded: collapseInitial ? false : oldTopic.expanded }));
+      updates.set(target.id, { weight: isLegacyBuiltInRoot ? 10 : (oldTopic.weight || target.weight), expanded: collapseInitial ? false : oldTopic.expanded });
       if (oldTopic.selected) selectedIds.add(target.id);
       return;
     }
@@ -673,9 +798,23 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
   legacySeriesParents.forEach((legacy, path) => {
     const parent = byPath.get(path);
     if (!parent) return;
-    next = updateById(next, parent.id, (node) => ({ ...node, selected: legacy.selected || node.selected, weight: legacy.weight || node.weight }));
+    updates.set(parent.id, { ...updates.get(parent.id), weight: legacy.weight || parent.weight });
     if (legacy.selected) selectedIds.add(parent.id);
   });
-  selectedIds.forEach((id) => { next = updateById(next, id, (node) => setBranchSelected(node, true)); });
-  return [...next, ...Array.from(missingCustom.values())];
+  const apply = (items: TopicNode[], inheritedSelection = false): TopicNode[] => items.map((node) => {
+    const patch = updates.get(node.id);
+    const branchSelected = inheritedSelection || selectedIds.has(node.id);
+    const children = node.children ? apply(node.children, branchSelected) : undefined;
+    const stats = children?.length
+      ? children.reduce((total, child) => { const value = leafStats(child); return { selected: total.selected + value.selected, total: total.total + value.total }; }, { selected: 0, total: 0 })
+      : { selected: branchSelected ? 1 : 0, total: 1 };
+    const selected = stats.selected === stats.total;
+    const result = patch || children !== node.children || selected !== node.selected
+      ? { ...node, ...patch, selected, children }
+      : node;
+    topicLeafStats.set(result, stats);
+    return result;
+  });
+  const migrated = apply(next);
+  return preserveTopicPathIndex(next, [...migrated, ...Array.from(missingCustom.values())]);
 }

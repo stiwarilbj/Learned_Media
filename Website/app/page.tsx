@@ -1,38 +1,44 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CollectionView } from "@/components/learned-media/CollectionView";
-import { ExploreView } from "@/components/learned-media/ExploreView";
-import { FeedView } from "@/components/learned-media/FeedView";
+import dynamic from "next/dynamic";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Navigation } from "@/components/learned-media/Navigation";
 import { Icon } from "@/components/learned-media/icons";
-import { SettingsView } from "@/components/learned-media/SettingsView";
-import { VideoWorkspace } from "@/components/learned-media/VideoWorkspace";
-import { SetupWorkspace } from "@/components/learned-media/SetupWorkspace";
 import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
 import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
-import { TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
+import { findTopicById, TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
 import { normalizeSearchText, rankSearchResults, shouldExpandNaturalSearch } from "@/lib/search";
 import { requestCacheKey, requestCacheScope, SessionCache } from "@/lib/session-cache";
 import { createTopicSuggestionIndex, suggestTopics } from "@/lib/topic-suggestions";
+import { searchTopicsWithYieldingFallback } from "@/lib/topic-search-fallback";
+import type { TopicSearchIndex, TopicSearchWorkerReply } from "@/lib/topic-search-types";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
-import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
+import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore as writeRawWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
+import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-preferences";
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
-import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, filterYouTubeVideos, loadYouTubeWorkspace, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, strongLocalVideoCandidates, strongLocalVideoPlanCandidates, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
+import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, filterYouTubeVideos, isApprovedYouTubeVideo, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, searchYouTubeCandidates, selectRandomVideos, strongLocalVideoCandidates, strongLocalVideoPlanCandidates, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
+
+const CollectionView = dynamic(() => import("@/components/learned-media/CollectionView").then((module) => module.CollectionView), { loading: () => null });
+const ExploreView = dynamic(() => import("@/components/learned-media/ExploreView").then((module) => module.ExploreView), { loading: () => null });
+const FeedView = dynamic(() => import("@/components/learned-media/FeedView").then((module) => module.FeedView), { loading: () => null });
+const SettingsView = dynamic(() => import("@/components/learned-media/SettingsView").then((module) => module.SettingsView), { loading: () => null });
+const VideoWorkspace = dynamic(() => import("@/components/learned-media/VideoWorkspace").then((module) => module.VideoWorkspace), { loading: () => null });
+const SetupWorkspace = dynamic(() => import("@/components/learned-media/SetupWorkspace").then((module) => module.SetupWorkspace), { loading: () => null });
 
 const STORAGE_KEY = "learned-media-state";
 const STORAGE_BACKUP_KEY = "learned-media-state-backup";
 const LEGACY_STORAGE_KEY = "learned-media-demo-state";
+const PENDING_WORKSPACE_JOURNAL_KEY = "learned-media-pending-workspace-v1";
 const THEME_MIGRATION_KEY = "learned-media-light-theme-v1";
 const TEN_LEVEL_DIFFICULTY_MIGRATION_KEY = "learned-media-ten-level-difficulty-v1";
-const PERSISTENCE_VERSION = 2;
+const PERSISTENCE_VERSION = 3;
 const SEARCH_CACHE_TTL_MS = 30 * 60 * 1000;
 const MIN_STRONG_VIDEO_RESULTS = 6;
 const KNOWN_DEMO_IDS = new Set([
@@ -53,7 +59,7 @@ type PersistedState = {
   youtubeActivity?: YouTubeWorkspaceActivity;
 };
 
-type YouTubeWorkspaceActivity = Pick<YouTubeWorkspaceState, "savedIds" | "history" | "playbackPositions" | "searchText" | "selectedTopic" | "activeTab" | "selectedChannelId" | "selectedVideoId" | "discoverIds" | "channelOrder">;
+type YouTubeWorkspaceActivity = YouTubeActivityState;
 
 type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
@@ -63,6 +69,87 @@ type ConfirmationRequest = {
   confirmLabel: string;
   action: () => void | Promise<void>;
 };
+
+function compactStateForLocalStorage(state: PersistedState) {
+  const topics = Array.isArray(state.topics) ? compactTopicPreferences(state.topics) : state.topics;
+  return { ...state, persistenceVersion: PERSISTENCE_VERSION, topics };
+}
+
+function compactWorkspaceStoreForLocalStorage(store: AppWorkspaceStore): WorkspaceStore<PersistedState> {
+  return {
+    ...store,
+    records: store.records.map((record) => ({ ...record, state: compactStateForLocalStorage(record.state) as unknown as PersistedState }))
+  };
+}
+
+let localWorkspaceWriteQueue: Promise<void> = Promise.resolve();
+let localWorkspaceWriteRevision = 0;
+
+function writeWorkspaceStore(store: AppWorkspaceStore, options: { recovery?: boolean } = {}) {
+  const recovery = options.recovery ?? true;
+  const localSnapshot = compactWorkspaceStoreForLocalStorage(store);
+  const revision = ++localWorkspaceWriteRevision;
+  const activeRecord = localSnapshot.records.find((record) => record.id === localSnapshot.activeId);
+  if (!recovery && activeRecord) {
+    const journal = {
+      revision,
+      activeId: activeRecord.id,
+      savedAt: activeRecord.state.savedAt ?? activeRecord.updatedAt,
+      topics: activeRecord.state.topics,
+      settings: activeRecord.state.settings,
+      feedStarted: activeRecord.state.feedStarted,
+      theme: activeRecord.state.theme
+    };
+    try { window.localStorage.setItem(PENDING_WORKSPACE_JOURNAL_KEY, JSON.stringify(journal)); } catch { /* IndexedDB remains the normal persistence path. */ }
+  }
+  const next = localWorkspaceWriteQueue.then(async () => {
+    try {
+      await writeRawWorkspaceStore(localSnapshot, { writeRecovery: recovery });
+    } catch (error) {
+      if (recovery) throw error;
+      await writeRawWorkspaceStore(localSnapshot, { writeRecovery: true });
+    }
+    try {
+      const pending = JSON.parse(window.localStorage.getItem(PENDING_WORKSPACE_JOURNAL_KEY) || "null") as { revision?: number; activeId?: string; savedAt?: string } | null;
+      const committedAt = Date.parse(activeRecord?.state.savedAt ?? activeRecord?.updatedAt ?? "") || 0;
+      const pendingAt = Date.parse(pending?.savedAt ?? "") || 0;
+      if (pending?.activeId === activeRecord?.id && pendingAt <= committedAt) window.localStorage.removeItem(PENDING_WORKSPACE_JOURNAL_KEY);
+    } catch { /* A malformed journal is harmless after the transactional write. */ }
+  });
+  localWorkspaceWriteQueue = next.catch(() => undefined);
+  return next;
+}
+
+function restorePendingWorkspaceJournal(store: AppWorkspaceStore, catalogTopics?: TopicNode[]): AppWorkspaceStore {
+  try {
+    const journal = JSON.parse(window.localStorage.getItem(PENDING_WORKSPACE_JOURNAL_KEY) || "null") as {
+      revision?: number; activeId?: string; savedAt?: string; topics?: unknown; settings?: FeedSettings; feedStarted?: boolean; theme?: "light" | "dark";
+    } | null;
+    if (!journal?.activeId) return store;
+    const record = store.records.find((item) => item.id === journal.activeId);
+    if (!record) return store;
+    const previousTime = Math.max(Date.parse(record.updatedAt || "") || 0, Date.parse(record.state.savedAt || "") || 0);
+    if ((Date.parse(journal.savedAt || "") || 0) < previousTime) {
+      window.localStorage.removeItem(PENDING_WORKSPACE_JOURNAL_KEY);
+      return store;
+    }
+    const recoveredTopics = restoreTopicPreferences(journal.topics, false, catalogTopics);
+    record.state = {
+      ...record.state,
+      ...(recoveredTopics ? { topics: recoveredTopics } : {}),
+      ...(journal.settings ? { settings: { ...record.state.settings, ...journal.settings } } : {}),
+      ...(typeof journal.feedStarted === "boolean" ? { feedStarted: journal.feedStarted } : {}),
+      ...(journal.theme ? { theme: journal.theme } : {}),
+      savedAt: journal.savedAt
+    };
+    record.updatedAt = journal.savedAt ?? record.updatedAt;
+    store.activeId = record.id;
+    if (journal.theme) store.theme = journal.theme;
+    return store;
+  } catch {
+    return store;
+  }
+}
 
 function readWorkspaceState() {
   for (const key of [STORAGE_KEY, STORAGE_BACKUP_KEY, LEGACY_STORAGE_KEY]) {
@@ -77,7 +164,7 @@ function readWorkspaceState() {
 }
 
 function writeWorkspaceState(state: PersistedState) {
-  const snapshot = JSON.stringify({ ...state, persistenceVersion: PERSISTENCE_VERSION, savedAt: new Date().toISOString() });
+  const snapshot = JSON.stringify({ ...compactStateForLocalStorage(state), savedAt: new Date().toISOString() });
   try {
     const previous = window.localStorage.getItem(STORAGE_KEY);
     if (previous) window.localStorage.setItem(STORAGE_BACKUP_KEY, previous);
@@ -114,21 +201,23 @@ function youtubeActivityOf(workspace: YouTubeWorkspaceState): YouTubeWorkspaceAc
     selectedChannelId: workspace.selectedChannelId,
     selectedVideoId: workspace.selectedVideoId,
     discoverIds: workspace.discoverIds,
-    channelOrder: workspace.channelOrder
+    channelOrder: workspace.channelOrder,
+    prioritizeRecentByChannel: workspace.prioritizeRecentByChannel
   };
 }
 
-function applyYouTubeActivity(workspace: YouTubeWorkspaceState, activity?: YouTubeWorkspaceActivity): YouTubeWorkspaceState {
+function applyYouTubeActivity(workspace: YouTubeWorkspaceState, activity?: Partial<YouTubeWorkspaceActivity>): YouTubeWorkspaceState {
   if (!activity) return workspace;
   const restored = { ...workspace, ...activity };
   const videoIds = new Set(workspace.videos.map((video) => video.id));
   const channelIds = new Set(workspace.channels.map((channel) => channel.id));
   return {
     ...restored,
-    savedIds: restored.savedIds.filter((id) => videoIds.has(id)),
-    history: restored.history.filter((item) => videoIds.has(item.videoId)),
-    playbackPositions: Object.fromEntries(Object.entries(restored.playbackPositions).filter(([id]) => videoIds.has(id))),
-    discoverIds: restored.discoverIds.filter((id) => videoIds.has(id)),
+    savedIds: (activity.savedIds ?? workspace.savedIds).filter((id) => videoIds.has(id)),
+    history: (activity.history ?? workspace.history).filter((item) => videoIds.has(item.videoId)),
+    playbackPositions: Object.fromEntries(Object.entries(activity.playbackPositions ?? workspace.playbackPositions).filter(([id]) => videoIds.has(id))),
+    discoverIds: (activity.discoverIds ?? workspace.discoverIds).filter((id) => videoIds.has(id)),
+    prioritizeRecentByChannel: activity.prioritizeRecentByChannel ?? workspace.prioritizeRecentByChannel,
     selectedVideoId: restored.selectedVideoId && videoIds.has(restored.selectedVideoId) ? restored.selectedVideoId : undefined,
     selectedChannelId: restored.selectedChannelId && channelIds.has(restored.selectedChannelId) ? restored.selectedChannelId : undefined
   };
@@ -242,6 +331,24 @@ function migrateLearningProfile(profile: LearningProfile): LearningProfile {
   return Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, { ...value, targetDifficulty: migrateLegacyDifficulty(value.targetDifficulty) }])) as LearningProfile;
 }
 
+function normalizeSavedState(parsed: Partial<PersistedState> | null, collapseInitial: boolean, catalogTopics?: TopicNode[]): PersistedState {
+  const storedTopics: unknown = parsed?.topics;
+  const compactTopics = restoreTopicPreferences(storedTopics, collapseInitial, catalogTopics);
+  const needsCatalogMigration = (parsed?.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION;
+  const restoredTopics = Array.isArray(storedTopics)
+    ? (needsCatalogMigration ? migrateTopicTree(storedTopics, collapseInitial, needsCatalogMigration) : storedTopics)
+    : compactTopics
+      ? (needsCatalogMigration ? migrateTopicTree(compactTopics, collapseInitial, needsCatalogMigration) : compactTopics)
+      : createDefaultTopics();
+  const restoredSettings: FeedSettings = { ...DEFAULT_SETTINGS, ...parsed?.settings, displayMode: parsed?.settings?.displayMode === "text" ? "text" : "picture-text" };
+  restoredSettings.sentenceLength = normalizeSentenceLength(parsed?.settings?.sentenceLength);
+  const realCards = (parsed?.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));
+  const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
+  const restoredProfile = parsed?.learningProfile ? parsed.learningProfile : {};
+  const restoredTheme = parsed?.theme === "dark" ? "dark" : "light";
+  return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
+}
+
 function learningResponseCacheKey(sessionId: string, apiKey: string, action: "learn" | "question", card: FactCard, question = "", detailed = false, history: LearningMessage[] = []) {
   const identity = {
     id: card.id,
@@ -256,13 +363,19 @@ function learningResponseCacheKey(sessionId: string, apiKey: string, action: "le
 }
 
 export default function HomePage() {
+  const initialTopicCatalog = useRef<TopicNode[] | null>(null);
   const [workspaceId, setWorkspaceId] = useState("local-workspace");
   const [workspaceName, setWorkspaceName] = useState("Local Workspace");
   const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummary[]>([{ id: "local-workspace", name: "Local Workspace", createdAt: "", updatedAt: "" }]);
   const [view, setView] = useState<View>("feed");
-  const [topics, setTopics] = useState<TopicNode[]>(createDefaultTopics);
+  const [topics, setTopics] = useState<TopicNode[]>(() => {
+    const catalog = createDefaultTopics();
+    initialTopicCatalog.current = catalog;
+    return catalog;
+  });
   const [settings, setSettings] = useState<FeedSettings>(DEFAULT_SETTINGS);
   const [cards, setCards] = useState<FactCard[]>([]);
+  const [questionDrafts, setQuestionDrafts] = useState<Record<string, { text?: string; detailed?: boolean }>>({});
   const [learningProfile, setLearningProfile] = useState<LearningProfile>({});
   const [feedHasMore, setFeedHasMore] = useState(true);
   const [pendingSlots, setPendingSlots] = useState(DEFAULT_CARD_GENERATION_COUNT);
@@ -292,6 +405,29 @@ export default function HomePage() {
   const [youtubeStatus, setYoutubeStatus] = useState<"not-configured" | "connecting" | "refreshing" | "connected" | "error">("not-configured");
   const [youtubeProgress, setYoutubeProgress] = useState<YouTubeImportProgress>({ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0 });
   const [youtubeWorkspace, setYoutubeWorkspace] = useState<YouTubeWorkspaceState>(DEFAULT_YOUTUBE_WORKSPACE);
+  const youtubeIndexes = useMemo(() => {
+    const videoById = new Map<string, YouTubeVideo>();
+    const channelById = new Map<string, YouTubeChannelRecord>();
+    const videosByChannel = new Map<string, YouTubeVideo[]>();
+    const videosByTopic = new Map<YouTubeTopic | "All", YouTubeVideo[]>([["All", []]]);
+    const catalogIsCurrent = youtubeWorkspace.catalogVersion >= YOUTUBE_CATALOG_VERSION;
+    for (const channel of youtubeWorkspace.channels) channelById.set(channel.id, channel);
+    for (const video of youtubeWorkspace.videos) {
+      videoById.set(video.id, video);
+      const channelVideos = videosByChannel.get(video.channelId) ?? [];
+      channelVideos.push(video);
+      videosByChannel.set(video.channelId, channelVideos);
+      if (!catalogIsCurrent && !isApprovedYouTubeVideo(video)) continue;
+      videosByTopic.get("All")!.push(video);
+      for (const topic of video.topics) {
+        const matches = videosByTopic.get(topic) ?? [];
+        matches.push(video);
+        videosByTopic.set(topic, matches);
+      }
+    }
+    return { videoById, channelById, videosByChannel, videosByTopic };
+  }, [youtubeWorkspace.catalogVersion, youtubeWorkspace.channels, youtubeWorkspace.videos]);
+  const youtubeTopicPool = useCallback((topic: YouTubeTopic | "All") => youtubeIndexes.videosByTopic.get(topic) ?? [], [youtubeIndexes]);
   const [youtubeSearchResults, setYoutubeSearchResults] = useState<YouTubeVideo[]>([]);
   const [youtubeSmartSearchLoading, setYoutubeSmartSearchLoading] = useState(false);
   const [youtubeSmartSearchRan, setYoutubeSmartSearchRan] = useState(false);
@@ -300,7 +436,14 @@ export default function HomePage() {
   const [youtubeError, setYoutubeError] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [showGoToTop, setShowGoToTop] = useState(false);
+  const [topicWorkerReadyRevision, setTopicWorkerReadyRevision] = useState(-1);
+  const [topicSearchReply, setTopicSearchReply] = useState<TopicSearchWorkerReply>({ type: "ready", catalogRevision: -1 });
   const requestGeneration = useRef(0);
+  const topicCatalogRevision = useRef(0);
+  const catalogTopicListCache = useRef<{ revision: number; topics: Array<TopicNode & { path: string[] }> } | null>(null);
+  const topicSearchWorker = useRef<Worker | null>(null);
+  const currentQueryRef = useRef(query);
+  currentQueryRef.current = query;
   const generationAbortController = useRef<AbortController | null>(null);
   const imageHydrationControllers = useRef(new Map<string, AbortController>());
   const imageHydrationQueue = useRef<Array<{ card: FactCard; requestId: number; workspaceId: string; epoch: number }>>([]);
@@ -321,6 +464,8 @@ export default function HomePage() {
   const persistedStateRef = useRef<PersistedState | null>(null);
   const youtubeWorkspaceRef = useRef<YouTubeWorkspaceState>(DEFAULT_YOUTUBE_WORKSPACE);
   const workspaceStoreRef = useRef<AppWorkspaceStore | null>(null);
+  const workspaceSaveTimer = useRef<number | null>(null);
+  const youtubeActivitySaveTimers = useRef(new Map<string, number>());
   const workspaceIdRef = useRef("local-workspace");
   const workspaceNameRef = useRef("Local Workspace");
   const workspaceEpochRef = useRef(0);
@@ -474,6 +619,8 @@ export default function HomePage() {
   const switchWorkspace = useCallback(async (targetId: string) => {
     if (targetId === workspaceIdRef.current || !workspaceStoreRef.current) return;
     cancelWorkspaceRequests();
+    if (workspaceSaveTimer.current !== null) window.clearTimeout(workspaceSaveTimer.current);
+    workspaceSaveTimer.current = null;
     const currentId = workspaceIdRef.current;
     const currentName = workspaceNameRef.current;
     await saveWorkspaceRecordNow(currentId, currentName, makeCurrentSnapshot());
@@ -484,13 +631,16 @@ export default function HomePage() {
     workspaceNameRef.current = target.name;
     setWorkspaceId(target.id);
     setWorkspaceName(target.name);
-    const restoredTopics = migrateTopicTree(target.state.topics, false, (target.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION);
-    setTopics(restoredTopics);
-    setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings, sentenceLength: normalizeSentenceLength(target.state.settings?.sentenceLength) });
-    const restoredCards = uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body));
+    const targetState = normalizeSavedState(target.state, false, initialTopicCatalog.current ?? undefined);
+    target.state = targetState;
+    setTopics(targetState.topics);
+    topicCatalogRevision.current += 1;
+    setSettings(targetState.settings);
+    const restoredCards = targetState.cards;
     setCards(restoredCards);
-    setLearningProfile(target.state.learningProfile ?? {});
-    setFeedStarted(Boolean(target.state.feedStarted && restoredCards.length));
+    setQuestionDrafts({});
+    setLearningProfile(targetState.learningProfile);
+    setFeedStarted(targetState.feedStarted);
     setFeedHasMore(true);
     setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setQuery("");
@@ -500,7 +650,7 @@ export default function HomePage() {
     setLearningErrors({});
     setView("feed");
     setYoutubeWorkspace((current) => applyYouTubeActivity(current, target.state.youtubeActivity));
-    persistedStateRef.current = target.state;
+    persistedStateRef.current = targetState;
     await writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The workspace changed, but the active workspace could not be saved."));
   }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow]);
 
@@ -509,6 +659,8 @@ export default function HomePage() {
     const requestedName = nextLocalWorkspaceName(workspaceStoreRef.current.records);
     cancelWorkspaceRequests();
     await saveWorkspaceRecordNow(workspaceIdRef.current, workspaceNameRef.current, makeCurrentSnapshot());
+    if (workspaceSaveTimer.current !== null) window.clearTimeout(workspaceSaveTimer.current);
+    workspaceSaveTimer.current = null;
     const now = new Date().toISOString();
     const record: AppWorkspaceRecord = { id: makeWorkspaceId(), name: requestedName, createdAt: now, updatedAt: now, state: { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: createDefaultTopics(), settings: { ...DEFAULT_SETTINGS, obscurity: 5 }, cards: [], learningProfile: {}, feedStarted: false, theme } };
     workspaceStoreRef.current.records.push(record);
@@ -519,8 +671,10 @@ export default function HomePage() {
     setWorkspaceName(record.name);
     setWorkspaceSummaries(workspaceStoreRef.current.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
     setTopics(record.state.topics);
+    topicCatalogRevision.current += 1;
     setSettings(record.state.settings);
     setCards([]);
+    setQuestionDrafts({});
     setLearningProfile({});
     setFeedStarted(false);
     setFeedHasMore(true);
@@ -589,10 +743,13 @@ export default function HomePage() {
       workspaceNameRef.current = replacement.name;
       setWorkspaceId(replacement.id);
       setWorkspaceName(replacement.name);
-      setTopics(migrateTopicTree(replacement.state.topics, false, (replacement.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION));
+      replacement.state = normalizeSavedState(replacement.state, false, initialTopicCatalog.current ?? undefined);
+      setTopics(replacement.state.topics);
+      topicCatalogRevision.current += 1;
       setSettings({ ...DEFAULT_SETTINGS, ...replacement.state.settings, sentenceLength: normalizeSentenceLength(replacement.state.settings?.sentenceLength) });
       const replacementCards = uniqueCards((replacement.state.cards ?? []).map((card, cardIndex) => normalizeFact(card, cardIndex)).filter((card) => card.title && card.body));
       setCards(replacementCards);
+      setQuestionDrafts({});
       setLearningProfile(replacement.state.learningProfile ?? {});
       setFeedStarted(Boolean(replacement.state.feedStarted && replacementCards.length));
       setFeedHasMore(true);
@@ -659,31 +816,22 @@ export default function HomePage() {
   useEffect(() => { youtubeWorkspaceRef.current = youtubeWorkspace; }, [youtubeWorkspace]);
 
   useEffect(() => {
+    if (!hydrated || (view !== "videos" && view !== "settings")) return;
     let active = true;
-    void loadYouTubeWorkspace().then((workspace) => {
-      if (!active) return;
-      const activeRecord = workspaceStoreRef.current?.records.find((record) => record.id === workspaceIdRef.current);
-      const restored = applyYouTubeActivity(workspace, activeRecord?.state.youtubeActivity);
+    const activeRecord = workspaceStoreRef.current?.records.find((record) => record.id === workspaceId);
+    const fallback = activeRecord?.state.youtubeActivity;
+    const restore = youtubeCatalogLoadedRef.current
+      ? loadYouTubeActivity(workspaceId, fallback).then((activity) => applyYouTubeActivity(youtubeWorkspaceRef.current, activity ?? undefined))
+      : loadYouTubeWorkspace(workspaceId, fallback);
+    void restore.then((restored) => {
+      if (!active || workspaceIdRef.current !== workspaceId) return;
       youtubeWorkspaceRef.current = restored;
       youtubeCatalogLoadedRef.current = true;
       setYoutubeWorkspace(restored);
       if (restored.videos.length) setYoutubeStatus("connected");
     });
     return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    if (hydrated) void saveYouTubeWorkspace(youtubeWorkspace);
-  }, [hydrated, youtubeWorkspace]);
-
-  useEffect(() => {
-    if (!hydrated || !workspaceStoreRef.current || !persistedStateRef.current) return;
-    const record = workspaceStoreRef.current.records.find((item) => item.id === workspaceIdRef.current);
-    if (!record) return;
-    record.state = { ...record.state, youtubeActivity: youtubeActivityOf(youtubeWorkspace), savedAt: new Date().toISOString() };
-    void writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("Your video activity could not be saved. A local recovery copy was kept."));
-    scheduleCloudSave();
-  }, [hydrated, scheduleCloudSave, youtubeWorkspace]);
+  }, [hydrated, view, workspaceId]);
 
   useEffect(() => {
     displayModeRef.current = settings.displayMode;
@@ -697,26 +845,34 @@ export default function HomePage() {
 
   useEffect(() => {
     let active = true;
-    const normalizeSavedState = (parsed: Partial<PersistedState> | null, collapseInitial: boolean): PersistedState => {
-      const restoredTopics = parsed?.topics ? migrateTopicTree(parsed.topics, collapseInitial, (parsed?.topicCatalogVersion ?? 0) < 11) : createDefaultTopics();
-      const restoredSettings: FeedSettings = { ...DEFAULT_SETTINGS, ...parsed?.settings, displayMode: parsed?.settings?.displayMode === "text" ? "text" : "picture-text" };
-      restoredSettings.sentenceLength = normalizeSentenceLength(parsed?.settings?.sentenceLength);
-      const realCards = (parsed?.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));
-      const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
-      const restoredProfile = parsed?.learningProfile ? (parsed.learningProfile) : {};
-      const restoredTheme = parsed?.theme === "dark" ? "dark" : "light";
-      return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
-    };
     const restore = async () => {
-      let legacy: Partial<PersistedState> | null = null;
-      try { legacy = readWorkspaceState(); } catch { legacy = null; }
       const shouldMigrate = typeof window !== "undefined" && window.localStorage.getItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY) !== "1";
-      const legacyState = normalizeSavedState(legacy, shouldMigrate || (legacy?.topicCatalogVersion ?? 0) < 11);
-      const fallback: AppWorkspaceStore = { version: 1, activeId: "local-workspace", records: [makeLocalWorkspace(legacyState)], theme: legacyState.theme };
-      const loaded = await readWorkspaceStore<PersistedState>(fallback);
+      let store = await readWorkspaceStore<PersistedState>(null);
       if (!active) return;
-      const store = loaded ?? fallback;
-      if (!store.records.length) store.records = fallback.records;
+      let fallbackNormalized = false;
+      if (!store) {
+        let legacy: Partial<PersistedState> | null = null;
+        try { legacy = readWorkspaceState(); } catch { legacy = null; }
+        const legacyState = legacy
+          ? normalizeSavedState(legacy, shouldMigrate || (legacy.topicCatalogVersion ?? 0) < 11, initialTopicCatalog.current ?? undefined)
+          : { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: initialTopicCatalog.current ?? [], settings: DEFAULT_SETTINGS, cards: [], learningProfile: {}, feedStarted: false, theme: "light" as const };
+        store = { version: 1, activeId: "local-workspace", records: [makeLocalWorkspace(legacyState)], theme: legacyState.theme };
+        fallbackNormalized = true;
+      }
+      if (!store.records.length) {
+        const topics = initialTopicCatalog.current ?? [];
+        const emptyState: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics, settings: DEFAULT_SETTINGS, cards: [], learningProfile: {}, feedStarted: false, theme: "light" };
+        store.records = [makeLocalWorkspace(emptyState)];
+        store.activeId = store.records[0].id;
+        fallbackNormalized = true;
+      }
+      const needsSnapshotMigration = store.records.some((record) => {
+        const state = record.state as unknown as { persistenceVersion?: number; topics?: unknown };
+        return Array.isArray(state.topics) || state.persistenceVersion !== PERSISTENCE_VERSION;
+      });
+      let hasPendingJournal = false;
+      try { hasPendingJournal = Boolean(window.localStorage.getItem(PENDING_WORKSPACE_JOURNAL_KEY)); } catch { /* Workspace snapshots can still restore from IndexedDB. */ }
+      store = restorePendingWorkspaceJournal(store, initialTopicCatalog.current ?? undefined);
       const activeRecord = store.records.find((record) => record.id === store.activeId) ?? store.records[0];
       factMemoryRef.current = mergeFactMemory(store.factMemory ?? [], store.records.flatMap(record => (record.state.cards ?? []).map(rememberFact)));
       store.factMemory = factMemoryRef.current;
@@ -726,11 +882,14 @@ export default function HomePage() {
       setWorkspaceId(activeRecord.id);
       setWorkspaceName(activeRecord.name);
       setWorkspaceSummaries(store.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
-      const restored = normalizeSavedState(activeRecord.state, shouldMigrate || (activeRecord.state.topicCatalogVersion ?? 0) < 11);
+      const restored = fallbackNormalized ? activeRecord.state : normalizeSavedState(activeRecord.state, shouldMigrate || (activeRecord.state.topicCatalogVersion ?? 0) < 11, initialTopicCatalog.current ?? undefined);
+      activeRecord.state = restored;
       persistedStateRef.current = restored;
       setTopics(restored.topics);
+      topicCatalogRevision.current += 1;
       setSettings(restored.settings);
       setCards(restored.cards);
+      setQuestionDrafts({});
       setLearningProfile(restored.learningProfile);
       setFeedStarted(restored.feedStarted);
       const sharedTheme = store.theme ?? restored.theme;
@@ -738,7 +897,9 @@ export default function HomePage() {
       setTheme(sharedTheme);
       if (shouldMigrate) window.localStorage.setItem(TEN_LEVEL_DIFFICULTY_MIGRATION_KEY, "1");
       if (window.localStorage.getItem(THEME_MIGRATION_KEY) !== "1") window.localStorage.setItem(THEME_MIGRATION_KEY, "1");
-      await writeWorkspaceStore(store).catch(() => undefined);
+      if (needsSnapshotMigration || hasPendingJournal) {
+        await writeWorkspaceStore(store, { recovery: needsSnapshotMigration }).catch(() => undefined);
+      }
       setHydrated(true);
       const epoch = keyEditEpoch.current;
       void Promise.all([readRememberedKey("gemini"), readRememberedKey("youtube")]).then(([gemini, youtube]) => { if (!active) return; setKeysHydrated(true); if (keyEditEpoch.current !== epoch) return; apiKeyRef.current = gemini; setApiKey(gemini); setYoutubeKey(youtube); }).catch(() => { if (!active) return; setKeysHydrated(true); setToast("Remembered keys could not be restored. Your workspaces are still available."); });
@@ -789,7 +950,10 @@ export default function HomePage() {
         if (!active || controller.signal.aborted || cloudEpoch.current !== epoch) return;
         const localStore = compatible ? currentStore : null;
         const localRecords = (localStore?.records ?? []) as unknown as CloudRecord[];
-        const mergedRecords = mergeRecords(localRecords, remote.records);
+        const mergedRecords = mergeRecords(localRecords, remote.records).map((record) => ({
+          ...record,
+          state: normalizeSavedState(record.state as Partial<PersistedState>, false, initialTopicCatalog.current ?? undefined)
+        }));
         const fallbackState: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: createDefaultTopics(), settings: DEFAULT_SETTINGS, cards: [], learningProfile: {}, feedStarted: false, theme: theme };
         const records = mergedRecords.length ? mergedRecords as AppWorkspaceRecord[] : [makeLocalWorkspace(fallbackState)];
         const preferredId = localStore?.activeId && records.some((record) => record.id === localStore.activeId) ? localStore.activeId : records[0].id;
@@ -802,14 +966,17 @@ export default function HomePage() {
         setWorkspaceId(target.id);
         setWorkspaceName(target.name);
         setWorkspaceSummaries(records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
-        setTopics(migrateTopicTree(target.state.topics ?? createDefaultTopics(), false, (target.state.topicCatalogVersion ?? 0) < TOPIC_CATALOG_VERSION));
-        setSettings({ ...DEFAULT_SETTINGS, ...target.state.settings, sentenceLength: normalizeSentenceLength(target.state.settings?.sentenceLength) });
-        const targetCards = uniqueCards((target.state.cards ?? []).map((card, index) => normalizeFact(card, index)).filter((card) => card.title && card.body));
+        const targetState = target.state;
+        setTopics(targetState.topics);
+        topicCatalogRevision.current += 1;
+        setSettings(targetState.settings);
+        const targetCards = targetState.cards;
         setCards(targetCards);
-        setLearningProfile(target.state.learningProfile ?? {});
-        setFeedStarted(Boolean(target.state.feedStarted && targetCards.length));
+        setQuestionDrafts({});
+        setLearningProfile(targetState.learningProfile);
+        setFeedStarted(targetState.feedStarted);
         setTheme(mergedStore.theme ?? "light");
-        persistedStateRef.current = target.state;
+        persistedStateRef.current = targetState;
         await writeWorkspaceStore(mergedStore);
         setSyncStatus("synced");
         scheduleCloudSave();
@@ -828,7 +995,6 @@ export default function HomePage() {
     if (!hydrated) return;
     const state: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics, settings, cards, learningProfile, feedStarted, theme, youtubeActivity: youtubeActivityOf(youtubeWorkspaceRef.current) };
     persistedStateRef.current = state;
-    writeWorkspaceState(state);
     const currentStore = workspaceStoreRef.current;
     if (currentStore) {
       const index = currentStore.records.findIndex((record) => record.id === workspaceIdRef.current);
@@ -838,11 +1004,15 @@ export default function HomePage() {
       else currentStore.records.push(record);
       currentStore.activeId = workspaceIdRef.current;
       currentStore.theme = theme;
-      archiveFacts(cards);
       currentStore.factMemory = factMemoryRef.current;
-      setWorkspaceSummaries(currentStore.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
-      void writeWorkspaceStore(currentStore).catch(() => setToast("Your workspace could not be saved. A local recovery copy was kept."));
       scheduleCloudSave();
+      if (workspaceSaveTimer.current !== null) window.clearTimeout(workspaceSaveTimer.current);
+      workspaceSaveTimer.current = window.setTimeout(() => {
+        workspaceSaveTimer.current = null;
+        void writeWorkspaceStore(currentStore, { recovery: false }).then(() => {
+          setWorkspaceSummaries(currentStore.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+        }).catch(() => setToast("Your workspace could not be saved. A local recovery copy was kept."));
+      }, 300);
     }
   }, [cards, feedStarted, hydrated, learningProfile, scheduleCloudSave, settings, theme, topics]);
 
@@ -860,11 +1030,12 @@ export default function HomePage() {
       }
       store.activeId = workspaceIdRef.current;
       store.theme = theme;
+      void saveYouTubeWorkspace(youtubeWorkspaceRef.current, { activity: true, workspaceId: workspaceIdRef.current });
       writeWorkspaceState(snapshot);
       // writeWorkspaceStore writes localStorage before opening IndexedDB, so
       // the recovery copy survives a pagehide even when the transaction cannot
       // finish before the browser closes the document.
-      try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(store)); } catch { /* Recovery is best effort. */ }
+      try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(compactWorkspaceStoreForLocalStorage(store))); } catch { /* Recovery is best effort. */ }
       void writeWorkspaceStore(store).catch(() => undefined);
     };
     const handleVisibilityChange = () => {
@@ -899,14 +1070,81 @@ export default function HomePage() {
   }, [toast]);
 
   const selectedCount = useMemo(() => selectedLeafCount(topics), [topics]);
-  const allTopicResults = useMemo(() => flattenTopics(topics), [topics]);
-  const topicSuggestionIndex = useMemo(() => createTopicSuggestionIndex(allTopicResults), [allTopicResults]);
-  const localTopicSuggestions = useMemo(() => suggestTopics(topicSuggestionIndex, query), [topicSuggestionIndex, query]);
+  const catalogRevision = topicCatalogRevision.current;
+  const getCatalogTopicList = useCallback(() => {
+    if (catalogTopicListCache.current?.revision !== catalogRevision) catalogTopicListCache.current = { revision: catalogRevision, topics: flattenTopics(topics) };
+    return catalogTopicListCache.current.topics;
+  }, [catalogRevision, topics]);
+  const localTopicSuggestions = topicSearchReply.query?.trim() === query.trim() && topicSearchReply.catalogRevision === catalogRevision
+    ? topicSearchReply.suggestions ?? []
+    : [];
   const meaningfulLocalTopicMatches = localTopicSuggestions.filter((suggestion) => suggestion.group !== "explore").length;
+  const catalogCustomTopics = useMemo(() => topics.filter((topic) => topic.custom), [catalogRevision]);
+  const topicTreeSearchIndex = useMemo<TopicSearchIndex | undefined>(() => {
+    if (topicSearchReply.type !== "results" || topicSearchReply.query?.trim() !== query.trim() || topicSearchReply.catalogRevision !== catalogRevision) {
+      return query.trim() ? { query: query.trim(), catalogRevision, ready: false, visibleIds: new Set(), matchingDescendants: new Set(), directScores: new Map() } : undefined;
+    }
+    return {
+      query: topicSearchReply.query,
+      catalogRevision,
+      ready: true,
+      visibleIds: new Set(topicSearchReply.visibleIds ?? []),
+      matchingDescendants: new Set(topicSearchReply.matchingDescendants ?? []),
+      directScores: new Map(topicSearchReply.directScores ?? [])
+    };
+  }, [catalogRevision, query, topicSearchReply]);
+
+  useEffect(() => {
+    const text = query.trim();
+    if (!hydrated || !text || topicSearchWorker.current) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      if (topicSearchWorker.current) return;
+      void searchTopicsWithYieldingFallback(topics, text, semanticSearch.query === text ? semanticSearch.terms : [], catalogRevision, () => active && topicCatalogRevision.current === catalogRevision && currentQueryRef.current.trim() === text).then((reply) => {
+        if (reply && active && topicCatalogRevision.current === catalogRevision && currentQueryRef.current.trim() === text) setTopicSearchReply(reply);
+      });
+    }, 0);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [catalogRevision, hydrated, query, semanticSearch, topicWorkerReadyRevision, topics]);
+
+  useEffect(() => {
+    if (!hydrated || typeof Worker === "undefined") return;
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("../workers/topic-search.worker.ts", import.meta.url), { type: "module" });
+    } catch {
+      return;
+    }
+    topicSearchWorker.current = worker;
+    worker.onmessage = (event: MessageEvent<TopicSearchWorkerReply>) => {
+      const reply = event.data;
+      if (reply.catalogRevision !== topicCatalogRevision.current) return;
+      if (reply.type === "ready") setTopicWorkerReadyRevision(reply.catalogRevision);
+      else if (reply.query?.trim() === currentQueryRef.current.trim()) setTopicSearchReply(reply);
+    };
+    worker.onerror = () => {
+      worker.terminate();
+      if (topicSearchWorker.current === worker) topicSearchWorker.current = null;
+      setTopicWorkerReadyRevision(-1);
+    };
+    worker.postMessage({ type: "initialize", customTopics: catalogCustomTopics, catalogRevision });
+    return () => {
+      worker.terminate();
+      if (topicSearchWorker.current === worker) topicSearchWorker.current = null;
+    };
+  }, [catalogCustomTopics, catalogRevision, hydrated]);
+
+  useEffect(() => {
+    const worker = topicSearchWorker.current;
+    const text = query.trim();
+    if (!worker || !text || topicWorkerReadyRevision !== catalogRevision) return;
+    worker.postMessage({ type: "search", query: text, semanticTerms: semanticSearch.query === text ? semanticSearch.terms : [], catalogRevision });
+  }, [catalogRevision, query, semanticSearch, topicWorkerReadyRevision]);
 
   useEffect(() => {
     globalSearchAbortController.current?.abort();
     const text = query.trim();
+    if (text && (topicWorkerReadyRevision !== catalogRevision || topicSearchReply.query?.trim() !== text || topicSearchReply.catalogRevision !== catalogRevision)) return;
     if (!text || !apiKey.trim() || geminiStatus !== "connected" || !shouldExpandNaturalSearch(text, meaningfulLocalTopicMatches)) {
       setSemanticSearch({ query: text, terms: [] });
       return;
@@ -939,7 +1177,7 @@ export default function HomePage() {
       controller.abort();
       if (globalSearchAbortController.current === controller) globalSearchAbortController.current = null;
     };
-  }, [apiKey, geminiStatus, meaningfulLocalTopicMatches, query, recordGeminiFailure, recordGeminiOutcomes]);
+  }, [apiKey, catalogRevision, geminiStatus, meaningfulLocalTopicMatches, query, recordGeminiFailure, recordGeminiOutcomes, topicSearchReply, topicWorkerReadyRevision]);
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => {
     const nextSentenceLength = next.sentenceLength === undefined ? settings.sentenceLength : normalizeSentenceLength(next.sentenceLength);
@@ -1022,6 +1260,7 @@ export default function HomePage() {
       return;
     }
     setTopics((current) => [...current, { id, label, selected: true, expanded: false, weight: 10, custom: true }]);
+    topicCatalogRevision.current += 1;
     setFeedHasMore(true);
     setCustomTopic("");
     setToast(`${label} added to your topic tree.`);
@@ -1031,6 +1270,7 @@ export default function HomePage() {
     const topic = flattenTopics(topics).find((candidate) => candidate.id === id);
     if (!topic?.custom) return;
     setTopics((current) => removeTopicTree(current, id));
+    topicCatalogRevision.current += 1;
     setFeedHasMore(true);
     setToast(`${topic.label} removed from your topic tree.`);
   }, [topics]);
@@ -1194,6 +1434,7 @@ export default function HomePage() {
     setFeedHasMore(true);
     setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setCards([]);
+    setQuestionDrafts({});
     setLoading(false);
     setRabbitHole(null);
     setLearnLoading(null);
@@ -1326,6 +1567,14 @@ export default function HomePage() {
     }
   }, [apiKey, cards, questionLoading, recordGeminiFailure, recordGeminiOutcomes]);
 
+  const updateQuestionDraft = useCallback((id: string, text: string) => {
+    setQuestionDrafts((current) => current[id]?.text === text ? current : { ...current, [id]: { ...current[id], text } });
+  }, []);
+
+  const updateQuestionDetailPreference = useCallback((id: string, detailed: boolean) => {
+    setQuestionDrafts((current) => current[id]?.detailed === detailed ? current : { ...current, [id]: { ...current[id], detailed } });
+  }, []);
+
   const handleCardAction = useCallback((id: string, action: FactCardAction) => {
     if (action === "rabbit") {
       const card = cards.find((item) => item.id === id);
@@ -1340,6 +1589,7 @@ export default function HomePage() {
       if (!card || card.feedback === action) return;
       const result = recordTopicFeedback(learningProfile, card.topicPath, action, normalizeDifficulty(settings.obscurity));
       setLearningProfile(result.profile);
+      archiveFacts([{ ...card, feedback: action, known: action === "heard" }]);
       setCards((current) => current.map((item) => item.id === id ? { ...item, feedback: action, known: action === "heard" } : item));
       const topic = card.topicPath.at(-1) ?? "this topic";
       if (action === "heard") {
@@ -1358,14 +1608,16 @@ export default function HomePage() {
     }));
     if (action === "more") setToast("Your mix will lean a little closer to this thread.");
     if (action === "less") setToast("We’ll keep this thread quieter for a while.");
-  }, [cards, learningProfile, settings.obscurity, startFeed]);
+  }, [archiveFacts, cards, learningProfile, settings.obscurity, startFeed]);
 
   const performResetAllPreferences = useCallback(() => {
     cancelGeneration();
     requestGeneration.current += 1;
     setTopics(createDefaultTopics());
+    topicCatalogRevision.current += 1;
     setSettings(DEFAULT_SETTINGS);
     setCards([]);
+    setQuestionDrafts({});
     setFeedHasMore(true);
     setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setLearningProfile({});
@@ -1394,6 +1646,7 @@ export default function HomePage() {
     cancelGeneration();
     requestGeneration.current += 1;
     setCards([]);
+    setQuestionDrafts({});
     setFeedHasMore(true);
     setLearningProfile({});
     setLearnLoading(null);
@@ -1511,14 +1764,22 @@ export default function HomePage() {
     }
   }, []);
 
-  const updateYouTubeWorkspace = useCallback((update: (current: YouTubeWorkspaceState) => YouTubeWorkspaceState) => {
-    setYoutubeWorkspace((current) => {
-      const next = update(current);
-      youtubeWorkspaceRef.current = next;
-      void saveYouTubeWorkspace(next);
-      return next;
-    });
-  }, []);
+  const updateYouTubeWorkspace = useCallback((update: (current: YouTubeWorkspaceState) => YouTubeWorkspaceState, syncCloud = false) => {
+    const next = update(youtubeWorkspaceRef.current);
+    if (next === youtubeWorkspaceRef.current) return;
+    youtubeWorkspaceRef.current = next;
+    setYoutubeWorkspace(next);
+    const workspaceId = workspaceIdRef.current;
+    const record = workspaceStoreRef.current?.records.find((item) => item.id === workspaceId);
+    if (record) record.state = { ...record.state, youtubeActivity: youtubeActivityOf(next), savedAt: new Date().toISOString() };
+    const existingTimer = youtubeActivitySaveTimers.current.get(workspaceId);
+    if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+    youtubeActivitySaveTimers.current.set(workspaceId, window.setTimeout(() => {
+      youtubeActivitySaveTimers.current.delete(workspaceId);
+      void saveYouTubeWorkspace(next, { activity: true, workspaceId });
+    }, 300));
+    if (syncCloud) scheduleCloudSave();
+  }, [scheduleCloudSave]);
 
   const connectYouTube = useCallback(async (force = false) => {
     const keyAtStart = youtubeKey.trim();
@@ -1541,6 +1802,9 @@ export default function HomePage() {
       const refreshCatalog = force || snapshot.catalogVersion < YOUTUBE_CATALOG_VERSION;
       const result = await client.syncApprovedCatalog(snapshot.channels, controller.signal, (progress) => { if (!controller.signal.aborted && youtubeKey.trim() === keyAtStart) setYoutubeProgress(progress); }, { existingVideos: snapshot.videos, sourceStates: snapshot.sourceStates, force: refreshCatalog });
       if (controller.signal.aborted || youtubeKey.trim() !== keyAtStart) return;
+      const nextSyncAt = result.incomplete ? snapshot.lastSyncAt : new Date().toISOString();
+      const catalogSnapshot: YouTubeWorkspaceState = { ...snapshot, channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: result.incomplete ? snapshot.catalogVersion : YOUTUBE_CATALOG_VERSION, libraryIncomplete: result.incomplete, lastSyncAt: nextSyncAt };
+      void saveYouTubeWorkspace(catalogSnapshot, { catalog: true, workspaceId: workspaceIdRef.current });
       updateYouTubeWorkspace((current) => {
         const available = new Set(result.videos.map((video) => video.id));
         const preservedDiscoverIds = current.discoverIds.filter((id) => available.has(id));
@@ -1573,14 +1837,14 @@ export default function HomePage() {
       return;
     }
     void connectYouTube(false);
-  }, [connectYouTube, hydrated, youtubeKey, youtubeStatus, youtubeWorkspace]);
+  }, [connectYouTube, hydrated, youtubeKey, youtubeStatus, youtubeWorkspace.catalogVersion, youtubeWorkspace.videos.length]);
 
   useEffect(() => {
     if (!hydrated || !youtubeWorkspace.videos.length || youtubeWorkspace.discoverIds.length) return;
-    const pool = filterYouTubeVideos(youtubeWorkspace.videos, "", youtubeWorkspace.selectedTopic);
+    const pool = youtubeTopicPool(youtubeWorkspace.selectedTopic);
     const ids = selectRandomVideos(pool, 24, [], youtubeWorkspace.prioritizeRecentByChannel).map((video) => video.id);
     if (ids.length) updateYouTubeWorkspace((current) => current.discoverIds.length ? current : { ...current, discoverIds: ids });
-  }, [hydrated, updateYouTubeWorkspace, youtubeWorkspace]);
+  }, [hydrated, updateYouTubeWorkspace, youtubeTopicPool, youtubeWorkspace.discoverIds.length, youtubeWorkspace.prioritizeRecentByChannel, youtubeWorkspace.selectedTopic, youtubeWorkspace.videos]);
 
   useEffect(() => {
     if (!youtubeKey.trim() || !["connected", "error"].includes(youtubeStatus)) return;
@@ -1614,28 +1878,28 @@ export default function HomePage() {
   }, [handleYouTubeKeyChange]);
 
   const shuffleYouTube = useCallback(() => {
-    const pool = filterYouTubeVideos(youtubeWorkspaceRef.current.videos, "", youtubeWorkspaceRef.current.selectedTopic);
+    const pool = youtubeTopicPool(youtubeWorkspaceRef.current.selectedTopic);
     const ids = selectRandomVideos(pool, 24, [], youtubeWorkspaceRef.current.prioritizeRecentByChannel).map((video) => video.id);
     updateYouTubeWorkspace((current) => ({ ...current, activeTab: "discover", selectedVideoId: undefined, selectedChannelId: undefined, discoverIds: ids }));
-  }, [updateYouTubeWorkspace]);
+  }, [updateYouTubeWorkspace, youtubeTopicPool]);
 
   const showMoreYouTube = useCallback(() => {
     const current = youtubeWorkspaceRef.current;
-    const pool = filterYouTubeVideos(current.videos, "", current.selectedTopic);
+    const pool = youtubeTopicPool(current.selectedTopic);
     const next = selectRandomVideos(pool, 24, current.discoverIds, current.prioritizeRecentByChannel);
     if (!next.length) return;
     updateYouTubeWorkspace((workspace) => ({ ...workspace, activeTab: "discover", discoverIds: [...workspace.discoverIds, ...next.map((video) => video.id)] }));
-  }, [updateYouTubeWorkspace]);
+  }, [updateYouTubeWorkspace, youtubeTopicPool]);
 
   const setYouTubeRecentBias = useCallback((channelName: string, enabled: boolean) => {
     updateYouTubeWorkspace((current) => {
       const prioritizeRecentByChannel = { ...(current.prioritizeRecentByChannel ?? DEFAULT_YOUTUBE_RECENCY_PREFERENCES), [channelName]: enabled };
-      const pool = filterYouTubeVideos(current.videos, "", current.selectedTopic);
+      const pool = youtubeTopicPool(current.selectedTopic);
       const count = Math.min(pool.length, Math.max(current.discoverIds.length, 24));
       const discoverIds = selectRandomVideos(pool, count, [], prioritizeRecentByChannel).map((video) => video.id);
       return { ...current, prioritizeRecentByChannel, discoverIds };
     });
-  }, [updateYouTubeWorkspace]);
+  }, [updateYouTubeWorkspace, youtubeTopicPool]);
 
   const handleVideoSearch = useCallback((value: string) => {
     youtubeSearchAbortController.current?.abort();
@@ -1797,7 +2061,7 @@ export default function HomePage() {
     updateYouTubeWorkspace((current) => {
       const history = [{ videoId: id, watchedAt: new Date().toISOString() }, ...current.history.filter((item) => item.videoId !== id)].slice(0, 200);
       return { ...current, selectedVideoId: id, selectedChannelId: undefined, history };
-    });
+    }, true);
   }, [updateYouTubeWorkspace]);
 
   const openChannel = useCallback((id: string) => {
@@ -1813,27 +2077,29 @@ export default function HomePage() {
     updateYouTubeWorkspace((current) => ({ ...current, savedIds: current.savedIds.includes(id) ? current.savedIds.filter((savedId) => savedId !== id) : [...current.savedIds, id] }));
   }, [updateYouTubeWorkspace]);
 
+  const recordYouTubePlaybackPosition = useCallback((id: string, seconds: number) => {
+    updateYouTubeWorkspace((current) => Math.abs((current.playbackPositions[id] ?? 0) - seconds) < 30 ? current : { ...current, playbackPositions: { ...current.playbackPositions, [id]: seconds } });
+  }, [updateYouTubeWorkspace]);
+
+  const deferredVideoSearchText = useDeferredValue(youtubeWorkspace.searchText);
   const videoSearchResults = useMemo(() => {
-    const workspace = youtubeWorkspace;
-    if (workspace.searchText.trim()) return youtubeSmartSearchRan ? youtubeSearchResults : filterYouTubeVideos(workspace.videos, workspace.searchText, workspace.selectedTopic, workspace.selectedChannelId);
-    const pool = filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic);
-    const byId = new Map(pool.map((video) => [video.id, video]));
-    const recommendationIds = workspace.discoverIds.length ? workspace.discoverIds : selectRandomVideos(pool, 24, [], workspace.prioritizeRecentByChannel).map((video) => video.id);
-    return recommendationIds.map((id) => byId.get(id)).filter((video): video is YouTubeVideo => Boolean(video));
-  }, [youtubeSearchResults, youtubeSmartSearchRan, youtubeWorkspace]);
+    if (deferredVideoSearchText.trim()) return youtubeSmartSearchRan ? youtubeSearchResults : filterYouTubeVideos(youtubeWorkspace.videos, deferredVideoSearchText, youtubeWorkspace.selectedTopic, youtubeWorkspace.selectedChannelId);
+    return youtubeWorkspace.discoverIds.map((id) => youtubeIndexes.videoById.get(id)).filter((video): video is YouTubeVideo => Boolean(video));
+  }, [deferredVideoSearchText, youtubeSearchResults, youtubeSmartSearchRan, youtubeWorkspace.videos, youtubeWorkspace.selectedTopic, youtubeWorkspace.selectedChannelId, youtubeWorkspace.discoverIds, youtubeIndexes]);
 
   const filteredCards = useMemo(() => {
     if (!query.trim()) return cards;
     return rankSearchResults(query, cards, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
   }, [cards, query]);
 
-  const activeCollection = (kind: "saved" | "likes" | "history") => {
-    const collection = kind === "saved" ? cards.filter((card) => card.saved) : kind === "likes" ? cards.filter((card) => card.liked) : cards;
+  const collectionCards = useMemo(() => {
+    if (view !== "saved" && view !== "likes" && view !== "history") return [];
+    const collection = view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : cards;
     if (!query.trim()) return collection;
     return rankSearchResults(query, collection, (card) => `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`);
-  };
+  }, [cards, query, view]);
 
-  const chooseExploreTopic = useCallback((requestedTopic: string) => {
+  const chooseExploreTopic = useCallback((requestedTopic: string, requestedId?: string) => {
     if (requestedTopic === "Custom topic") {
       setFeedStarted(false);
       setQuery("");
@@ -1843,26 +2109,30 @@ export default function HomePage() {
     }
 
     const normalizedTopic = normalizeSearchText(requestedTopic);
-    const catalogTopics = flattenTopics(topics);
-    const exactMatch = catalogTopics.find((topic) => (
-      normalizeSearchText(topic.label) === normalizedTopic
-      || topic.aliases?.some((alias) => normalizeSearchText(alias) === normalizedTopic)
-    ));
-    const directSuggestion = exactMatch
-      ? undefined
-      : suggestTopics(topicSuggestionIndex, requestedTopic).find((suggestion) => suggestion.group === "keyword");
-    const selectedTopic = exactMatch ?? catalogTopics.find((topic) => topic.id === directSuggestion?.id);
+    let selectedTopic = requestedId ? findTopicById(topics, requestedId) : undefined;
+    if (!selectedTopic) {
+      const catalogTopics = getCatalogTopicList();
+      const exactMatch = catalogTopics.find((topic) => (
+        normalizeSearchText(topic.label) === normalizedTopic
+        || topic.aliases?.some((alias) => normalizeSearchText(alias) === normalizedTopic)
+      ));
+      const directSuggestion = exactMatch
+        ? undefined
+        : suggestTopics(createTopicSuggestionIndex(catalogTopics), requestedTopic).find((suggestion) => suggestion.group === "keyword");
+      selectedTopic = exactMatch ?? catalogTopics.find((topic) => topic.id === directSuggestion?.id);
+    }
     const label = selectedTopic?.label ?? titleCaseTopicLabel(requestedTopic);
 
     if (selectedTopic) {
       setTopics((current) => {
-        const topic = flattenTopics(current).find((candidate) => candidate.id === selectedTopic.id);
+        const topic = findTopicById(current, selectedTopic.id);
         return !topic || selectionState(topic) === "selected" ? current : toggleTopicSelection(current, topic.id);
       });
     } else {
       const id = `custom-${slugify(label)}`;
+      if (!findTopicById(topics, id)) topicCatalogRevision.current += 1;
       setTopics((current) => {
-        const existing = flattenTopics(current).find((topic) => topic.id === id);
+        const existing = findTopicById(current, id);
         if (existing) return selectionState(existing) === "selected" ? current : toggleTopicSelection(current, id);
         return [...current, { id, label, selected: true, expanded: false, weight: 10, custom: true }];
       });
@@ -1873,21 +2143,18 @@ export default function HomePage() {
     setQuery(label);
     setView("feed");
     setToast(`Ready to explore ${label}. Start learning when you're ready.`);
-  }, [topicSuggestionIndex, topics]);
+  }, [getCatalogTopicList, topicSearchReply, catalogRevision, topics]);
 
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={chooseExploreTopic} />;
-    if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(filterYouTubeVideos(current.videos, "", topic), 24, [], current.prioritizeRecentByChannel).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={(id, seconds) => updateYouTubeWorkspace((current) => ({ ...current, playbackPositions: { ...current.playbackPositions, [id]: seconds } }))} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
-    if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={activeCollection(view)} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} />;
+      if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} videoById={youtubeIndexes.videoById} channelById={youtubeIndexes.channelById} videosByChannel={youtubeIndexes.videosByChannel} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(youtubeTopicPool(topic), 24, [], current.prioritizeRecentByChannel).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={recordYouTubePlaybackPosition} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
+    if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={collectionCards} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus} syncError={syncError} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
-    if (!feedStarted) return <SetupWorkspace topics={topics} query={query} onQueryChange={setQuery} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
-    return <FeedView cards={filteredCards} showReset={cards.length > 0 || loading} query={query} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, DEFAULT_CARD_GENERATION_COUNT)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
+    if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
+    return <FeedView cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, DEFAULT_CARD_GENERATION_COUNT)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
 
-  const topicSuggestions = useMemo(
-    () => suggestTopics(topicSuggestionIndex, query, semanticSearch.query === query.trim() ? semanticSearch.terms : []),
-    [topicSuggestionIndex, query, semanticSearch]
-  );
+  const topicSuggestions = localTopicSuggestions;
 
   return (
     <div

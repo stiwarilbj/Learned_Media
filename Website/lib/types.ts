@@ -110,6 +110,7 @@ export type FactCard = {
   createdAt?: string;
   learnMore?: string;
   question?: string;
+  questionDetailed?: boolean;
   answer?: string;
   answerDetailed?: boolean;
   answerSources?: WikipediaSource[];

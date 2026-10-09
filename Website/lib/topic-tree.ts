@@ -1,4 +1,5 @@
 import type { TopicNode } from "./types";
+import { preserveTopicPathIndex, preserveTopicSelectionStats, updateTopicTreeById } from "./topic-catalog";
 
 export {
   flattenTopics,
@@ -16,30 +17,38 @@ export function updateTopicTree(
   id: string,
   update: (node: TopicNode) => TopicNode
 ): TopicNode[] {
-  return nodes.map((node) => {
-    const next = node.id === id ? update(node) : node;
-    return next.children ? { ...next, children: updateTopicTree(next.children, id, update) } : next;
-  });
+  return updateTopicTreeById(nodes, id, update);
 }
 
 export function collapseTopicBranches(nodes: TopicNode[]): TopicNode[] {
-  return nodes.map((node) => {
-    const collapsed = { ...node, expanded: false };
-    if (node.children) collapsed.children = collapseTopicBranches(node.children);
-    return collapsed;
+  let changed = false;
+  const next = nodes.map((node) => {
+    const children = node.children ? collapseTopicBranches(node.children) : node.children;
+    if (!node.expanded && children === node.children) return node;
+    changed = true;
+    return preserveTopicSelectionStats(node, { ...node, expanded: false, children });
   });
+  return changed ? preserveTopicPathIndex(nodes, next) : nodes;
 }
 
 export function removeTopicTree(nodes: TopicNode[], id: string): TopicNode[] {
-  return nodes
-    .filter((node) => node.id !== id)
-    .map((node) => node.children ? { ...node, children: removeTopicTree(node.children, id) } : node);
+  let changed = false;
+  const result: TopicNode[] = [];
+  for (const node of nodes) {
+    if (node.id === id) { changed = true; continue; }
+    if (!node.children?.length) { result.push(node); continue; }
+    const children = removeTopicTree(node.children, id);
+    if (children !== node.children) { changed = true; result.push({ ...node, children }); }
+    else result.push(node);
+  }
+  return changed ? preserveTopicPathIndex(nodes, result) : nodes;
 }
 
 export function clearTopicSelections(nodes: TopicNode[]): TopicNode[] {
-  return nodes.map((node) => ({
+  const cleared = nodes.map((node) => ({
     ...node,
     selected: false,
     children: node.children ? clearTopicSelections(node.children) : undefined
   }));
+  return preserveTopicPathIndex(nodes, cleared);
 }
