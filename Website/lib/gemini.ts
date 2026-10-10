@@ -27,7 +27,6 @@ export const ALLOWED_GEMINI_MODELS = [
   ...PRIMARY_FLASH_LITE_MODELS,
   "gemini-2.5-flash-lite",
   "gemini-3.8-flash",
-  "gemini-3.5-flash",
   "gemini-3-flash-preview",
   "gemini-2.5-flash"
 ] as const;

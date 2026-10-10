@@ -11,7 +11,7 @@
   const TOPIC_CATALOG_VERSION = 24;
   const REQUIRED_WORKING_MODELS = 2;
   const PRIMARY_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
-  const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
+  const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Impossible"];
   const PERSISTENCE_VERSION = 2;
