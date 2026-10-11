@@ -13,7 +13,7 @@ import { findTopicById, TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
 import { normalizeSearchText, rankSearchResults, shouldExpandNaturalSearch } from "@/lib/search";
 import { requestCacheKey, requestCacheScope, SessionCache } from "@/lib/session-cache";
-import { createTopicSuggestionIndex, suggestTopics } from "@/lib/topic-suggestions";
+import { createTopicSuggestionIndex, suggestTopics, shouldEnrichTopics, TOPIC_SEARCH_VERSION, type TopicQueryPlan } from "@/lib/topic-suggestions";
 import { searchTopicsWithYieldingFallback } from "@/lib/topic-search-fallback";
 import type { TopicSearchIndex, TopicSearchWorkerReply } from "@/lib/topic-search-types";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
@@ -85,11 +85,6 @@ function compactStateForLocalStorage(state: PersistedState) {
   return compact;
 }
 
-function semanticSearchStateMatches(state: { query: string; terms: string[] }, query: string, terms: string[]) {
-  return normalizeSearchText(state.query) === normalizeSearchText(query)
-    && state.terms.length === terms.length
-    && state.terms.every((term, index) => normalizeSearchText(term) === normalizeSearchText(terms[index]));
-}
 
 function cardSearchText(card: FactCard) {
   return `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`;
@@ -410,7 +405,7 @@ export default function HomePage() {
   const [feedStarted, setFeedStarted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
-  const [semanticSearch, setSemanticSearch] = useState<{ query: string; terms: string[] }>({ query: "", terms: [] });
+  const [semanticSearch, setSemanticSearch] = useState<{ query: string; terms: string[]; plan?: TopicQueryPlan }>({ query: "", terms: [] });
   const [customTopic, setCustomTopic] = useState("");
   const [rabbitHole, setRabbitHole] = useState<string | null>(null);
   const [toast, setToast] = useState("");
@@ -480,6 +475,7 @@ export default function HomePage() {
   const topicSearchWorker = useRef<Worker | null>(null);
   const topicSearchRequestId = useRef(0);
   const topicSearchSignature = useRef("");
+  const topicEnrichmentAttempt = useRef("");
   const cardSearchWorker = useRef<Worker | null>(null);
   const cardSearchWorkerReady = useRef(false);
   const cardSearchIndexedCards = useRef(new Map<string, { card: FactCard; text: string }>());
@@ -515,7 +511,7 @@ export default function HomePage() {
   const [youtubeSearchHasMore, setYoutubeSearchHasMore] = useState(true);
   const youtubeSearchAbortController = useRef<AbortController | null>(null);
   const globalSearchAbortController = useRef<AbortController | null>(null);
-  const naturalSearchCache = useRef(new SessionCache<string[]>(100, SEARCH_CACHE_TTL_MS));
+  const naturalSearchCache = useRef(new SessionCache<TopicQueryPlan>(100, SEARCH_CACHE_TTL_MS));
   const youtubeSearchCache = useRef(new SessionCache<{ results: YouTubeVideo[]; reasons: Record<string, RankedVideoSearchResult>; plan: VideoSearchPlan; expanded: boolean }>(100, SEARCH_CACHE_TTL_MS));
   const learningResponseCache = useRef(new SessionCache<{ answer: string; citations: WikipediaSource[] }>(100, SEARCH_CACHE_TTL_MS));
   const youtubeCatalogLoadedRef = useRef(false);
@@ -1146,10 +1142,9 @@ export default function HomePage() {
     }
     return catalogSuggestionIndexCache.current.index;
   }, [catalogRevision, getCatalogTopicList]);
-  const localTopicSuggestions = topicSearchReply.query?.trim() === query.trim() && topicSearchReply.catalogRevision === catalogRevision
+  const localTopicSuggestions = normalizeSearchText(topicSearchReply.query ?? "") === normalizeSearchText(query) && topicSearchReply.catalogRevision === catalogRevision
     ? topicSearchReply.suggestions ?? []
     : [];
-  const meaningfulLocalTopicMatches = localTopicSuggestions.filter((suggestion) => suggestion.group !== "explore").length;
   const catalogCustomTopics = useMemo(() => topics.filter((topic) => topic.custom), [catalogRevision]);
   const syncCardSearchIndex = useCallback((nextCards: FactCard[]) => {
     const worker = cardSearchWorker.current;
@@ -1312,11 +1307,11 @@ export default function HomePage() {
   }, [syncYouTubeSearchIndex, youtubeWorkspace.videos]);
 
   const topicTreeSearchIndex = useMemo<TopicSearchIndex | undefined>(() => {
-    if (topicSearchReply.type !== "results" || topicSearchReply.query?.trim() !== query.trim() || topicSearchReply.catalogRevision !== catalogRevision) {
+    if (topicSearchReply.type !== "results" || normalizeSearchText(topicSearchReply.query ?? "") !== normalizeSearchText(query) || topicSearchReply.catalogRevision !== catalogRevision) {
       return query.trim() ? { query: query.trim(), catalogRevision, ready: false, visibleIds: new Set(), matchingDescendants: new Set(), directScores: new Map() } : undefined;
     }
     return {
-      query: topicSearchReply.query,
+      query: query.trim(),
       catalogRevision,
       ready: true,
       visibleIds: new Set(topicSearchReply.visibleIds ?? []),
@@ -1332,8 +1327,8 @@ export default function HomePage() {
     const timer = window.setTimeout(() => {
       if (topicSearchWorker.current) return;
       const terms = normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.terms : [];
-      void searchTopicsWithYieldingFallback(topics, text, terms, catalogRevision, () => active && topicCatalogRevision.current === catalogRevision && currentQueryRef.current.trim() === text).then((reply) => {
-        if (reply && active && topicCatalogRevision.current === catalogRevision && currentQueryRef.current.trim() === text) setTopicSearchReply(reply);
+      void searchTopicsWithYieldingFallback(topics, text, normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.plan ?? terms : [], catalogRevision, () => active && topicCatalogRevision.current === catalogRevision && normalizeSearchText(currentQueryRef.current) === normalizeSearchText(text)).then((reply) => {
+        if (reply && active && topicCatalogRevision.current === catalogRevision && normalizeSearchText(currentQueryRef.current) === normalizeSearchText(text)) setTopicSearchReply(reply);
       });
     }, 0);
     return () => { active = false; window.clearTimeout(timer); };
@@ -1353,7 +1348,7 @@ export default function HomePage() {
       const reply = event.data;
       if (reply.catalogRevision !== topicCatalogRevision.current) return;
       if (reply.type === "ready") setTopicWorkerReadyRevision(reply.catalogRevision);
-      else if (reply.requestId === topicSearchRequestId.current && reply.query?.trim() === currentQueryRef.current.trim()) setTopicSearchReply(reply);
+      else if (reply.requestId === topicSearchRequestId.current && normalizeSearchText(reply.query ?? "") === normalizeSearchText(currentQueryRef.current)) setTopicSearchReply({ ...reply, query: currentQueryRef.current.trim() });
     };
     worker.onerror = () => {
       worker.terminate();
@@ -1377,50 +1372,42 @@ export default function HomePage() {
       return;
     }
     const semanticTerms = normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.terms : [];
-    const signature = JSON.stringify([catalogRevision, text, semanticTerms.map(normalizeSearchText)]);
+    const plan = normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.plan : undefined;
+    const signature = JSON.stringify([catalogRevision, normalizeSearchText(text), plan ?? semanticTerms.map(normalizeSearchText)]);
     if (topicSearchSignature.current === signature) return;
     topicSearchSignature.current = signature;
     const requestId = ++topicSearchRequestId.current;
-    worker.postMessage({ type: "search", requestId, query: text, semanticTerms, catalogRevision });
+    worker.postMessage({ type: "search", requestId, query: text, semanticTerms, plan, catalogRevision });
   }, [catalogRevision, query, semanticSearch, topicWorkerReadyRevision]);
 
+  const topicEnrichmentKey = JSON.stringify([catalogRevision, normalizeSearchText(query), apiKey.trim()]);
+  const topicCoverage = topicSearchReply.catalogRevision === catalogRevision && normalizeSearchText(topicSearchReply.query ?? "") === normalizeSearchText(query) ? topicSearchReply.completeCoverage : undefined;
   useEffect(() => {
     globalSearchAbortController.current?.abort();
     const text = query.trim();
-    if (text && (topicWorkerReadyRevision !== catalogRevision || topicSearchReply.query?.trim() !== text || topicSearchReply.catalogRevision !== catalogRevision)) return;
-    if (!text || !apiKey.trim() || geminiStatus !== "connected" || !shouldExpandNaturalSearch(text, meaningfulLocalTopicMatches)) {
-      setSemanticSearch((current) => semanticSearchStateMatches(current, text, []) ? current : { query: text, terms: [] });
+    if (!text || !apiKey.trim() || geminiStatus !== "connected" || topicCoverage === undefined) return;
+    const cacheKey = requestCacheKey(requestCacheScope(sessionIdRef.current, apiKey.trim()), "topic-search", TOPIC_SEARCH_VERSION, catalogRevision, normalizeSearchText(text));
+    const cached = naturalSearchCache.current.get(cacheKey);
+    if (cached) {
+      setSemanticSearch(current => current.plan === cached && normalizeSearchText(current.query) === normalizeSearchText(text) ? current : { query: text, terms: [], plan: cached });
       return;
     }
-    const scope = requestCacheScope(sessionIdRef.current, apiKey.trim());
-    const cacheKey = requestCacheKey(scope, "topic-search", TOPIC_CATALOG_VERSION, normalizeSearchText(text));
-    const cachedTerms = naturalSearchCache.current.get(cacheKey);
-    if (cachedTerms) {
-      setSemanticSearch((current) => semanticSearchStateMatches(current, text, cachedTerms) ? current : { query: text, terms: cachedTerms });
-      return;
-    }
+    if (topicEnrichmentAttempt.current === topicEnrichmentKey || !shouldEnrichTopics(text, topicCoverage)) return;
     const controller = new AbortController();
     globalSearchAbortController.current = controller;
+    let settled = false;
     const timer = window.setTimeout(() => {
-      void interpretNaturalSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: text, catalogVersion: TOPIC_CATALOG_VERSION, signal: controller.signal }).then((result) => {
-        if (!controller.signal.aborted && globalSearchAbortController.current === controller) {
-          naturalSearchCache.current.set(cacheKey, result.terms);
+      topicEnrichmentAttempt.current = topicEnrichmentKey;
+      void interpretNaturalSearch({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, query: text, catalogVersion: `${TOPIC_CATALOG_VERSION}:${catalogRevision}:${TOPIC_SEARCH_VERSION}`, signal: controller.signal }).then(result => {
+        if (!controller.signal.aborted) {
+          naturalSearchCache.current.set(cacheKey, result.plan);
           recordGeminiOutcomes(result.modelOutcomes);
-          setSemanticSearch((current) => semanticSearchStateMatches(current, text, result.terms) ? current : { query: text, terms: result.terms });
+          setSemanticSearch({ query: text, terms: [], plan: result.plan });
         }
-      }).catch((error) => {
-        if (!controller.signal.aborted && globalSearchAbortController.current === controller) {
-          recordGeminiFailure(error);
-          setSemanticSearch((current) => semanticSearchStateMatches(current, text, []) ? current : { query: text, terms: [] });
-        }
-      });
+      }).catch(error => { if (!controller.signal.aborted) recordGeminiFailure(error); }).finally(() => { settled = true; });
     }, 1500);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-      if (globalSearchAbortController.current === controller) globalSearchAbortController.current = null;
-    };
-  }, [apiKey, catalogRevision, geminiStatus, meaningfulLocalTopicMatches, query, recordGeminiFailure, recordGeminiOutcomes, topicSearchReply, topicWorkerReadyRevision]);
+    return () => { window.clearTimeout(timer); controller.abort(); if (!settled && topicEnrichmentAttempt.current === topicEnrichmentKey) topicEnrichmentAttempt.current = ""; };
+  }, [topicEnrichmentKey, topicCoverage, geminiStatus, recordGeminiFailure, recordGeminiOutcomes]);
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => {
     const nextSentenceLength = next.sentenceLength === undefined ? settings.sentenceLength : normalizeSentenceLength(next.sentenceLength);

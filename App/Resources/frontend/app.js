@@ -269,6 +269,7 @@
       else if (key === "html") element.innerHTML = value;
       else if (key === "onClick") element.addEventListener("click", value);
       else if (key === "onInput") element.addEventListener("input", value);
+      else if (key === "onFocus") element.addEventListener("focus", value);
       else if (key === "onChange") element.addEventListener("change", value);
       else if (key === "onKeydown") element.addEventListener("keydown", value);
       else if (key === "disabled") element.disabled = Boolean(value);
@@ -348,6 +349,7 @@
   }
   function clearSessionSearchCaches() {
     semanticSearchCache.clear(); youtubeSmartSearchCache.clear(); learningResponseCache.clear();
+    cancelPendingSemanticSearch(); topicResultCache.clear(); topicAttempt = "";
   }
   function bridge(action, payload) {
     if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.native) {
@@ -1011,13 +1013,13 @@
   }
   function topicMatches(topic, query) {
     if (!query) return true;
-    return searchScore(query, topic.label + " " + (topic.aliases || []).join(" ")) > 0 || Boolean(topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
+    return topicTreeVisible.has(topic.id);
   }
   function topicRow(topic, depth, query) {
     if (query && !topicMatches(topic, query)) return null;
     const hasChildren = Boolean(topic.children && topic.children.length);
     const selection = selectionState(topic);
-    const searchExpanded = Boolean(query && topic.children && topic.children.some(function (child) { return topicMatches(child, query); }));
+    const searchExpanded = Boolean(query && topicTreeAncestors.has(topic.id));
     const childrenVisible = hasChildren && (topic.expanded || (searchExpanded && !topicSearchExpansionSuppressed));
     const branchWrap = node("div", { className: "topic-branch" });
     const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + (!hasChildren ? " leaf-row" : "") + (topic.custom ? " custom-row" : "") + " selection-" + selection, dataset: { topicId: topic.id }, onClick: function (event) { if (event.target.closest && event.target.closest("button")) return; toggleTopicSelection(topic.id); saveState(); render(); } });
@@ -1055,6 +1057,7 @@
     picker.appendChild(actions);
     const tree = node("div", { className: "topic-tree", role: "tree", ariaLabel: "Topic browser" });
     const query = state.topicQuery.trim();
+    if(query)scheduleTopicSearch(query);
     state.topics.forEach(function (topic) { const row = topicRow(topic, 0, query); if (row) tree.appendChild(row); });
     picker.appendChild(tree);
     return picker;
@@ -1284,119 +1287,139 @@
     if (!target) return;
     requestConfirmation("Delete workspace “" + target.name + "”?", "Its cards and local history will be removed from this Mac.", "Confirm", function () { performDeleteWorkspace(id); });
   }
-  function naturalSearchVariants(query) {
-    const normalized = searchText(query);
-    const groups = [
-      ["politician", "politics", "government", "congress", "legislation", "lawmakers"],
-      ["behind the scenes", "inner workings", "process", "tactics", "strategy"],
-      ["movie", "film", "cinema"],
-      ["tv", "television", "show", "series"],
-      ["music", "songs", "singers", "artists"],
-      ["sport", "sports", "athletics", "league", "players"],
-      ["science", "scientist", "research", "experiment"]
-    ];
-    return groups.filter(function (group) { return group.some(function (term) { return normalized.indexOf(term) >= 0 || term.indexOf(normalized) >= 0; }); }).flatMap(function (group) { return group; });
+  const topicSemantic = window.LEARNED_MEDIA_TOPIC_SEARCH;
+  const topicResultCache = createSessionCache(100, 30 * 60 * 1000);
+  let topicWorker = null, topicWorkerReady = false, topicIndex = null, topicRevision = "", topicJob = 0, topicActiveKey = "", topicAttempt = "";
+  let topicTreeVisible = new Set(), topicTreeAncestors = new Set();
+  function ensureTopicIndex() {
+      const revision = JSON.stringify([TOPIC_CATALOG_VERSION, state.workspaceId, state.topics.filter(t => t.custom).map(t => [t.id, t.label, t.aliases])]);
+      if (revision === topicRevision)
+          return;
+      topicRevision = revision;
+      topicActiveKey = "";
+      topicWorkerReady = false;
+      topicResultCache.clear();
+      topicAttempt = "";
+      const topics = flatTopics();
+      topicIndex = null;
+      if (topicWorker)
+          topicWorker.terminate();
+      try {
+          topicWorker = new Worker("topic-search.worker.js");
+          topicWorker.onmessage = function (event) { const r = event.data; if (r.revision !== topicRevision)
+              return; if (r.type === "ready") {
+              topicWorkerReady = true;
+              topicActiveKey = "";
+              scheduleTopicSearch(state.query || state.topicQuery);
+          }
+          else if (r.id === topicJob) {
+              topicResultCache.set(r.key, r);
+              publishTopicSearch(r.query, r);
+          } };
+          topicWorker.onerror = function () { topicWorker.terminate(); topicWorker = null; topicActiveKey = ""; scheduleTopicSearch(state.query || state.topicQuery); };
+          topicWorker.postMessage({ type: "initialize", topics, revision });
+      }
+      catch (_) {
+          topicWorker = null;
+      }
   }
-  function globalSearchEntries() {
-    const topics = flatTopics().map(function (topic) { return { kind: "topic", id: topic.id, label: topic.path.join(" → "), topic: topic, text: topic.path.join(" ") + " " + topic.label + " " + (topic.aliases || []).join(" ") }; });
-    const facts = state.cards.map(function (card) { return { kind: "fact", id: card.id, label: card.title, card: card, text: [card.hook, card.title, card.body, (card.topicPath || []).join(" "), (card.sources || []).map(function (source) { return source.title; }).join(" ")].join(" ") }; });
-    return topics.concat(facts);
+  function topicCacheKey(query, plan) { return JSON.stringify([topicRevision, topicSemantic.TOPIC_SEARCH_VERSION, normalizeNaturalSearchText(query), plan || []]); }
+  function publishTopicSearch(query, result) {
+      if (normalizeNaturalSearchText(query) !== normalizeNaturalSearchText(state.query || state.topicQuery))
+          return;
+      if (state.topicQuery) {
+          topicTreeVisible = new Set(result.visibleIds);
+          topicTreeAncestors = new Set(result.matchingDescendants);
+          render();
+      }
+      else {
+          const wrap = document.querySelector(".global-search-wrap");
+          if (wrap)
+              renderGlobalSearchPopover(wrap);
+      }
+      requestSemanticSearch(query, result);
+  }
+  function scheduleTopicSearch(query) {
+      ensureTopicIndex();
+      const text = String(query || "").trim();
+      if (!text)
+          return;
+      const scope = scopedCacheKey(state.key, [topicRevision, topicSemantic.TOPIC_SEARCH_VERSION, normalizeNaturalSearchText(text)]);
+      const plan = semanticSearchCache.get(scope);
+      const key = topicCacheKey(text, plan);
+      const cached = topicResultCache.get(key);
+      if (cached) {
+          if (state.topicQuery) {
+              topicTreeVisible = new Set(cached.visibleIds);
+              topicTreeAncestors = new Set(cached.matchingDescendants);
+          }
+          requestSemanticSearch(text, cached);
+          return;
+      }
+      if (key === topicActiveKey)
+          return;
+      topicActiveKey = key;
+      const id = ++topicJob;
+      if (topicWorker) {
+          if (topicWorkerReady)
+              topicWorker.postMessage({ type: "search", id, key, query: text, plan, revision: topicRevision });
+      }
+      else {
+          if (!topicIndex)
+              topicIndex = topicSemantic.createTopicSuggestionIndex(flatTopics());
+          topicSemantic.searchTopicIndexYielding(topicIndex, text, plan || [], () => id === topicJob).then(result => { if (result) {
+              topicResultCache.set(key, result);
+              publishTopicSearch(text, result);
+          } });
+      }
   }
   function globalSearchResults(query) {
-    const text = String(query || "").trim();
-    if (!text) return [];
-    const entries = globalSearchEntries();
-    const direct = entries.map(function (entry, index) { return { entry: entry, index: index, score: searchScore(text, entry.text) }; }).filter(function (item) { return item.score > 0; }).sort(function (left, right) { return right.score - left.score || left.index - right.index; }).slice(0, 10);
-    const directIDs = new Set(direct.map(function (item) { return item.entry.kind + ":" + item.entry.id; }));
-    const variants = [text].concat(state.semanticSearchTerms || [], naturalSearchVariants(text));
-    const related = entries.map(function (entry, index) { return { entry: entry, index: index, score: Math.max.apply(Math, variants.map(function (variant) { return searchScore(variant, entry.text); })) }; }).filter(function (item) { return item.score > 0 && !directIDs.has(item.entry.kind + ":" + item.entry.id); }).sort(function (left, right) { return right.score - left.score || left.index - right.index; }).slice(0, 90);
-    return direct.concat(related).map(function (item) { return item.entry; });
+      ensureTopicIndex();
+      scheduleTopicSearch(query);
+      const plan = semanticSearchCache.get(scopedCacheKey(state.key, [topicRevision, topicSemantic.TOPIC_SEARCH_VERSION, normalizeNaturalSearchText(query)]));
+      const result = topicResultCache.get(topicCacheKey(query, plan));
+      return result ? result.suggestions : [];
   }
   function renderGlobalSearchPopover(searchWrap) {
-    const previous = searchWrap.querySelector(".search-popover");
-    if (previous) previous.remove();
-    const results = globalSearchResults(state.query);
-    if (!results.length) return;
-    const popover = node("div", { className: "search-popover" });
-    const topics = results.filter(function (entry) { return entry.kind === "topic"; });
-    const facts = results.filter(function (entry) { return entry.kind === "fact"; });
-    function appendGroup(label, entries) {
-      if (!entries.length) return;
-      popover.appendChild(node("span", { className: "search-group-label", text: label }));
-      entries.forEach(function (entry) {
-        popover.appendChild(node("button", { type: "button", onClick: function () {
-          if (entry.kind === "topic") {
-            state.view = "feed";
-            state.started = false;
-            state.topicQuery = entry.topic.label;
-            state.query = "";
-          } else {
-            state.view = "history";
-            state.query = entry.card.title;
-          }
-          render();
-        } }, node("span", { text: entry.label }), svg("arrow", 14)));
-      });
-    }
-    appendGroup("Topics", topics);
-    appendGroup("Facts", facts);
-    searchWrap.appendChild(popover);
+      const previous = searchWrap.querySelector(".search-popover");
+      if (previous)
+          previous.remove();
+      const results = globalSearchResults(state.query);
+      if (!results.length)
+          return;
+      const popover = node("div", { className: "search-popover" });
+      for (const group of ["keyword", "related", "explore"]) {
+          const entries = results.filter(r => r.group === group);
+          if (!entries.length)
+              continue;
+          popover.appendChild(node("span", { className: "search-group-label", text: group === "keyword" ? "Keyword matches" : group === "related" ? "Related topics" : "Explore more" }));
+          for (const entry of entries)
+              popover.appendChild(node("button", { type: "button", ariaLabel: entry.path.join(" → "), onClick: function () { state.view = "feed"; state.started = false; state.topicQuery = entry.label; state.query = ""; topicSearchExpansionSuppressed = false; scheduleTopicSearch(state.topicQuery); render(); } }, node("span", { text: entry.path.join(" → ") }), svg("arrow", 14)));
+      }
+      searchWrap.appendChild(popover);
   }
-  function normalizeNaturalSearchText(value) {
-    return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
-  }
-  function meaningfulTopicMatchCount(query) {
-    const words = normalizeNaturalSearchText(query).split(" ").filter(function (word) { return word.length > 2 && !NATURAL_SEARCH_STOP_WORDS.has(word); });
-    if (!words.length) return 0;
-    return flatTopics().filter(function (topic) {
-      const haystack = normalizeNaturalSearchText((topic.path || []).join(" ") + " " + topic.label + " " + (topic.aliases || []).join(" "));
-      const covered = words.filter(function (word) { return haystack.split(" ").some(function (candidate) { return candidate === word || word.length >= 5 && candidate.length >= 5 && candidate.indexOf(word) === 0; }); }).length;
-      const minimum = words.length === 1 ? 1 : Math.max(2, Math.ceil(words.length * .55));
-      return covered >= minimum;
-    }).length;
-  }
-  function shouldExpandNaturalSearch(query, meaningfulLocalMatches) {
-    const normalized = normalizeNaturalSearchText(query);
-    const words = normalized.split(" ").filter(Boolean);
-    const contentWords = words.filter(function (word) { return word.length > 1 && !NATURAL_SEARCH_STOP_WORDS.has(word); });
-    const intent = /^(?:who|what|when|where|why|how|explain|find me|tell me|show me|similar to|related to|ideas like)\b/i.test(normalized);
-    return Number(meaningfulLocalMatches || 0) < 8 && (contentWords.length >= 5 || (intent && words.length >= 4 && contentWords.length >= 2));
-  }
-  function cancelPendingSemanticSearch() {
-    if (searchInterpretTimer) { window.clearTimeout(searchInterpretTimer); searchInterpretTimer = null; }
-    if (searchInterpretRequest && typeof searchInterpretRequest.cancel === "function") searchInterpretRequest.cancel();
-    searchInterpretRequest = null;
-  }
-  function requestSemanticSearch(query, searchWrap) {
-    cancelPendingSemanticSearch();
-    searchInterpretToken += 1;
-    const token = searchInterpretToken;
-    state.semanticSearchTerms = [];
-    const text = String(query || "").trim();
-    const localMatches = meaningfulTopicMatchCount(text);
-    if (!text || !shouldExpandNaturalSearch(text, localMatches) || !state.key.trim() || state.geminiStatus !== "connected") return;
-    const cacheKey = scopedCacheKey(state.key, [TOPIC_CATALOG_VERSION, normalizeNaturalSearchText(text)]);
-    const cached = semanticSearchCache.get(cacheKey);
-    if (cached) {
-      state.semanticSearchTerms = cached;
-      renderGlobalSearchPopover(searchWrap);
-      return;
-    }
-    searchInterpretTimer = window.setTimeout(function () {
-      searchInterpretTimer = null;
-      const request = bridge("searchInterpret", { key: state.key, query: text, catalogVersion: TOPIC_CATALOG_VERSION });
-      searchInterpretRequest = request;
-      request.then(function (result) {
-        if (token !== searchInterpretToken) return;
-        state.semanticSearchTerms = Array.from(new Set((result.terms || []).filter(function (term) { return typeof term === "string" && term.trim(); }).map(function (term) { return term.trim(); }))).slice(0, 24);
-        semanticSearchCache.set(cacheKey, state.semanticSearchTerms);
-        renderGlobalSearchPopover(searchWrap);
-      }).catch(function () {
-        if (token === searchInterpretToken) renderGlobalSearchPopover(searchWrap);
-      }).finally(function () {
-        if (searchInterpretRequest === request) searchInterpretRequest = null;
-      });
-    }, 1500);
+  function normalizeNaturalSearchText(value) { return topicSemantic ? topicSemantic.localTopicPlan && String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim() : searchText(value); }
+  function cancelPendingSemanticSearch() { if (searchInterpretRequest)
+      topicAttempt = ""; if (searchInterpretTimer)
+      clearTimeout(searchInterpretTimer); searchInterpretTimer = null; if (searchInterpretRequest && searchInterpretRequest.cancel)
+      searchInterpretRequest.cancel(); searchInterpretRequest = null; searchInterpretToken++; topicJob++; topicActiveKey = ""; }
+  function requestSemanticSearch(query, result) {
+      const text = String(query || "").trim();
+      const key = scopedCacheKey(state.key, [topicRevision, topicSemantic.TOPIC_SEARCH_VERSION, normalizeNaturalSearchText(text)]);
+      if (!text || !result || !topicSemantic.shouldEnrichTopics(text, result.completeCoverage) || !state.key.trim() || state.geminiStatus !== "connected" || semanticSearchCache.get(key) || topicAttempt === key)
+          return;
+      if (searchInterpretTimer)
+          clearTimeout(searchInterpretTimer);
+      const token = searchInterpretToken;
+      searchInterpretTimer = setTimeout(function () {
+          topicAttempt = key;
+          searchInterpretTimer = null;
+          const request = bridge("searchInterpret", { key: state.key, query: text, catalogVersion: TOPIC_CATALOG_VERSION });
+          searchInterpretRequest = request;
+          request.then(result => { if (token !== searchInterpretToken)
+              return; const plan = topicSemantic.validateTopicPlan(result.plan || result); semanticSearchCache.set(key, plan); topicActiveKey = ""; scheduleTopicSearch(text); }).catch(() => { }).finally(() => { if (searchInterpretRequest === request)
+              searchInterpretRequest = null; });
+      }, 1500);
   }
   function installPopoverDismiss() {
     if (window.__learnedMediaPopoverDismiss) return;
@@ -1430,7 +1453,7 @@
     const searchWrap = node("div", { className: "top-nav-search" });
     const search = node("div", { className: "global-search-wrap" });
     search.appendChild(svg("search", 17));
-    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics or facts", ariaLabel: "Search topics or facts", onFocus: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } renderGlobalSearchPopover(search); }, onInput: function (event) { state.query = event.target.value; const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); renderGlobalSearchPopover(search); requestSemanticSearch(state.query, search); } }));
+    search.appendChild(node("input", { id: "global-search", value: state.query, placeholder: "Search topics", ariaLabel: "Search topics", onFocus: function () { const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } renderGlobalSearchPopover(search); }, onInput: function (event) { cancelPendingSemanticSearch(); state.query = event.target.value; state.topicQuery = state.query; const menu = switcher.querySelector(".workspace-menu"); if (menu) { clearWorkspaceRename(); menu.remove(); } document.querySelectorAll(".fact-card").forEach(function (card) { card.style.display = !state.query || searchScore(state.query, card.textContent) ? "" : "none"; }); renderGlobalSearchPopover(search); } }));
     searchWrap.appendChild(search);
     header.appendChild(searchWrap);
     const accountName = state.workspaceName;
@@ -1468,7 +1491,7 @@
     difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
     difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Impossible" })));
     details.appendChild(difficulty);
-    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { state.topicQuery = event.target.value; topicSearchExpansionSuppressed = false; render(); } })));
+    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { id: "topic-search", value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { cancelPendingSemanticSearch(); state.topicQuery = event.target.value; state.query = ""; topicSearchExpansionSuppressed = false; scheduleTopicSearch(state.topicQuery); render(); } })));
     details.appendChild(topicTree());
     details.appendChild(customTopicForm(setup ? "custom-topic-form" : "feed-custom-topic"));
     details.appendChild(feedCustomize(setup));
@@ -1736,7 +1759,7 @@
     if (currentMainScroll) mainScrollTop = currentMainScroll.scrollTop;
     const activeElement = document.activeElement;
     if (activeElement && activeElement.dataset && activeElement.dataset.topicId) focusedTopicId = activeElement.dataset.topicId;
-    const activeField = activeElement && ["gemini-key", "youtube-key", "youtube-search"].includes(activeElement.id) ? activeElement : null;
+    const activeField = activeElement && ["gemini-key", "youtube-key", "youtube-search", "global-search", "topic-search"].includes(activeElement.id) ? activeElement : null;
     if (activeField) { focusedFieldId = activeField.id; focusedSelection = typeof activeField.selectionStart === "number" ? [activeField.selectionStart, activeField.selectionEnd] : null; }
     else if (activeElement && activeElement !== document.body) { focusedFieldId = null; focusedSelection = null; }
     focusedQuestionCardId = activeElement && activeElement.dataset ? activeElement.dataset.cardId || null : null;

@@ -187,3 +187,22 @@ test("YouTube worker yields while ranking 30,000 videos and preserves the top re
   assert.equal(reply.candidates.length, 80);
   assert.deepEqual(reply.candidates.map((candidate) => candidate.videoId), expected);
 });
+
+test("topic semantic worker returns meaning matches and ancestor paths, rejecting obsolete queries", async () => {
+  const {scope,messages}=loadWorker("workers/topic-search.worker.ts");
+  scope.onmessage({data:{type:"initialize",customTopics:[],catalogRevision:8}});
+  scope.onmessage({data:{type:"search",requestId:1,query:"why does the ground shake",semanticTerms:[],catalogRevision:8}});
+  scope.onmessage({data:{type:"search",requestId:2,query:"earthquakes in Japan",semanticTerms:[],catalogRevision:8}});
+  const r=await waitForMessage(messages,m=>m.requestId===2);
+  assert.equal(r.completeCoverage,true);assert.equal(r.suggestions.length,100);assert.ok(r.suggestions.slice(0,5).some(s=>s.label==="2011 Tōhoku Earthquake"));
+  assert.ok(r.visibleIds.length>r.matchedIds.length);assert.ok(!messages.some(m=>m.requestId===1));
+});
+test("topic semantic worker invalidates catalog caches when custom topics change", async () => {
+  const {scope,messages}=loadWorker("workers/topic-search.worker.ts");
+  scope.onmessage({data:{type:"initialize",customTopics:[],catalogRevision:9}});
+  scope.onmessage({data:{type:"search",requestId:1,query:"quantum gardens",semanticTerms:[],catalogRevision:9}});
+  const before=await waitForMessage(messages,m=>m.requestId===1);assert.equal(before.completeCoverage,false);
+  scope.onmessage({data:{type:"initialize",customTopics:[{id:"custom-garden",label:"Quantum Gardens",custom:true,selected:false,expanded:false,weight:10}],catalogRevision:10}});
+  scope.onmessage({data:{type:"search",requestId:2,query:"quantum gardens",semanticTerms:[],catalogRevision:10}});
+  const after=await waitForMessage(messages,m=>m.requestId===2);assert.equal(after.completeCoverage,true);assert.ok(after.matchedIds.includes("custom-garden"));
+});

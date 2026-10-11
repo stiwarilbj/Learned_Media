@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		mo7r/AJLlrRgwbVv5Q+A8XhDExg=
+		zor0XWW+lrrr7FifaV/J42AnnpI=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -38,7 +38,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		hc0ZaayNW3mM8wCiNhpeTT0fe6A=
+		JozkMnUEY2enVRw0CoeO8sXJH0g=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
@@ -67,6 +67,14 @@
 		<key>Resources/frontend/topic-catalog.js</key>
 		<data>
 		2Ow3jhDfEyMOts6ial/8zcS1fj4=
+		</data>
+		<key>Resources/frontend/topic-search.worker.js</key>
+		<data>
+		q77iRtO5yXkFMyKlYPjUfWe8i6c=
+		</data>
+		<key>Resources/frontend/topic-semantic.js</key>
+		<data>
+		1LO4hoarSkcWvC3oL32Njnlphso=
 		</data>
 		<key>Resources/frontend/video-semantic.js</key>
 		<data>
@@ -98,7 +106,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			89o1AF0d+JpAM1yiYTH+QMwOoHcwGEvZNixh6dK3cBM=
+			ILTQH/Tw/NkZqDfSVmR8nxfaPHP6qPCkX8nD+VHbAb0=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -147,7 +155,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			4DQD5WgqOW7mn+8ZCICmd9/yH2Te6MlFyfqRRz2umSA=
+			tmJn2iuYmp74C1J0S7m+lLOSOmDtyWR/LeZMK0vpfCQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>
@@ -197,6 +205,20 @@
 			<key>hash2</key>
 			<data>
 			V/rN88ejvfcqpMAE4w7lG+frjkSo7HgLlMp74nUYIyc=
+			</data>
+		</dict>
+		<key>Resources/frontend/topic-search.worker.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			0OottlMKvtLUmQV4KUgGlE0Qsfzc30ZfcysjKfy+uEs=
+			</data>
+		</dict>
+		<key>Resources/frontend/topic-semantic.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			jmCsjdKddNMED8QGxzFXgf5FNzRienEc6mHVkXlFbsk=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-semantic.js</key>

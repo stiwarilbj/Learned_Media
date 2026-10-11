@@ -15,6 +15,8 @@ export type TopicSearchWorkerReply = {
   query?: string;
   catalogRevision?: number;
   suggestions?: TopicSuggestion[];
+  matchedIds?: string[];
+  completeCoverage?: boolean;
   visibleIds?: string[];
   matchingDescendants?: string[];
   directScores?: Array<[string, number]>;

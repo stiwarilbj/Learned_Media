@@ -1416,12 +1416,12 @@ private final class GeminiClient {
 
     func interpretNaturalSearch(key: String, query: String, catalogVersion: Int) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using natural-language search.", retryable: false) }
-        let prompt = "Expand this unresolved natural-language search for a learning-topic catalog. Return up to 12 specific synonyms or likely catalog phrases without broadening or inventing titles. Catalog version: \(catalogVersion). The original query is also searched locally. Return only JSON with a terms array. Query: \(query)"
-        let schema: [String: Any] = ["type": "OBJECT", "properties": ["terms": ["type": "ARRAY", "items": ["type": "STRING"]]], "required": ["terms"]]
+        let prompt = "Interpret this unresolved learning-topic query. One group per required idea; equivalents are interchangeable expressions, related are only nearby concepts. Preserve places and all requested ideas; alternatives=true only for explicit either/or. No invented catalog IDs or titles. Up to 8 groups, 12 short phrases per list. Catalog: \(catalogVersion). Query: \(query)"
+        let list: [String: Any] = ["type": "ARRAY", "items": ["type": "STRING"]]
+        let schema: [String: Any] = ["type": "OBJECT", "properties": ["groups": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": ["label": ["type": "STRING"], "equivalents": list, "related": list], "required": ["label", "equivalents", "related"]]], "alternatives": ["type": "BOOLEAN"]], "required": ["groups", "alternatives"]]
         let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 1024, cacheContext: "topic-catalog:\(catalogVersion)")
-        let envelope = try JSONDecoder().decode(GeminiNaturalSearchEnvelope.self, from: Data(result.text.utf8))
-        let terms = Array(Set((envelope.terms ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).prefix(24)
-        return ["terms": Array(terms), "modelOutcomes": result.outcomes]
+        let plan = try JSONSerialization.jsonObject(with: Data(result.text.utf8)) as? [String: Any] ?? [:]
+        return ["plan": plan, "modelOutcomes": result.outcomes]
     }
 
     func rankVideoSearch(key: String, query: String, plan: [String: Any], candidates: [[String: Any]], catalogVersion: Int) async throws -> [String: Any] {

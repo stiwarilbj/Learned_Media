@@ -1,3 +1,4 @@
+import { validateTopicPlan, type TopicQueryPlan } from "./topic-suggestions";
 import type { Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, WikipediaSource } from "./types";
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
@@ -1046,16 +1047,14 @@ export async function interpretVideoSearch({ apiKey, sessionId = "default-sessio
   return { plan, modelOutcomes: result.outcomes };
 }
 
-export async function interpretNaturalSearch({ apiKey, sessionId = "default-session", query, catalogVersion = "current", signal }: { apiKey: string; sessionId?: string; query: string; catalogVersion?: string | number; signal?: AbortSignal }): Promise<{ terms: string[]; modelOutcomes: GeminiModelOutcome[] }> {
+export async function interpretNaturalSearch({ apiKey, sessionId = "default-session", query, catalogVersion = "current", signal }: { apiKey: string; sessionId?: string; query: string; catalogVersion?: string | number; signal?: AbortSignal }): Promise<{ terms: string[]; plan: TopicQueryPlan; modelOutcomes: GeminiModelOutcome[] }> {
   if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before using natural-language search.", undefined, [], undefined, false);
-  const prompt = "Expand this unresolved natural-language query for a learning-topic catalog. Return up to 12 specific synonyms or likely catalog phrases, without broadening or inventing titles. Catalog version: " + catalogVersion + ". Original query is also searched. Query: " + query;
-  const result = await requestStructured<{ terms?: string[] }>(apiKey, sessionId, prompt, {
-    type: "OBJECT",
-    properties: { terms: { type: "ARRAY", items: { type: "STRING" } } },
-    required: ["terms"]
+  const prompt = "Interpret this unresolved learning-topic query. One group per required idea; equivalents are interchangeable expressions, related are only nearby concepts. Preserve places and all requested ideas; alternatives=true only for explicit either/or. No invented catalog IDs or titles. Up to 8 groups, 12 short phrases per list. Catalog: " + catalogVersion + ". Query: " + query;
+  const result = await requestStructured<TopicQueryPlan>(apiKey, sessionId, prompt, {
+    type: "OBJECT", properties: { groups: { type: "ARRAY", items: { type: "OBJECT", properties: { label: { type: "STRING" }, equivalents: { type: "ARRAY", items: { type: "STRING" } }, related: { type: "ARRAY", items: { type: "STRING" } } }, required: ["label", "equivalents", "related"] } }, alternatives: { type: "BOOLEAN" } }, required: ["groups", "alternatives"]
   }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, { priority: "background", models: PRIMARY_FLASH_LITE_MODELS, maxOutputTokens: 1024, cacheContext: "topic-catalog:" + catalogVersion });
-  const terms = Array.from(new Set((result.value.terms ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean))).slice(0, 12);
-  return { terms, modelOutcomes: result.outcomes };
+  const plan = validateTopicPlan(result.value);
+  return { plan, terms: plan.groups.flatMap(group => group.equivalents).slice(0,12), modelOutcomes: result.outcomes };
 }
 
 export type RankedVideoSearchResult = {

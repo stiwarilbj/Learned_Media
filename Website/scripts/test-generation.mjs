@@ -116,8 +116,8 @@ function installNetworkMock(options = {}) {
       let output;
       if (prompt.includes('"ok":true')) {
         output = { ok: true };
-      } else if (prompt.includes("Expand this unresolved natural-language query")) {
-        output = { terms: ["stellar evolution", "supernova"] };
+      } else if (prompt.includes("Interpret this unresolved learning-topic query")) {
+        output = { groups: [{label:"stellar evolution",equivalents:["stellar evolution", "supernova"],related:[]}], alternatives:false };
       } else if (prompt.includes("Interpret this natural-language video search")) {
         output = { terms: ["black holes"], include: [], alternatives: ["gravitational lensing"], exclude: [], topics: ["Science"], sort: "relevance" };
       } else if (prompt.includes("Check these approved videos against the plan")) {
@@ -331,7 +331,7 @@ await t.test("successful search interpretations coalesce and invalidate by catal
   const [first, duplicate] = await Promise.all([interpretNaturalSearch(topicArgs), interpretNaturalSearch(topicArgs)]);
   assert.deepEqual(first.terms, ["stellar evolution", "supernova"]);
   assert.deepEqual(duplicate.terms, first.terms);
-  const topicCalls = () => geminiCalls(state).filter(call => call.prompt.includes("Expand this unresolved natural-language query"));
+  const topicCalls = () => geminiCalls(state).filter(call => call.prompt.includes("Interpret this unresolved learning-topic query"));
   assert.equal(topicCalls().length, 1, "identical pending interpretations should share one Gemini request");
   await interpretNaturalSearch(topicArgs);
   assert.equal(topicCalls().length, 1, "successful responses should be cached for the session");

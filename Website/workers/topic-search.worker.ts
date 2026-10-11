@@ -2,112 +2,44 @@
 import { createDefaultTopics } from "@/lib/demo-data";
 import { flattenTopics } from "@/lib/topic-catalog";
 import { normalizeSearchText } from "@/lib/search";
-import { createTopicSuggestionIndex, suggestTopics, type TopicSuggestionIndex } from "@/lib/topic-suggestions";
+import { createTopicSuggestionIndex, searchTopicIndexYielding, type TopicQueryPlan } from "@/lib/topic-suggestions";
 import type { TopicNode } from "@/lib/types";
 import type { TopicSearchWorkerReply } from "@/lib/topic-search-types";
-
-type Request = { type: "initialize"; customTopics: TopicNode[]; catalogRevision: number } | { type: "search"; requestId: number; query: string; semanticTerms: string[]; catalogRevision: number } | { type: "cancel"; requestId: number };
-
-const workerScope = self as DedicatedWorkerGlobalScope;
-let catalogRevision = -1;
-let suggestionIndex: TopicSuggestionIndex | null = null;
-let searchable = new Map<string, { label: string; aliases: string[]; parent?: string; children: string[]; order: number }>();
-const resultCache = new Map<string, TopicSearchWorkerReply>();
-let latestSearchRequestId = 0;
-
-function yieldToWorker() {
-  return new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
-
-function scoreTopic(query: string, label: string, aliases: string[]) {
-  if (query.length < 2) return 0;
-  const values = [label, ...aliases];
-  let best = 0;
-  for (const value of values) {
-    if (value.includes(query)) best = Math.max(best, 100 + query.length);
-    else {
-      const tokens = query.split(" ").filter((token) => token.length > 1);
-      if (!tokens.length) continue;
-      const valueTokens = value.split(" ").filter(Boolean);
-      let score = 0;
-      for (const token of tokens) {
-        const match = valueTokens.find((candidate) => candidate.startsWith(token));
-        if (!match) { score = 0; break; }
-        score += match === token ? 20 : 13;
-      }
-      if (score) best = Math.max(best, score + 12);
-    }
-  }
-  return best;
-}
-
-function initialize(customTopics: TopicNode[], revision: number) {
-  const nodes = [...createDefaultTopics(), ...customTopics];
-  const flattened = flattenTopics(nodes);
-  suggestionIndex = createTopicSuggestionIndex(flattened);
-  searchable = new Map(flattened.map((item, order) => [item.id, {
-    label: normalizeSearchText(item.label),
-    aliases: (item.aliases ?? []).map(normalizeSearchText),
-    parent: undefined,
-    children: item.children?.map((child) => child.id) ?? [],
-    order
-  }]));
-  const parentByChild = new Map<string, string>();
-  for (const [id, item] of searchable) for (const child of item.children) parentByChild.set(child, id);
-  for (const [id, item] of searchable) item.parent = parentByChild.get(id);
-  catalogRevision = revision;
-  latestSearchRequestId = 0;
-  resultCache.clear();
-  workerScope.postMessage({ type: "ready", catalogRevision } satisfies TopicSearchWorkerReply);
-}
-
-async function search(requestId: number, query: string, semanticTerms: string[], revision: number) {
-  if (revision !== catalogRevision || !suggestionIndex) return;
-  latestSearchRequestId = requestId;
-  const normalized = normalizeSearchText(query);
-  const cacheKey = `${revision}\u0000${normalized}\u0000${semanticTerms.map(normalizeSearchText).join("\u0001")}`;
-  const cached = resultCache.get(cacheKey);
-  if (cached) {
-    workerScope.postMessage({ ...cached, query, requestId });
-    return;
-  }
-
-  const scores = new Map<string, number>();
-  let processed = 0;
-  for (const [id, item] of searchable) {
-    if (requestId !== latestSearchRequestId || revision !== catalogRevision) return;
-    const score = scoreTopic(normalized, item.label, item.aliases);
-    if (score) scores.set(id, score);
-    processed += 1;
-    if (processed % 800 === 0) {
-      await yieldToWorker();
-      if (requestId !== latestSearchRequestId || revision !== catalogRevision) return;
-    }
-  }
-  const visibleIds = new Set<string>();
-  const matchingDescendants = new Set<string>();
-  for (const id of scores.keys()) {
-    visibleIds.add(id);
-    let parent = searchable.get(id)?.parent;
-    while (parent) {
-      visibleIds.add(parent);
-      matchingDescendants.add(parent);
-      parent = searchable.get(parent)?.parent;
-    }
-  }
-  const reply: TopicSearchWorkerReply = {
-    type: "results", query, requestId, catalogRevision: revision,
-    suggestions: suggestTopics(suggestionIndex, query, semanticTerms),
-    visibleIds: [...visibleIds], matchingDescendants: [...matchingDescendants], directScores: [...scores]
-  };
-  resultCache.set(cacheKey, { ...reply, requestId: undefined });
-  if (resultCache.size > 100) resultCache.delete(resultCache.keys().next().value!);
-  if (requestId === latestSearchRequestId && revision === catalogRevision) workerScope.postMessage(reply);
-}
-
-workerScope.onmessage = (event: MessageEvent<Request>) => {
-  const request = event.data;
-  if (request.type === "initialize") initialize(request.customTopics, request.catalogRevision);
-  else if (request.type === "cancel") latestSearchRequestId = request.requestId;
-  else void search(request.requestId, request.query, request.semanticTerms, request.catalogRevision);
+type Request = {
+    type: "initialize";
+    customTopics: TopicNode[];
+    catalogRevision: number;
+} | {
+    type: "search";
+    requestId: number;
+    query: string;
+    semanticTerms: string[];
+    plan?: TopicQueryPlan;
+    catalogRevision: number;
+} | {
+    type: "cancel";
+    requestId: number;
 };
+const scope = self as DedicatedWorkerGlobalScope;
+let revision = -1, latest = 0, index: ReturnType<typeof createTopicSuggestionIndex> | null = null;
+const cache = new Map<string, TopicSearchWorkerReply>();
+scope.onmessage = (event: MessageEvent<Request>) => { const r = event.data; if (r.type === "initialize") {
+    revision = r.catalogRevision;
+    latest = 0;
+    cache.clear();
+    index = createTopicSuggestionIndex(flattenTopics([...createDefaultTopics(), ...r.customTopics]));
+    scope.postMessage({ type: "ready", catalogRevision: revision });
+}
+else if (r.type === "cancel")
+    latest = r.requestId;
+else
+    void search(r); };
+async function search(r: Extract<Request, {
+    type: "search";
+}>) { if (!index || r.catalogRevision !== revision)
+    return; latest = r.requestId; const key = JSON.stringify([revision, normalizeSearchText(r.query), r.plan || r.semanticTerms]); const cached = cache.get(key); if (cached) {
+    scope.postMessage({ ...cached, query: r.query, requestId: r.requestId });
+    return;
+} const result = await searchTopicIndexYielding(index, r.query, r.plan || r.semanticTerms, () => latest === r.requestId && revision === r.catalogRevision); if (!result)
+    return; const reply: TopicSearchWorkerReply = { type: "results", query: r.query, requestId: r.requestId, catalogRevision: revision, ...result }; cache.set(key, reply); if (cache.size > 100)
+    cache.delete(cache.keys().next().value!); scope.postMessage(reply); }
