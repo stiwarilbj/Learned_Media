@@ -12,7 +12,7 @@ final class ModelPolicyTests: XCTestCase {
         let rounds = GeminiModelPolicy.attemptRounds(models: GeminiModelPolicy.allowedModels)
         let recovery = GeminiModelPolicy.primaryModels + GeminiModelPolicy.primaryModels + GeminiModelPolicy.primaryModels + Array(GeminiModelPolicy.allowedModels.dropFirst(2))
         XCTAssertEqual(rounds, [GeminiModelPolicy.allowedModels, recovery, recovery])
-        XCTAssertEqual(rounds.flatMap { $0 }.count, 35)
+        XCTAssertEqual(rounds.flatMap { $0 }.count, GeminiModelPolicy.allowedModels.count + recovery.count * 2)
         for primary in GeminiModelPolicy.primaryModels {
             XCTAssertEqual(rounds[1].filter { $0 == primary }.count, 3)
             XCTAssertEqual(rounds[2].filter { $0 == primary }.count, 3)

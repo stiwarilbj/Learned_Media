@@ -73,8 +73,12 @@ async function search(request: SearchRequest) {
     }
   }
   const source = direct.length ? direct : fallback;
-  source.sort((left, right) => right.candidate.score - left.candidate.score || left.index - right.index);
-  const candidates = source.slice(0, Math.max(1, Math.min(80, request.limit))).map(({ candidate }) => candidate);
+  source.sort((left, right) => {
+    const a = videos.get(left.candidate.videoId)!, b = videos.get(right.candidate.videoId)!;
+    const dateOrder = request.plan.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : request.plan.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
+    return dateOrder || right.candidate.score - left.candidate.score || left.index - right.index;
+  });
+  const candidates = source.slice(0, Math.max(1, request.limit)).map(({ candidate }) => candidate);
   remember(key, candidates);
   if (request.requestId === latestRequestId && request.revision === revision) {
     if (activeRequestId === request.requestId) activeRequestId = 0;

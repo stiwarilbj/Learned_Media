@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		GqsmINwZ/PSDoBrZyqHUOZV/8wk=
+		mo7r/AJLlrRgwbVv5Q+A8XhDExg=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -38,7 +38,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		f4Tj1AK/Hf5yrxJ16fnPC+q/0WU=
+		hc0ZaayNW3mM8wCiNhpeTT0fe6A=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
@@ -68,13 +68,21 @@
 		<data>
 		2Ow3jhDfEyMOts6ial/8zcS1fj4=
 		</data>
+		<key>Resources/frontend/video-semantic.js</key>
+		<data>
+		FA0L7Y17cRXmCSfWP+4PhfG604I=
+		</data>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<data>
 		R0Rf0SIHPKEz/c4HPeuSP0amers=
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
-		rQEGqS8acwNBIJUoScNCoX5JMiE=
+		wbrcMCsWj82rG0QYj4oB6SI5s1c=
+		</data>
+		<key>Resources/frontend/youtube-search.worker.js</key>
+		<data>
+		tsGhwta0p/jegXuOPEkWTtBrsCU=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -90,7 +98,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			b67QNKbDJA4Vykg+ZznLEykoYGAGeMcjjCqQNaNtOPk=
+			89o1AF0d+JpAM1yiYTH+QMwOoHcwGEvZNixh6dK3cBM=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -139,7 +147,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			CjD7YqJ9R8a2yLt28d37xzgy/8w7gOlw8M51Nnn15RY=
+			4DQD5WgqOW7mn+8ZCICmd9/yH2Te6MlFyfqRRz2umSA=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>
@@ -191,6 +199,13 @@
 			V/rN88ejvfcqpMAE4w7lG+frjkSo7HgLlMp74nUYIyc=
 			</data>
 		</dict>
+		<key>Resources/frontend/video-semantic.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			xJk47qJTiZ72Kh1asdVVJg6j9cXlWwVMDRdTxpXZRd8=
+			</data>
+		</dict>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<dict>
 			<key>hash2</key>
@@ -202,7 +217,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			nEoKUfrvOnJqWmXkpYZgmigxtbMDJpOJGHBWJtIr5Ho=
+			xggyzb+LwjCFxY54KCExBM1pXWIFa1BfYz3ooeRU9QI=
+			</data>
+		</dict>
+		<key>Resources/frontend/youtube-search.worker.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			U+tKPQtXWZ/F41AN/dzWpD8btxKbM28YMjomD4cql8k=
 			</data>
 		</dict>
 	</dict>

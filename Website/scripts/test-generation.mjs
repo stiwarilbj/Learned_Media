@@ -513,7 +513,7 @@ await t.test("all-model failures run both complete recovery cycles before declar
   await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1, onProgress: event => { if (event.type === "status") statuses.push(event.status); } }), /Every available Gemini model failed/);
   const recovery = [...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(0, 2), ...ALLOWED_GEMINI_MODELS.slice(2)];
   assert.deepEqual(geminiCalls(state).map(call => call.model), [...ALLOWED_GEMINI_MODELS, ...recovery, ...recovery]);
-  assert.equal(geminiCallCount(state), 35);
+  assert.equal(geminiCallCount(state), ALLOWED_GEMINI_MODELS.length + recovery.length * 2);
   assert.equal(statuses.at(-1), "rate-limited");
 });
 

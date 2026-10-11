@@ -1,3 +1,4 @@
+import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
 export type YouTubeTopic = "History" | "Politics" | "Geography" | "Science" | "Nature" | "Mathematics" | "Literature" | "Sports" | "Culture" | "Technology";
 
 export type ApprovedChannelSeed = {
@@ -69,7 +70,7 @@ export type YouTubeWorkspaceState = {
   selectedChannelId?: string;
   selectedVideoId?: string;
   discoverIds: string[];
-  channelOrder: "newest" | "oldest" | "random";
+  channelOrder: "relevance" | "newest" | "oldest" | "random";
   prioritizeRecentByChannel: Record<string, boolean>;
   libraryIncomplete: boolean;
   lastSyncAt?: string;
@@ -103,6 +104,7 @@ export type YouTubeSearchPlanLike = {
   alternatives?: string[];
   exclude?: string[];
   topics?: string[];
+  topicHints?: string[];
   conceptGroups?: YouTubeSearchConceptGroup[];
   channel?: string;
   channelId?: string;
@@ -683,204 +685,21 @@ export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclud
   return selected;
 }
 
-const SEARCH_BOILERPLATE = /(?:subscribe|like and subscribe|follow us|social media|patreon|sponsor(?:ed)? by|use code|affiliate|merch(?:andise)?|join the discord|business inquiries|check out my|support the channel|all links? in the description)[^.!?]*(?:[.!?]|$)/gi;
-
-type SearchField = { name: string; value: string; normalized?: string; words?: string[] };
-type YouTubeSearchMetadata = { fields: SearchField[]; normalized: string; words: string[]; strongNormalized: string; strongWords: string[] };
-const youtubeSearchMetadata = new WeakMap<YouTubeVideo, YouTubeSearchMetadata>();
-
-function searchableDescription(video: YouTubeVideo) {
-  // Keep meaningful passages from the whole description. A beginning-only
-  // excerpt misses the subject when creators put their useful notes later.
-  return video.description.replace(SEARCH_BOILERPLATE, " ").replace(/https?:\/\/\S+/gi, " ").replace(/\s+/g, " ").trim().slice(0, 6000);
-}
-
-function searchMetadata(video: YouTubeVideo): YouTubeSearchMetadata {
-  const cached = youtubeSearchMetadata.get(video);
-  if (cached) return cached;
-  const fields: SearchField[] = [
-    { name: "title", value: video.title },
-    { name: "channel", value: video.channelName },
-    { name: "description", value: searchableDescription(video) },
-    { name: "tags", value: video.tags.join(" ") },
-    { name: "topics", value: video.topics.join(" ") }
-  ];
-  for (const field of fields) {
-    field.normalized = normalized(field.value);
-    field.words = field.normalized.split(" ").filter(Boolean);
-  }
-  const searchable = fields.map((field) => field.normalized).join(" ");
-  const strongSearchable = fields.filter((field) => field.name !== "channel").map((field) => field.normalized).join(" ");
-  const metadata = {
-    fields,
-    normalized: searchable,
-    words: searchable.split(" ").filter(Boolean),
-    strongNormalized: strongSearchable,
-    strongWords: strongSearchable.split(" ").filter(Boolean)
-  };
-  youtubeSearchMetadata.set(video, metadata);
-  return metadata;
-}
-
-function editDistance(left: string, right: string) {
-  if (left === right) return 0;
-  if (!left.length) return right.length;
-  if (!right.length) return left.length;
-  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
-  for (let row = 1; row <= left.length; row += 1) {
-    const current = [row];
-    for (let column = 1; column <= right.length; column += 1) {
-      current[column] = Math.min(
-        current[column - 1] + 1,
-        previous[column] + 1,
-        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
-      );
-    }
-    previous = current;
-  }
-  return previous[right.length];
-}
-
-function tokenMatches(token: string, words: string[]) {
-  if (token.length < 3) return words.includes(token);
-  return words.some((word) => {
-    if (word === token) return true;
-    if (token.length >= 5 && word.length >= 5 && (word.startsWith(token) || token.startsWith(word)) && Math.min(token.length, word.length) >= 5 && Math.abs(token.length - word.length) <= 4) return true;
-    return token.length >= 5 && word.length >= 5 && editDistance(token, word) <= (token.length >= 8 ? 2 : 1);
-  });
-}
-
-function matchesNormalizedSearchTerm(term: string, text: string) {
-  const query = normalized(term);
-  if (!query || !text) return false;
-  if (` ${text} `.includes(` ${query} `)) return true;
-  const queryWords = query.split(" ").filter(Boolean);
-  const textWords = text.split(" ").filter(Boolean);
-  return queryWords.length > 1 ? queryWords.every((word) => tokenMatches(word, textWords)) : tokenMatches(query, textWords);
-}
-
-function fieldMatches(term: string, fields: SearchField[]) {
-  const normalizedTerm = normalized(term);
-  if (!normalizedTerm) return { matched: false, score: 0, fields: [], supportingText: [] as string[] };
-  const termWords = normalizedTerm.split(" ").filter((word) => word.length > 1);
-  let score = 0;
-  const matchedFields: string[] = [];
-  const supportingText: string[] = [];
-  fields.forEach(({ name, value, normalized: normalizedValue, words: fieldWords }) => {
-    const searchableValue = normalizedValue ?? normalized(value);
-    const words = fieldWords ?? searchableValue.split(" ").filter(Boolean);
-    const phrase = ` ${searchableValue} `.includes(` ${normalizedTerm} `);
-    const matchedWords = termWords.filter((word) => tokenMatches(word, words));
-    const coverage = matchedWords.length / Math.max(termWords.length, 1);
-    if (!phrase && (!matchedWords.length || coverage < (termWords.length === 1 ? 1 : 0.5))) return;
-    const multiplier = name === "title" ? 10 : name === "channel" ? 8 : name === "tags" ? 4 : name === "topics" ? 3 : name === "description" ? 2 : 1;
-    score += multiplier * (phrase ? (termWords.length === 1 ? 1.6 : 2.2) : coverage);
-    matchedFields.push(name);
-    if (name === "title" || name === "description" || name === "channel") supportingText.push(value.slice(0, 220));
-  });
-  return { matched: score > 0, score, fields: Array.from(new Set(matchedFields)), supportingText: supportingText.slice(0, 3) };
-}
-
-function broadTokenScore(term: string, fields: SearchField[], searchableWords?: string[]) {
-  const words = meaningfulVideoWords(term);
-  if (!words.length) return 0;
-  const availableWords = searchableWords ?? normalized(fields.map((field) => field.value).join(" ")).split(" ").filter(Boolean);
-  const matched = words.filter((word) => tokenMatches(word, availableWords));
-  return matched.length / words.length;
-}
-
-const VIDEO_QUERY_STOP_WORDS = new Set(["about", "after", "again", "all", "and", "are", "before", "best", "by", "can", "did", "do", "does", "for", "from", "how", "in", "into", "is", "it", "like", "me", "of", "on", "or", "show", "similar", "some", "that", "the", "their", "them", "this", "to", "video", "videos", "what", "when", "where", "which", "who", "why", "with"]);
-
-function meaningfulVideoWords(value: string) {
-  return normalized(value).split(" ").filter((word) => word.length > 2 && !VIDEO_QUERY_STOP_WORDS.has(word));
-}
-
-function strongTermMatch(term: string, video: YouTubeVideo) {
-  const words = meaningfulVideoWords(term);
-  if (!words.length) return false;
-  const search = searchMetadata(video);
-  const metadata = search.strongNormalized;
-  if (` ${metadata} `.includes(` ${normalized(term)} `)) return true;
-  const metadataWords = search.strongWords;
-  const matched = words.filter((word) => metadataWords.some((candidate) => candidate === word || (word.length >= 5 && candidate.length >= 5 && (candidate.startsWith(word) || word.startsWith(candidate)) && Math.abs(candidate.length - word.length) <= 2)));
-  const minimumCoverage = words.length === 1 ? 1 : Math.ceil(words.length * 0.67);
-  return matched.length >= minimumCoverage;
-}
-
-/** Keep local results that mention the query's meaningful concepts in metadata. */
+/** Synonyms may satisfy required concepts without repeating the user's wording. */
 export function strongLocalVideoCandidates(query: string, candidates: YouTubeSearchCandidate[]) {
-  return candidates.filter((candidate) => candidate.matchedFields.length > 0 && !candidate.matchedFields.includes("semantic-fallback") && strongTermMatch(query, candidate.video));
+  return strongLocalVideoPlanCandidates(makeLocalVideoPlan(query), candidates);
 }
-
-/** Apply semantic coverage after the interpreted plan's strict filters ran locally. */
 export function strongLocalVideoPlanCandidates(plan: YouTubeSearchPlanLike, candidates: YouTubeSearchCandidate[]) {
-  const coreTerms = (plan.terms ?? []).filter(Boolean);
-  const requiredTerms = (plan.include ?? []).filter(Boolean);
-  const groups = (plan.conceptGroups ?? []).filter((group) => group.required !== false && group.terms.length);
-  return candidates.filter((candidate) => {
-    if (!candidate.matchedFields.length || candidate.matchedFields.includes("semantic-fallback")) return false;
-    if (coreTerms.length && !coreTerms.some((term) => strongTermMatch(term, candidate.video))) return false;
-    if (requiredTerms.some((term) => !strongTermMatch(term, candidate.video))) return false;
-    if (groups.some((group) => !group.terms.some((term) => strongTermMatch(term, candidate.video)))) return false;
-    return true;
-  });
+  return candidates.filter((candidate) => semanticCoverage(candidate.video, plan));
 }
-
-export function searchYouTubeCandidates(videos: YouTubeVideo[], plan: YouTubeSearchPlanLike, topic: YouTubeTopic | "All" = "All", channelId?: string, limit = 80, excludedIds: string[] = [], expanded = false) {
-  const excluded = new Set(excludedIds);
-  const groups = (plan.conceptGroups ?? []).filter((group) => group.terms?.length).map((group) => ({ ...group, terms: group.terms.slice(0, 12) }));
-  const primaryTerms = [...(plan.terms ?? []), ...(plan.include ?? [])];
-  const terms = [
-    ...primaryTerms,
-    ...(expanded ? (plan.alternatives ?? []) : [])
-  ].filter((term) => term.trim()).filter((term, index, all) => all.findIndex((candidate) => normalized(candidate) === normalized(term)) === index).slice(0, 48);
-  const effectiveChannelId = plan.channelId ?? channelId;
-  const explicitTopics = new Set((plan.topics ?? []).map((value) => normalized(value)));
-  const exclusions = (plan.exclude ?? []).map((term) => normalized(term)).filter(Boolean);
-  const results: YouTubeSearchCandidate[] = [];
-  const semanticFallback: YouTubeSearchCandidate[] = [];
-  videos.forEach((video) => {
-    if (excluded.has(video.id) || !isApprovedYouTubeVideo(video)) return;
-    if (effectiveChannelId && video.channelId !== effectiveChannelId) return;
-    if (topic !== "All" && !video.topics.includes(topic)) return;
-    if (explicitTopics.size && !video.topics.some((item) => explicitTopics.has(normalized(item)))) return;
-    const dateIntent = plan.dateIntent ?? "upload";
-    if (dateIntent !== "event" && plan.minDate && video.publishedAt < plan.minDate) return;
-    if (dateIntent !== "event" && plan.maxDate && video.publishedAt > plan.maxDate) return;
-    if (plan.minDurationSeconds !== undefined && video.durationSeconds < plan.minDurationSeconds) return;
-    if (plan.maxDurationSeconds !== undefined && video.durationSeconds > plan.maxDurationSeconds) return;
-    const metadata = searchMetadata(video);
-    const fields = metadata.fields;
-    if (exclusions.some((term) => matchesNormalizedSearchTerm(term, metadata.normalized))) return;
-    const matches = terms.map((term) => fieldMatches(term, fields)).filter((match) => match.matched);
-    const groupMatches = groups.map((group) => {
-      const groupResults = group.terms.map((term) => fieldMatches(term, fields)).filter((match) => match.matched);
-      return groupResults.sort((left, right) => right.score - left.score)[0];
-    });
-    if (groups.some((group, index) => group.required !== false && !groupMatches[index])) return;
-    const matched = [...matches, ...groupMatches.filter(Boolean)];
-    const softScore = terms.length ? Math.max(...terms.map((term) => broadTokenScore(term, fields, metadata.words)), 0) : 0;
-    if (!matched.length) {
-      if (!explicitTopics.size && softScore >= 0.2) semanticFallback.push({ video, score: softScore, matchedFields: ["semantic-fallback"], supportingText: [] });
-      return;
-    }
-    const score = matched.reduce((sum, match) => sum + match.score, 0) + (matched.length ? softScore * 0.35 : softScore);
-    results.push({
-      video,
-      score,
-      matchedFields: Array.from(new Set(matched.flatMap((match) => match.fields).concat(matched.length ? [] : ["semantic-fallback"]))),
-      supportingText: Array.from(new Set(matched.flatMap((match) => match.supportingText))).slice(0, 3)
-    });
-  });
-  const maxResults = Math.max(1, Math.min(80, limit));
-  if (!results.length && !explicitTopics.size) return semanticFallback.sort((left, right) => right.score - left.score).slice(0, maxResults);
-  return results.sort((left, right) => right.score - left.score).slice(0, maxResults);
+export function searchYouTubeCandidates(videos: YouTubeVideo[], plan: YouTubeSearchPlanLike, topic: YouTubeTopic | "All" = "All", channelId?: string, limit = 80, excludedIds: string[] = [], _expanded = false): YouTubeSearchCandidate[] {
+  return searchSemanticVideos(videos, plan, topic, channelId, limit, excludedIds);
 }
 
 export function filterYouTubeVideos(videos: YouTubeVideo[], searchText: string, topic: YouTubeTopic | "All", channelId?: string) {
   const term = normalized(searchText);
   if (!term) return videos.filter((video) => isApprovedYouTubeVideo(video) && (!channelId || video.channelId === channelId) && (topic === "All" || video.topics.includes(topic)));
-  return searchYouTubeCandidates(videos, { terms: [searchText] }, topic, channelId, Math.min(80, videos.length)).map((candidate) => candidate.video);
+  return searchYouTubeCandidates(videos, makeLocalVideoPlan(searchText, [], channelId), topic, channelId, Math.min(80, videos.length)).map((candidate) => candidate.video);
 }
 
 export function relatedYouTubeVideos(videos: YouTubeVideo[], current: YouTubeVideo, count = 6, prioritizeRecentByChannel: Record<string, boolean> = {}) {

@@ -1014,26 +1014,12 @@ ${context}`;
   return { answer: result.value.answer.trim(), citations: (indexes.length ? indexes : [0]).map((index) => sources[index]).filter(Boolean), modelOutcomes: result.outcomes };
 }
 
-export type VideoSearchPlan = {
-  terms?: string[];
-  include?: string[];
-  alternatives?: string[];
-  exclude?: string[];
-  topics?: string[];
-  conceptGroups?: Array<{ label?: string; terms: string[]; required?: boolean }>;
-  channel?: string;
-  channelId?: string;
-  dateIntent?: "upload" | "event" | "either";
-  minDate?: string;
-  maxDate?: string;
-  minDurationSeconds?: number;
-  maxDurationSeconds?: number;
-  sort?: "relevance" | "newest" | "oldest" | "random";
-};
+export type { VideoSearchPlan } from "./video-semantic";
+import type { VideoSearchPlan } from "./video-semantic";
 
 export async function interpretVideoSearch({ apiKey, sessionId = "default-session", query, catalogVersion = "current", signal }: { apiKey: string; sessionId?: string; query: string; catalogVersion?: string | number; signal?: AbortSignal }): Promise<{ plan: VideoSearchPlan; modelOutcomes: GeminiModelOutcome[] }> {
   if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before using smart video search.", undefined, [], undefined, false);
-  const prompt = "Interpret this natural-language video search for a closed catalog of approved educational YouTube videos. Search by meaning, not only by exact wording: a user's plain-language idea may appear under a different title, description phrase, topic label, or YouTube tag. Return a precise JSON search plan. Put the user's short, concrete core concepts in terms. Put additional concepts that must all be present in include. Put only faithful synonyms, paraphrases, related named mechanisms, and likely metadata wording in alternatives; alternatives are optional recall hints and must not replace a required concept. Use conceptGroups when the query has multiple required ideas or an either/or choice. Identify exclusions, an approved channel name only when the user asks for one, upload-date requests versus historical/event dates, duration bounds in seconds, approved topic labels, and the requested sort. Historical dates describe a video's subject and must not become upload-date filters unless the user clearly asks when the video was posted. Never invent videos or channels. Catalog version: " + catalogVersion + ". Query: " + query;
+  const prompt = "Interpret this natural-language video search for a closed catalog of approved educational YouTube videos. Search by meaning, not only by exact wording: a user's plain-language idea may appear under a different title, description phrase, topic label, or YouTube tag. Return a precise JSON search plan. Put the user's short, concrete core concepts in terms. Put additional concepts that must all be present in include. Put only faithful synonyms, paraphrases, related named mechanisms, and likely metadata wording in alternatives; include equivalent paraphrases inside the same required concept group so they can satisfy it without the original words. Related ideas are optional hints only. Return conceptGroups for every requested subject, with one required group per idea and faithful synonyms as alternatives within that group. Preserve either/or choices. Identify exclusions, an approved channel name only when the user asks for one, upload-date requests versus historical/event dates, duration bounds in seconds, approved topic labels, and the requested sort. Historical dates describe a video's subject and must not become upload-date filters unless the user clearly asks when the video was posted. Never invent videos or channels. Catalog version: " + catalogVersion + ". Query: " + query;
   const result = await requestStructured<{ terms?: string[]; include?: string[]; alternatives?: string[]; exclude?: string[]; topics?: string[]; conceptGroups?: VideoSearchPlan["conceptGroups"]; channel?: string; channelId?: string; dateIntent?: VideoSearchPlan["dateIntent"]; minDate?: string; maxDate?: string; minDurationSeconds?: number; maxDurationSeconds?: number; sort?: VideoSearchPlan["sort"] }>(apiKey, sessionId, prompt, {
     type: "OBJECT",
     properties: {
