@@ -2,13 +2,37 @@
 (function(scope){const search={};(function(exports){"use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeSearchText = normalizeSearchText;
+exports.searchTextForms = searchTextForms;
+exports.protectedSearchTerms = protectedSearchTerms;
 exports.shouldExpandNaturalSearch = shouldExpandNaturalSearch;
 exports.searchScoreNormalized = searchScoreNormalized;
 exports.searchScore = searchScore;
 exports.rankSearchResults = rankSearchResults;
 /** Small, deterministic fuzzy matching helpers used by the local search UI. */
-function normalizeSearchText(value) {
-    return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
+function foldSearchText(value, preserveHyphens = false) {
+    const folded = value.replace(/[\u2010-\u2015\u2212]/g, "-").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(preserveHyphens ? /[^a-z0-9\u0080-\uFFFF-]+/g : /[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
+    return folded;
+}
+function normalizeSearchText(value) { return foldSearchText(value); }
+/** Retain the compound spelling as well as its spaced search equivalent. */
+function searchTextForms(value) {
+    return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
+}
+const compoundCache = new Map();
+/** Keep prefixes and short components together before stop-word filtering. */
+function protectedSearchTerms(value) {
+    const cached = compoundCache.get(value);
+    if (cached)
+        return cached;
+    const original = foldSearchText(value, true);
+    const spaced = normalizeSearchText(value);
+    const compounds = [...original.matchAll(/\b[a-z0-9]+(?:-[a-z0-9]+)+\b/g)].map(match => normalizeSearchText(match[0]));
+    const variants = [...spaced.matchAll(/\b(?:x ray|(?:non|post|pre|anti|pro|neo) [a-z0-9]+)\b/g)].map(match => match[0]);
+    const terms = [...new Set([...compounds, ...variants])].sort((a, b) => b.length - a.length);
+    if (compoundCache.size >= 500)
+        compoundCache.delete(compoundCache.keys().next().value);
+    compoundCache.set(value, terms);
+    return terms;
 }
 const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with", "explain", "find", "show", "tell", "please", "me", "learn", "understand", "video", "videos", "topics"]);
 /** Coverage is authoritative: one complete match beats any number of weak recommendations. */
@@ -90,7 +114,7 @@ exports.searchTopicIndex = searchTopicIndex;
 exports.suggestTopics = suggestTopics;
 exports.searchTopicIndexYielding = searchTopicIndexYielding;
 const search_1 = require("./search");
-exports.TOPIC_SEARCH_VERSION = 5;
+exports.TOPIC_SEARCH_VERSION = 6;
 const STOP = new Set("a about an and are as at be by can did do does explain find for from how i in into is it me of on or our please show some that the their them there these this to was were what when where which who why with would tell topics learn learning want know".split(" "));
 const CONCEPTS = [
     { label: "earthquakes", equivalents: ["earthquake", "earthquakes", "quake", "quakes", "tremors", "ground shaking", "shaking ground", "ground shake", "seismic activity", "earth tremor"], related: ["plate tectonics", "geology", "tsunamis", "faults", "seismic waves"] },
@@ -115,14 +139,25 @@ const CONCEPTS = [
     { label: "united states", equivalents: ["united states", "usa", "us", "american"], related: [] },
     { label: "united kingdom", equivalents: ["united kingdom", "uk", "british", "britain"], related: [] }
 ];
-const words = (s) => (0, search_1.normalizeSearchText)(s).split(" ").filter(w => w.length > 1 && !STOP.has(w));
+const wordCache = new Map();
+const words = (s) => {
+    const cached = wordCache.get(s);
+    if (cached)
+        return cached;
+    const required = new Set((0, search_1.protectedSearchTerms)(s).flatMap(term => term.split(" ")));
+    const result = (0, search_1.normalizeSearchText)(s).split(" ").filter(w => required.has(w) || w.length > 1 && !STOP.has(w));
+    if (wordCache.size >= 500)
+        wordCache.delete(wordCache.keys().next().value);
+    wordCache.set(s, result);
+    return result;
+};
 const contains = (s, t) => Boolean(t) && (` ${s} `).includes(` ${t} `);
 const fieldTokens = new Map();
 const termCache = new Map();
 function matches(s, t) {
     let term = termCache.get(t);
     if (!term) {
-        term = { text: (0, search_1.normalizeSearchText)(t), tokens: words(t) };
+        term = { text: (0, search_1.normalizeSearchText)(t), tokens: (0, search_1.protectedSearchTerms)(t).includes((0, search_1.normalizeSearchText)(t)) ? (0, search_1.normalizeSearchText)(t).split(" ") : words(t) };
         termCache.set(t, term);
         if (termCache.size > 500)
             termCache.delete(termCache.keys().next().value);
@@ -161,6 +196,10 @@ function localTopicPlan(query) {
     }
     let remaining = (0, search_1.normalizeSearchText)(query);
     const groups = [];
+    for (const term of (0, search_1.protectedSearchTerms)(query)) {
+        groups.push({ label: term, equivalents: [term], related: [] });
+        remaining = (` ${remaining} `).split(` ${term} `).join(" ").trim();
+    }
     for (const { phrase, concept } of conceptsByPhrase)
         if (contains(remaining, phrase)) {
             if (!groups.includes(concept))
@@ -177,7 +216,7 @@ function createTopicSuggestionIndex(topics) {
     if (fieldTokens.size > 100000)
         fieldTokens.clear();
     const pathIds = new Map(topics.map(t => [t.path.join("\0"), t.id]));
-    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(search_1.normalizeSearchText); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
+    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => (0, search_1.searchTextForms)(value).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
     return { entries, byId: new Map(entries.map(e => [e.topic.id, e])) };
 }
 function rank(entry, query, plan) {

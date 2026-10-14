@@ -203,3 +203,17 @@ test('enrichment measures complete concept coverage rather than result count',()
  assert.equal(engine.shouldEnrichVideoSearch(orQuery,orPlan,partial),false,'one complete OR clause is strong coverage');
  for(const candidates of [complete,partial,[]]) assert.equal(native.LEARNED_MEDIA_VIDEO_SEARCH.shouldEnrichVideoSearch(query,plan,candidates),engine.shouldEnrichVideoSearch(query,plan,candidates));
 });
+
+
+test('hyphenated compounds match spaced spellings without losing prefixes or X',()=>{
+ const catalog=[video('xh','X-ray imaging'),video('xs','X ray imaging'),video('ray','Ray imaging'),video('ph','Post-war reconstruction'),video('ps','Post war reconstruction'),video('war','War reconstruction'),video('nh','Non-Euclidean geometry'),video('ns','Non Euclidean geometry'),video('euclid','Euclidean geometry')];
+ for(const search of [engine,native.LEARNED_MEDIA_VIDEO_SEARCH]) for(const [queries,expected] of [[['x-ray','X ray','X‑ray'],['xh','xs']],[['post-war','post war','post–war'],['ph','ps']],[['non-Euclidean','non Euclidean','non‑Euclidean'],['nh','ns']]]) {
+  for(const query of queries) {
+   const results=search.searchSemanticVideos(catalog,search.makeLocalVideoPlan(query));
+   assert.deepEqual(Array.from(ids(results)),expected,query);
+   assert.ok(results.every(row=>row.supportingText.length),query);
+  }
+ }
+ const excluded=engine.makeLocalVideoPlan('geometry without non-Euclidean');
+ assert.deepEqual(ids(engine.searchSemanticVideos(catalog,excluded)),['euclid']);
+});

@@ -68,3 +68,25 @@ test('one genuine topic match skips enrichment while a hundred fallback topics d
  assert.equal(weak.suggestions.length,100);assert.equal(engine.shouldEnrichTopics(weakQuery,weak.completeCoverage),true);
  assert.equal(engine.shouldEnrichTopics('show me topics',false),false);
 });
+
+
+test('hyphenated and spaced compounds retain prefixes and short components on web and Mac',()=>{
+ const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ const custom=['X-ray','X ray','Ray','Post-war','Post war','War','Non-Euclidean','Non Euclidean','Euclidean'].map((label,i)=>({id:'compound-'+i,label,path:['Custom',label]}));
+ for(const search of [engine,scope.LEARNED_MEDIA_TOPIC_SEARCH]) {
+  const ix=search.createTopicSuggestionIndex([...topics,...custom]);
+  for(const [queries,expected,rejected] of [[['X-ray','x ray','X‑ray'],[0,1],2],[['post-war','post war','post–war'],[3,4],5],[['non-Euclidean','non Euclidean','non‑Euclidean'],[6,7],8]]) {
+   let previous;
+   for(const query of queries) {
+    const result=search.searchTopicIndex(ix,query);
+    assert.ok(result.completeCoverage,query);
+    for(const i of expected) assert.ok(result.matchedIds.includes('compound-'+i),query);
+    assert.ok(!result.matchedIds.includes('compound-'+rejected),query);
+    assert.equal(result.suggestions.length,100);assert.equal(new Set(result.suggestions.map(s=>s.id)).size,100);
+    const ordered=result.suggestions.map(s=>s.id);if(previous)assert.deepEqual(Array.from(ordered),Array.from(previous));previous=ordered;
+   }
+  }
+ }
+ const {searchTextForms}=require('../lib/search.ts');
+ assert.deepEqual(searchTextForms('Non‑Euclidean'),['non-euclidean','non euclidean']);
+});

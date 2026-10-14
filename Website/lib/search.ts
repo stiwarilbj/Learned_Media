@@ -1,6 +1,29 @@
 /** Small, deterministic fuzzy matching helpers used by the local search UI. */
-export function normalizeSearchText(value: string) {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
+function foldSearchText(value: string, preserveHyphens = false) {
+  const folded = value.replace(/[\u2010-\u2015\u2212]/g, "-").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(preserveHyphens ? /[^a-z0-9\u0080-\uFFFF-]+/g : /[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
+  return folded;
+}
+
+export function normalizeSearchText(value: string) { return foldSearchText(value); }
+
+/** Retain the compound spelling as well as its spaced search equivalent. */
+export function searchTextForms(value: string) {
+  return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
+}
+
+const compoundCache = new Map<string, string[]>();
+/** Keep prefixes and short components together before stop-word filtering. */
+export function protectedSearchTerms(value: string) {
+  const cached = compoundCache.get(value);
+  if (cached) return cached;
+  const original = foldSearchText(value, true);
+  const spaced = normalizeSearchText(value);
+  const compounds = [...original.matchAll(/\b[a-z0-9]+(?:-[a-z0-9]+)+\b/g)].map(match => normalizeSearchText(match[0]));
+  const variants = [...spaced.matchAll(/\b(?:x ray|(?:non|post|pre|anti|pro|neo) [a-z0-9]+)\b/g)].map(match => match[0]);
+  const terms = [...new Set([...compounds, ...variants])].sort((a, b) => b.length - a.length);
+  if (compoundCache.size >= 500) compoundCache.delete(compoundCache.keys().next().value!);
+  compoundCache.set(value, terms);
+  return terms;
 }
 
 const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with", "explain", "find", "show", "tell", "please", "me", "learn", "understand", "video", "videos", "topics"]);

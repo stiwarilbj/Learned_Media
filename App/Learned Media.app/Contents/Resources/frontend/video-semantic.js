@@ -1,5 +1,111 @@
 // Generated from Website/lib/video-semantic.ts. Run node Website/scripts/build-native-video-search.mjs.
-(function(scope){ const exports = {};
+(function(scope){ const search = {}; (function(exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.normalizeSearchText = normalizeSearchText;
+exports.searchTextForms = searchTextForms;
+exports.protectedSearchTerms = protectedSearchTerms;
+exports.shouldExpandNaturalSearch = shouldExpandNaturalSearch;
+exports.searchScoreNormalized = searchScoreNormalized;
+exports.searchScore = searchScore;
+exports.rankSearchResults = rankSearchResults;
+/** Small, deterministic fuzzy matching helpers used by the local search UI. */
+function foldSearchText(value, preserveHyphens = false) {
+    const folded = value.replace(/[\u2010-\u2015\u2212]/g, "-").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(preserveHyphens ? /[^a-z0-9\u0080-\uFFFF-]+/g : /[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
+    return folded;
+}
+function normalizeSearchText(value) { return foldSearchText(value); }
+/** Retain the compound spelling as well as its spaced search equivalent. */
+function searchTextForms(value) {
+    return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
+}
+const compoundCache = new Map();
+/** Keep prefixes and short components together before stop-word filtering. */
+function protectedSearchTerms(value) {
+    const cached = compoundCache.get(value);
+    if (cached)
+        return cached;
+    const original = foldSearchText(value, true);
+    const spaced = normalizeSearchText(value);
+    const compounds = [...original.matchAll(/\b[a-z0-9]+(?:-[a-z0-9]+)+\b/g)].map(match => normalizeSearchText(match[0]));
+    const variants = [...spaced.matchAll(/\b(?:x ray|(?:non|post|pre|anti|pro|neo) [a-z0-9]+)\b/g)].map(match => match[0]);
+    const terms = [...new Set([...compounds, ...variants])].sort((a, b) => b.length - a.length);
+    if (compoundCache.size >= 500)
+        compoundCache.delete(compoundCache.keys().next().value);
+    compoundCache.set(value, terms);
+    return terms;
+}
+const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with", "explain", "find", "show", "tell", "please", "me", "learn", "understand", "video", "videos", "topics"]);
+/** Coverage is authoritative: one complete match beats any number of weak recommendations. */
+function shouldExpandNaturalSearch(query, completeCoverage = false) {
+    if (completeCoverage)
+        return false;
+    const contentWords = normalizeSearchText(query).split(" ").filter(word => word.length > 1 && !NATURAL_SEARCH_STOP_WORDS.has(word));
+    return contentWords.length >= 2;
+}
+function distance(left, right) {
+    if (left === right)
+        return 0;
+    if (!left.length)
+        return right.length;
+    if (!right.length)
+        return left.length;
+    let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+    for (let row = 1; row <= left.length; row += 1) {
+        const current = [row];
+        for (let column = 1; column <= right.length; column += 1) {
+            current[column] = Math.min(current[column - 1] + 1, previous[column] + 1, previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1));
+        }
+        previous = current;
+    }
+    return previous[right.length];
+}
+function tokenScore(queryToken, textToken) {
+    if (queryToken === textToken)
+        return 20;
+    if (textToken.startsWith(queryToken) || queryToken.startsWith(textToken))
+        return 13;
+    const limit = queryToken.length >= 8 ? 2 : 1;
+    return queryToken.length >= 4 && textToken.length >= 4 && distance(queryToken, textToken) <= limit ? 7 : 0;
+}
+function searchScoreNormalized(normalizedQuery, normalizedText) {
+    if (!normalizedQuery || !normalizedText)
+        return 0;
+    if (normalizedText.includes(normalizedQuery))
+        return 100 + normalizedQuery.length;
+    const queryTokens = normalizedQuery.split(" ").filter((token) => token.length > 1);
+    const textTokens = normalizedText.split(" ").filter(Boolean);
+    if (!queryTokens.length)
+        return 0;
+    let score = 0;
+    let matched = 0;
+    queryTokens.forEach((queryToken) => {
+        const best = Math.max(...textTokens.map((textToken) => tokenScore(queryToken, textToken)), 0);
+        if (best > 0) {
+            matched += 1;
+            score += best;
+        }
+    });
+    if (!matched)
+        return 0;
+    const coverage = matched / queryTokens.length;
+    if (coverage < (queryTokens.length > 1 ? 0.5 : 1))
+        return 0;
+    return score * coverage + (matched === queryTokens.length ? 12 : 0);
+}
+function searchScore(query, text) {
+    return searchScoreNormalized(normalizeSearchText(query), normalizeSearchText(text));
+}
+function rankSearchResults(query, items, getText, limit = items.length) {
+    return items
+        .map((item, index) => ({ item, index, score: searchScore(query, getText(item)) }))
+        .filter((entry) => entry.score > 0)
+        .sort((left, right) => right.score - left.score || left.index - right.index)
+        .slice(0, limit)
+        .map((entry) => entry.item);
+}
+
+})(search); const require = () => search; const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VIDEO_SEMANTIC_VERSION = void 0;
@@ -14,7 +120,8 @@ exports.searchSemanticVideos = searchSemanticVideos;
 exports.searchSemanticVideosYielding = searchSemanticVideosYielding;
 exports.videoSearchReason = videoSearchReason;
 exports.shouldEnrichVideoSearch = shouldEnrichVideoSearch;
-exports.VIDEO_SEMANTIC_VERSION = 6;
+const search_1 = require("./search");
+exports.VIDEO_SEMANTIC_VERSION = 7;
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
     ["gravitational lensing", "bending starlight", "light bending", "bending light", "light bends", "gravity bends light", "bent light"],
@@ -56,7 +163,7 @@ const CONCEPTS = [
     ["telescope", "telescopes"], ["internet", "world wide web"],
 ];
 const STOP = new Set("a an the and or of to in on at for by from with about is are was were be been do does did how why what when where which who can could would should me show explain tell learn understand video videos youtube work works happen happens happening affect affects effect effects really please more some something".split(" "));
-function normalizeVideoQuery(value) { return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " "); }
+function normalizeVideoQuery(value) { return String(value || "").replace(/[\u2010-\u2015\u2212]/g, "-").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " "); }
 const equivalentTerms = new Map(CONCEPTS.flatMap((terms) => terms.map((term) => [normalizeVideoQuery(term), terms])));
 const aliases = CONCEPTS.flatMap((terms, id) => terms.map((term) => ({ term: normalizeVideoQuery(term), id }))).sort((a, b) => b.term.length - a.term.length);
 function contains(text, phrase) { return (` ${text} `).includes(` ${phrase} `); }
@@ -65,6 +172,10 @@ function expand(term) { const normalized = normalizeVideoQuery(term); return equ
 function groupsFor(value) {
     let remaining = normalizeVideoQuery(value);
     const groups = [];
+    for (const term of (0, search_1.protectedSearchTerms)(value)) {
+        groups.push({ label: term, terms: [term], required: true });
+        remaining = (` ${remaining} `).split(` ${term} `).join(" ").trim();
+    }
     const seen = new Set();
     for (const alias of aliases)
         if (contains(remaining, alias.term)) {
@@ -183,7 +294,7 @@ function fieldsFor(video) {
     const cached = index.get(video);
     if (cached)
         return cached;
-    const fields = [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]].map(([name, value]) => ({ name, value, text: normalizeVideoQuery(value), words: new Set(normalizeVideoQuery(value).split(" ")) }));
+    const fields = [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]].map(([name, value]) => ({ name, value, text: (0, search_1.searchTextForms)(value).join(" "), words: new Set((0, search_1.searchTextForms)(value).join(" ").split(" ")) }));
     index.set(video, fields);
     return fields;
 }
@@ -196,12 +307,12 @@ function matchesTerm(term, field) {
         return false;
     if (contains(field.text, text))
         return true;
-    const words = meaningful(text);
+    const words = (0, search_1.protectedSearchTerms)(term).includes(text) ? text.split(" ") : meaningful(text);
     return words.length > 0 && words.every((word) => field.words.has(word) || (word.length >= 5 && hasPrefix(field.words, word)));
 }
 function passage(field, term) {
     const sentences = field.name === "description" ? field.value.split(/(?<=[.!?])\s+/) : [field.value];
-    const matching = sentences.find((value) => matchesTerm(term, { ...field, text: normalizeVideoQuery(value), words: new Set(normalizeVideoQuery(value).split(" ")) }));
+    const matching = sentences.find((value) => matchesTerm(term, { ...field, text: (0, search_1.searchTextForms)(value).join(" "), words: new Set((0, search_1.searchTextForms)(value).join(" ").split(" ")) }));
     const value = matching || field.value;
     const words = meaningful(term);
     const hit = value.toLowerCase().indexOf(words[0] || term.toLowerCase());

@@ -1,3 +1,4 @@
+import { searchTextForms, protectedSearchTerms } from "./search";
 /** Shared, dependency-free search policy. The native runtime is generated from this file. */
 export type VideoSearchPlan = {
   terms?: string[]; include?: string[]; alternatives?: string[]; exclude?: string[];
@@ -11,7 +12,7 @@ export type VideoSearchPlan = {
 type Video = { id: string; channelId: string; channelName: string; title: string; description: string; tags: string[]; topics: string[]; publishedAt: string; durationSeconds: number; approved: boolean; special?: boolean; sourceIds?: string[] };
 export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
-export const VIDEO_SEMANTIC_VERSION = 6;
+export const VIDEO_SEMANTIC_VERSION = 7;
 
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
@@ -54,7 +55,7 @@ const CONCEPTS = [
   ["telescope", "telescopes"], ["internet", "world wide web"],
 ];
 const STOP = new Set("a an the and or of to in on at for by from with about is are was were be been do does did how why what when where which who can could would should me show explain tell learn understand video videos youtube work works happen happens happening affect affects effect effects really please more some something".split(" "));
-export function normalizeVideoQuery(value: string) { return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " "); }
+export function normalizeVideoQuery(value: string) { return String(value || "").replace(/[\u2010-\u2015\u2212]/g, "-").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " "); }
 const equivalentTerms = new Map(CONCEPTS.flatMap((terms) => terms.map((term) => [normalizeVideoQuery(term), terms] as const)));
 const aliases = CONCEPTS.flatMap((terms, id) => terms.map((term) => ({ term: normalizeVideoQuery(term), id }))).sort((a, b) => b.term.length - a.term.length);
 function contains(text: string, phrase: string) { return (` ${text} `).includes(` ${phrase} `); }
@@ -63,6 +64,10 @@ function expand(term: string) { const normalized = normalizeVideoQuery(term); re
 function groupsFor(value: string) {
   let remaining = normalizeVideoQuery(value);
   const groups: NonNullable<VideoSearchPlan["conceptGroups"]> = [];
+  for (const term of protectedSearchTerms(value)) {
+    groups.push({ label: term, terms: [term], required: true });
+    remaining = (` ${remaining} `).split(` ${term} `).join(" ").trim();
+  }
   const seen = new Set<number>();
   for (const alias of aliases) if (contains(remaining, alias.term)) {
     if (!seen.has(alias.id)) { groups.push({ label: CONCEPTS[alias.id][0], terms: CONCEPTS[alias.id], required: true }); seen.add(alias.id); }
@@ -167,7 +172,7 @@ const BOILERPLATE = /\b(subscribe|patreon|sponsor(?:ed)?|affiliate|merch|use cod
 function cleanDescription(value: string) { return value.split(/\n+|(?<=[.!?])\s+/).filter((part) => !BOILERPLATE.test(part)).join(" ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0,6000); }
 function fieldsFor(video: Video) {
   const cached = index.get(video); if (cached) return cached;
-  const fields = [ ["title",video.title], ["tags",(video.tags || []).join(", ")], ["description",cleanDescription(video.description || "")], ["topics",(video.topics || []).join(" ")] ].map(([name,value]) => ({name,value,text:normalizeVideoQuery(value),words:new Set(normalizeVideoQuery(value).split(" "))}));
+  const fields = [ ["title",video.title], ["tags",(video.tags || []).join(", ")], ["description",cleanDescription(video.description || "")], ["topics",(video.topics || []).join(" ")] ].map(([name,value]) => ({name,value,text:searchTextForms(value).join(" "),words:new Set(searchTextForms(value).join(" ").split(" "))}));
   index.set(video, fields); return fields;
 }
 function hasPrefix(words: Set<string>, word: string) { for (const candidate of words) if (candidate.length >= 5 && Math.abs(candidate.length-word.length) <= 2 && (candidate.startsWith(word) || word.startsWith(candidate))) return true; return false; }
@@ -175,12 +180,12 @@ function matchesTerm(term: string, field: Field) {
   const text = normalizeVideoQuery(term);
   if (!text) return false;
   if (contains(field.text, text)) return true;
-  const words = meaningful(text);
+  const words = protectedSearchTerms(term).includes(text) ? text.split(" ") : meaningful(text);
   return words.length > 0 && words.every((word) => field.words.has(word) || (word.length >= 5 && hasPrefix(field.words, word)));
 }
 function passage(field: Field, term: string) {
   const sentences = field.name === "description" ? field.value.split(/(?<=[.!?])\s+/) : [field.value];
-  const matching = sentences.find((value) => matchesTerm(term,{...field,text:normalizeVideoQuery(value),words:new Set(normalizeVideoQuery(value).split(" "))}));
+  const matching = sentences.find((value) => matchesTerm(term,{...field,text:searchTextForms(value).join(" "),words:new Set(searchTextForms(value).join(" ").split(" "))}));
   const value = matching || field.value;
   const words = meaningful(term);
   const hit = value.toLowerCase().indexOf(words[0] || term.toLowerCase());

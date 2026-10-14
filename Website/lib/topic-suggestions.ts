@@ -1,6 +1,6 @@
-import { normalizeSearchText, shouldExpandNaturalSearch } from "./search";
+import { normalizeSearchText, shouldExpandNaturalSearch, searchTextForms, protectedSearchTerms } from "./search";
 import type { TopicNode } from "./types";
-export const TOPIC_SEARCH_VERSION = 5;
+export const TOPIC_SEARCH_VERSION = 6;
 export type TopicSuggestionGroup = "keyword" | "related" | "broader" | "explore";
 export type TopicSuggestion = {
     id: string;
@@ -70,7 +70,16 @@ const CONCEPTS: TopicConcept[] = [
     { label: "united states", equivalents: ["united states", "usa", "us", "american"], related: [] },
     { label: "united kingdom", equivalents: ["united kingdom", "uk", "british", "britain"], related: [] }
 ];
-const words = (s: string) => normalizeSearchText(s).split(" ").filter(w => w.length > 1 && !STOP.has(w));
+const wordCache = new Map<string, string[]>();
+const words = (s: string) => {
+    const cached = wordCache.get(s);
+    if (cached) return cached;
+    const required = new Set(protectedSearchTerms(s).flatMap(term => term.split(" ")));
+    const result = normalizeSearchText(s).split(" ").filter(w => required.has(w) || w.length > 1 && !STOP.has(w));
+    if (wordCache.size >= 500) wordCache.delete(wordCache.keys().next().value!);
+    wordCache.set(s, result);
+    return result;
+};
 const contains = (s: string, t: string) => Boolean(t) && (` ${s} `).includes(` ${t} `);
 const fieldTokens = new Map<string, string[]>();
 const termCache = new Map<string, {
@@ -80,7 +89,7 @@ const termCache = new Map<string, {
 function matches(s: string, t: string) {
     let term = termCache.get(t);
     if (!term) {
-        term = { text: normalizeSearchText(t), tokens: words(t) };
+        term = { text: normalizeSearchText(t), tokens: protectedSearchTerms(t).includes(normalizeSearchText(t)) ? normalizeSearchText(t).split(" ") : words(t) };
         termCache.set(t, term);
         if (termCache.size > 500)
             termCache.delete(termCache.keys().next().value!);
@@ -115,6 +124,10 @@ export function localTopicPlan(query: string): TopicQueryPlan {
     }
     let remaining = normalizeSearchText(query);
     const groups: TopicConcept[] = [];
+    for (const term of protectedSearchTerms(query)) {
+        groups.push({ label: term, equivalents: [term], related: [] });
+        remaining = (` ${remaining} `).split(` ${term} `).join(" ").trim();
+    }
     for (const { phrase, concept } of conceptsByPhrase)
         if (contains(remaining, phrase)) {
             if (!groups.includes(concept))
@@ -131,7 +144,7 @@ export function createTopicSuggestionIndex(topics: TopicWithPath[]): TopicSugges
     if (fieldTokens.size > 100000)
         fieldTokens.clear();
     const pathIds = new Map(topics.map(t => [t.path.join("\0"), t.id]));
-    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(normalizeSearchText); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
+    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => searchTextForms(value).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
     return { entries, byId: new Map(entries.map(e => [e.topic.id, e])) };
 }
 type Ranked = {
