@@ -56,7 +56,7 @@ const VideoCard = memo(function VideoCard({ video, saved, reason, onOpenVideo, o
       <div className="video-card-copy"><h3>{video.title}</h3><p>{video.channelName}</p><time dateTime={video.publishedAt}>{formatDate(video.publishedAt)}</time></div>
     </button>
     <button type="button" className={`video-save-button ${saved ? "saved" : ""}`} onClick={() => onSaveVideo(video.id)} aria-label={saved ? "Remove from saved videos" : "Save video"}><Icon name="bookmark" size={16} /></button>
-    {reason && <details className="video-match-reason"><summary>Why this matches</summary><p>{reason.explanation}</p><small>{reason.support.join(" · ")}</small></details>}
+    {reason && <details className="video-match-reason"><summary>{reason.relevance === "broader" ? "Broader recommendation" : "Why this matches"}</summary><p>{reason.explanation}</p><small>{reason.support.join(" · ")}</small></details>}
   </article>;
 });
 
@@ -71,7 +71,10 @@ function VideoList({ videos, savedIds, reasons, smartSearchRan, onOpenVideo, onS
   const renderVideo = useCallback((video: YouTubeVideo) => <VideoCard video={video} saved={savedIds.has(video.id)} reason={reasons?.[video.id]} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} />, [onOpenVideo, onSaveVideo, reasons, savedIds]);
   if (!videos.length) return <div className="video-empty"><div className="empty-orbit"><Icon name="search" size={24} /></div><h2>{smartSearchRan ? "No relevant approved videos found" : "No approved videos match that yet"}</h2><p>{smartSearchRan ? "No match is supported by the approved catalog metadata. Try another phrase or remove a conflicting filter" : "Try another phrase, topic, or channel. The search stays inside the approved collection"}</p></div>;
   const columns = viewportWidth > 900 ? 3 : viewportWidth > 620 ? 2 : 1;
-  return <VirtualizedRows items={videos} columns={columns} estimatedHeight={viewportWidth <= 620 ? 285 : 260} gap={13} className="video-grid" getKey={videoRowKey} renderItem={renderVideo} />;
+  const strong = videos.filter(video => reasons?.[video.id]?.relevance !== "broader");
+  const broader = videos.filter(video => reasons?.[video.id]?.relevance === "broader");
+  const grid = (items: YouTubeVideo[]) => <VirtualizedRows items={items} columns={columns} estimatedHeight={viewportWidth <= 620 ? 285 : 260} gap={13} className="video-grid" getKey={videoRowKey} renderItem={renderVideo} />;
+  return <>{strong.length > 0 && grid(strong)}{broader.length > 0 && <section aria-label="Broader recommendations"><h3>Broader recommendations</h3>{grid(broader)}</section>}</>;
 }
 
 function VideoTabs({ activeTab, savedCount, onTabChange }: { activeTab: YouTubeWorkspaceState["activeTab"]; savedCount: number; onTabChange: (tab: YouTubeWorkspaceState["activeTab"]) => void }) {

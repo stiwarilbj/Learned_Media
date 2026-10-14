@@ -11,7 +11,7 @@ export type VideoSearchPlan = {
 type Video = { id: string; channelId: string; channelName: string; title: string; description: string; tags: string[]; topics: string[]; publishedAt: string; durationSeconds: number; approved: boolean; special?: boolean; sourceIds?: string[] };
 export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
-export const VIDEO_SEMANTIC_VERSION = 4;
+export const VIDEO_SEMANTIC_VERSION = 5;
 
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
@@ -246,7 +246,7 @@ export function searchSemanticVideos<T extends Video>(videos: T[], plan: VideoSe
     const exactTitle = (plan.terms || []).some((term) => contains(title,normalizeVideoQuery(term)));
     const relatedBonus = Math.min(3, related.filter(term => fields.some(field => matchesTerm(term, field))).length);
     const hint = (video.topics || []).some((topic) => (plan.topicHints || []).includes(topic));
-    results.push({video,coverage,score:100*evidence.length + evidence.reduce((sum,item)=>sum+item.score,0)+(exactTitle?10:0)+(hint?1:0)+relatedBonus,matchedFields:[...new Set(evidence.map((item)=>item.field.name))],supportingText:[...new Set(evidence.map((item)=>passage(item.field,item.term)))].slice(0,3)});
+    results.push({video,coverage,score:100*evidence.length + evidence.reduce((sum,item)=>sum+item.score,0)+(exactTitle?10:0)+(hint?1:0)+relatedBonus,matchedFields:[...new Set(evidence.map((item)=>item.field.name))],supportingText:[...new Set(evidence.map((item)=>passage(item.field,item.term)))].slice(0,8)});
   }
   return results.sort((a,b)=>compareSemanticCandidates(a,b,plan.sort)).slice(0,Math.max(1,limit));
 }
@@ -259,4 +259,40 @@ export async function searchSemanticVideosYielding<T extends Video>(videos: T[],
   }
   if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
   return matches.sort((a,b)=>compareSemanticCandidates(a,b,plan.sort)).slice(0,limit);
+}
+
+/** Explain only evidence found in searchable metadata; model prose never establishes a match. */
+export function videoSearchReason<T extends Video>(video: T, plan: VideoSearchPlan, localScore = 0, suppliedSupport: string[] = []) {
+  const groups = requiredGroups(plan);
+  const fields = fieldsFor(video).filter(field => field.name !== "topics");
+  const support: string[] = [], matchedFields = new Set<string>();
+  for (const group of groups) {
+    const matches = group.terms.flatMap(expand).flatMap(term => fields.filter(field => matchesTerm(term, field)).map(field => ({field,term})));
+    const best = matches[0];
+    if (best) {
+      matchedFields.add(best.field.name);
+      const text = `${best.field.name[0].toUpperCase() + best.field.name.slice(1)}: “${passage(best.field,best.term)}”`;
+      if (!support.includes(text)) support.push(text);
+    }
+  }
+  // Require a contiguous excerpt in one field, rather than loose word overlap across fields.
+  for (const excerpt of suppliedSupport.slice(0,4)) {
+    if (typeof excerpt !== "string" || !meaningful(excerpt).length) continue;
+    const normalized = normalizeVideoQuery(excerpt);
+    const excerptField = {name:"excerpt",value:excerpt,text:normalized,words:new Set(normalized.split(" "))};
+    if (!groups.some(group => [...group.terms.flatMap(expand), ...(group.related || [])].some(term => matchesTerm(term,excerptField)))) continue;
+    const field = fields.find(field => contains(field.text,normalized));
+    if (!field || !normalized) continue;
+    const text = `${field.name[0].toUpperCase() + field.name.slice(1)}: “${passage(field,excerpt)}”`;
+    if (!support.includes(text)) support.push(text);
+  }
+  const coverage = videoConceptCoverage(video,plan);
+  const strong = groups.length > 0 && coverage.complete && matchedFields.size > 0;
+  return {
+    videoId: video.id, relevance: strong ? "strong" as const : "broader" as const,
+    support: support.slice(0,12), localScore,
+    explanation: strong ? `Matches all requested concepts in the ${[...matchedFields].join(" and ")}.`
+      : support.length ? "Broader recommendation: the metadata below does not establish every requested concept."
+      : "Matches your browsing filters; no meaning-based metadata match was found."
+  };
 }

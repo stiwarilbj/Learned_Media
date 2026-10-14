@@ -1017,7 +1017,7 @@ export async function generateLearningResponse({ apiKey, sessionId = "default-se
 }
 
 export type { VideoSearchPlan } from "./video-semantic";
-import type { VideoSearchPlan } from "./video-semantic";
+import { videoSearchReason, type VideoSearchPlan } from "./video-semantic";
 
 export async function interpretVideoSearch({ apiKey, sessionId = "default-session", query, catalogVersion = "current", signal }: { apiKey: string; sessionId?: string; query: string; catalogVersion?: string | number; signal?: AbortSignal }): Promise<{ plan: VideoSearchPlan; modelOutcomes: GeminiModelOutcome[] }> {
   if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before using smart video search.", undefined, [], undefined, false);
@@ -1051,7 +1051,7 @@ export async function interpretNaturalSearch({ apiKey, sessionId = "default-sess
 
 export type RankedVideoSearchResult = {
   videoId: string;
-  relevance: "direct" | "strong";
+  relevance: "direct" | "strong" | "broader";
   support: string[];
   explanation: string;
   localScore: number;
@@ -1085,32 +1085,14 @@ export async function rankVideoSearchCandidates({ apiKey, sessionId = "default-s
   const results = (result.value.matches ?? []).flatMap((match) => {
     const videoId = match.videoId?.trim() ?? "";
     const relevance = match.relevance === "direct" || match.relevance === "strong" ? match.relevance : undefined;
-    const explanation = match.explanation?.trim().slice(0, 240) ?? "";
-    const support = Array.from(new Set((match.support ?? []).filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean))).slice(0, 4);
     const candidate = candidateById.get(videoId);
-    const metadata = candidate ? searchableVideoDescription([candidate.video.title, candidate.video.channelName, candidate.video.description, candidate.video.tags.join(" "), candidate.video.topics.join(" ")].join(" ")) : "";
-    const supportedByMetadata = support.some((excerpt) => supportMatchesMetadata(excerpt, metadata));
-    if (!allowed.has(videoId) || seen.has(videoId) || !candidate || !relevance || !support.length || !supportedByMetadata || !explanation) return [];
+    if (!allowed.has(videoId) || seen.has(videoId) || !candidate || !relevance) return [];
+    const reason = videoSearchReason(candidate.video, plan, candidate.score, match.support ?? []);
+    if (!reason.support.length) return [];
     seen.add(videoId);
-    return [{ videoId, relevance: relevance as "direct" | "strong", support, explanation, localScore: candidate.score }];
+    return [reason];
   });
   return { results, modelOutcomes: result.outcomes };
-}
-
-function normalizeVideoSearchText(value: string) {
-  return value.toLocaleLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
-}
-
-function supportMatchesMetadata(support: string, metadata: string) {
-  const excerpt = normalizeVideoSearchText(support);
-  const text = normalizeVideoSearchText(metadata);
-  if (!excerpt || !text) return false;
-  if (` ${text} `.includes(` ${excerpt} `)) return true;
-  const excerptWords = excerpt.split(" ").filter((word) => word.length > 2);
-  if (excerptWords.length < 2) return false;
-  const textWords = new Set(text.split(" "));
-  const overlap = excerptWords.filter((word) => textWords.has(word)).length;
-  return overlap / excerptWords.length >= 0.65;
 }
 
 function searchableVideoDescription(value: string) {

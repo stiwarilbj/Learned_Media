@@ -15,7 +15,7 @@ Module._extensions[".ts"] = (module, filename) => {
   module._compile(compiled, filename);
 };
 
-const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, testGeminiKey } = require("../lib/gemini.ts");
+const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey } = require("../lib/gemini.ts");
 const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt, buildSearchInterpretationPrompt } = require("../lib/prompts.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
@@ -125,7 +125,7 @@ function installNetworkMock(options = {}) {
       } else if (prompt.includes("Interpret this natural-language video search")) {
         output = { conceptGroups: [{label:"black holes",terms:["black holes", "collapsed stars"],related:["gravitational lensing"],required:false}], exclude: ["stars"], topics: ["Science"], sort: "random", channelId: "invented", minDate: "2099-01-01", maxDurationSeconds: 1 };
       } else if (prompt.includes("Check these approved videos against the plan")) {
-        output = { matches: [] };
+        output = { matches: options.videoMatches || [] };
       } else if (prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates")) {
         state.candidatePrompts.push(prompt);
         const attempt = Number(prompt.match(/Attempt: (\d+)/)?.[1] ?? 1);
@@ -1047,4 +1047,15 @@ await t.test("an already-cancelled batch performs no provider or Wikipedia reque
   await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), signal: controller.signal }), /canceled/i);
   assert.equal(state.requests.length, 0);
 });
+});
+
+test('video verification discards fabricated explanations and unsupported excerpts',async()=>{
+ const metadata={channelId:'approved',channelName:'Science',description:'Gravitational lensing bends distant light.',tags:[],topics:['Science'],publishedAt:'2024-01-01',durationSeconds:600,approved:true};
+ const full={...metadata,id:'full',title:'Black Holes'};const partial={...metadata,id:'partial',title:'Cosmic Mirrors'};const unsupported={...metadata,id:'unsupported',title:'Science Facts',description:''};
+ const state=installNetworkMock({videoMatches:[{videoId:'full',relevance:'strong',support:['Gravitational lensing bends distant light.','Invented evidence.'],explanation:'Made up explanation'},{videoId:'partial',relevance:'strong',support:['Gravitational lensing bends distant light.'],explanation:'Claims every idea'},{videoId:'unsupported',relevance:'strong',support:['Science'],explanation:'Generic topic is sufficient'}]});
+ const sessionId=await connectMock(state),plan=makeLocalVideoPlan('black holes and bending starlight');
+ const candidates=[full,partial,unsupported].map(video=>({video,score:100,matchedFields:[],supportingText:[]}));
+ const checked=await rankVideoSearchCandidates({apiKey:'test-key',sessionId,query:'black holes and bending starlight',plan,candidates});
+ assert.deepEqual(checked.results.map(r=>r.videoId),['full','partial']);assert.equal(checked.results[0].relevance,'strong');assert.equal(checked.results[1].relevance,'broader');
+ assert.ok(checked.results.every(r=>!r.support.some(s=>s.includes('Invented')) && !r.explanation.includes('Made up')));
 });

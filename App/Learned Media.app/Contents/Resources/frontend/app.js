@@ -772,12 +772,15 @@
     card.appendChild(main);
     card.appendChild(node("button", { className: "video-save-button" + (state.youtube.savedIds.indexOf(video.id) >= 0 ? " saved" : ""), ariaLabel: state.youtube.savedIds.indexOf(video.id) >= 0 ? "Remove from saved videos" : "Save video", onClick: function () { youtubeSave(video.id); } }, svg("bookmark", 16)));
     const reason = state.youtube.smartReasons && state.youtube.smartReasons[video.id];
-    if (reason) card.appendChild(node("details", { className: "video-match-reason" }, node("summary", { text: "Why this matches" }), node("p", { text: reason.explanation || "The metadata supports this search." }), node("small", { text: (reason.support || []).join(" · ") })));
+    if (reason) card.appendChild(node("details", { className: "video-match-reason" }, node("summary", { text: reason.relevance === "broader" ? "Broader recommendation" : "Why this matches" }), node("p", { text: reason.explanation || "The metadata supports this search." }), node("small", { text: (reason.support || []).join(" · ") })));
     return card;
   }
   function youtubeList(videos) {
     if (!videos.length) return node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("search", 24)), node("h2", { text: "No approved videos match that yet" }), node("p", { text: "Try another phrase, topic, or channel. Search stays inside the approved collection." }));
-    const grid = node("div", { className: "video-grid" }); videos.forEach(function (video) { grid.appendChild(youtubeVideoCard(video)); }); return grid;
+    const strong = videos.filter(function(video){return !(state.youtube.smartReasons[video.id] && state.youtube.smartReasons[video.id].relevance === "broader");});
+    const broader = videos.filter(function(video){return state.youtube.smartReasons[video.id] && state.youtube.smartReasons[video.id].relevance === "broader";});
+    function grid(items){const result=node("div",{className:"video-grid"});items.forEach(function(video){result.appendChild(youtubeVideoCard(video));});return result;}
+    return node("div",{},strong.length ? grid(strong) : null,broader.length ? node("section",{ariaLabel:"Broader recommendations"},node("h3",{text:"Broader recommendations"}),grid(broader)) : null);
   }
   function youtubeImportNotice() {
     const progress = state.youtubeProgress || {};
@@ -804,7 +807,7 @@
   let youtubeById = new Map(), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "", youtubeSearchExpedite = null;
   let youtubeSearchPlan = null, youtubeSearchHasMore = true, youtubeSearchPaging = false, youtubePagingController = null, youtubeBrowseOrder = "newest", youtubeSearchVisibleCount = 80;
   const youtubeWorkerPending = new Map();
-  function localVideoReason(candidate) { return { relevance:"strong", support:candidate.supportingText, explanation:"Covers the requested concepts in the " + candidate.matchedFields.join(" and ") + ".", localScore:candidate.score }; }
+  function localVideoReason(candidate) { return videoSearch.videoSearchReason(candidate.video, youtubeSearchPlan || videoSearch.makeLocalVideoPlan(state.youtube.searchText), candidate.score); }
   function videoSearchIndex() {
     if (youtubeIndexedVideos === state.youtube.videos) return;
     youtubeIndexedVideos = state.youtube.videos; youtubeIndexRevision++;
@@ -868,7 +871,7 @@
       const cached=youtubeSmartSearchCache.get(cacheKey);
       if(cached && (automatic || cached.ids.length || cached.expanded || !state.key.trim() || state.geminiStatus!=="connected")){ plan=cached.plan; publish(cached.ids.slice(),cached.reasons); return; }
       let candidates=await localVideoCandidates(plan,80,signal);
-      let ranked=candidates.map(function(candidate){return Object.assign({videoId:candidate.video.id},localVideoReason(candidate));});
+      let ranked=candidates.map(function(candidate){return Object.assign({videoId:candidate.video.id},videoSearch.videoSearchReason(candidate.video,plan,candidate.score));});
       publish(candidates.map(function(candidate){return candidate.video.id;}),Object.fromEntries(ranked.map(function(match){return [match.videoId,match];})));
       const needs=!candidates.length && (!automatic || shouldExpandNaturalSearch(query,0));
       let optionalFailed=false;
@@ -886,11 +889,11 @@
           mergeGeminiModelOutcomes(interpreted.modelOutcomes || []);
           plan=videoSearch.mergeVideoSearchPlans(plan,interpreted,state.youtube.channels,state.youtube.selectedChannelId);
           candidates=await localVideoCandidates(plan,80,signal);
-          ranked=candidates.map(function(candidate){return Object.assign({videoId:candidate.video.id},localVideoReason(candidate));});
+          ranked=candidates.map(function(candidate){return Object.assign({videoId:candidate.video.id},videoSearch.videoSearchReason(candidate.video,plan,candidate.score));});
           if(!ranked.length && plan.conceptGroups && plan.conceptGroups.length){
             state.youtubeSearchPhase="checking";render();
             const uncertain=await localVideoCandidates(Object.assign({},plan,{include:[],conceptGroups:plan.conceptGroups.map(function(group){return Object.assign({},group,{required:false});})}),40,signal);
-            if(uncertain.length){const checked=await trackedYoutubeSearchBridge("videoSearchRank",{key:state.key.trim(),query:query,catalogVersion:revision,plan:plan,candidates:uncertain});if(signal.aborted)return;mergeGeminiModelOutcomes(checked.modelOutcomes || []);ranked=checked.results || [];}
+            if(uncertain.length){const checked=await trackedYoutubeSearchBridge("videoSearchRank",{key:state.key.trim(),query:query,catalogVersion:revision,plan:plan,candidates:uncertain});if(signal.aborted)return;mergeGeminiModelOutcomes(checked.modelOutcomes || []);ranked=(checked.results || []).flatMap(function(match){const candidate=uncertain.find(function(item){return item.video.id===match.videoId;});if(!candidate)return [];const reason=videoSearch.videoSearchReason(candidate.video,plan,candidate.score,match.support || []);return reason.support.length ? [reason] : [];});}
           }
         } catch(error){if(signal.aborted)return;optionalFailed=true;state.youtubeSearchError="Meaning-based expansion is unavailable. Local matches remain available.";}
       }
@@ -1388,13 +1391,13 @@
       if (!results.length)
           return;
       const popover = node("div", { className: "search-popover" });
-      for (const group of ["keyword", "related", "explore"]) {
+      for (const group of ["keyword", "related", "broader", "explore"]) {
           const entries = results.filter(r => r.group === group);
           if (!entries.length)
               continue;
-          popover.appendChild(node("span", { className: "search-group-label", text: group === "keyword" ? "Keyword matches" : group === "related" ? "Related topics" : "Explore more" }));
+          popover.appendChild(node("span", { className: "search-group-label", text: group === "keyword" ? "Keyword matches" : group === "related" ? "Related topics" : group === "broader" ? "Broader recommendations" : "Explore more" }));
           for (const entry of entries)
-              popover.appendChild(node("button", { type: "button", ariaLabel: entry.path.join(" → "), onClick: function () { state.view = "feed"; state.started = false; state.topicQuery = entry.label; state.query = ""; topicSearchExpansionSuppressed = false; scheduleTopicSearch(state.topicQuery); render(); } }, node("span", { text: entry.path.join(" → ") }), svg("arrow", 14)));
+              popover.appendChild(node("button", { type: "button", title: [entry.explanation].concat(entry.support || []).join("\n"), ariaLabel: entry.path.join(" → "), onClick: function () { state.view = "feed"; state.started = false; state.topicQuery = entry.label; state.query = ""; topicSearchExpansionSuppressed = false; scheduleTopicSearch(state.topicQuery); render(); } }, node("span", { text: entry.path.join(" → ") }), svg("arrow", 14)));
       }
       searchWrap.appendChild(popover);
   }

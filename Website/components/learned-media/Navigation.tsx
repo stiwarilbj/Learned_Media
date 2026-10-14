@@ -113,13 +113,13 @@ export function Navigation({ view, onNavigate, onReset, showReset, query, onQuer
             {query && <button type="button" className="clear-search" onClick={() => { setSearchOpen(false); onQueryChange(""); }} aria-label="Clear search"><Icon name="x" size={15} /></button>}
             {query && searchOpen && topicSuggestions.length > 0 && <div className="search-popover" role="region" aria-label={`${topicSuggestions.length} topic suggestions`}>
               <span className="search-group-label search-suggestion-total">{topicSuggestions.length} topic suggestions</span>
-              {(["keyword", "related", "explore"] as const).map((group) => {
+              {(["keyword", "related", "broader", "explore"] as const).map((group) => {
                 const groupSuggestions = topicSuggestions.filter((topic) => topic.group === group);
                 if (groupSuggestions.length === 0) return null;
-                const label = group === "keyword" ? "Keyword matches" : group === "related" ? "Related topics" : "Explore more";
+                const label = group === "keyword" ? "Keyword matches" : group === "related" ? "Related topics" : group === "broader" ? "Broader recommendations" : "Explore more";
                 return <section className="search-suggestion-group" key={group} aria-label={`${label}: ${groupSuggestions.length}`}>
                   <span className="search-group-label">{label} <span className="search-group-count">{groupSuggestions.length}</span></span>
-                  {groupSuggestions.map((topic) => <button type="button" key={topic.id} title={topic.path.join(" → ")} aria-label={topic.path.join(" → ")} onClick={() => { setSearchOpen(false); setWorkspaceOpen(false); onChooseTopic(topic.label, topic.id); }}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}
+                  {groupSuggestions.map((topic) => <button type="button" key={topic.id} title={[topic.explanation, ...topic.support].join("\n")} aria-label={topic.path.join(" → ")} onClick={() => { setSearchOpen(false); setWorkspaceOpen(false); onChooseTopic(topic.label, topic.id); }}><span>{topic.path.join(" → ")}</span><Icon name="arrow" size={14} /></button>)}
                 </section>;
               })}
             </div>}

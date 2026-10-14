@@ -1,12 +1,14 @@
 import { normalizeSearchText } from "./search";
 import type { TopicNode } from "./types";
-export const TOPIC_SEARCH_VERSION = 3;
-export type TopicSuggestionGroup = "keyword" | "related" | "explore";
+export const TOPIC_SEARCH_VERSION = 4;
+export type TopicSuggestionGroup = "keyword" | "related" | "broader" | "explore";
 export type TopicSuggestion = {
     id: string;
     label: string;
     path: string[];
     group: TopicSuggestionGroup;
+    support: string[];
+    explanation: string;
     coverage: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 };
 export type TopicConcept = {
@@ -140,12 +142,14 @@ type Ranked = {
     covered: number;
     matchedConcepts: number[];
     missingConcepts: number[];
+    support: string[];
 };
 function rank(entry: Entry, query: string, plan: TopicQueryPlan): Ranked {
     const queryWords = words(query), q = normalizeSearchText(query);
     const direct = queryWords.length ? Math.max(...entry.fields.map((f, i) => contains(f, q) ? 600 - i * 80 : queryWords.every(w => matches(f, w)) ? 350 - i * 70 : 0), 0) : 0;
     let covered = 0, score = 0;
     const coveredGroups = new Set<number>();
+    const support = new Set<string>();
     for (const [groupIndex, g] of plan.groups.entries()) {
         const equivalents = g.equivalents;
         let best = 0;
@@ -160,6 +164,11 @@ function rank(entry: Entry, query: string, plan: TopicQueryPlan): Ranked {
                 best = Math.max(best, 95);
         }
         if (best) {
+            const fieldIndex = entry.fields.findIndex(f => equivalents.some(term => matches(f, term)));
+            if (fieldIndex === 0) support.add(`Name: “${entry.topic.label}”`);
+            else if (fieldIndex === entry.fields.length - 1) support.add(`Topic path: “${entry.topic.path.join(" → ")}”`);
+            else if (fieldIndex > 0) support.add(`Alias: “${entry.topic.aliases?.[fieldIndex - 1]}”`);
+            else support.add(`Geographic context: “${entry.topic.label}” (${entry.context})`);
             covered++;
             coveredGroups.add(groupIndex);
             score += best;
@@ -170,7 +179,7 @@ function rank(entry: Entry, query: string, plan: TopicQueryPlan): Ranked {
     const complete = plan.groups.length > 0 && (plan.anyOf?.length ? plan.anyOf.some(clause => clause.every(i => coveredGroups.has(i))) : plan.alternatives ? covered > 0 : covered === plan.groups.length);
     const clauses = plan.anyOf?.length ? plan.anyOf : plan.alternatives ? plan.groups.map((_,i) => [i]) : [plan.groups.map((_,i) => i)];
     const missingConcepts = clauses.map(clause => clause.filter(i => !coveredGroups.has(i))).sort((a,b) => a.length-b.length)[0] || [];
-    return { entry, complete, direct, covered, matchedConcepts: [...coveredGroups], missingConcepts, score: score + (complete ? 10000 : 0) + covered * 500 + direct };
+    return { entry, complete, direct, covered, support: [...support], matchedConcepts: [...coveredGroups], missingConcepts, score: score + (complete ? 10000 : 0) + covered * 500 + direct };
 }
 function finalize(index: TopicSuggestionIndex, query: string, ranked: Ranked[]): TopicSemanticResult {
     const byOrder = [...ranked];
@@ -208,7 +217,7 @@ function finalize(index: TopicSuggestionIndex, query: string, ranked: Ranked[]):
             fallback.push({ ...byOrder[entry.order], score: 0, direct: 0 });
         }
     }
-    const suggest = (r: Ranked, group: TopicSuggestionGroup): TopicSuggestion => ({ id: r.entry.topic.id, label: r.entry.topic.label, path: r.entry.topic.path, group, coverage: { matchedConcepts: r.matchedConcepts, missingConcepts: r.missingConcepts, complete: r.complete } });
+    const suggest = (r: Ranked, group: TopicSuggestionGroup): TopicSuggestion => ({ id: r.entry.topic.id, label: r.entry.topic.label, path: r.entry.topic.path, group: group === "related" && !r.complete ? "broader" : group, support: r.support, explanation: r.complete ? "Matches the requested concepts in the topic metadata." : r.support.length ? "Broader recommendation: matches only part of the query." : "Broader catalog recommendation; no direct metadata match.", coverage: { matchedConcepts: r.matchedConcepts, missingConcepts: r.missingConcepts, complete: r.complete } });
     const matched = ranked.filter(r => r.complete), visible = new Set<string>(), ancestors = new Set<string>();
     for (const { entry } of matched) {
         visible.add(entry.topic.id);

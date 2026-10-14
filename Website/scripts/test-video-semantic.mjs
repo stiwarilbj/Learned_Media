@@ -172,3 +172,19 @@ test('enrichment cannot combine independent requested concepts into one intercha
  assert.deepEqual(ids(engine.searchSemanticVideos(videos,plan,'All','c1')),['both']);
  assert.equal(plan.conceptGroups.length,2);
 });
+
+test('search reasons quote the matching fields, not unrelated metadata or model prose',()=>{
+ const plan=engine.makeLocalVideoPlan('black holes and bending starlight');
+ const item=video('supported','Black Holes',{description:'Massive galaxies create gravitational lensing of distant objects.',tags:['cosmology']});
+ const reason=engine.videoSearchReason(item,plan,120,['An invented quotation about black holes.']);
+ assert.equal(reason.relevance,'strong');assert.ok(reason.support.some(s=>s==='Title: “Black Holes”'));assert.ok(reason.support.some(s=>s.startsWith('Description: “Massive galaxies')));assert.ok(!reason.support.some(s=>s.includes('invented')));
+ const partial=engine.videoSearchReason(videos[0],plan,100,['Gravitational Lensing Explained']);assert.equal(partial.relevance,'broader');
+ const generic=engine.videoSearchReason(video('generic','Science Facts',{topics:['Black Holes'],channelName:'Gravitational Lensing'}),plan,0,['Black Holes','Gravitational Lensing']);assert.equal(generic.relevance,'broader');assert.deepEqual(generic.support,[]);
+ const filters=engine.videoSearchReason(videos[0],engine.makeLocalVideoPlan('uploaded since 2024'));assert.equal(filters.relevance,'broader');assert.match(filters.explanation,/browsing filters/);
+ assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.videoSearchReason(item,plan,120))),engine.videoSearchReason(item,plan,120));
+});
+test('loose word overlap and sponsor text cannot substantiate a verification quotation',()=>{
+ const item=video('partial','Black Holes',{description:'Lensing is discussed separately. Galaxies appear later. Our sponsor sells gravitational lensing shirts.'});
+ const reason=engine.videoSearchReason(item,engine.makeLocalVideoPlan('bending starlight'),0,['Lensing galaxies','gravitational lensing shirts']);
+ assert.equal(reason.relevance,'broader');assert.deepEqual(reason.support,[]);
+});

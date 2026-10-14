@@ -22,7 +22,7 @@ import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-pr
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
-import { makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
+import { videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -2134,7 +2134,7 @@ export default function HomePage() {
         youtubeSearchResultsRef.current = merged;
         setYoutubeSearchResults(merged);
         setYoutubeSearchHasMore(next.length === 80);
-        setYoutubeSearchReasons((reasons) => ({ ...reasons, ...Object.fromEntries(next.map((candidate) => [candidate.video.id, { videoId: candidate.video.id, relevance: "strong" as const, localScore: candidate.score, support: candidate.supportingText, explanation: "Covers the requested concepts in the video metadata." }])) }));
+        setYoutubeSearchReasons((reasons) => ({ ...reasons, ...Object.fromEntries(next.map((candidate) => [candidate.video.id, videoSearchReason(candidate.video, plan, candidate.score)])) }));
       }).catch(() => { /* Existing matches remain usable if pagination is canceled. */ }).finally(() => { if (youtubeSearchMoreAbort.current === controller) youtubeSearchMoreAbort.current = null; });
       return;
     }
@@ -2210,7 +2210,7 @@ export default function HomePage() {
           return searchSemanticVideosYielding(workspace.videos, candidatePlan, workspace.selectedTopic, workspace.selectedChannelId, limit, [], controller.signal);
         }
       };
-      const reason = (candidate: YouTubeSearchCandidate): RankedVideoSearchResult => ({ videoId: candidate.video.id, relevance: "strong", support: candidate.supportingText, explanation: `Covers the requested concepts in the ${candidate.matchedFields.join(" and ")}.`, localScore: candidate.score });
+      const reason = (candidate: YouTubeSearchCandidate): RankedVideoSearchResult => videoSearchReason(candidate.video, plan, candidate.score);
       let candidates = await getCandidates(plan);
       let ranked = candidates.map(reason);
       publish(candidates.map((candidate) => candidate.video), Object.fromEntries(ranked.map((match) => [match.videoId, match])));
