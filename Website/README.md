@@ -33,3 +33,5 @@ While connected, overdue creator sources refresh once a day. Use **Refresh video
 `lib/prompts.ts` builds one instruction block per operation, followed by labeled task data. `lib/prompt-instructions.json` is the shared source for connection, card, answer, and search rules. Empty optional fields and identical rules/fields are omitted; evidence and user text retain their exact content. Catalog versions remain in request cache keys rather than model prompts.
 
 After editing shared instructions, run `npm run generate:prompts` to update the native Swift instructions. `npm run test:generation` checks that the generated copy is current and verifies prompt isolation, citations, and request counts.
+
+Question answers pass the exact current query first, separately from supporting card context and prior conversation. Question-specific instructions require a direct first-sentence answer, coverage of every requested part, and omission of irrelevant card details. Supplemental evidence can support the answer while remaining distinct from evidence for the card's claim.

@@ -16,7 +16,7 @@ Module._extensions[".ts"] = (module, filename) => {
 };
 
 const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, testGeminiKey } = require("../lib/gemini.ts");
-const { buildPrompt } = require("../lib/prompts.ts");
+const { buildPrompt, buildLearningPrompt } = require("../lib/prompts.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
@@ -357,7 +357,9 @@ await t.test("learning prompts contain only the active length and operation with
     assert.equal(result.citations[0].url, card.sources[0].url);
     const prompt = geminiCalls(state).at(-1).prompt;
     assert.ok(prompt.startsWith("Answer the user's exact question"));
-    assert.ok(prompt.includes(question));
+    assert.ok(prompt.includes("Original user query: " + question));
+    assert.ok(prompt.indexOf("Original user query:") < prompt.indexOf("Supporting card context:"));
+    assert.ok(!prompt.includes("to stay on its subject"));
     assert.ok(prompt.includes(detailed ? "150 to 250 words" : "2 to 4 sentences"));
     assert.ok(!prompt.includes(detailed ? "2 to 4 sentences" : "150 to 250 words"));
     assert.ok(!prompt.includes("More Details:") && !prompt.includes("wikipediaSearchTitles"));
@@ -366,8 +368,29 @@ await t.test("learning prompts contain only the active length and operation with
   await generateLearningResponse({ apiKey: "test-key", sessionId, action: "learn", card });
   const prompt = geminiCalls(state).at(-1).prompt;
   assert.ok(prompt.startsWith("Explain this one card"));
-  assert.ok(!prompt.includes("User question:") && !prompt.includes("2 to 4 sentences"));
+  assert.ok(!prompt.includes("Original user query:") && !prompt.includes("2 to 4 sentences"));
   assert.equal(geminiCallCount(state), 3);
+});
+
+await t.test("the original question takes priority over unrelated card details and previous questions", () => {
+  const question = "  Why does warm air rise, and when does it stop rising?  ";
+  const card = { title: "An observatory's pressure logbook", body: "Clerks kept a leather-bound logbook.", topicPath: ["History"] };
+  const history = Array.from({ length: 8 }, (_, index) => ({ role: "user", content: `Earlier request ${index}: summarize the logbook.` }));
+  const evidence = [{ index: 0, kind: "supplemental", title: "Convection", extract: "A  complete passage.\nAnother sentence." }];
+  const prompt = buildLearningPrompt({ action: "question", card, question, history, evidence });
+  const blocks = prompt.split("\n\n");
+  assert.equal(blocks[1], "Original user query: " + question, "preserve the exact current query separately and put it before context");
+  assert.deepEqual(JSON.parse(blocks[2].slice("Supporting card context: ".length)), card);
+  assert.deepEqual(JSON.parse(blocks[3].slice("Previous conversation (context only): ".length)), history.slice(-6));
+  assert.deepEqual(JSON.parse(blocks[4].slice("Wikipedia evidence: ".length)), evidence);
+  assert.ok(blocks[0].includes("address every requested part and omit card details that do not help answer it"));
+  assert.ok(blocks[0].includes("Previous conversation may clarify references but must not replace the current query"));
+  assert.ok(blocks[0].includes("Supplemental sources may directly support the answer to the query"));
+  assert.ok(blocks[0].includes("state that limitation in the first sentence"));
+  assert.ok(!blocks[0].includes("stay on its subject") && !blocks[0].includes("100 to 160 words"));
+  const learn = buildLearningPrompt({ action: "learn", card, question, history, evidence });
+  assert.ok(learn.startsWith("Explain this one card"));
+  assert.ok(!learn.includes(question) && !learn.includes("Previous conversation (context only):"));
 });
 
 await t.test("successful search interpretations coalesce and invalidate by catalog and credential", async () => {

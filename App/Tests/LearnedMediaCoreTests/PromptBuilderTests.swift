@@ -29,4 +29,30 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(grounded.contains("provide a verbatim quotation"))
         XCTAssertTrue(FactQuality.writingRules().contains("provide a verbatim quotation"))
     }
+
+    func testQuestionIsSeparateAndTakesPriorityOverCardAndHistory() throws {
+        let question = "  Why does warm air rise, and when does it stop rising?  "
+        let card: [String: Any] = ["title": "An observatory's pressure logbook", "body": "Clerks kept a leather-bound logbook."]
+        let history: [[String: Any]] = (0..<8).map { ["role": "user", "content": "Earlier request \($0): summarize the logbook."] }
+        let evidence: [[String: Any]] = [["index": 0, "kind": "supplemental", "title": "Convection", "extract": "A  complete passage.\nAnother sentence."]]
+        let prompt = PromptBuilder.learning(action: .question, card: card, question: question, history: history, evidence: evidence)
+        let blocks = prompt.components(separatedBy: "\n\n")
+        XCTAssertEqual(blocks[1], "Original user query: " + question)
+        let decodedCard = try JSONSerialization.jsonObject(with: Data(blocks[2].dropFirst("Supporting card context: ".count).utf8)) as? [String: String]
+        XCTAssertEqual(decodedCard?["body"], card["body"] as? String)
+        let decodedHistory = try JSONSerialization.jsonObject(with: Data(blocks[3].dropFirst("Previous conversation (context only): ".count).utf8)) as? [[String: String]]
+        XCTAssertEqual(decodedHistory?.count, 6)
+        XCTAssertEqual(decodedHistory?.first?["content"], history[2]["content"] as? String)
+        let decodedEvidence = try JSONSerialization.jsonObject(with: Data(blocks[4].dropFirst("Wikipedia evidence: ".count).utf8)) as? [[String: Any]]
+        XCTAssertEqual(decodedEvidence?.first?["extract"] as? String, evidence[0]["extract"] as? String)
+        XCTAssertTrue(blocks[0].contains("omit card details that do not help answer it"))
+        XCTAssertTrue(blocks[0].contains("must not replace the current query"))
+        XCTAssertTrue(blocks[0].contains("Supplemental sources may directly support the answer to the query"))
+        XCTAssertTrue(blocks[0].contains("state that limitation in the first sentence"))
+        XCTAssertFalse(blocks[0].contains("stay on its subject") || blocks[0].contains("100 to 160 words"))
+        let learn = PromptBuilder.learning(action: .learn, card: card, question: question, history: history, evidence: evidence)
+        XCTAssertTrue(learn.hasPrefix("Explain this one card"))
+        XCTAssertFalse(learn.contains(question) || learn.contains("Previous conversation (context only):"))
+    }
+
 }

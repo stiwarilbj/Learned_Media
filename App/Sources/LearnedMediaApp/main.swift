@@ -1363,7 +1363,7 @@ private final class GeminiClient {
         sourceArray = sourceArray.map { original in
             var source = original
             if !originalURLs.contains((original["canonicalUrl"] as? String) ?? (original["url"] as? String ?? "")) {
-                source["extract"] = FactQuality.evidence(original["extract"] as? String ?? "", focus: "\(card["title"] ?? "") \(card["body"] ?? "") \(question ?? "")", level: 5)
+                source["extract"] = FactQuality.evidence(original["extract"] as? String ?? "", focus: question ?? (card["title"] as? String ?? ""), level: 5)
             }
             return source
         }
@@ -1374,13 +1374,8 @@ private final class GeminiClient {
         }
         let cardIdentity: [String: Any] = ["topicPath": card["topicPath"] as? [String] ?? [], "hook": card["hook"] as? String ?? "",
                                          "title": card["title"] as? String ?? "", "body": card["body"] as? String ?? ""]
-        let length = detailed ? "Answer in approximately 150 to 250 words." : "Answer in 2 to 4 sentences."
-        let prompt = PromptBuilder.build(action == "learn" ? .learn : .question,
-            rules: (PromptInstructions.rules["learningEvidence"] ?? []) + (action == "learn" ? [] : [length]), fields: [
-                PromptField("Card", cardIdentity), PromptField("User question", action == "learn" ? nil : question),
-                PromptField("Conversation so far", action == "learn" ? nil : Array(history.suffix(6))),
-                PromptField("Wikipedia evidence", context)
-            ])
+        let prompt = PromptBuilder.learning(action: action == "learn" ? .learn : .question,
+            card: cardIdentity, question: question, detailed: detailed, history: history, evidence: context)
         let result = try await structured(key: key, prompt: prompt, schema: ["type": "OBJECT", "properties": ["answer": ["type": "STRING"], "citationIndexes": ["type": "ARRAY", "items": ["type": "INTEGER"]]], "required": ["answer", "citationIndexes"]], stage: "learning", maxOutputTokens: detailed ? 8192 : 4096)
         let envelope = try JSONDecoder().decode(GeminiAnswerEnvelope.self, from: Data(result.text.utf8))
         guard let answer = envelope.answer?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty else { throw NativeError(message: "Gemini returned an empty explanation.") }

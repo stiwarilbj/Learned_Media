@@ -1,4 +1,4 @@
-import { buildPrompt, learningEvidenceRules } from "./prompts";
+import { buildPrompt, buildLearningPrompt } from "./prompts";
 import { validateTopicPlan, type TopicQueryPlan } from "./topic-suggestions";
 import type { Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, WikipediaSource } from "./types";
 import type { LearningProfile } from "./types";
@@ -996,18 +996,12 @@ export async function generateLearningResponse({ apiKey, sessionId = "default-se
   const sources = Array.from(new Map([...originalSources, ...questionSources].map((source) => [source.canonicalUrl ?? source.url, source])).values()).slice(0, 5);
   if (!sources.length) throw new GeminiFailure("Wikipedia did not return the cited pages for this fact.", undefined, [], undefined, true);
   sources.forEach(source => {
-    if (!originalUrls.has(source.canonicalUrl ?? source.url)) source.extract = selectEvidence(source.extract ?? "", (question ?? "") + " " + card.title, 5);
+    if (!originalUrls.has(source.canonicalUrl ?? source.url)) source.extract = selectEvidence(source.extract ?? "", question?.trim() ? question : card.title, 5);
   });
   const context = sources.map((source, index) => ({ index, kind: originalUrls.has(source.canonicalUrl ?? source.url) ? "original" : "supplemental", title: source.title, extract: source.extract ?? "No extract returned" }));
-  const prompt = buildPrompt(action === "learn" ? "learn" : "question", [
-    ...learningEvidenceRules,
-    ...(action === "question" ? [detailed ? "Answer in approximately 150 to 250 words." : "Answer in 2 to 4 sentences."] : [])
-  ], [
-    { label: "Card", value: { topicPath: card.topicPath, hook: card.hook, title: card.title, body: card.body } },
-    { label: "User question", value: action === "question" ? question : undefined },
-    { label: "Conversation so far", value: action === "question" ? history?.slice(-6) : undefined },
-    { label: "Wikipedia evidence", value: context }
-  ]);
+  const prompt = buildLearningPrompt({ action, question, detailed, history,
+    card: { topicPath: card.topicPath, hook: card.hook, title: card.title, body: card.body }, evidence: context
+  });
   const result = await requestStructured<{ answer?: string; citationIndexes?: number[] }>(apiKey, sessionId, prompt, { type: "OBJECT", properties: { answer: { type: "STRING" }, citationIndexes: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["answer", "citationIndexes"] }, "learning", GENERATION_TIMEOUT_MS, signal);
   if (!result.value.answer?.trim()) throw new GeminiFailure("Gemini returned an empty explanation.", undefined, result.outcomes, undefined, true);
   const indexes = Array.from(new Set((result.value.citationIndexes ?? []).filter((index) => index >= 0 && index < sources.length))).slice(0, 3);

@@ -1,6 +1,6 @@
 import instructions from "./prompt-instructions.json";
 
-export type PromptOperation = Exclude<keyof typeof instructions, "learningEvidence" | "cardWriting">;
+export type PromptOperation = Exclude<keyof typeof instructions, "learningEvidence" | "questionEvidence" | "cardWriting">;
 export type PromptField = { label: string; value: unknown; multiline?: boolean };
 
 /** Keep instructions separate from data; never normalize evidence or user text. */
@@ -20,4 +20,22 @@ export function buildPrompt(operation: PromptOperation, rules: string[] = [], fi
   return [uniqueRules.join(" "), ...data].join("\n\n");
 }
 
-export const learningEvidenceRules = instructions.learningEvidence;
+export function buildLearningPrompt({ action, card, question, detailed, history, evidence }: {
+  action: "learn" | "question";
+  card: unknown;
+  question?: string;
+  detailed?: boolean;
+  history?: unknown[];
+  evidence: unknown[];
+}) {
+  const asking = action === "question";
+  return buildPrompt(action, [
+    ...(asking ? instructions.questionEvidence : instructions.learningEvidence),
+    ...(asking ? [detailed ? "Answer in approximately 150 to 250 words." : "Answer in 2 to 4 sentences."] : [])
+  ], [
+    { label: "Original user query", value: asking ? question : undefined },
+    { label: asking ? "Supporting card context" : "Card", value: card },
+    { label: "Previous conversation (context only)", value: asking ? history?.slice(-6) : undefined },
+    { label: "Wikipedia evidence", value: evidence }
+  ]);
+}

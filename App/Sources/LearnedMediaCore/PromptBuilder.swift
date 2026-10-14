@@ -42,4 +42,18 @@ public enum PromptBuilder {
         }
         return ([instructions.joined(separator: " ")] + data).joined(separator: "\n\n")
     }
+
+    public static func learning(action: PromptOperation, card: [String: Any], question: String? = nil,
+                                detailed: Bool = false, history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
+        let asking = action == .question
+        let rules = PromptInstructions.rules[asking ? "questionEvidence" : "learningEvidence"] ?? []
+        let length = detailed ? "Answer in approximately 150 to 250 words." : "Answer in 2 to 4 sentences."
+        return build(asking ? .question : .learn, rules: rules + (asking ? [length] : []), fields: [
+            PromptField("Original user query", asking ? question : nil),
+            PromptField(asking ? "Supporting card context" : "Card", card),
+            PromptField("Previous conversation (context only)", asking ? Array(history.suffix(6)) : nil),
+            PromptField("Wikipedia evidence", evidence)
+        ])
+    }
+
 }
