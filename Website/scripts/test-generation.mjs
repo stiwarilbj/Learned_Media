@@ -137,7 +137,7 @@ function installNetworkMock(options = {}) {
           if (options.duplicateSlot === 5 && assignment.slot === 0 && attempt > 1) word = words[10];
           return { slot: assignment.slot, title: "Shared Article", claim: factBundle(word).claim, topicPath: assignment.topicPath, wikipediaSearchTitles: ["Shared Article"] };
         }).filter(Boolean).reverse() };
-      } else if (prompt.includes("Return one grounded fact for each slot")) {
+      } else if (prompt.includes("Return one result for each slot")) {
         state.groundingPrompts.push(prompt);
         const values = groundingSlots(prompt);
         output = { facts: values.map(value => {
@@ -148,6 +148,10 @@ function installNetworkMock(options = {}) {
           if (options.omitSlotOnce === slot && !state.omittedSlots.has(slot)) {
             state.omittedSlots.add(slot);
             return null;
+          }
+          if (options.needsEvidenceSlot === slot && (!options.needsEvidenceOnce || !state.omittedSlots.has("evidence:" + slot))) {
+            state.omittedSlots.add("evidence:" + slot);
+            return { slot, status: "needs_evidence", claim, missingEvidence: "The passage mentions the subject but does not establish the claimed mechanism." };
           }
           const sentences = sentenceSet(word);
           const quotes = options.invalidSlot === slot ? sentences.map((quote, index) => index === 0 ? "This quotation does not occur in the supplied Wikipedia passage." : quote) : sentences;
@@ -167,6 +171,8 @@ function installNetworkMock(options = {}) {
           }
           return {
             slot,
+            status: "grounded",
+            claimEvidenceIds: options.invalidClaimEvidenceSlot === slot ? ["unknown-claim-evidence"] : options.missingClaimEvidenceSlot === slot ? undefined : [evidence[0].evidenceIds[0]],
             title: factBundle(word).title,
             hook: factBundle(word).hook,
             claim,
@@ -861,6 +867,40 @@ await t.test("duplicate content is rejected and only that slot is regenerated", 
   assert.equal(geminiCallCount(state), 4, "one duplicate slot should add one candidate and one grounding call");
   assert.equal(state.candidatePrompts.length, 2);
   assert.equal(state.groundingPrompts.length, 2);
+});
+
+await t.test("grounding requires support for the specific claim and structured needs-evidence output", () => {
+  const prompt = buildFactCardPrompt({ sentenceCount: 3, difficulties: [5], fields: [] });
+  assert.ok(prompt.includes("not merely mention the same subject"));
+  assert.ok(prompt.includes("claimEvidenceIds"));
+  assert.ok(prompt.includes('"status":"needs_evidence"'));
+  assert.ok(prompt.includes("Card-writing constraints apply only to grounded results"));
+});
+
+await t.test("needs-evidence results recover only the unsupported slot without publishing a fabricated card", async () => {
+  const state = installNetworkMock({ needsEvidenceSlot: 6, needsEvidenceOnce: true });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 7 });
+  assert.equal(result.completedCount, 7);
+  assert.equal(state.candidatePrompts.length, 2);
+  assert.equal(state.groundingPrompts.length, 2);
+  const retry = groundingSlots(state.groundingPrompts[1]);
+  assert.deepEqual(retry.map(slot => slot.slot), [6]);
+  const schema = state.requests.find(request => request.body?.contents?.[0]?.parts?.[0]?.text?.includes("Return one result for each slot"))?.body?.generationConfig?.responseSchema;
+  assert.deepEqual(schema.properties.facts.items.properties.status.enum, ["grounded", "needs_evidence"]);
+  assert.ok(!schema.properties.facts.items.required.includes("sentences"), "needs-evidence results need no invented sentences");
+});
+
+await t.test("unsupported claims and missing or unknown claim evidence preserve successful cards", async () => {
+  for (const options of [{ needsEvidenceSlot: 9 }, { invalidClaimEvidenceSlot: 9 }, { missingClaimEvidenceSlot: 9 }]) {
+    const state = installNetworkMock(options);
+    const sessionId = await connectMock(state);
+    const result = await generateGeminiFacts(generationArgs(sessionId));
+    assert.equal(result.completedCount, 9);
+    assert.equal(result.failedJobs, 1);
+    assert.equal(result.partial, true);
+    assert.equal(new Set(result.cards.map(card => card.id)).size, 9);
+  }
 });
 
 await t.test("evidence restoration trusts only the current card's local allowlist", () => {

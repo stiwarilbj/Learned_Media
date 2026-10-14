@@ -30,6 +30,15 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertTrue(FactQuality.writingRules().contains("provide a verbatim quotation"))
     }
 
+    func testGroundingRequiresSpecificClaimSupportOrNeedsEvidence() {
+        let prompt = PromptBuilder.build(.grounding)
+        XCTAssertTrue(prompt.contains("not merely mention the same subject"))
+        XCTAssertTrue(prompt.contains("claimEvidenceIds"))
+        XCTAssertTrue(prompt.contains("\"status\":\"needs_evidence\""))
+        XCTAssertTrue(prompt.contains("Do not invent evidence IDs"))
+        XCTAssertTrue(prompt.contains("Card-writing constraints apply only to grounded results"))
+    }
+
     func testQuestionIsSeparateAndTakesPriorityOverCardAndHistory() throws {
         let question = "  Why does warm air rise, and when does it stop rising?  "
         let card: [String: Any] = ["title": "An observatory's pressure logbook", "body": "Clerks kept a leather-bound logbook."]

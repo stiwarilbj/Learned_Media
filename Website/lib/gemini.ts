@@ -43,7 +43,7 @@ type CandidateFact = {
   difficulty?: number;
 };
 
-type GroundedFact = { slot?: number; title?: string; hook?: string; claim?: string; sentences?: string[]; evidence?: Array<{ sentence: number; evidenceIds?: string[] }> };
+type GroundedFact = { status?: "grounded" | "needs_evidence"; claimEvidenceIds?: string[]; missingEvidence?: string; slot?: number; title?: string; hook?: string; claim?: string; sentences?: string[]; evidence?: Array<{ sentence: number; evidenceIds?: string[] }> };
 type GroundingEvidence = { sourceIndex: number; quote: string; section: string };
 
 type ModelPool = {
@@ -684,10 +684,10 @@ function candidateSchema(slotCount: number) {
 }
 function groundedSchema(sentenceCount: number) {
   return { type: "OBJECT", properties: { facts: { type: "ARRAY", items: { type: "OBJECT", properties: {
-    slot: { type: "INTEGER" }, title: { type: "STRING" }, hook: { type: "STRING" }, claim: { type: "STRING" },
+    slot: { type: "INTEGER" }, status: { type: "STRING", enum: ["grounded", "needs_evidence"] }, claimEvidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } }, missingEvidence: { type: "STRING" }, title: { type: "STRING" }, hook: { type: "STRING" }, claim: { type: "STRING" },
     sentences: { type: "ARRAY", items: { type: "STRING" }, minItems: sentenceCount, maxItems: sentenceCount },
     evidence: { type: "ARRAY", maxItems: 12, items: { type: "OBJECT", properties: { sentence: { type: "INTEGER" }, evidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } } }, required: ["sentence", "evidenceIds"] } }
-  }, required: ["slot", "title", "hook", "claim", "sentences", "evidence"] } } }, required: ["facts"] };
+  }, required: ["slot", "status", "claim"] } } }, required: ["facts"] };
 }
 
 function splitIntoGroups<T>(items: T[], maxItems: number) {
@@ -916,7 +916,14 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
           const fact = matches.length === 1 ? matches[0] : undefined;
           try {
             if (!fact) throw new GeminiFailure("Gemini omitted this grounded fact slot.");
+            if (fact.status === "needs_evidence") {
+              markRetry(slot, "The supplied passages do not support this card’s specific main claim; more evidence is needed.", round, false);
+              continue;
+            }
+            if (fact.status !== "grounded") throw new GeminiFailure("The grounded result is missing a valid evidence status.");
             const assignedEvidence = grounding.evidenceBySlot.get(slot.index) ?? new Map<string, GroundingEvidence>();
+            // Claim support is explicit and must use this slot's supplied evidence, independently of sentence citations.
+            restoreEvidenceReferences([{ sentence: 0, evidenceIds: fact.claimEvidenceIds }], assignedEvidence, sentenceCount);
             const localFact: GroundedDraft = {
               title: fact.title ?? "",
               hook: fact.hook ?? "",
@@ -924,6 +931,8 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
               sentences: fact.sentences ?? [],
               evidence: restoreEvidenceReferences(fact.evidence, assignedEvidence, sentenceCount)
             };
+            const sentenceEvidenceIds = new Set((fact.evidence ?? []).flatMap(item => item.evidenceIds ?? []));
+            if (!fact.claimEvidenceIds!.every(id => sentenceEvidenceIds.has(id))) throw new GeminiFailure("The card’s main claim evidence is missing from its sentence citations.");
             validateDraft(localFact, slot.sources!, sentenceCount, slot.target);
             const chosenIndexes = Array.from(new Set(localFact.evidence.map(item => item.sourceIndex)));
             const chosenSources = chosenIndexes.map(index => slot.sources![index]);

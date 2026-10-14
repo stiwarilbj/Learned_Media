@@ -9,8 +9,9 @@
     "If a slot would repeat a claim or add a weak, broad, or unverifiable fact, omit that slot instead of padding the batch. Return an empty facts array if none qualifies."
   ],
   "grounding": [
-    "Return one grounded fact for each slot. Omit unsupported slots; never substitute a different claim.",
-    "For each sentence, return only evidence IDs assigned to that slot. Evidence items use a zero-based sentence index and evidenceIds. Never return reconstructed source titles, sections, or quotations; those are restored locally. Unknown IDs and IDs not assigned to that slot are rejected."
+    "Return one result for each slot without substituting a different claim. A grounded result uses status=\"grounded\" and the card fields. A citation must establish the candidate’s specific main claim, including its relationship, mechanism, dates, or quantities, not merely mention the same subject. Return claimEvidenceIds for the assigned passages that directly support that claim, and sentence evidence IDs for every sentence. State the supported main claim in the card body; its claimEvidenceIds must also appear among the sentence citations so the claim’s support is retained with the saved card.",
+    "For each sentence, return only evidence IDs assigned to that slot. Evidence items use a zero-based sentence index and evidenceIds. Never return reconstructed source titles, sections, or quotations; those are restored locally. Unknown IDs and IDs not assigned to that slot are rejected.",
+    "If no supplied passage supports the specific main claim, return only {\"slot\":<assigned ID>,\"status\":\"needs_evidence\",\"claim\":<candidate claim>,\"missingEvidence\":<short description of the unsupported detail>}. Do not invent evidence IDs, cite subject-only passages, weaken or replace the claim, or pad this result with card sentences. Card-writing constraints apply only to grounded results."
   ],
   "learn": [
     "Explain this one card in one useful paragraph of approximately 100 to 160 words. Add context rather than repeating its body."

@@ -46,6 +46,9 @@ private struct GeminiCandidate: Decodable {
 }
 private struct GeminiCandidateEnvelope: Decodable { let facts: [GeminiCandidate]? }
 private struct GeminiGroundedFact: Decodable {
+    let status: String?
+    let claimEvidenceIds: [String]?
+    let missingEvidence: String?
     let slot: Int?
     let title: String?
     let hook: String?
@@ -1029,10 +1032,10 @@ private final class GeminiClient {
 
     private func groundedSchema(sentenceCount: Int) -> [String: Any] {
         ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": [
-            "slot": ["type": "INTEGER"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
+            "slot": ["type": "INTEGER"], "status": ["type": "STRING", "enum": ["grounded", "needs_evidence"]], "claimEvidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]], "missingEvidence": ["type": "STRING"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
             "sentences": ["type": "ARRAY", "minItems": sentenceCount, "maxItems": sentenceCount, "items": ["type": "STRING"]],
             "evidence": ["type": "ARRAY", "maxItems": 12, "items": ["type": "OBJECT", "properties": ["sentence": ["type": "INTEGER"], "evidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["sentence", "evidenceIds"]]]
-        ], "required": ["slot", "title", "hook", "claim", "sentences", "evidence"]]]], "required": ["facts"]]
+        ], "required": ["slot", "status", "claim"]]]], "required": ["facts"]]
     }
 
     private func candidatePrompt(slots: [GeminiGenerationSlot], attempt: Int) -> String {
@@ -1198,6 +1201,9 @@ private final class GeminiClient {
     }
 
     private func makeCard(slot: GeminiGenerationSlot, fact: GeminiGroundedFact, evidenceByID: [String: GeminiEvidence], sentenceCount: Int, model: String?, resolvedModel: String?) throws -> [String: Any] {
+        guard fact.status == "grounded", FactQuality.validEvidenceReferences([(0, fact.claimEvidenceIds)], assignedIDs: Set(evidenceByID.keys), sentenceCount: sentenceCount) else {
+            throw NativeError(message: "The card is missing valid evidence IDs supporting its specific main claim.")
+        }
         guard let title = fact.title, let hook = fact.hook, let claim = fact.claim,
               let sentences = fact.sentences, let references = fact.evidence,
               !references.isEmpty else {
@@ -1205,6 +1211,10 @@ private final class GeminiClient {
         }
         guard FactQuality.validEvidenceReferences(references.map { ($0.sentence, $0.evidenceIds) }, assignedIDs: Set(evidenceByID.keys), sentenceCount: sentences.count) else {
             throw NativeError(message: "The card returned invalid evidence references, an unknown ID, or an ID assigned to another card.")
+        }
+        let sentenceEvidenceIDs = Set(references.flatMap { $0.evidenceIds ?? [] })
+        guard (fact.claimEvidenceIds ?? []).allSatisfy({ sentenceEvidenceIDs.contains($0) }) else {
+            throw NativeError(message: "The card’s main claim evidence is missing from its sentence citations.")
         }
         let quotes: [GeminiEvidence] = try references.flatMap { reference in
             try (reference.evidenceIds ?? []).map { id -> GeminiEvidence in
@@ -1313,6 +1323,13 @@ private final class GeminiClient {
                                 slots[slotIndex].lastError = result.error ?? "Gemini omitted this grounded slot."
                                 if attempt > 0 { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
                             }
+                            continue
+                        }
+                        if fact.status == "needs_evidence" {
+                            slots[slotIndex].lastError = "The supplied passages do not support this card’s specific main claim; more evidence is needed."
+                            slots[slotIndex].mode = "candidate"
+                            slots[slotIndex].candidate = nil
+                            slots[slotIndex].sources = []
                             continue
                         }
                         do {
