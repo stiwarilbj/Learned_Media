@@ -5,6 +5,34 @@ final class StructuredResponseTests: XCTestCase {
     private let item: [String: Any] = ["type": "OBJECT", "properties": ["slot": ["type": "INTEGER"], "claim": ["type": "STRING"], "hook": ["type": "STRING"], "evidenceIds": ["type": "ARRAY", "items": ["type": "STRING"]]], "required": ["slot", "claim"]]
     private var schema: [String: Any] { ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": item], "terms": ["type": "ARRAY", "items": ["type": "STRING"]], "alternatives": ["type": "BOOLEAN"]], "required": ["facts"]] }
 
+    func testBoundaryBomPreservesLiteralAndEscapedStringCharacters() throws {
+        let fields: [String: Any] = ["type": "OBJECT", "properties": ["answer": ["type": "STRING"], "quote": ["type": "STRING"]]]
+        let answer = "\u{FEFF}Answer\u{FEFF}", quote = "A source \u{FEFF} quotation."
+        let body = String(data: try JSONSerialization.data(withJSONObject: ["answer": answer, "quote": quote]), encoding: .utf8)!
+        for value in [body, body.replacingOccurrences(of: "\u{FEFF}", with: "\\uFEFF")] {
+            for raw in ["\u{FEFF}" + value, "\u{FEFF}```json\n" + value + "\n```"] {
+                let parsed = try StructuredResponse.parse(raw, schema: fields)
+                XCTAssertEqual(parsed["answer"] as? String, answer)
+                XCTAssertEqual(parsed["quote"] as? String, quote)
+            }
+        }
+        XCTAssertEqual(StructuredResponse.stripResponseBom("x\u{FEFF}y"), "x\u{FEFF}y")
+        XCTAssertEqual(StructuredResponse.stripResponseBom("\"\u{FEFF}inside\u{FEFF}\""), "\"\u{FEFF}inside\u{FEFF}\"")
+        XCTAssertEqual(StructuredResponse.stripResponseBom("\u{FEFF}{}"), "{}")
+    }
+
+    func testStreamAndPartialRecoveryPreserveBomInClaims() throws {
+        let claim = "\u{FEFF}Supported claim\u{FEFF}"
+        let item = String(data: try JSONSerialization.data(withJSONObject: ["slot": 0, "claim": claim]), encoding: .utf8)!
+        let partial = "\u{FEFF}{\"facts\":[" + item + ",{\"slot\":1,\"claim\":\"unfinished"
+        let parser = JSONArrayItemStreamParser(property: "facts")
+        var streamed: [[String: Any]] = []
+        for character in partial { streamed += parser.append(String(character)) }
+        XCTAssertEqual(streamed.first?["claim"] as? String, claim)
+        let recovered = try StructuredResponse.parse(partial, schema: schema)
+        XCTAssertEqual((recovered["facts"] as? [[String: Any]])?.first?["claim"] as? String, claim)
+    }
+
     func testMalformedItemAndOptionalFieldDoNotDiscardValidCards() throws {
         let parsed = try StructuredResponse.parse(#"{"facts":[{"slot":0,"claim":"Valid","hook":123},null,{"slot":1,"claim":123},{"slot":2,"claim":"Other valid"}]}"#, schema: schema)
         struct Item: Decodable { let slot: Int; let claim: String; let hook: String? }

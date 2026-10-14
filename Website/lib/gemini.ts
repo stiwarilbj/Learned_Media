@@ -9,7 +9,7 @@ import type { YouTubeSearchCandidate } from "./youtube";
 import { canonicalRequestIdentity, reusableStructuredValue, requestCacheKey, SessionCache, type RequestIdentity } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
 import { JsonArrayItemStreamParser } from "./stream-json";
-import { normalizeStructuredValue, parseStructuredResponse } from "./structured-response";
+import { normalizeStructuredValue, parseStructuredResponse, stripResponseBom } from "./structured-response";
 import { transientRetryDelayMs } from "./retry-timing";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
@@ -184,7 +184,7 @@ async function poolFor(_apiKey: string, sessionId = "default-session") {
 }
 
 function stripJsonFence(value: string) {
-  return value.replace(/^\u0060\u0060\u0060json\s*/i, "").replace(/^\u0060\u0060\u0060\s*/i, "").replace(/\s*\u0060\u0060\u0060$/i, "").trim();
+  return stripResponseBom(value).replace(/^\u0060\u0060\u0060json\s*/i, "").replace(/^\u0060\u0060\u0060\s*/i, "").replace(/\s*\u0060\u0060\u0060$/i, "").trim();
 }
 
 function errorDetail(payload: unknown) {
@@ -291,7 +291,7 @@ async function readEventStream(response: Response, onTextChunk?: (text: string) 
     eventData = [];
     if (!data || data === "[DONE]") return;
     let payload: GeminiTextResponse;
-    try { payload = JSON.parse(data) as GeminiTextResponse; }
+    try { payload = JSON.parse(stripResponseBom(data)) as GeminiTextResponse; }
     catch { throw new GeminiFailure("Gemini returned malformed streamed output.", response.status, [], undefined, true); }
     resolvedModel = payload.modelVersion ?? resolvedModel;
     const chunk = payload.candidates?.[0]?.content?.parts?.map(part => part.text ?? "").join("") ?? "";
@@ -362,7 +362,7 @@ async function requestModelText(apiKey: string, model: string, prompt: string, r
   }, timeoutMs, signal, onTextChunk);
   if (!response.ok) {
     let payload: unknown = {};
-    try { payload = JSON.parse(raw); } catch { /* Keep the HTTP status as the primary signal. */ }
+    try { payload = JSON.parse(stripResponseBom(raw)); } catch { /* Keep the HTTP status as the primary signal. */ }
     const detail = errorDetail(payload) || "Gemini returned HTTP " + response.status + ".";
     throw new GeminiFailure(detail, response.status, [], retryAfterMs(response, payload), isTransient(response.status, detail), quotaScope(response.status, payload));
   }
@@ -372,7 +372,7 @@ async function requestModelText(apiKey: string, model: string, prompt: string, r
   }
   let payload: unknown = {};
   try {
-    payload = JSON.parse(raw);
+    payload = JSON.parse(stripResponseBom(raw));
   } catch {
     throw new GeminiFailure("Gemini returned malformed JSON.", response.status, [], undefined, true);
   }
@@ -1063,7 +1063,7 @@ export async function generateLearningResponse({ apiKey, sessionId = "default-se
   const result = await requestStructured<{ answer?: string; citationIndexes?: number[] }>(apiKey, sessionId, prompt, { type: "OBJECT", properties: { answer: { type: "STRING" }, citationIndexes: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["answer", "citationIndexes"] }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, {identity: {task: action === "question" ? "question" : "learn", query: action === "question" ? question : undefined, topics: card.topicPath, filters: {detailed: action === "question" && Boolean(detailed)}, context: {card: {hook: card.hook, title: card.title, body: card.body}, history: action === "question" ? history?.slice(-6) ?? [] : [], evidence: context, sourceUrls: sources.map(source => source.canonicalUrl ?? source.url)}}});
   if (!result.value.answer?.trim()) throw new GeminiFailure("Gemini returned an empty explanation.", undefined, result.outcomes, undefined, true);
   const indexes = Array.from(new Set((result.value.citationIndexes ?? []).filter((index) => index >= 0 && index < sources.length))).slice(0, 3);
-  return { answer: result.value.answer.trim(), citations: (indexes.length ? indexes : [0]).map((index) => sources[index]).filter(Boolean), modelOutcomes: result.outcomes };
+  return { answer: result.value.answer, citations: (indexes.length ? indexes : [0]).map((index) => sources[index]).filter(Boolean), modelOutcomes: result.outcomes };
 }
 
 export type { VideoSearchPlan } from "./video-semantic";

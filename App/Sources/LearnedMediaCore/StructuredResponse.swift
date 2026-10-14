@@ -2,6 +2,30 @@ import Foundation
 import CoreFoundation
 
 public enum StructuredResponse {
+    /// Remove a BOM only at the response boundary, never inside JSON strings.
+    public static func stripResponseBom(_ text: String) -> String {
+        text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
+    }
+
+    // JSONSerialization drops a leading U+FEFF inside string values on macOS.
+    // JSONDecoder preserves those characters, including escaped representations.
+    private struct JSONValue: Decodable {
+        let value: Any
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if container.decodeNil() { value = NSNull() }
+            else if let string = try? container.decode(String.self) { value = string }
+            else if let boolean = try? container.decode(Bool.self) { value = boolean }
+            else if let integer = try? container.decode(Int.self) { value = integer }
+            else if let number = try? container.decode(Double.self) { value = number }
+            else if let array = try? container.decode([JSONValue].self) { value = array.map(\.value) }
+            else { value = try container.decode([String: JSONValue].self).mapValues(\.value) }
+        }
+    }
+    static func decodeJSON(_ text: String) throws -> Any {
+        try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)).value
+    }
+
     private static let setFields: Set<String> = ["evidenceIds", "claimEvidenceIds", "terms", "include", "alternatives", "topics", "related", "equivalents", "wikipediaSearchTitles", "facts", "evidence"]
 
     private static func repairCommas(_ text: String) -> String {
@@ -25,7 +49,7 @@ public enum StructuredResponse {
         var depth = 0, quoted = false, escaped = false, stringStart = -1, key: String?, start = -1
         func retain(_ end: Int) {
             guard let key, start >= 0, end >= start,
-                  let value = try? JSONSerialization.jsonObject(with: Data(String(chars[start..<end]).utf8), options: [.fragmentsAllowed]) else { return }
+                  let value = try? decodeJSON(String(chars[start..<end])) else { return }
             fields[key] = value
         }
         for index in chars.indices {
@@ -34,7 +58,7 @@ public enum StructuredResponse {
                 if escaped { escaped = false } else if c == "\\" { escaped = true }
                 else if c == "\"" {
                     quoted = false
-                    if depth == 1 && start < 0 { key = (try? JSONSerialization.jsonObject(with: Data(String(chars[stringStart...index]).utf8), options: [.fragmentsAllowed])) as? String }
+                    if depth == 1 && start < 0 { key = (try? decodeJSON(String(chars[stringStart...index]))) as? String }
                 }
                 continue
             }
@@ -60,7 +84,7 @@ public enum StructuredResponse {
             let text = string.trimmingCharacters(in: .whitespacesAndNewlines)
             if text.range(of: "^(0|[1-9][0-9]*)$", options: .regularExpression) != nil, let integer = Int(text), integer <= 9_007_199_254_740_991 { value = integer }
         }
-        if type == "STRING", let string = value as? String { value = string.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if type == "STRING", let string = value as? String { value = string.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.subtracting(CharacterSet(charactersIn: "\u{FEFF}"))) }
         if let options = schema["enum"] as? [String], let string = value as? String, !options.contains(string) { return nil }
         switch type {
         case "OBJECT":
@@ -100,9 +124,9 @@ public enum StructuredResponse {
     }
 
     public static func parse(_ raw: String, schema: [String: Any]) throws -> [String: Any] {
-        let text = repairCommas(raw.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^```(?:json)?\\s*|\\s*```$", with: "", options: [.regularExpression, .caseInsensitive]).trimmingCharacters(in: .whitespacesAndNewlines))
+        let text = repairCommas(stripResponseBom(raw).trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^```(?:json)?\\s*|\\s*```$", with: "", options: [.regularExpression, .caseInsensitive]).trimmingCharacters(in: .whitespacesAndNewlines))
         let parsed: Any
-        if let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) { parsed = object }
+        if let object = try? decodeJSON(text) { parsed = object }
         else {
             guard text.hasPrefix("{") else { throw CocoaError(.propertyListReadCorrupt) }
             let recovered = completeFields(text); var fields = recovered.fields

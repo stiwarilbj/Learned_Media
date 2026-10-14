@@ -1508,3 +1508,35 @@ test('acronym guidance is evidence-bound and limited to writing operations',()=>
  }
  for(const operation of ['connection','candidate','videoInterpret','topicInterpret','videoVerify']) assert.ok(!buildPrompt(operation).includes(rule));
 });
+
+
+test('response-boundary BOMs are removed without rewriting literal or escaped JSON string characters',()=>{
+ const {parseStructuredResponse,stripResponseBom}=require('../lib/structured-response.ts');
+ const schema={type:'OBJECT',properties:{answer:{type:'STRING'},quote:{type:'STRING'},terms:{type:'ARRAY',items:{type:'STRING'}}}};
+ const expected={answer:'\uFEFFAnswer\uFEFF',quote:'A source \uFEFF quotation.',terms:['\uFEFFTolkien\uFEFF']};
+ for(const body of [JSON.stringify(expected),JSON.stringify(expected).replaceAll('\uFEFF','\\uFEFF')]){
+  for(const raw of ['\uFEFF'+body,'\uFEFF```json\n'+body+'\n```']) assert.deepEqual(parseStructuredResponse(raw,schema),expected);
+ }
+ assert.equal(stripResponseBom('x\uFEFFy'),'x\uFEFFy');
+ assert.equal(stripResponseBom('"\uFEFFinside\uFEFF"'),'"\uFEFFinside\uFEFF"');
+ assert.equal(stripResponseBom('\uFEFF{}'),'{}');
+});
+
+test('BOM-prefixed connection, streamed candidates, grounded cards and search plans need no extra calls',async()=>{
+ const state=installNetworkMock({responseText(output){return '\uFEFF```json\n'+JSON.stringify(output)+'\n```';}});
+ const sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),2);
+ const plan=await interpretNaturalSearch({apiKey:'test-key',sessionId,query:'why do stars explode',catalogVersion:'bom'});
+ assert.deepEqual(plan.terms,['stellar evolution','supernova']);assert.equal(geminiCallCount(state),3);
+});
+
+
+test('learning answers preserve BOMs inside strings after boundary cleanup',async()=>{
+ const answer='\uFEFFThe diaphragm \uFEFF detected pressure changes.\uFEFF';
+ const state=installNetworkMock({learningAnswer:answer,responseText(output){return '\uFEFF'+JSON.stringify(output);}}),sessionId=await connectMock(state);
+ const fact=factBundle('amber');
+ const card={id:'bom-answer',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:articleExtract()}]};
+ const result=await generateLearningResponse({apiKey:'test-key',sessionId,action:'question',card,question:'How did it detect pressure?'});
+ assert.equal(result.answer,answer);assert.equal(geminiCallCount(state),1);
+});

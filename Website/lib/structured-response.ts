@@ -1,5 +1,10 @@
 import { JsonArrayItemStreamParser } from "./stream-json";
 
+/** Strip only the response-boundary BOM; quoted text is never rewritten. */
+export function stripResponseBom(text: string): string {
+  return text.replace(/^\uFEFF/, "");
+}
+
 type Schema = Record<string, unknown>;
 const setFields = new Set(["evidenceIds", "claimEvidenceIds", "terms", "include", "alternatives", "topics", "related", "equivalents", "wikipediaSearchTitles"]);
 function stable(value: unknown): string {
@@ -55,7 +60,7 @@ function completeFields(text: string) {
 /** Drop invalid fields/items independently. Never invent factual content or evidence. */
 export function normalizeStructuredValue(value: unknown, schema: Schema, field = "", root = false): unknown {
   if (schema.type === "INTEGER" && typeof value === "string" && /^(0|[1-9]\d*)$/.test(value.trim()) && Number.isSafeInteger(Number(value))) value = Number(value);
-  if (typeof value === "string" && schema.type === "STRING") value = value.trim();
+  if (typeof value === "string" && schema.type === "STRING") value = value.replace(/^[^\S\uFEFF]+|[^\S\uFEFF]+$/g, "");
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return undefined;
   switch (schema.type) {
     case "OBJECT": {
@@ -94,7 +99,7 @@ export function normalizeStructuredValue(value: unknown, schema: Schema, field =
 }
 
 export function parseStructuredResponse(raw: string, schema: Schema): Record<string, unknown> {
-  const text = trailingCommas(raw.trim().replace(/^```(?:json)?\s*|\s*```$/gi, "").trim());
+  const text = trailingCommas(stripResponseBom(raw).trim().replace(/^```(?:json)?\s*|\s*```$/gi, "").trim());
   let parsed: unknown;
   try { parsed = JSON.parse(text); }
   catch {

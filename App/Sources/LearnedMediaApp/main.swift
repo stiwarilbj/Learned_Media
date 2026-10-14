@@ -848,7 +848,7 @@ private final class GeminiClient {
                     }
                     try consumeEvent()
                     guard !streamedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeError(message: "Gemini returned no usable structured answer.", retryable: true) }
-                    let cleaned = streamedText.replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cleaned = StructuredResponse.stripResponseBom(streamedText).replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
                     return (cleaned, streamedModel)
                 }
                 for try await line in bytes.lines { raw.append(contentsOf: line.utf8); raw.append(10) }
@@ -880,7 +880,7 @@ private final class GeminiClient {
             throw NativeError(message: "Gemini returned malformed JSON.", retryable: true)
         }
         guard let text = payload.candidates?.first?.content?.parts?.compactMap(\.text).joined(), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeError(message: "Gemini returned no usable structured answer.", retryable: true) }
-        return (text.replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines), payload.modelVersion)
+        return (StructuredResponse.stripResponseBom(text).replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines), payload.modelVersion)
     }
 
     private func ensureModels(key: String) async throws {
@@ -1465,7 +1465,7 @@ private final class GeminiClient {
             card: cardIdentity, question: question, detailed: detailed, history: history, evidence: context)
         let result = try await structured(key: key, prompt: prompt, schema: ["type": "OBJECT", "properties": ["answer": ["type": "STRING"], "citationIndexes": ["type": "ARRAY", "items": ["type": "INTEGER"]]], "required": ["answer", "citationIndexes"]], stage: "learning", maxOutputTokens: detailed ? 8192 : 4096, identity: try RequestIdentity.data(task: action == "learn" ? "learn" : "question", query: action == "question" ? question : nil, topics: cardIdentity["topicPath"] ?? [], filters: ["detailed": detailed], context: ["card": cardIdentity, "history": action == "question" ? Array(history.suffix(6)) : [], "evidence": context, "sourceUrls": sourceArray.prefix(5).map { $0["canonicalUrl"] as? String ?? $0["url"] as? String ?? "" }]))
         let envelope = try JSONDecoder().decode(GeminiAnswerEnvelope.self, from: Data(result.text.utf8))
-        guard let answer = envelope.answer?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty else { throw NativeError(message: "Gemini returned an empty explanation.") }
+        guard let answer = envelope.answer, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeError(message: "Gemini returned an empty explanation.") }
         let citations = (envelope.citationIndexes ?? []).filter { $0 >= 0 && $0 < sourceArray.count }.prefix(3).map { sourceArray[$0] }
         return ["answer": answer, "citations": Array(citations.isEmpty ? Array(sourceArray.prefix(1)) : citations), "modelOutcomes": result.outcomes]
     }
