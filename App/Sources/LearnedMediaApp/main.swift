@@ -942,11 +942,12 @@ private final class GeminiClient {
                     try Task.checkCancellation()
                     if streaming { onStreamAttemptStart?() }
                     let result = try await requestModel(model, key: key, prompt: prompt, schema: schema, maxOutputTokens: maxOutputTokens, timeout: timeout, streaming: streaming, onTextChunk: streaming ? onStreamText : nil)
-                    guard let object = try? JSONSerialization.jsonObject(with: Data(result.text.utf8)) as? [String: Any], object.keys.isEmpty == false else { throw NativeError(message: "Gemini returned malformed structured output.", retryable: true) }
+                    guard let object = try? StructuredResponse.parse(result.text, schema: schema), object.keys.isEmpty == false,
+                          let repaired = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), let text = String(data: repaired, encoding: .utf8) else { throw NativeError(message: "Gemini returned malformed structured output.", retryable: true) }
                     let latency = Int(Date().timeIntervalSince(started) * 1000)
                     outcomes.append(["model": model, "resolvedModel": result.resolvedModel ?? model, "stage": stage, "status": "success", "latencyMs": latency])
                     await scheduler.markSuccess(model, resolvedModel: result.resolvedModel)
-                    return (result.text, model, result.resolvedModel, outcomes)
+                    return (text, model, result.resolvedModel, outcomes)
                 } catch {
                     if Task.isCancelled || error is CancellationError {
                         await scheduler.release(model)
@@ -1151,18 +1152,22 @@ private final class GeminiClient {
     private func generateCandidates(key: String, slots: [GeminiGenerationSlot], sentenceCount: Int, attempt: Int) async -> GeminiCandidateGroupResult {
         var requestOutcomes: [[String: Any]] = []
         let parser = JSONArrayItemStreamParser(property: "facts")
+        let schema = candidateSchema(slotCount: slots.count)
+        let fields = schema["properties"] as? [String: Any] ?? [:]
+        let itemSchema = (fields["facts"] as? [String: Any])?["items"] as? [String: Any] ?? [:]
         var prefetched: [Int: (identity: String, task: Task<[[String: Any]], Never>)] = [:]
         func identity(_ candidate: GeminiCandidate) -> String {
             [candidate.title ?? "", candidate.claim ?? "", candidate.topicPath?.joined(separator: "\u{0}") ?? "", candidate.wikipediaSearchTitles?.joined(separator: "\u{0}") ?? ""].joined(separator: "\u{1}")
         }
         do {
-            let result = try await structured(key: key, prompt: candidatePrompt(slots: slots, attempt: attempt), schema: candidateSchema(slotCount: slots.count), stage: "candidate", maxOutputTokens: 4096, streaming: true, onStreamAttemptStart: {
+            let result = try await structured(key: key, prompt: candidatePrompt(slots: slots, attempt: attempt), schema: schema, stage: "candidate", maxOutputTokens: 4096, streaming: true, onStreamAttemptStart: {
                 parser.reset()
                 prefetched.values.forEach { $0.task.cancel() }
                 prefetched.removeAll()
             }, onStreamText: { fragment in
                 for object in parser.append(fragment) {
-                    guard let data = try? JSONSerialization.data(withJSONObject: object),
+                    guard let normalized = StructuredResponse.normalize(object, schema: itemSchema),
+                          let data = try? JSONSerialization.data(withJSONObject: normalized),
                           let candidate = try? JSONDecoder().decode(GeminiCandidate.self, from: data),
                           let slotIndex = candidate.slot,
                           let slot = slots.first(where: { $0.index == slotIndex }),

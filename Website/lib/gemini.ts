@@ -9,6 +9,7 @@ import type { YouTubeSearchCandidate } from "./youtube";
 import { canonicalRequestIdentity, reusableStructuredValue, requestCacheKey, SessionCache, type RequestIdentity } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
 import { JsonArrayItemStreamParser } from "./stream-json";
+import { normalizeStructuredValue, parseStructuredResponse } from "./structured-response";
 import { transientRetryDelayMs } from "./retry-timing";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
@@ -563,7 +564,7 @@ async function runStructuredRequest<T>(pool: ModelPool, apiKey: string, prompt: 
         if (options.streaming) options.onStreamAttemptStart?.();
         const result = await requestModelText(apiKey, model, prompt, responseSchema, timeoutMs, maxOutputTokens, signal, options.streaming ? options.onStreamText : undefined);
         let value: T;
-        try { value = JSON.parse(result.text) as T; }
+        try { value = parseStructuredResponse(result.text, responseSchema) as T; }
         catch { throw new GeminiFailure("Gemini returned malformed structured output.", undefined, [], undefined, true); }
         if (!value || typeof value !== "object") throw new GeminiFailure("Gemini returned malformed structured output.", undefined, [], undefined, true);
         const outcome: GeminiModelOutcome = { model, resolvedModel: result.resolvedModel, stage, status: "success", latencyMs: Date.now() - started };
@@ -901,7 +902,8 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
           onStreamAttemptStart: () => { streamParser.reset(); streamedCandidates.clear(); },
           onStreamText: (text) => {
             for (const value of streamParser.push(text)) {
-              const candidate = value as CandidateFact;
+              const candidate = normalizeStructuredValue(value, candidateSchema(group.length).properties.facts.items) as CandidateFact | undefined;
+              if (!candidate) continue;
               const slot = group.find(item => item.index === candidate.slot);
               if (slot) startEvidenceLookup(slot, candidate);
             }

@@ -84,9 +84,9 @@ function groundingSlots(prompt) {
   }));
 }
 
-function streamedJsonResponse(output, model, delayMs = 0, onComplete = () => {}) {
+function streamedJsonResponse(output, model, delayMs = 0, onComplete = () => {}, rawText) {
   const encoded = JSON.stringify(output);
-  const fragments = Array.isArray(output.facts)
+  const fragments = rawText !== undefined ? [rawText] : Array.isArray(output.facts)
     ? ["{\"facts\":[", ...output.facts.flatMap((fact, index) => [JSON.stringify(fact), index < output.facts.length - 1 ? "," : ""]), "]}"]
     : [encoded];
   let index = 0;
@@ -192,11 +192,13 @@ function installNetworkMock(options = {}) {
       } else {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
       }
+      if (options.transformOutput) output = options.transformOutput(output, prompt);
+      const rawText = options.responseText?.(output, prompt);
       if (url.pathname.includes(":streamGenerateContent")) {
         const candidateStream = prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates");
-        return streamedJsonResponse(output, model, candidateStream ? options.streamChunkDelayMs || 0 : 0, candidateStream ? () => { state.candidateStreamCompletedAt = performance.now(); } : undefined);
+        return streamedJsonResponse(output, model, candidateStream ? options.streamChunkDelayMs || 0 : 0, candidateStream ? () => { state.candidateStreamCompletedAt = performance.now(); } : undefined, rawText);
       }
-      return jsonResponse({ candidates: [{ content: { parts: [{ text: JSON.stringify(output) }] } }], modelVersion: model });
+      return jsonResponse({ candidates: [{ content: { parts: [{ text: rawText ?? JSON.stringify(output) }] } }], modelVersion: model });
     }
     if (url.hostname === "en.wikipedia.org" && url.pathname === "/w/api.php") {
       const action = url.searchParams.get("action");
@@ -1194,4 +1196,60 @@ test('video verification shares query variants and isolates filters and candidat
  await rankVideoSearchCandidates({...args,plan:{...args.plan,minDurationSeconds:500}});
  await rankVideoSearchCandidates({...args,candidates:[{...args.candidates[0],video:{...video,description:'Updated metadata.'}}]});
  assert.equal(geminiCallCount(state)-before,3);
+});
+
+test('malformed candidate items preserve the other six slots and retry only the missing candidate',async()=>{
+ let damaged=false;
+ const state=installNetworkMock({transformOutput(output,prompt){if(!damaged && prompt.includes('Generate one batch of distinct')){damaged=true;output.facts.find(f=>f.slot===3).title=123;output.facts.push(null);}return output;}}),sessionId=await connectMock(state);
+ const published=[];const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7,onProgress:e=>{if(e.type==='card')published.push(e.slot);}});
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),4);
+ assert.deepEqual(candidateAssignments(state.candidatePrompts[1]).map(s=>s.slot),[3]);
+ assert.deepEqual(groundingSlots(state.groundingPrompts[1]).map(s=>s.slot),[3]);
+ assert.equal(published.length,7);assert.equal(new Set(published).size,7);
+});
+test('truncated grounded output salvages six complete cards and retries only the unfinished slot',async()=>{
+ let damaged=false;
+ const state=installNetworkMock({responseText(output,prompt){if(!damaged && prompt.includes('Return one result for each slot')){damaged=true;return '{"facts":['+output.facts.slice(0,-1).map(f=>JSON.stringify(f)).join(',')+',{"slot":0,"title":"unfinished';}}}),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),3);
+ assert.equal(state.candidatePrompts.length,1);assert.deepEqual(groundingSlots(state.groundingPrompts[1]).map(s=>s.slot),[0]);
+});
+test('safe numeric IDs, whitespace and exact duplicates need no extra generation calls',async()=>{
+ const state=installNetworkMock({transformOutput(output,prompt){if(prompt.includes('Generate one batch of distinct'))for(const fact of output.facts){fact.slot=String(fact.slot);fact.title=' '+fact.title+' ';}if(prompt.includes('Return one result for each slot')){for(const fact of output.facts){fact.slot=String(fact.slot);for(const e of fact.evidence){e.sentence=String(e.sentence);e.evidenceIds=e.evidenceIds.map(id=>' '+id+' ');e.evidenceIds.push(e.evidenceIds[0]);}fact.claimEvidenceIds=fact.claimEvidenceIds.map(id=>' '+id+' ');}output.facts.push({...output.facts[0]});}return output;}}),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),2);
+});
+test('semantic interpretation retains valid groups and terms when unrelated fields have invalid types',async()=>{
+ const state=installNetworkMock({transformOutput(output,prompt){if(prompt.includes('Interpret this natural-language video search')){output.terms=['supernova',null,42,'stellar evolution'];output.conceptGroups.push(null,{label:'bad group',terms:42,related:[]});output.conceptGroups[0].related=['gravitational lensing',123];}return output;}}),sessionId=await connectMock(state);
+ const result=await interpretVideoSearch({apiKey:'test-key',sessionId,query:'why do dying stars explode',catalogVersion:'salvage'});
+ assert.deepEqual(result.plan.terms,['supernova','stellar evolution']);assert.equal(result.plan.conceptGroups.length,1);assert.deepEqual(result.plan.conceptGroups[0].related,['gravitational lensing']);assert.equal(geminiCallCount(state),1);
+});
+test('local syntax repair never edits source text or invents incomplete objects',()=>{
+ const {parseStructuredResponse}=require('../lib/structured-response.ts');
+ const item={type:'OBJECT',properties:{slot:{type:'INTEGER'},claim:{type:'STRING'},evidenceIds:{type:'ARRAY',items:{type:'STRING'}}},required:['slot','claim']};
+ const schema={type:'OBJECT',properties:{facts:{type:'ARRAY',items:item},terms:{type:'ARRAY',items:{type:'STRING'}},alternatives:{type:'BOOLEAN'}},required:['facts']};
+ const parsed=parseStructuredResponse('{"facts":[{"slot":"0","claim":"Quoted ,} and ,] stay exact","evidenceIds":[" unknown ","unknown"],},null,{"slot":1,"claim":12},],}',schema);
+ assert.deepEqual(parsed.facts,[{slot:0,claim:'Quoted ,} and ,] stay exact',evidenceIds:['unknown']}]);
+ const partial=parseStructuredResponse('{"terms":["stars"],"alternatives":false,"facts":[{"slot":0,"claim":"complete"},{"slot":1,"claim":"unfinished',schema);
+ assert.deepEqual(partial,{terms:['stars'],alternatives:false,facts:[{slot:0,claim:'complete'}]});
+ const conflicting=parseStructuredResponse('{"facts":[{"slot":0,"claim":"A"},{"slot":0,"claim":"B"}]}',schema);
+ assert.equal(conflicting.facts.length,2,'conflicting duplicates must not be silently resolved');
+ assert.throws(()=>parseStructuredResponse('{"facts":[{"slot":0,"claim":"unfinished',schema));
+});
+
+test('a malformed duplicate cannot disqualify the valid grounded card for its slot',async()=>{
+ const state=installNetworkMock({transformOutput(output,prompt){if(prompt.includes('Return one result for each slot'))output.facts.push({...output.facts[0],title:123});return output;}}),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),2);
+});
+
+test('a truncated topic plan keeps its complete concept group without a second interpretation',async()=>{
+ const state=installNetworkMock({responseText(output,prompt){if(prompt.includes('Interpret this unresolved learning-topic query'))return '{"alternatives":false,"groups":['+JSON.stringify(output.groups[0])+',{"label":"unfinished';}}),sessionId=await connectMock(state);
+ const result=await interpretNaturalSearch({apiKey:'test-key',sessionId,query:'why do stars explode',catalogVersion:'partial-topic'});
+ assert.equal(result.plan.groups.length,1);assert.equal(result.plan.alternatives,false);assert.deepEqual(result.terms,['stellar evolution','supernova']);assert.equal(geminiCallCount(state),1);
+});
+
+test('malformed concept labels and related fields cannot erase valid equivalents',async()=>{
+ const state=installNetworkMock({transformOutput(output,prompt){if(prompt.includes('Interpret this unresolved learning-topic query')){output.groups[0].label=123;output.groups[0].related=123;}return output;}}),sessionId=await connectMock(state);
+ const result=await interpretNaturalSearch({apiKey:'test-key',sessionId,query:'why do stars explode',catalogVersion:'bad-label'});
+ assert.deepEqual(result.terms,['stellar evolution','supernova']);assert.deepEqual(result.plan.groups[0].related,[]);
+ await interpretNaturalSearch({apiKey:'test-key',sessionId,query:'WHY DO STARS EXPLODE',catalogVersion:'bad-label'});assert.equal(geminiCallCount(state),1,'safely repaired usable plans can be cached');
 });
