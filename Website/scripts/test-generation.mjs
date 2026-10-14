@@ -84,7 +84,7 @@ function groundingSlots(prompt) {
   }));
 }
 
-function streamedJsonResponse(output, model, delayMs = 0, onComplete = () => {}, rawText) {
+function streamedJsonResponse(output, model, delayMs = 0, onComplete = () => {}, rawText, finishReason) {
   const encoded = JSON.stringify(output);
   const fragments = rawText !== undefined ? [rawText] : Array.isArray(output.facts)
     ? ["{\"facts\":[", ...output.facts.flatMap((fact, index) => [JSON.stringify(fact), index < output.facts.length - 1 ? "," : ""]), "]}"]
@@ -92,7 +92,11 @@ function streamedJsonResponse(output, model, delayMs = 0, onComplete = () => {},
   let index = 0;
   const body = new ReadableStream({
     async pull(controller) {
-      if (index >= fragments.length) { onComplete(); controller.close(); return; }
+      if (index >= fragments.length) {
+        onComplete();
+        controller.enqueue(new TextEncoder().encode("data: " + JSON.stringify({candidates:[{finishReason}],modelVersion:model}) + "\n\n"));
+        controller.close(); return;
+      }
       const text = fragments[index++];
       const event = JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }], modelVersion: model });
       controller.enqueue(new TextEncoder().encode("data: " + event + "\n\n"));
@@ -193,13 +197,14 @@ function installNetworkMock(options = {}) {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
       }
       if (options.transformOutput) output = options.transformOutput(output, prompt);
-      const rawText = options.responseText?.(output, prompt);
+      const rawText = options.responseText?.(output, prompt, body);
+      const finishReason = options.finishReason ? options.finishReason(output, prompt) : "STOP";
       if (process.env.PROMPT_EVALUATION_REPORT && !connectionCheck) state.outputs.push({ prompt, output, text: rawText ?? JSON.stringify(output) });
       if (url.pathname.includes(":streamGenerateContent")) {
         const candidateStream = prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates");
-        return streamedJsonResponse(output, model, candidateStream ? options.streamChunkDelayMs || 0 : 0, candidateStream ? () => { state.candidateStreamCompletedAt = performance.now(); } : undefined, rawText);
+        return streamedJsonResponse(output, model, candidateStream ? options.streamChunkDelayMs || 0 : 0, candidateStream ? () => { state.candidateStreamCompletedAt = performance.now(); } : undefined, rawText, finishReason);
       }
-      return jsonResponse({ candidates: [{ content: { parts: [{ text: rawText ?? JSON.stringify(output) }] } }], modelVersion: model });
+      return jsonResponse({ candidates: [{ content: { parts: [{ text: rawText ?? JSON.stringify(output) }] }, finishReason }], modelVersion: model });
     }
     if (url.hostname === "en.wikipedia.org" && url.pathname === "/w/api.php") {
       const action = url.searchParams.get("action");
@@ -1585,4 +1590,80 @@ test('duplicate-field comparison respects JSON types, nesting and exact string d
  assert.equal(check(same),same);
  assert.equal(check('{"value":[1,2],"value":[2,1]}'),'null');
  assert.deepEqual(JSON.parse(check('{"items":[{"evidence":{"id":"e1","id":"e2"}},{"quote":"\\uFEFF \\\"id\\\":1, \\\"id\\\":2"}]}')),{items:[{evidence:null},{quote:'\uFEFF "id":1, "id":2'}]});
+});
+
+
+test('normal stop reasons are recorded without increasing budgets or call counts',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+ assert.equal(geminiCallCount(state),2);
+ assert.equal(result.modelOutcomes.length,2);
+ for(const outcome of result.modelOutcomes){assert.equal(outcome.finishReason,'STOP');assert.equal(outcome.outputLimitReached,false);assert.ok(outcome.maxOutputTokens>0);}
+});
+
+test('output-limited grounding preserves complete cards and increases only unfinished-slot capacity',async()=>{
+ let limited=false,reason='STOP';
+ const state=installNetworkMock({responseText(output,prompt){
+  reason='STOP';
+  if(!limited&&prompt.includes('Return one result for each slot')){
+   limited=true;reason='MAX_TOKENS';
+   return '{"facts":['+output.facts.slice(0,6).map(JSON.stringify).join(',')+',{"slot":0,"title":"unfinished';
+  }
+ },finishReason(){return reason;}}),sessionId=await connectMock(state);
+ const cards=[];
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7,onProgress(event){if(event.type==='card')cards.push(event);}});
+ assert.equal(result.completedCount,7);assert.equal(cards.length,7);assert.equal(new Set(cards.map(item=>item.slot)).size,7);
+ assert.deepEqual(groundingSlots(state.groundingPrompts[1]).map(item=>item.slot),[0]);
+ const grounding=state.requests.filter(item=>item.body.contents?.[0]?.parts?.[0]?.text.includes('Return one result for each slot'));
+ assert.equal(grounding.length,2);
+ assert.ok(grounding[1].body.generationConfig.maxOutputTokens>=grounding[0].body.generationConfig.maxOutputTokens*2);
+ const stopped=result.modelOutcomes.find(item=>item.finishReason==='MAX_TOKENS');assert.equal(stopped?.outputLimitReached,true);assert.equal(stopped?.stage,'grounding');
+ assert.equal(geminiCallCount(state),3);
+});
+
+test('terminal streamed output-limit metadata increases capacity for missing candidates',async()=>{
+ let limited=false,reason='STOP';
+ const state=installNetworkMock({responseText(output,prompt){
+  reason='STOP';
+  if(!limited&&prompt.includes('Generate one batch of distinct')){
+   limited=true;reason='MAX_TOKENS';
+   return '{"facts":['+output.facts.slice(0,6).map(JSON.stringify).join(',')+',{"slot":0,"title":"unfinished';
+  }
+ },finishReason(){return reason;}}),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+ assert.equal(result.completedCount,7);
+ const requests=state.requests.filter(item=>item.body.contents?.[0]?.parts?.[0]?.text.includes('Generate one batch of distinct'));
+ assert.equal(requests.length,2);assert.deepEqual(candidateAssignments(state.candidatePrompts[1]).map(item=>item.slot),[0]);
+ assert.equal(requests[0].body.generationConfig.maxOutputTokens,4096);assert.equal(requests[1].body.generationConfig.maxOutputTokens,8192);
+ assert.equal(result.modelOutcomes.find(item=>item.stage==='candidate')?.finishReason,'MAX_TOKENS');assert.equal(geminiCallCount(state),4);
+});
+
+test('a limit stop without a complete item grows the next fallback request',async()=>{
+ let limited=false,reason='STOP';
+ const state=installNetworkMock({responseText(output,prompt){
+  reason='STOP';
+  if(!limited&&prompt.includes('Generate one batch of distinct')){limited=true;reason='MAX_TOKENS';return '';}
+ },finishReason(){return reason;}}),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+ assert.equal(result.completedCount,7);
+ const requests=state.requests.filter(item=>item.body.contents?.[0]?.parts?.[0]?.text.includes('Generate one batch of distinct'));
+ assert.equal(requests.length,2);assert.equal(requests[1].body.generationConfig.maxOutputTokens,requests[0].body.generationConfig.maxOutputTokens*2);
+ assert.ok(requests[0].url.pathname.includes(ALLOWED_GEMINI_MODELS[0]));assert.ok(requests[1].url.pathname.includes(ALLOWED_GEMINI_MODELS[1]));
+ assert.equal(result.modelOutcomes[0].finishReason,'MAX_TOKENS');assert.equal(result.modelOutcomes[0].status,'cooldown');assert.equal(geminiCallCount(state),3);
+});
+
+test('capacity policy is bounded and does not mistake safety or unknown stops for token limits',()=>{
+ const {nextOutputCapacity,truncatedOutputFloor}=require('../lib/output-capacity.ts');
+ for(const reason of ['STOP','SAFETY','OTHER','UNKNOWN',undefined])assert.equal(nextOutputCapacity(4096,reason),4096);
+ assert.equal(nextOutputCapacity(4096,'MAX_TOKENS'),8192);assert.equal(nextOutputCapacity(65536,'MAX_TOKENS'),65536);
+ assert.equal(truncatedOutputFloor([{finishReason:'MAX_TOKENS',maxOutputTokens:20000},{finishReason:'STOP',maxOutputTokens:4000}]),40000);
+ assert.equal(truncatedOutputFloor([{finishReason:'STOP',maxOutputTokens:4000}]),0);
+});
+
+
+test('missing finish reasons remain unknown rather than being recorded as normal stops',async()=>{
+ const state=installNetworkMock({finishReason(){return undefined;}}),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),2);
+ for(const outcome of result.modelOutcomes){assert.equal(outcome.finishReason,'UNKNOWN');assert.equal(outcome.outputLimitReached,false);}
 });

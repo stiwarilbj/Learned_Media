@@ -76,6 +76,9 @@ export type GeminiModelCheck = {
 };
 
 export type GeminiModelOutcome = {
+  finishReason?: string;
+  outputLimitReached?: boolean;
+  maxOutputTokens?: number;
   model: string;
   resolvedModel?: string;
   stage: "candidate" | "grounding" | "learning";

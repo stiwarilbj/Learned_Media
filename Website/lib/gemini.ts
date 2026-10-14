@@ -1,3 +1,4 @@
+import { nextOutputCapacity, truncatedOutputFloor, MAX_OUTPUT_CAPACITY } from "./output-capacity";
 import { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildSearchInterpretationPrompt } from "./prompts";
 import { validateTopicPlan, type TopicQueryPlan } from "./topic-suggestions";
 import type { Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, WikipediaSource } from "./types";
@@ -79,7 +80,7 @@ type StructuredResult = { value: unknown; model: string; resolvedModel?: string;
 type StructuredFlight = { controller: AbortController; subscribers: Set<symbol>; promise: Promise<StructuredResult>; settled: boolean };
 
 type GeminiTextResponse = {
-  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }>;
   modelVersion?: string;
 };
 
@@ -91,6 +92,8 @@ type GenerationSlot = {
   sources?: ResolvedWikipediaSource[];
   mode: "candidate" | "grounding" | "combined";
   lastError?: string;
+  candidateOutputFloor?: number;
+  groundingOutputFloor?: number;
 };
 
 export type GeminiProgressEvent =
@@ -285,6 +288,7 @@ async function readEventStream(response: Response, onTextChunk?: (text: string) 
   let eventData: string[] = [];
   let text = "";
   let resolvedModel: string | undefined;
+  let finishReason: string | undefined;
   const flush = () => {
     if (!eventData.length) return;
     const data = eventData.join("\n");
@@ -294,6 +298,7 @@ async function readEventStream(response: Response, onTextChunk?: (text: string) 
     try { payload = JSON.parse(stripResponseBom(data)) as GeminiTextResponse; }
     catch { throw new GeminiFailure("Gemini returned malformed streamed output.", response.status, [], undefined, true); }
     resolvedModel = payload.modelVersion ?? resolvedModel;
+    finishReason = payload.candidates?.[0]?.finishReason ?? finishReason;
     const chunk = payload.candidates?.[0]?.content?.parts?.map(part => part.text ?? "").join("") ?? "";
     if (chunk) {
       text += chunk;
@@ -319,7 +324,7 @@ async function readEventStream(response: Response, onTextChunk?: (text: string) 
   buffer += decoder.decode();
   if (buffer) consumeLine(buffer);
   flush();
-  return { text, resolvedModel };
+  return { text, resolvedModel, finishReason };
 }
 
 async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, timeoutMs: number, externalSignal?: AbortSignal, onTextChunk?: (text: string) => void) {
@@ -336,10 +341,10 @@ async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, ti
     const response = await fetch(input, { ...init, signal: controller.signal });
     if (onTextChunk && response.ok && response.body) {
       const streamed = await readEventStream(response, onTextChunk);
-      return { response, raw: streamed.text, resolvedModel: streamed.resolvedModel, streamed: true };
+      return { response, raw: streamed.text, resolvedModel: streamed.resolvedModel, finishReason: streamed.finishReason, streamed: true };
     }
     const raw = await response.text();
-    return { response, raw, resolvedModel: undefined, streamed: false };
+    return { response, raw, resolvedModel: undefined, finishReason: undefined, streamed: false };
   } catch (error) {
     if (externalSignal?.aborted) throw abortError();
     if (timedOut) throw new GeminiFailure("Gemini request timed out after " + Math.round(timeoutMs / 1000) + " seconds.", undefined, [], undefined, true);
@@ -352,7 +357,7 @@ async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, ti
 
 async function requestModelText(apiKey: string, model: string, prompt: string, responseSchema: Record<string, unknown>, timeoutMs: number, maxOutputTokens: number, signal?: AbortSignal, onTextChunk?: (text: string) => void) {
   const endpoint = GEMINI_API_ROOT + "/models/" + encodeURIComponent(model) + (onTextChunk ? ":streamGenerateContent?alt=sse" : ":generateContent");
-  const { response, raw, resolvedModel: streamedModel, streamed } = await fetchResponseText(endpoint, {
+  const { response, raw, resolvedModel: streamedModel, finishReason: streamedFinishReason, streamed } = await fetchResponseText(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", accept: onTextChunk ? "text/event-stream" : "application/json", "x-goog-api-key": apiKey },
     body: JSON.stringify({
@@ -367,8 +372,7 @@ async function requestModelText(apiKey: string, model: string, prompt: string, r
     throw new GeminiFailure(detail, response.status, [], retryAfterMs(response, payload), isTransient(response.status, detail), quotaScope(response.status, payload));
   }
   if (streamed) {
-    if (!raw.trim()) throw new GeminiFailure("Gemini returned no usable structured answer.", undefined, [], undefined, true);
-    return { text: stripJsonFence(raw), resolvedModel: streamedModel };
+    return { text: stripJsonFence(raw), resolvedModel: streamedModel, finishReason: streamedFinishReason };
   }
   let payload: unknown = {};
   try {
@@ -378,8 +382,7 @@ async function requestModelText(apiKey: string, model: string, prompt: string, r
   }
   const typed = payload as GeminiTextResponse;
   const text = typed.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
-  if (!text.trim()) throw new GeminiFailure("Gemini returned no usable structured answer.", undefined, [], undefined, true);
-  return { text: stripJsonFence(text), resolvedModel: typed.modelVersion };
+  return { text: stripJsonFence(text), resolvedModel: typed.modelVersion, finishReason: typed.candidates?.[0]?.finishReason };
 }
 
 function availableModels(pool: ModelPool, allowedModels?: readonly string[]) {
@@ -545,6 +548,7 @@ async function runStructuredRequest<T>(pool: ModelPool, apiKey: string, prompt: 
     onProgress?.({ type: "status", status: retryAt ? "rate-limited" : "unavailable" });
     throw error;
   }
+  let outputCapacity = nextOutputCapacity(options.maxOutputTokens ?? (stage === "candidate" ? 4096 : stage === "grounding" ? 16_384 : 2048));
   const rounds = geminiAttemptRounds(candidates, PRIMARY_FLASH_LITE_MODELS, recover);
   for (let round = 0; round < rounds.length; round += 1) {
     for (const target of rounds[round]) {
@@ -559,15 +563,18 @@ async function runStructuredRequest<T>(pool: ModelPool, apiKey: string, prompt: 
       const model = reserveModel(pool, target);
       if (!model) continue;
       const started = Date.now();
+      const maxOutputTokens = outputCapacity;
+      let finishReason: string | undefined;
       try {
-        const maxOutputTokens = options.maxOutputTokens ?? (stage === "candidate" ? 4096 : stage === "grounding" ? 16_384 : 2048);
         if (options.streaming) options.onStreamAttemptStart?.();
         const result = await requestModelText(apiKey, model, prompt, responseSchema, timeoutMs, maxOutputTokens, signal, options.streaming ? options.onStreamText : undefined);
+        finishReason = result.finishReason ?? "UNKNOWN";
+        outputCapacity = nextOutputCapacity(maxOutputTokens, finishReason);
         let value: T;
         try { value = parseStructuredResponse(result.text, responseSchema) as T; }
-        catch { throw new GeminiFailure("Gemini returned malformed structured output.", undefined, [], undefined, true); }
+        catch { throw new GeminiFailure(finishReason === "MAX_TOKENS" ? "Gemini reached its output limit before a complete item arrived." : "Gemini returned malformed structured output.", undefined, [], undefined, true); }
         if (!value || typeof value !== "object") throw new GeminiFailure("Gemini returned malformed structured output.", undefined, [], undefined, true);
-        const outcome: GeminiModelOutcome = { model, resolvedModel: result.resolvedModel, stage, status: "success", latencyMs: Date.now() - started };
+        const outcome: GeminiModelOutcome = { model, resolvedModel: result.resolvedModel, finishReason, outputLimitReached: finishReason === "MAX_TOKENS", maxOutputTokens, stage, status: "success", latencyMs: Date.now() - started };
         markModelSuccess(pool, model, outcome.latencyMs ?? 0, result.resolvedModel);
         outcomes.push(outcome);
         onProgress?.({ type: "model", outcome });
@@ -579,7 +586,7 @@ async function runStructuredRequest<T>(pool: ModelPool, apiKey: string, prompt: 
         if (signal.aborted) throw abortError();
         const error = classifyFailure(rawError);
         const modelRetryAt = markModelFailure(pool, model, error);
-        const outcome: GeminiModelOutcome = { model, stage, status: error.retryable ? "cooldown" : "failed", latencyMs: Date.now() - started, error: error.message, ...(modelRetryAt ? { retryAt: new Date(modelRetryAt).toISOString() } : {}) };
+        const outcome: GeminiModelOutcome = { model, ...(finishReason ? { finishReason, outputLimitReached: finishReason === "MAX_TOKENS", maxOutputTokens } : {}), stage, status: error.retryable ? "cooldown" : "failed", latencyMs: Date.now() - started, error: error.message, ...(modelRetryAt ? { retryAt: new Date(modelRetryAt).toISOString() } : {}) };
         outcomes.push(outcome);
         onProgress?.({ type: "model", outcome });
         if (isCredentialFailure(error)) {
@@ -882,7 +889,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   for (let round = cachedSlots ? -1 : 0; round < MAX_CANDIDATE_RETRIES && acceptedSlots.size < targetCount; round += 1) {
     if (signal?.aborted) throw abortError();
     const candidateSlots = slots.filter(slot => !acceptedSlots.has(slot.index) && slot.mode === "candidate");
-    const candidateGroups = splitIntoGroups(candidateSlots, candidateGroupSize);
+    const candidateGroups = splitIntoGroups(candidateSlots, candidateSlots.some(slot => slot.candidateOutputFloor === MAX_OUTPUT_CAPACITY) ? 1 : candidateGroupSize);
     await runGroups(candidateGroups, async group => {
       if (providerExhausted) return;
       if (signal?.aborted) throw abortError();
@@ -897,7 +904,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       };
       try {
         const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(group, settings, rabbitHole, round), candidateSchema(group.length), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
-          maxOutputTokens: 4096,
+          maxOutputTokens: Math.max(4096, ...group.map(slot => slot.candidateOutputFloor ?? 0)),
           streaming: true,
           onStreamAttemptStart: () => { streamParser.reset(); streamedCandidates.clear(); },
           onStreamText: (text) => {
@@ -909,6 +916,8 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             }
           }
         });
+        const floor = truncatedOutputFloor(result.outcomes);
+        if (floor) for (const slot of group) slot.candidateOutputFloor = Math.max(slot.candidateOutputFloor ?? 0, floor);
         const facts = result.value.facts ?? [];
         const eligible: GenerationSlot[] = [];
         for (const slot of group) {
@@ -945,15 +954,17 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
     });
 
     const groundingSlots = slots.filter(slot => !acceptedSlots.has(slot.index) && (slot.mode === "combined" || slot.mode === "grounding" && slot.candidate) && slot.sources?.length);
-    const groundingGroups = splitGroundingGroups(groundingSlots, sentenceCount);
+    const groundingGroups = splitGroundingGroups(groundingSlots, sentenceCount).flatMap(group => group.some(slot => slot.groundingOutputFloor === MAX_OUTPUT_CAPACITY) ? group.map(slot => [slot]) : [group]);
     await runGroups(groundingGroups, async group => {
       if (providerExhausted) return;
       if (signal?.aborted) throw abortError();
       try {
         const combined = group.every(slot => slot.mode === "combined");
         const grounding = groundingPrompt(group, sentenceCount, combined, settings, rabbitHole);
-        const maxOutputTokens = Math.min(65_536, Math.max(8192, group.length * sentenceCount * 500));
+        const maxOutputTokens = Math.min(65_536, Math.max(8192, group.length * sentenceCount * 500, ...group.map(slot => slot.groundingOutputFloor ?? 0)));
         const result = await requestStructured<{ facts?: GroundedFact[] }>(apiKey, sessionId, grounding.prompt, groundedSchema(sentenceCount, combined), "grounding", GENERATION_TIMEOUT_MS, signal, emit, { maxOutputTokens });
+        const floor = truncatedOutputFloor(result.outcomes);
+        if (floor) for (const slot of group) slot.groundingOutputFloor = Math.max(slot.groundingOutputFloor ?? 0, floor);
         const facts = result.value.facts ?? [];
         for (const slot of group) {
           const matches = facts.filter(fact => fact.slot === slot.index);

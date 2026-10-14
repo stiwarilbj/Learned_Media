@@ -111,6 +111,7 @@ private struct GeminiTextResponse: Decodable {
             let parts: [Part]?
         }
         let content: Content?
+        let finishReason: String?
     }
     let candidates: [Candidate]?
     let modelVersion: String?
@@ -702,6 +703,8 @@ private struct GeminiGenerationSlot {
     var candidate: GeminiCandidate?
     var sources: [[String: Any]]
     var lastError: String?
+    var candidateOutputFloor = 0
+    var groundingOutputFloor = 0
 }
 
 private typealias GeminiStructuredResult = (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]])
@@ -804,7 +807,7 @@ private final class GeminiClient {
         return "unknown"
     }
 
-    private func requestModel(_ model: String, key: String, prompt: String, schema: [String: Any], maxOutputTokens: Int = 4096, timeout: TimeInterval = 45, streaming: Bool = false, onTextChunk: ((String) -> Void)? = nil) async throws -> (text: String, resolvedModel: String?) {
+    private func requestModel(_ model: String, key: String, prompt: String, schema: [String: Any], maxOutputTokens: Int = 4096, timeout: TimeInterval = 45, streaming: Bool = false, onTextChunk: ((String) -> Void)? = nil) async throws -> (text: String, resolvedModel: String?, finishReason: String?) {
         let method = streaming ? "streamGenerateContent?alt=sse" : "generateContent"
         let endpoint = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):\(method)")!
         var request = URLRequest(url: endpoint, timeoutInterval: timeout)
@@ -822,6 +825,7 @@ private final class GeminiClient {
                 var eventLines: [String] = []
                 var streamedText = ""
                 var streamedModel: String?
+                var streamedFinishReason: String?
                 func consumeEvent() throws {
                     guard !eventLines.isEmpty else { return }
                     let event = eventLines.joined(separator: "\n")
@@ -832,6 +836,7 @@ private final class GeminiClient {
                         throw NativeError(message: "Gemini returned malformed streamed output.", retryable: true)
                     }
                     streamedModel = payload.modelVersion ?? streamedModel
+                    streamedFinishReason = payload.candidates?.first?.finishReason ?? streamedFinishReason
                     let chunk = payload.candidates?.first?.content?.parts?.compactMap(\.text).joined() ?? ""
                     if !chunk.isEmpty {
                         streamedText += chunk
@@ -847,9 +852,8 @@ private final class GeminiClient {
                         else if line.hasPrefix("data:") { eventLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)) }
                     }
                     try consumeEvent()
-                    guard !streamedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeError(message: "Gemini returned no usable structured answer.", retryable: true) }
                     let cleaned = StructuredResponse.stripResponseBom(streamedText).replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
-                    return (cleaned, streamedModel)
+                    return (cleaned, streamedModel, streamedFinishReason)
                 }
                 for try await line in bytes.lines { raw.append(contentsOf: line.utf8); raw.append(10) }
                 data = raw
@@ -879,8 +883,8 @@ private final class GeminiClient {
         } catch {
             throw NativeError(message: "Gemini returned malformed JSON.", retryable: true)
         }
-        guard let text = payload.candidates?.first?.content?.parts?.compactMap(\.text).joined(), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeError(message: "Gemini returned no usable structured answer.", retryable: true) }
-        return (StructuredResponse.stripResponseBom(text).replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines), payload.modelVersion)
+        let text = payload.candidates?.first?.content?.parts?.compactMap(\.text).joined() ?? ""
+        return (StructuredResponse.stripResponseBom(text).replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines), payload.modelVersion, payload.candidates?.first?.finishReason)
     }
 
     private func ensureModels(key: String) async throws {
@@ -924,6 +928,7 @@ private final class GeminiClient {
         let candidates = await scheduler.retryCandidateModels(allowedModels: allowedModels)
         guard !candidates.isEmpty else { throw NativeError(message: "No available Gemini models remain. Reconnect in Settings to check model availability again.", retryable: false, status: "unavailable") }
         let hadAvailableModels = !(await scheduler.availableModels(allowedModels: allowedModels)).isEmpty
+        var outputCapacity = OutputCapacity.next(maxOutputTokens)
         let rounds = GeminiModelPolicy.attemptRounds(models: candidates, recover: recover)
         for (round, models) in rounds.enumerated() {
             for model in models {
@@ -938,14 +943,18 @@ private final class GeminiClient {
                 }
                 guard await scheduler.reserve(model) else { continue }
                 let started = Date()
+                let attemptCapacity = outputCapacity
+                var finishReason: String?
                 do {
                     try Task.checkCancellation()
                     if streaming { onStreamAttemptStart?() }
-                    let result = try await requestModel(model, key: key, prompt: prompt, schema: schema, maxOutputTokens: maxOutputTokens, timeout: timeout, streaming: streaming, onTextChunk: streaming ? onStreamText : nil)
+                    let result = try await requestModel(model, key: key, prompt: prompt, schema: schema, maxOutputTokens: attemptCapacity, timeout: timeout, streaming: streaming, onTextChunk: streaming ? onStreamText : nil)
+                    finishReason = result.finishReason ?? "UNKNOWN"
+                    outputCapacity = OutputCapacity.next(attemptCapacity, finishReason: finishReason)
                     guard let object = try? StructuredResponse.parse(result.text, schema: schema), object.keys.isEmpty == false,
-                          let repaired = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), let text = String(data: repaired, encoding: .utf8) else { throw NativeError(message: "Gemini returned malformed structured output.", retryable: true) }
+                          let repaired = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), let text = String(data: repaired, encoding: .utf8) else { throw NativeError(message: finishReason == "MAX_TOKENS" ? "Gemini reached its output limit before a complete item arrived." : "Gemini returned malformed structured output.", retryable: true) }
                     let latency = Int(Date().timeIntervalSince(started) * 1000)
-                    outcomes.append(["model": model, "resolvedModel": result.resolvedModel ?? model, "stage": stage, "status": "success", "latencyMs": latency])
+                    outcomes.append(["model": model, "resolvedModel": result.resolvedModel ?? model, "finishReason": finishReason ?? "UNKNOWN", "outputLimitReached": finishReason == "MAX_TOKENS", "maxOutputTokens": attemptCapacity, "stage": stage, "status": "success", "latencyMs": latency])
                     await scheduler.markSuccess(model, resolvedModel: result.resolvedModel)
                     return (text, model, result.resolvedModel, outcomes)
                 } catch {
@@ -959,6 +968,11 @@ private final class GeminiClient {
                     let latency = Int(Date().timeIntervalSince(started) * 1000)
                     let retryAt = await scheduler.markFailure(model, retryable: retryable, retryAfter: nativeError?.retryAfter ?? 0, statusCode: nativeError?.statusCode, quotaScope: nativeError?.quotaScope)
                     var outcome: [String: Any] = ["model": model, "stage": stage, "status": retryable ? "cooldown" : "failed", "latencyMs": latency, "error": message]
+                    if let finishReason {
+                        outcome["finishReason"] = finishReason
+                        outcome["outputLimitReached"] = finishReason == "MAX_TOKENS"
+                        outcome["maxOutputTokens"] = attemptCapacity
+                    }
                     if let retryAt { outcome["retryAt"] = isoNow(retryAt) }
                     if let scope = nativeError?.quotaScope { outcome["quotaScope"] = scope }
                     outcomes.append(outcome)
@@ -1160,7 +1174,7 @@ private final class GeminiClient {
             [candidate.title ?? "", candidate.claim ?? "", candidate.topicPath?.joined(separator: "\u{0}") ?? "", candidate.wikipediaSearchTitles?.joined(separator: "\u{0}") ?? ""].joined(separator: "\u{1}")
         }
         do {
-            let result = try await structured(key: key, prompt: candidatePrompt(slots: slots, attempt: attempt), schema: schema, stage: "candidate", maxOutputTokens: 4096, streaming: true, onStreamAttemptStart: {
+            let result = try await structured(key: key, prompt: candidatePrompt(slots: slots, attempt: attempt), schema: schema, stage: "candidate", maxOutputTokens: max(4096, slots.map(\.candidateOutputFloor).max() ?? 0), streaming: true, onStreamAttemptStart: {
                 parser.reset()
                 prefetched.values.forEach { $0.task.cancel() }
                 prefetched.removeAll()
@@ -1237,7 +1251,7 @@ private final class GeminiClient {
         var requestOutcomes: [[String: Any]] = []
         do {
             let plan = groundingPrompt(slots: slots, sentenceCount: sentenceCount, combined: combined)
-            let outputTokens = max(4096, min(65_536, slots.count * sentenceCount * 500))
+            let outputTokens = min(OutputCapacity.maximum, max(8192, slots.count * sentenceCount * 500, slots.map(\.groundingOutputFloor).max() ?? 0))
             let result = try await structured(key: key, prompt: plan.prompt, schema: combinedSchema(sentenceCount: sentenceCount, combined: combined), stage: "grounding", maxOutputTokens: outputTokens)
             requestOutcomes = result.outcomes
             let envelope = try JSONDecoder().decode(GeminiGroundedEnvelope.self, from: Data(result.text.utf8))
@@ -1325,7 +1339,7 @@ private final class GeminiClient {
         for attempt in (cached == nil ? 0 : -1)..<3 where accepted.count < targetCount && !providerExhausted {
             try Task.checkCancellation()
             let pendingCandidates = slots.filter { $0.mode == "candidate" && accepted[$0.index] == nil }
-            let candidateGroups = generationGroups(pendingCandidates, maxCount: groupSize)
+            let candidateGroups = generationGroups(pendingCandidates, maxCount: pendingCandidates.contains(where: { $0.candidateOutputFloor == OutputCapacity.maximum }) ? 1 : groupSize)
             let candidateResults = await withTaskGroup(of: GeminiCandidateGroupResult.self, returning: [GeminiCandidateGroupResult].self) { group in
                 for batch in candidateGroups { group.addTask { await self.generateCandidates(key: key, slots: batch, sentenceCount: sentenceCount, attempt: attempt) } }
                 var results: [GeminiCandidateGroupResult] = []
@@ -1339,6 +1353,9 @@ private final class GeminiClient {
                 if let status = result.status { generationStatus = status; providerExhausted = true }
                 if let error = result.error, isCredentialFailure(error) { throw NativeError(message: error, retryable: false, outcomes: outcomes, status: "invalid") }
                 for index in result.slots {
+                    if let slotIndex = slots.firstIndex(where: { $0.index == index }) {
+                        slots[slotIndex].candidateOutputFloor = max(slots[slotIndex].candidateOutputFloor, OutputCapacity.truncatedFloor(result.outcomes))
+                    }
                     guard let candidate = result.candidates[index], let title = candidate.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
                           let claim = candidate.claim?.trimmingCharacters(in: .whitespacesAndNewlines), !claim.isEmpty,
                           let slotIndex = slots.firstIndex(where: { $0.index == index }), topicPathMatches(candidate.topicPath, assigned: slots[slotIndex].path) else {
@@ -1368,7 +1385,9 @@ private final class GeminiClient {
 
             if providerExhausted { break }
             let readyToGround = slots.filter { ($0.mode == "grounding" || $0.mode == "combined") && !$0.sources.isEmpty && accepted[$0.index] == nil }
-            let groundingBatches = groundingGroups(readyToGround, sentenceCount: sentenceCount)
+            let groundingBatches = groundingGroups(readyToGround, sentenceCount: sentenceCount).flatMap { batch in
+                batch.contains(where: { $0.groundingOutputFloor == OutputCapacity.maximum }) ? batch.map { [$0] } : [batch]
+            }
             var groundedCredentialError: String?
             await withTaskGroup(of: GeminiGroundedGroupResult.self) { group in
                 for batch in groundingBatches { group.addTask { await self.generateGrounded(key: key, slots: batch, sentenceCount: sentenceCount, combined: attempt < 0) } }
@@ -1379,6 +1398,9 @@ private final class GeminiClient {
                     if let status = result.status { generationStatus = status; providerExhausted = true }
                     if let error = result.error, isCredentialFailure(error) { groundedCredentialError = error; group.cancelAll(); break }
                     for index in result.slots {
+                        if let slotIndex = slots.firstIndex(where: { $0.index == index }) {
+                            slots[slotIndex].groundingOutputFloor = max(slots[slotIndex].groundingOutputFloor, OutputCapacity.truncatedFloor(result.outcomes))
+                        }
                         guard let slotIndex = slots.firstIndex(where: { $0.index == index }), let fact = result.facts[index] else {
                             if let slotIndex = slots.firstIndex(where: { $0.index == index }) {
                                 slots[slotIndex].lastError = result.error ?? "Gemini omitted this grounded slot."
