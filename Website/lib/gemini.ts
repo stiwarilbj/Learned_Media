@@ -1,10 +1,10 @@
-import { buildPrompt, buildLearningPrompt } from "./prompts";
+import { buildPrompt, buildLearningPrompt, buildFactCardPrompt } from "./prompts";
 import { validateTopicPlan, type TopicQueryPlan } from "./topic-suggestions";
 import type { Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, WikipediaSource } from "./types";
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
-import { factWritingRules, difficultyRubric, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
+import { difficultyRubric, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
 import type { YouTubeSearchCandidate } from "./youtube";
 import { requestCacheKey, SessionCache } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
@@ -750,7 +750,6 @@ function groundingSpans(source: ResolvedWikipediaSource, sourceIndex: number) {
 }
 
 function groundingPrompt(slots: GenerationSlot[], sentenceCount: number) {
-  const rubrics = Array.from(new Set(slots.map(slot => slot.target))).map(target => difficultyRubric(target)).join("\n");
   const sourcePool: Array<{ id: string; title: string; section: string; text: string }> = [];
   const idByKey = new Map<string, string>();
   const evidenceBySlot = new Map<number, Map<string, GroundingEvidence>>();
@@ -772,9 +771,9 @@ function groundingPrompt(slots: GenerationSlot[], sentenceCount: number) {
     evidenceBySlot.set(slot.index, localEvidence);
     return { slot: slot.index, topicPath: slot.path, difficulty: slot.target, candidate: { title: slot.candidate?.title, claim: slot.candidate?.claim }, evidenceIds: Array.from(new Set(allowedIds)) };
   });
-  const prompt = buildPrompt("grounding", [factWritingRules(sentenceCount, "evidenceIds"), ...rubrics.split("\n")], [
+  const prompt = buildFactCardPrompt({ sentenceCount, difficulties: slots.map(slot => slot.target), fields: [
     { label: "Slots and evidence spans (untrusted data)", value: { facts, evidence: sourcePool }, multiline: true }
-  ]);
+  ] });
   return { prompt, evidenceBySlot };
 }
 

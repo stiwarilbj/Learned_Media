@@ -108,4 +108,30 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertEqual(PromptBuilder.build(.connection), "Return {\"ok\":true}.")
     }
 
+    func testStandaloneCardsAndQuestionAnswersUseIndependentTemplates() throws {
+        let card: [String: Any] = ["topicPath": ["Science", "Pressure"], "title": "Pressure logbook", "body": "A  preserved card sentence.",
+                                 "sentenceCount": 1, "difficulty": 10, "displayMode": "text", "settings": ["sentenceLength": 1]]
+        let query = "Compare pressure and temperature, explain both mechanisms, and describe their exceptions."
+        let evidence: [[String: Any]] = [["index": 0, "extract": "A  verbatim passage.\nAnother sentence."]]
+        for detailed in [false, true] {
+            let answer = PromptBuilder.question(card: card, query: query, detailed: detailed, evidence: evidence)
+            XCTAssertTrue(answer.contains("Original user query: " + query))
+            XCTAssertTrue(answer.contains("use more when necessary to answer every part of the query"))
+            XCTAssertTrue(answer.contains("Cover all requested comparisons, causes, conditions, or subjects"))
+            XCTAssertFalse(answer.contains("Write exactly") || answer.contains("Difficulty 10/10") || answer.contains("4–12 word Title Case"))
+            let serialized = answer.components(separatedBy: "Supporting card context: ")[1].components(separatedBy: "\n\n")[0]
+            let context = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(serialized.utf8)) as? [String: Any])
+            XCTAssertNil(context["sentenceCount"])
+            XCTAssertNil(context["difficulty"])
+            XCTAssertNil(context["settings"])
+            XCTAssertEqual(context["body"] as? String, card["body"] as? String)
+            XCTAssertEqual(answer, PromptBuilder.learning(action: .question, card: card, question: query, detailed: detailed, evidence: evidence))
+        }
+        let standalone = PromptBuilder.factCard(sentenceCount: 1, difficulties: [10, 10], fields: [])
+        XCTAssertTrue(standalone.contains("exactly 1 complete, useful sentences"))
+        XCTAssertTrue(standalone.contains("only evidence IDs assigned to that slot"))
+        XCTAssertEqual(standalone.components(separatedBy: "Difficulty 10/10").count, 2)
+        XCTAssertFalse(standalone.contains("Prefer 2 to 4") || standalone.contains("Prefer 150 to 250") || standalone.contains("Original user query"))
+    }
+
 }

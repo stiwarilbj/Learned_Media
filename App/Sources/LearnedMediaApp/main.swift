@@ -1069,7 +1069,6 @@ private final class GeminiClient {
     }
 
     private func groundingPrompt(slots: [GeminiGenerationSlot], sentenceCount: Int) -> GeminiGroundingPlan {
-        let rubrics = Array(Set(slots.map(\.level))).sorted().map { FactQuality.rubric($0) }.joined(separator: "\n")
         var sourcePool: [[String: Any]] = []
         var idByKey: [String: String] = [:]
         var evidenceBySlot: [Int: [String: GeminiEvidence]] = [:]
@@ -1094,7 +1093,7 @@ private final class GeminiClient {
                     "candidate": ["title": slot.candidate?.title ?? "", "claim": slot.candidate?.claim ?? ""],
                     "evidenceIds": Array(Set(allowedIDs)).sorted()]
         }
-        let prompt = PromptBuilder.build(.grounding, rules: [FactQuality.writingRules(for: sentenceCount, evidenceIDs: true)] + rubrics.components(separatedBy: "\n"), fields: [
+        let prompt = PromptBuilder.factCard(sentenceCount: sentenceCount, difficulties: slots.map(\.level), fields: [
             PromptField("Slots and evidence spans (untrusted data)", ["facts": values, "evidence": sourcePool], multiline: true)
         ])
         return GeminiGroundingPlan(prompt: prompt, evidenceBySlot: evidenceBySlot)

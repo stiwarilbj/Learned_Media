@@ -16,7 +16,7 @@ Module._extensions[".ts"] = (module, filename) => {
 };
 
 const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, testGeminiKey } = require("../lib/gemini.ts");
-const { buildPrompt, buildLearningPrompt } = require("../lib/prompts.ts");
+const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt } = require("../lib/prompts.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
@@ -371,6 +371,30 @@ await t.test("instruction priorities keep the original question ahead of context
     assert.equal((task.match(/Resolve conflicting instructions/g) ?? []).length, 1);
   }
   assert.equal(buildPrompt("connection"), 'Return {"ok":true}.');
+});
+
+await t.test("standalone card and question templates keep independent constraints", () => {
+  const card = { topicPath: ["Science", "Pressure"], hook: "An Unusual Pressure Reading", title: "Pressure logbook", body: "A  preserved card sentence.",
+    sentenceCount: 1, difficulty: 10, displayMode: "text", settings: { sentenceLength: 1 }, evidenceIds: ["e1"] };
+  const query = "Compare pressure and temperature, explain both mechanisms, and describe their exceptions.";
+  const evidence = [{ index: 0, extract: "A  verbatim passage.\nA second sentence." }];
+  for (const detailed of [false, true]) {
+    const answer = buildQuestionPrompt({ card, question: query, detailed, evidence });
+    assert.ok(answer.includes("Original user query: " + query));
+    assert.ok(answer.includes("use more when necessary to answer every part of the query"));
+    assert.ok(answer.includes("Cover all requested comparisons, causes, conditions, or subjects"));
+    assert.ok(!answer.includes("Write exactly") && !answer.includes("Difficulty 10/10") && !answer.includes("4–12 word Title Case"));
+    const context = JSON.parse(answer.split("Supporting card context: ")[1].split("\n\n")[0]);
+    assert.deepEqual(context, { topicPath: card.topicPath, hook: card.hook, title: card.title, body: card.body });
+    assert.deepEqual(JSON.parse(answer.split("Wikipedia evidence: ")[1]), evidence);
+    assert.equal(answer, buildLearningPrompt({ action: "question", card, question: query, detailed, evidence }));
+  }
+  const standalone = buildFactCardPrompt({ sentenceCount: 1, difficulties: [10, 10], fields: [{ label: "Assigned slots", value: [{ slot: 0, topicPath: card.topicPath }] }] });
+  assert.ok(standalone.includes("exactly 1 complete, useful sentences"));
+  assert.ok(standalone.includes("only evidence IDs assigned to that slot"));
+  assert.equal((standalone.match(/Difficulty 10\/10/g) ?? []).length, 1);
+  assert.ok(!standalone.includes("Prefer 2 to 4") && !standalone.includes("Prefer 150 to 250"));
+  assert.ok(!standalone.includes("Original user query") && !standalone.includes("Card sentence counts"));
 });
 
 await t.test("writing prompts include only the requested length, difficulty, and citation mode", () => {

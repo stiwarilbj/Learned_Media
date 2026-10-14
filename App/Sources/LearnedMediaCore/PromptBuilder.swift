@@ -44,17 +44,35 @@ public enum PromptBuilder {
         return ([instructions.joined(separator: " ")] + data).joined(separator: "\n\n")
     }
 
-    public static func learning(action: PromptOperation, card: [String: Any], question: String? = nil,
-                                detailed: Bool = false, history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
-        let asking = action == .question
-        let rules = PromptInstructions.rules[asking ? "questionEvidence" : "learningEvidence"] ?? []
-        let length = detailed ? "Answer in approximately 150 to 250 words." : "Answer in 2 to 4 sentences."
-        return build(asking ? .question : .learn, rules: rules + (asking ? [length] : []), fields: [
-            PromptField("Original user query", asking ? question : nil),
-            PromptField(asking ? "Supporting card context" : "Card", card),
-            PromptField("Previous conversation (context only)", asking ? Array(history.suffix(6)) : nil),
+    public static func factCard(sentenceCount: Int, difficulties: [Int], fields: [PromptField]) -> String {
+        build(.grounding, rules: [FactQuality.writingRules(for: sentenceCount, evidenceIDs: true)]
+            + Array(Set(difficulties)).sorted().map { FactQuality.rubric($0) }, fields: fields)
+    }
+
+    private static func supportingCard(_ card: [String: Any]) -> [String: Any] {
+        card.filter { ["topicPath", "hook", "title", "body"].contains($0.key) }
+    }
+
+    public static func question(card: [String: Any], query: String?, detailed: Bool = false,
+                                history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
+        let rules = (PromptInstructions.rules["answerWriting"] ?? [])
+            + (PromptInstructions.rules["questionEvidence"] ?? [])
+            + (PromptInstructions.rules[detailed ? "answerDetailed" : "answerShort"] ?? [])
+        return build(.question, rules: rules, fields: [
+            PromptField("Original user query", query),
+            PromptField("Supporting card context", supportingCard(card)),
+            PromptField("Previous conversation (context only)", Array(history.suffix(6))),
             PromptField("Wikipedia evidence", evidence)
         ])
     }
 
+    public static func learning(action: PromptOperation, card: [String: Any], question: String? = nil,
+                                detailed: Bool = false, history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
+        if action == .question {
+            return self.question(card: card, query: question, detailed: detailed, history: history, evidence: evidence)
+        }
+        return build(.learn, rules: PromptInstructions.rules["learningEvidence"] ?? [], fields: [
+            PromptField("Card", supportingCard(card)), PromptField("Wikipedia evidence", evidence)
+        ])
+    }
 }
