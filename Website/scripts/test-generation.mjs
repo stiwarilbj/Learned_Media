@@ -1046,6 +1046,7 @@ await t.test("unknown evidence IDs fail local validation and leave only that slo
   assert.equal(result.partial, true);
   assert.equal(result.completedCount, 9);
   assert.equal(result.failedJobs, 1);
+  assert.deepEqual(result.validationDiagnostics, [{operation: "grounding", slot: 9, failureType: "unknown-evidence-id", message: "The card referenced unknown or unassigned evidence.", occurrences: 3}]);
   assert.equal(geminiCallCount(state), 5, "the invalid citation reuses its candidate once, then retries the unfinished slot");
   assert.equal(state.candidatePrompts.length, 2, "only the persistently invalid slot should receive a replacement candidate");
   assert.ok(result.cards.every(card => card.evidence?.every(item => card.sources[item.sourceIndex].extract?.includes(item.quote))));
@@ -1666,4 +1667,44 @@ test('missing finish reasons remain unknown rather than being recorded as normal
  const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
  assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),2);
  for(const outcome of result.modelOutcomes){assert.equal(outcome.finishReason,'UNKNOWN');assert.equal(outcome.outputLimitReached,false);}
+});
+
+test("validation diagnostics coalesce by operation, slot and type without retaining details", () => {
+  const { ValidationDiagnostics } = require("../lib/validation-diagnostics.ts");
+  const diagnostics = new ValidationDiagnostics();
+  for (let n = 0; n < 1000; n++) diagnostics.record("grounding", 2, `Unknown evidence ID private-${n}: ${"x".repeat(50000)}`);
+  const first = diagnostics.snapshot();
+  assert.equal(first.length, 1);
+  assert.equal(first[0].occurrences, 1000);
+  assert.ok(JSON.stringify(first).length < 250);
+  assert.ok(!JSON.stringify(first).includes("private"));
+  diagnostics.record("candidate", 2, "Unknown evidence ID");
+  diagnostics.record("grounding", 3, "Unknown evidence ID");
+  diagnostics.record("grounding", 2, "The supplied passages require more evidence is needed");
+  assert.equal(diagnostics.snapshot().length, 4);
+  first[0].occurrences = 0;
+  assert.equal(diagnostics.snapshot()[0].occurrences, 1000, "snapshots cannot mutate live counters");
+});
+
+test("diagnostic coalescing does not prevent accepting a corrected retry", async () => {
+  let attempts = 0;
+  const state = installNetworkMock({ transformOutput(output, prompt) {
+    if (prompt.includes('Return one result for each slot') && ++attempts <= 2) output.facts.find(f => f.slot === 0).evidence[0].evidenceIds = ["unassigned-" + attempts];
+    return output;
+  } });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({...generationArgs(sessionId), requestedCount: 1});
+  assert.equal(result.completedCount, 1);
+  assert.equal(result.validationDiagnostics[0]?.occurrences, 2);
+});
+
+test("total validation failure retains compact diagnostic counts", async () => {
+  const state = installNetworkMock({invalidSlot: 0});
+  const sessionId = await connectMock(state);
+  await assert.rejects(generateGeminiFacts({...generationArgs(sessionId), requestedCount: 1}), error => {
+    assert.equal(error.validationDiagnostics.length, 1);
+    assert.equal(error.validationDiagnostics[0].occurrences, 3);
+    assert.match(error.message, /3 occurrences/);
+    return true;
+  });
 });

@@ -43,8 +43,8 @@ function streamResponse(request: Request, apiKey: string, sessionId: string, bod
       }).then((result) => {
         send({ type: "complete", ...result });
       }).catch((error) => {
-        const failure = error as { outcomes?: unknown; status?: number };
-        send({ type: "error", error: describeGeminiError(error), modelOutcomes: failure.outcomes ?? [], retryable: failure.status !== 401 && failure.status !== 403, retryGuidance: "No sample facts were inserted. Retry after fixing the connection." });
+        const failure = error as { outcomes?: unknown; status?: number; validationDiagnostics?: unknown };
+        send({ type: "error", error: describeGeminiError(error), modelOutcomes: failure.outcomes ?? [], validationDiagnostics: failure.validationDiagnostics ?? [], retryable: failure.status !== 401 && failure.status !== 403, retryGuidance: "No sample facts were inserted. Retry after fixing the connection." });
       }).finally(close);
     }
   });
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
     });
     return NextResponse.json(result);
   } catch (error) {
-    const failure = error as { outcomes?: unknown; status?: number };
-    return NextResponse.json({ error: describeGeminiError(error), reason: "provider-error", modelOutcomes: failure.outcomes ?? [], partial: false, retryable: failure.status !== 401 && failure.status !== 403, retryGuidance: "No sample facts were inserted. Fix the connection or retry." }, { status: 502 });
+    const failure = error as { outcomes?: unknown; status?: number; validationDiagnostics?: unknown };
+    return NextResponse.json({ error: describeGeminiError(error), reason: "provider-error", modelOutcomes: failure.outcomes ?? [], validationDiagnostics: failure.validationDiagnostics ?? [], partial: false, retryable: failure.status !== 401 && failure.status !== 403, retryGuidance: "No sample facts were inserted. Fix the connection or retry." }, { status: 502 });
   }
 }

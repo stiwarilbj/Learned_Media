@@ -1,3 +1,4 @@
+import { ValidationDiagnostics, type ValidationDiagnostic } from "./validation-diagnostics";
 import { nextOutputCapacity, truncatedOutputFloor, MAX_OUTPUT_CAPACITY } from "./output-capacity";
 import { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildSearchInterpretationPrompt } from "./prompts";
 import { validateTopicPlan, type TopicQueryPlan } from "./topic-suggestions";
@@ -113,9 +114,11 @@ export type GeminiGenerationResult = {
   failedJobs: number;
   retryable: boolean;
   retryGuidance?: string;
+  validationDiagnostics: ValidationDiagnostic[];
 };
 
 class GeminiFailure extends Error {
+  validationDiagnostics: ValidationDiagnostic[] = [];
   status?: number;
   retryAfterMs?: number;
   retryable: boolean;
@@ -858,6 +861,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   const seenTitles = new Set(priorMemory.map(item => normalizedText(item.title)));
   const memory = [...priorMemory];
   const acceptedSlots = new Set<number>();
+  const diagnostics = new ValidationDiagnostics();
   const wikiCache = sharedWikipediaResolutionCache;
   let providerExhausted = false;
   let publicationGate = Promise.resolve();
@@ -879,8 +883,8 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       return true;
     } finally { unlock(); }
   };
-  const markRetry = (slot: GenerationSlot, message: string, round: number, retryGrounding: boolean) => {
-    slot.lastError = message;
+  const markRetry = (slot: GenerationSlot, message: string, round: number, retryGrounding: boolean, validation = true) => {
+    slot.lastError = validation ? diagnostics.record("grounding", slot.index, message) : message;
     slot.mode = retryGrounding && round === 0 ? "grounding" : "candidate";
   };
 
@@ -924,7 +928,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
           const matches = facts.filter(fact => fact.slot === slot.index);
           const candidate = matches.length === 1 ? matches[0] : undefined;
           if (!candidate?.title?.trim() || !candidate.claim?.trim() || !hasAssignedTopic(candidate, slot.path)) {
-            slot.lastError = "Gemini omitted a slot or returned a candidate for the wrong topic.";
+            slot.lastError = diagnostics.record("candidate", slot.index, "Gemini omitted a slot or returned a candidate for the wrong topic.");
             continue;
           }
           slot.candidate = candidate;
@@ -1035,17 +1039,21 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
         const error = classifyFailure(rawError);
         if (isCredentialFailure(error)) throw error;
         if (error.outcomes.length || /available Gemini models|every available Gemini model/i.test(error.message)) providerExhausted = true;
-        for (const slot of group) markRetry(slot, error.message, round, round >= 0);
+        for (const slot of group) markRetry(slot, error.message, round, round >= 0, false);
       }
     });
     if (providerExhausted) break;
   }
 
   const failedSlots = slots.filter(slot => !acceptedSlots.has(slot.index));
-  if (!cards.length) throw new GeminiFailure(failedSlots[0]?.lastError ?? "Gemini could not complete a Wikipedia-grounded batch.", undefined, outcomes, undefined, providerExhausted);
+  if (!cards.length) {
+    const failure = new GeminiFailure(failedSlots[0]?.lastError ?? "Gemini could not complete a Wikipedia-grounded batch.", undefined, outcomes, undefined, providerExhausted);
+    failure.validationDiagnostics = diagnostics.snapshot();
+    throw failure;
+  }
   const partial = cards.length < targetCount;
   failedSlots.forEach(slot => onProgress?.({ type: "slot-error", slot: slot.index, error: slot.lastError ?? "This fact slot could not be completed." }));
-  return { cards, modelOutcomes: outcomes, requestedCount: targetCount, completedCount: cards.length, partial, failedJobs: failedSlots.length, retryable: partial, retryGuidance: partial ? cards.length + " facts arrived. Retry to fill the remaining slots." : undefined };
+  return { cards, validationDiagnostics: diagnostics.snapshot(), modelOutcomes: outcomes, requestedCount: targetCount, completedCount: cards.length, partial, failedJobs: failedSlots.length, retryable: partial, retryGuidance: partial ? cards.length + " facts arrived. Retry to fill the remaining slots." : undefined };
 }
 
 export async function generateLearningResponse({ apiKey, sessionId = "default-session", action, card, question, detailed, history, signal }: { apiKey: string; sessionId?: string; action: "learn" | "question"; card: FactCard; question?: string; detailed?: boolean; history?: LearningMessage[]; signal?: AbortSignal }): Promise<{ answer: string; citations: WikipediaSource[]; modelOutcomes: GeminiModelOutcome[] }> {

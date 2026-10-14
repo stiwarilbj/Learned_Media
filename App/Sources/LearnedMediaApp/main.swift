@@ -17,14 +17,16 @@ private struct NativeError: Error {
     let statusCode: Int?
     let retryAfter: TimeInterval?
     let quotaScope: String?
+    let validationDiagnostics: [[String: Any]]
 
-    init(message: String, retryable: Bool = true, outcomes: [[String: Any]] = [], status: String? = nil, statusCode: Int? = nil, retryAfter: TimeInterval? = nil, quotaScope: String? = nil) {
+    init(message: String, retryable: Bool = true, outcomes: [[String: Any]] = [], status: String? = nil, statusCode: Int? = nil, retryAfter: TimeInterval? = nil, quotaScope: String? = nil, validationDiagnostics: [[String: Any]] = []) {
         self.message = message
         self.retryable = retryable
         self.outcomes = outcomes
         self.status = status
         self.statusCode = statusCode
         self.retryAfter = retryAfter
+        self.validationDiagnostics = validationDiagnostics
         self.quotaScope = quotaScope
     }
 }
@@ -1274,6 +1276,10 @@ private final class GeminiClient {
     }
 
     private func makeCard(slot: GeminiGenerationSlot, fact: GeminiGroundedFact, evidenceByID: [String: GeminiEvidence], sentenceCount: Int, model: String?, resolvedModel: String?) throws -> [String: Any] {
+        let suppliedIDs = (fact.claimEvidenceIds ?? []) + (fact.evidence ?? []).flatMap { $0.evidenceIds ?? [] }
+        guard suppliedIDs.allSatisfy({ evidenceByID[$0] != nil }) else {
+            throw NativeError(message: "The card referenced an unknown evidence ID or an ID assigned to another card.")
+        }
         guard fact.status == "grounded", FactQuality.validEvidenceReferences([(0, fact.claimEvidenceIds)], assignedIDs: Set(evidenceByID.keys), sentenceCount: sentenceCount) else {
             throw NativeError(message: "The card is missing valid evidence IDs supporting its specific main claim.")
         }
@@ -1327,6 +1333,7 @@ private final class GeminiClient {
             let topic = topics[index % topics.count]
             return GeminiGenerationSlot(index: index, path: topic["path"] as? [String] ?? [], level: max(1, min(10, topic["difficulty"] as? Int ?? settings["obscurity"] as? Int ?? 5)), mode: "candidate", candidate: nil, sources: [], lastError: nil)
         }
+        var diagnostics = ValidationDiagnostics()
         let ledger = FactPublicationLedger(initial: avoid)
         var accepted: [Int: [String: Any]] = [:]
         var outcomes: [[String: Any]] = []
@@ -1359,7 +1366,7 @@ private final class GeminiClient {
                     guard let candidate = result.candidates[index], let title = candidate.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
                           let claim = candidate.claim?.trimmingCharacters(in: .whitespacesAndNewlines), !claim.isEmpty,
                           let slotIndex = slots.firstIndex(where: { $0.index == index }), topicPathMatches(candidate.topicPath, assigned: slots[slotIndex].path) else {
-                        if let slotIndex = slots.firstIndex(where: { $0.index == index }) { slots[slotIndex].lastError = result.error ?? "Gemini omitted a slot or returned a candidate for a different topic." }
+                        if let slotIndex = slots.firstIndex(where: { $0.index == index }) { slots[slotIndex].lastError = result.error ?? diagnostics.record(operation: "candidate", slot: index, detail: "Gemini omitted a slot or returned a candidate for a different topic.") }
                         continue
                     }
                     slots[slotIndex].candidate = candidate
@@ -1403,13 +1410,13 @@ private final class GeminiClient {
                         }
                         guard let slotIndex = slots.firstIndex(where: { $0.index == index }), let fact = result.facts[index] else {
                             if let slotIndex = slots.firstIndex(where: { $0.index == index }) {
-                                slots[slotIndex].lastError = result.error ?? "Gemini omitted this grounded slot."
+                                slots[slotIndex].lastError = result.error ?? diagnostics.record(operation: "grounding", slot: index, detail: "Gemini omitted this grounded slot.")
                                 if attempt != 0 { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
                             }
                             continue
                         }
                         if fact.status == "needs_evidence" {
-                            slots[slotIndex].lastError = "The supplied passages do not support this card’s specific main claim; more evidence is needed."
+                            slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: "The supplied passages do not support this card’s specific main claim; more evidence is needed.")
                             slots[slotIndex].mode = "candidate"
                             slots[slotIndex].candidate = nil
                             slots[slotIndex].sources = []
@@ -1420,7 +1427,7 @@ private final class GeminiClient {
                             let card = try makeCard(slot: slots[slotIndex], fact: fact, evidenceByID: result.evidenceBySlot[index] ?? [:], sentenceCount: sentenceCount, model: result.model, resolvedModel: result.resolvedModel)
                             if Task.isCancelled { group.cancelAll(); break }
                             guard await ledger.accept(card) else {
-                                slots[slotIndex].lastError = "This candidate repeats another completed fact."
+                                slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: "This candidate repeats another completed fact.")
                                 slots[slotIndex].mode = "candidate"
                                 slots[slotIndex].candidate = nil
                                 slots[slotIndex].sources = []
@@ -1432,7 +1439,7 @@ private final class GeminiClient {
                             onCard(card, completed, targetCount)
                         } catch {
                             if Task.isCancelled { group.cancelAll(); break }
-                            slots[slotIndex].lastError = (error as? NativeError)?.message ?? "The fact failed local citation validation."
+                            slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: (error as? NativeError)?.message ?? "The fact failed local citation validation.")
                             if attempt != 0 { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
                         }
                     }
@@ -1445,9 +1452,9 @@ private final class GeminiClient {
         let cards = slots.compactMap { accepted[$0.index] }
         let failed = targetCount - cards.count
         guard !cards.isEmpty else {
-            throw NativeError(message: slots.first(where: { accepted[$0.index] == nil })?.lastError ?? "Gemini could not complete a Wikipedia-grounded batch.", retryable: generationStatus == "rate-limited", outcomes: outcomes, status: generationStatus)
+            throw NativeError(message: slots.first(where: { accepted[$0.index] == nil })?.lastError ?? "Gemini could not complete a Wikipedia-grounded batch.", retryable: generationStatus == "rate-limited", outcomes: outcomes, status: generationStatus, validationDiagnostics: diagnostics.snapshot)
         }
-        return ["cards": cards, "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "modelStatus": generationStatus ?? "connected", "partial": failed > 0, "failedJobs": failed, "retryable": failed > 0, "retryGuidance": failed > 0 ? "Some work failed. Retry to fill the remaining cards." : ""]
+        return ["cards": cards, "validationDiagnostics": diagnostics.snapshot, "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "modelStatus": generationStatus ?? "connected", "partial": failed > 0, "failedJobs": failed, "retryable": failed > 0, "retryGuidance": failed > 0 ? "Some work failed. Retry to fill the remaining cards." : ""]
     }
 
     func learn(key: String, action: String, card: [String: Any], question: String?, detailed: Bool, history: [[String: Any]]) async throws -> [String: Any] {
@@ -1973,7 +1980,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
 
     private func respondGeminiFailure(id: String, error: Error) {
         if let failure = error as? NativeError, !failure.outcomes.isEmpty || failure.status != nil {
-            var event: [String: Any] = ["type": "operationStatus", "modelOutcomes": failure.outcomes]
+            var event: [String: Any] = ["type": "operationStatus", "modelOutcomes": failure.outcomes, "validationDiagnostics": failure.validationDiagnostics]
             if let status = failure.status { event["status"] = status }
             respondEvent(id: id, payload: event)
         }
