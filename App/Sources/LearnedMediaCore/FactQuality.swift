@@ -116,6 +116,18 @@ public enum FactQuality {
         for byte in key.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
         return "e" + String(format: "%016llx", hash)
     }
+    /// Every ID must be assigned to this card, even if it exists elsewhere in the batch.
+    public static func validEvidenceReferences(_ references: [(sentence: Int, evidenceIDs: [String]?)], assignedIDs: Set<String>, sentenceCount: Int) -> Bool {
+        guard !references.isEmpty, references.count <= 12 else { return false }
+        var count = 0
+        for reference in references {
+            guard (0..<sentenceCount).contains(reference.sentence), let ids = reference.evidenceIDs,
+                  !ids.isEmpty, ids.count <= 3, ids.allSatisfy({ assignedIDs.contains($0) }) else { return false }
+            count += ids.count
+        }
+        return count <= 12
+    }
+
     private static func evidenceIsInSection(_ extract: String, quote: String, section: String) -> Bool {
         for passage in extract.components(separatedBy: "[Section: ").dropFirst() {
             let parts = passage.split(separator: "]", maxSplits: 1, omittingEmptySubsequences: false)
@@ -131,6 +143,10 @@ public enum FactQuality {
         let count = hook.split(whereSeparator: { $0.isWhitespace }).count
         guard !title.isEmpty, !claim.isEmpty, normalized(title) != normalized(hook), (4...12).contains(count), sentences.count == expected, evidence.count <= 12 else { return false }
         guard hook.range(of: "\\b(and|or|of|the|a|to|with)$", options: [.regularExpression,.caseInsensitive]) == nil else { return false }
+        guard evidence.allSatisfy({ item in
+            guard let sentence = item["sentence"] as? Int else { return false }
+            return sentences.indices.contains(sentence)
+        }) else { return false }
         var sections = Set<String>()
         for (index, sentence) in sentences.enumerated() {
             guard (35...600).contains(sentence.count), sentence.split(whereSeparator: { $0.isWhitespace }).count >= 8, sentence.range(of: "[.!?][”\"']?$", options: .regularExpression) != nil else { return false }

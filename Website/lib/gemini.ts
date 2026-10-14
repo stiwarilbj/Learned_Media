@@ -4,7 +4,7 @@ import type { Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelO
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
-import { difficultyRubric, stableEvidenceId, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
+import { difficultyRubric, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
 import type { YouTubeSearchCandidate } from "./youtube";
 import { requestCacheKey, SessionCache } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
@@ -922,13 +922,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
               hook: fact.hook ?? "",
               claim: fact.claim ?? "",
               sentences: fact.sentences ?? [],
-              evidence: (fact.evidence ?? []).flatMap(item => {
-                const ids = item.evidenceIds ?? [];
-                return (ids.length ? ids : [""]).map(id => {
-                  const match = assignedEvidence.get(id);
-                  return { sentence: item.sentence, sourceIndex: match?.sourceIndex ?? -1, quote: match?.quote ?? "", section: match?.section };
-                });
-              })
+              evidence: restoreEvidenceReferences(fact.evidence, assignedEvidence, sentenceCount)
             };
             validateDraft(localFact, slot.sources!, sentenceCount, slot.target);
             const chosenIndexes = Array.from(new Set(localFact.evidence.map(item => item.sourceIndex)));

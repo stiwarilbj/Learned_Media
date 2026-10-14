@@ -1203,14 +1203,16 @@ private final class GeminiClient {
               !references.isEmpty else {
             throw NativeError(message: "The fact did not contain \(sentenceCount) supported sentences with matching headings.")
         }
-        let quotes: [GeminiEvidence] = references.flatMap { reference in
-            (reference.evidenceIds ?? []).map { id -> GeminiEvidence in
-                guard let match = evidenceByID[id] else { return GeminiEvidence(sentence: reference.sentence, sourceIndex: -1, quote: "", section: nil) }
+        guard FactQuality.validEvidenceReferences(references.map { ($0.sentence, $0.evidenceIds) }, assignedIDs: Set(evidenceByID.keys), sentenceCount: sentences.count) else {
+            throw NativeError(message: "The card returned invalid evidence references, an unknown ID, or an ID assigned to another card.")
+        }
+        let quotes: [GeminiEvidence] = try references.flatMap { reference in
+            try (reference.evidenceIds ?? []).map { id -> GeminiEvidence in
+                guard let match = evidenceByID[id] else { throw NativeError(message: "The card referenced unassigned evidence.") }
                 return GeminiEvidence(sentence: reference.sentence, sourceIndex: match.sourceIndex, quote: match.quote, section: match.section)
             }
         }
-        guard references.allSatisfy({ $0.sentence >= 0 && $0.sentence < sentences.count && !($0.evidenceIds ?? []).isEmpty }),
-              FactQuality.validate(title: title, hook: hook, claim: claim, sentences: sentences, evidence: quotes.map { $0.dictionary }, sources: slot.sources, expectedSentences: sentenceCount, difficulty: slot.level) else {
+        guard FactQuality.validate(title: title, hook: hook, claim: claim, sentences: sentences, evidence: quotes.map { $0.dictionary }, sources: slot.sources, expectedSentences: sentenceCount, difficulty: slot.level) else {
             throw NativeError(message: "The fact did not contain \(sentenceCount) supported sentences with matching headings.")
         }
         let indexes = Array(Set(quotes.map(\.sourceIndex))).sorted()

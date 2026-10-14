@@ -6,6 +6,18 @@ final class FactQualityTests: XCTestCase {
         "extract": "The 1847 Relief Act created soup kitchens in Ireland. The kitchens served millions of meals during the famine. Parliament later replaced the program with a revised poor-law system. The revised system changed how relief was administered. The policy left a documented mark on Ireland’s relief institutions. County inspectors recorded the kitchens’ daily operations in detailed reports. Local committees purchased food through a centralized relief network. The program connected emergency meals with the broader poor-law administration. Historians use the surviving records to compare relief across counties. The legislation changed how officials measured hunger during the crisis."
     ]]
 
+    func testEvidenceIDsMustBelongToCurrentCard() {
+        let own = Set(["own"])
+        XCTAssertTrue(FactQuality.validEvidenceReferences([(0, ["own"])], assignedIDs: own, sentenceCount: 3))
+        let invalid: [(sentence: Int, evidenceIDs: [String]?)] = [
+            (0, ["unknown"]), (0, ["other-card"]), (0, nil), (0, []),
+            (0, ["own", "own", "own", "own"]), (-1, ["own"]), (3, ["own"])
+        ]
+        for reference in invalid {
+            XCTAssertFalse(FactQuality.validEvidenceReferences([(0, ["own"]), reference], assignedIDs: own, sentenceCount: 3))
+        }
+    }
+
     func testAcceptsOneSupportedThreeSentenceFact() {
         let sentences = [
             "The 1847 Relief Act created soup kitchens in Ireland.",

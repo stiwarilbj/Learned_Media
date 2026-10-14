@@ -10,7 +10,7 @@
   ],
   "grounding": [
     "Return one grounded fact for each slot. Omit unsupported slots; never substitute a different claim.",
-    "For each sentence, return only evidence IDs assigned to that slot. Evidence items use a zero-based sentence index and evidenceIds."
+    "For each sentence, return only evidence IDs assigned to that slot. Evidence items use a zero-based sentence index and evidenceIds. Never return reconstructed source titles, sections, or quotations; those are restored locally. Unknown IDs and IDs not assigned to that slot are rejected."
   ],
   "learn": [
     "Explain this one card in one useful paragraph of approximately 100 to 160 words. Add context rather than repeating its body."

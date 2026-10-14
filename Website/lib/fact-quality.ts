@@ -187,6 +187,24 @@ export function stableEvidenceId(key: string) {
 }
 
 export type GroundedDraft = { title: string; hook: string; claim: string; sentences: string[]; evidence: Array<{ sentence: number; sourceIndex: number; quote: string; section?: string }> };
+/** Resolve every returned ID against this card's allowlist before citation validation. */
+export function restoreEvidenceReferences(references: unknown, assigned: ReadonlyMap<string, { sourceIndex: number; quote: string; section?: string }>, sentenceCount: number): GroundedDraft["evidence"] {
+  if (!Array.isArray(references) || !references.length || references.length > 12) throw new Error("The card is missing valid evidence references.");
+  const restored = references.flatMap(item => {
+    if (!item || !Number.isInteger(item.sentence) || item.sentence < 0 || item.sentence >= sentenceCount
+        || !Array.isArray(item.evidenceIds) || !item.evidenceIds.length || item.evidenceIds.length > 3) {
+      throw new Error("The card returned an invalid evidence reference or sentence index.");
+    }
+    return item.evidenceIds.map((id: unknown) => {
+      const match = typeof id === "string" ? assigned.get(id) : undefined;
+      if (!match) throw new Error("The card referenced an unknown evidence ID or an ID assigned to another card.");
+      return { sentence: item.sentence, sourceIndex: match.sourceIndex, quote: match.quote, section: match.section };
+    });
+  });
+  if (restored.length > 12) throw new Error("The card returned too many evidence references.");
+  return restored;
+}
+
 function evidenceSection(extract: string, quote: string, section: string) {
   const marker = `[Section: ${section}]`;
   const start = extract.indexOf(marker);
@@ -202,7 +220,7 @@ export function validateDraft(draft: GroundedDraft, sources: WikipediaSource[], 
   if (count < 4 || count > 12 || /\b(?:and|or|of|the|a|to|with)$/i.test(draft.hook.trim())) throw new Error("The fact hook is incomplete or outside 4–12 words.");
   if (normalizedText(draft.title) === normalizedText(draft.hook)) throw new Error("The black heading must be more specific than the blue hook.");
   if (!Array.isArray(draft.sentences) || draft.sentences.length !== sentenceCount || draft.sentences.some(sentence => typeof sentence !== "string" || sentence.trim().length < 35 || sentence.trim().split(/\s+/).length < 8 || sentence.length > 600 || !/[.!?][”"']?$/.test(sentence.trim()))) throw new Error(`Each fact must contain exactly ${sentenceCount} complete sentence${sentenceCount === 1 ? "" : "s"}.`);
-  if (!Array.isArray(draft.evidence) || draft.evidence.length > 12) throw new Error("The fact is missing verifiable evidence.");
+  if (!Array.isArray(draft.evidence) || draft.evidence.length > 12 || draft.evidence.some(item => !item || !Number.isInteger(item.sentence) || item.sentence < 0 || item.sentence >= sentenceCount)) throw new Error("The fact is missing verifiable evidence.");
   const sections = new Set<string>();
   for (let sentence = 0; sentence < sentenceCount; sentence++) {
     const quotes = draft.evidence.filter(item => item.sentence === sentence);

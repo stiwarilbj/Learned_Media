@@ -22,7 +22,7 @@ const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
 const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
 const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
-const { completeSentenceChunks, selectEvidence, stableEvidenceId, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
+const { completeSentenceChunks, selectEvidence, stableEvidenceId, restoreEvidenceReferences, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
 const { sharedWikipediaResolutionCache } = require("../lib/wikipedia.ts");
 const originalFetch = globalThis.fetch;
 const originalDateNow = Date.now;
@@ -158,6 +158,13 @@ function installNetworkMock(options = {}) {
             const invalidId = (options.invalidEvidenceIdSlot === slot || options.invalidSlot === slot) && sentence === 0;
             return { sentence, evidenceIds: invalidId ? ["unknown-evidence-id"] : selected ? [selected.id] : ["unknown-evidence-id"] };
           });
+          if (options.foreignEvidenceSlot === slot) {
+            state.foreignEvidenceId ??= value.allEvidence.find(span => !value.evidenceIds.includes(span.id))?.id;
+            evidence[0].evidenceIds = [state.foreignEvidenceId ?? "foreign-evidence-id"];
+          }
+          if (options.extraInvalidEvidenceSlot === slot) {
+            evidence.push({ sentence: sentences.length, evidenceIds: [value.evidenceIds[0]] });
+          }
           return {
             slot,
             title: factBundle(word).title,
@@ -854,6 +861,36 @@ await t.test("duplicate content is rejected and only that slot is regenerated", 
   assert.equal(geminiCallCount(state), 4, "one duplicate slot should add one candidate and one grounding call");
   assert.equal(state.candidatePrompts.length, 2);
   assert.equal(state.groundingPrompts.length, 2);
+});
+
+await t.test("evidence restoration trusts only the current card's local allowlist", () => {
+  const assigned = new Map([["own", { sourceIndex: 0, quote: "Exact local quotation.", section: "Local section" }]]);
+  assert.deepEqual(restoreEvidenceReferences([{ sentence: 0, evidenceIds: ["own"], quote: "Forged quotation", section: "Forged section", sourceIndex: 99 }], assigned, 3),
+    [{ sentence: 0, sourceIndex: 0, quote: "Exact local quotation.", section: "Local section" }]);
+  for (const reference of [
+    { sentence: 0, evidenceIds: ["unknown"] },
+    { sentence: 0, evidenceIds: ["other-card"] },
+    { sentence: 0, evidenceIds: [] },
+    { sentence: 0, evidenceIds: [null] },
+    { sentence: 0, evidenceIds: ["own", "own", "own", "own"] },
+    { sentence: -1, evidenceIds: ["own"] },
+    { sentence: 3, evidenceIds: ["own"] },
+    { sentence: 0.5, evidenceIds: ["own"] }
+  ]) {
+    assert.throws(() => restoreEvidenceReferences([{ sentence: 0, evidenceIds: ["own"] }, reference], assigned, 3));
+  }
+});
+
+await t.test("foreign IDs and extra out-of-range references reject only the affected card", async () => {
+  for (const options of [{ foreignEvidenceSlot: 9 }, { extraInvalidEvidenceSlot: 9 }]) {
+    const state = installNetworkMock(options);
+    const sessionId = await connectMock(state);
+    const result = await generateGeminiFacts(generationArgs(sessionId));
+    assert.equal(result.completedCount, 9);
+    assert.equal(result.failedJobs, 1);
+    assert.equal(result.partial, true);
+    assert.ok(result.cards.every(card => card.evidence.every(item => card.sources[item.sourceIndex].extract.includes(item.quote))));
+  }
 });
 
 await t.test("unknown evidence IDs fail local validation and leave only that slot partial", async () => {
