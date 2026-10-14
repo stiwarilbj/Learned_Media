@@ -12,7 +12,7 @@ export type VideoSearchPlan = {
 type Video = { id: string; channelId: string; channelName: string; title: string; description: string; tags: string[]; topics: string[]; publishedAt: string; durationSeconds: number; approved: boolean; special?: boolean; sourceIds?: string[] };
 export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
-export const VIDEO_SEMANTIC_VERSION = 8;
+export const VIDEO_SEMANTIC_VERSION = 9;
 
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
@@ -170,7 +170,7 @@ function preserveVideoConcepts(local: NonNullable<VideoSearchPlan["conceptGroups
 }
 type Field = { name: string; value: string; text: string; words: Set<string> };
 const index = new WeakMap<Video, Field[]>();
-const BOILERPLATE = /\b(subscribe|patreon|sponsor(?:ed)?|affiliate|merch|use code|follow (?:me|us)|support (?:me|us|the channel)|buy (?:my|our))\b/i;
+const BOILERPLATE = /\b(subscribe|patreon|sponsor(?:ed)?|affiliate|merch|use code|follow (?:me|us)|support (?:me|us|the channel)|buy (?:my|our)|(?:our|my|this) (?:other )?channel|check out (?:our|my)|channel advertisement)\b/i;
 function cleanDescription(value: string) { return value.split(/\n+|(?<=[.!?])\s+/).filter((part) => !BOILERPLATE.test(part)).join(" ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0,6000); }
 function fieldsFor(video: Video) {
   const cached = index.get(video); if (cached) return cached;
@@ -194,6 +194,59 @@ function passage(field: Field, term: string) {
   const start = value.length > 320 && hit > 240 ? Math.max(0,hit-80) : 0;
   return value.slice(start,start+320);
 }
+// Connection evidence stays inside one short passage, or the title and opening passage.
+const nearbyIndex = new WeakMap<Video, Array<{ fields: Field[]; bonus: number }>>();
+function localField(name: string, value: string): Field {
+  const text = searchTextForms(contextualSearchText(value)).join(" ");
+  return {name,value,text,words:new Set(text.split(" "))};
+}
+function nearbyUnits(video: Video) {
+  const cached = nearbyIndex.get(video); if (cached) return cached;
+  const title = fieldsFor(video)[0];
+  const units = [{fields:[title],bonus:30}];
+  let lead: Field | undefined;
+  for (const paragraph of video.description.slice(0,6000).split(/\n+/)) {
+    // Keep paragraph boundaries even after removing advertisements and links.
+    const runs: string[][] = [[]];
+    for (const sentence of paragraph.split(/(?<=[.!?])\s+/)) {
+      if (BOILERPLATE.test(sentence)) { runs.push([]); continue; }
+      const clean=cleanDescription(sentence); if(clean) runs[runs.length-1].push(clean);
+    }
+    for (const sentences of runs) for (let i=0;i<sentences.length;i++) {
+      const pair = [sentences[i],sentences[i+1]].filter(Boolean).join(" ");
+      const value = pair;
+      for (let start=0;start<value.length;start+=240) {
+        const from = start ? value.indexOf(" ",start) + 1 : 0;
+        if (start && from === 0) break;
+        const end = value.length <= from+480 ? value.length : value.lastIndexOf(" ",from+480);
+        if (end <= from) continue;
+        const field = localField("description",value.slice(from,end));
+        units.push({fields:[field],bonus:16});
+        if (!lead) lead=field;
+        if (end === value.length) break;
+      }
+    }
+  }
+  if (lead) units.push({fields:[title,lead],bonus:8});
+  for (const tag of video.tags || []) if (tag.length <= 480) units.push({fields:[localField("tags",tag)],bonus:4});
+  nearbyIndex.set(video,units); return units;
+}
+function matchedGroups(fields: Field[], groups: NonNullable<VideoSearchPlan["conceptGroups"]>) {
+  return groups.flatMap((group,i)=>group.terms.flatMap(expand).some(term=>fields.some(field=>matchesTerm(term,field))) ? [i] : []);
+}
+function connectedCoverage(video: Video, groups: NonNullable<VideoSearchPlan["conceptGroups"]>, anyOf: number[][] | undefined, global: VideoConceptCoverage) {
+  if (!global.complete || groups.filter(g=>g.required!==false).length<2) return {coverage:global,bonus:0,fields:undefined as Field[] | undefined};
+  const titleFields=[fieldsFor(video)[0]];
+  const titleCoverage=coverageFor(groups,matchedGroups(titleFields,groups),anyOf);
+  if(titleCoverage.complete) return {coverage:titleCoverage,bonus:30,fields:titleFields};
+  let best = {coverage:{...global,complete:false,matchedConcepts:[] as number[],missingConcepts:groups.map((_,i)=>i)},bonus:0,fields:undefined as Field[] | undefined};
+  for (const unit of nearbyUnits(video)) {
+    const coverage = coverageFor(groups,matchedGroups(unit.fields,groups),anyOf);
+    if (coverage.complete && !best.coverage.complete || coverage.complete===best.coverage.complete && (coverage.missingConcepts.length<best.coverage.missingConcepts.length || coverage.missingConcepts.length===best.coverage.missingConcepts.length && unit.bonus>best.bonus)) best={coverage,bonus:unit.bonus,fields:unit.fields};
+  }
+  return best;
+}
+
 function requiredGroups(plan: VideoSearchPlan): NonNullable<VideoSearchPlan["conceptGroups"]> {
   if (plan.conceptGroups?.length) return [...plan.conceptGroups, ...(plan.include || []).filter((term) => !plan.conceptGroups!.some((group) => group.terms.some((variant) => normalizeVideoQuery(variant) === normalizeVideoQuery(term)))).map((term) => ({terms:expand(term),required:true}))];
   return [...(plan.terms || []).map(term => ({terms:expand(term),required:true})), ...(plan.include || []).map((term) => ({terms:expand(term),required:true}))];
@@ -223,7 +276,7 @@ function coverageFor(groups: NonNullable<VideoSearchPlan["conceptGroups"]>, matc
 export function videoConceptCoverage<T extends Video>(video: T, plan: VideoSearchPlan): VideoConceptCoverage {
   const fields = fieldsFor(video), groups = requiredGroups(plan);
   const matched = groups.flatMap((group, i) => group.terms.flatMap(expand).some(term => fields.filter(field => field.name !== "topics").some(field => matchesTerm(term,field))) ? [i] : []);
-  return coverageFor(groups, matched, plan.anyOf);
+  return connectedCoverage(video,groups,plan.anyOf,coverageFor(groups, matched, plan.anyOf)).coverage;
 }
 export function semanticCoverage<T extends Video>(video: T, plan: VideoSearchPlan) {
   return requiredGroups(plan).length > 0 && videoConceptCoverage(video,plan).complete;
@@ -247,13 +300,21 @@ export function searchSemanticVideos<T extends Video>(videos: T[], plan: VideoSe
       if (matches.length) { evidence.push(matches[0]); matchedConcepts.push(groupIndex); }
     }
     const filterOnly = !groups.length && Boolean(plan.channelId || channelId || topic !== "All" || plan.minDate || plan.maxDate || plan.minDurationSeconds !== undefined || plan.maxDurationSeconds !== undefined || plan.sort && plan.sort !== "relevance");
-    const coverage = coverageFor(groups, matchedConcepts, plan.anyOf);
+    const connected = connectedCoverage(video,groups,plan.anyOf,coverageFor(groups, matchedConcepts, plan.anyOf));
+    const coverage = connected.coverage;
     if (!coverage.complete || !evidence.length && !filterOnly) continue;
+    if (connected.fields) {
+      evidence.length=0;
+      for (const group of groups) {
+        const matches=group.terms.flatMap(term=>connected.fields!.filter(field=>matchesTerm(term,field)).map(field=>({field,term,score:field.name==="title"?20:field.name==="tags"?12:8})));
+        matches.sort((a,b)=>b.score-a.score); if(matches.length) evidence.push(matches[0]);
+      }
+    }
     const title = fields[0].text;
     const exactTitle = (plan.terms || []).some((term) => contains(title,normalizeVideoQuery(term)));
     const relatedBonus = Math.min(3, related.filter(term => fields.some(field => matchesTerm(term, field))).length);
     const hint = (video.topics || []).some((topic) => (plan.topicHints || []).includes(topic));
-    results.push({video,coverage,score:100*evidence.length + evidence.reduce((sum,item)=>sum+item.score,0)+(exactTitle?10:0)+(hint?1:0)+relatedBonus,matchedFields:[...new Set(evidence.map((item)=>item.field.name))],supportingText:[...new Set(evidence.map((item)=>passage(item.field,item.term)))].slice(0,8)});
+    results.push({video,coverage,score:100*evidence.length + evidence.reduce((sum,item)=>sum+item.score,0)+(exactTitle?10:0)+(hint?1:0)+relatedBonus+connected.bonus,matchedFields:[...new Set(evidence.map((item)=>item.field.name))],supportingText:[...new Set(evidence.map((item)=>passage(item.field,item.term)))].slice(0,8)});
   }
   return results.sort((a,b)=>compareSemanticCandidates(a,b,plan.sort)).slice(0,Math.max(1,limit));
 }
@@ -271,7 +332,9 @@ export async function searchSemanticVideosYielding<T extends Video>(videos: T[],
 /** Explain only evidence found in searchable metadata; model prose never establishes a match. */
 export function videoSearchReason<T extends Video>(video: T, plan: VideoSearchPlan, localScore = 0, suppliedSupport: string[] = []) {
   const groups = requiredGroups(plan);
-  const fields = fieldsFor(video).filter(field => field.name !== "topics");
+  const allFields = fieldsFor(video).filter(field => field.name !== "topics");
+  const connected = connectedCoverage(video,groups,plan.anyOf,coverageFor(groups,matchedGroups(allFields,groups),plan.anyOf));
+  const fields = connected.coverage.complete && connected.fields ? connected.fields : allFields;
   const support: string[] = [], matchedFields = new Set<string>();
   for (const group of groups) {
     const matches = group.terms.flatMap(expand).flatMap(term => fields.filter(field => matchesTerm(term, field)).map(field => ({field,term})));

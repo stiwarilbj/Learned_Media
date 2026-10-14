@@ -231,3 +231,43 @@ test('short aliases need domain context rather than capitalization or ordinary p
   assert.ok(!ids(search.searchSemanticVideos(catalog,search.makeLocalVideoPlan('information technology support'))).includes('it'));
  }
 });
+
+
+test('multi-concept matches require a nearby connection and prefer a connecting title',()=>{
+ const filler='Marine ecosystems contain many kinds of plants and animals. '.repeat(18);
+ const catalog=[video('title','Earthquakes in Japan'),video('near','Seismic Stories',{description:'Earthquakes can damage buildings. In Japan, seismic engineering reduces damage.'}),video('lead','Earthquakes Explained',{description:'Japan has extensive seismic monitoring.'}),video('far','Seismic Stories',{description:'Earthquakes shake the ground. '+filler+'Japan has a rich literary tradition.'}),video('ad','Earthquakes Explained',{description:'Earthquakes shake the ground. '+filler+'Visit our other channel for Japan travel.'}),video('paragraphs','Seismic Stories',{description:'Earthquakes shake the ground.\nJapan has a rich literary tradition.'}),video('tags','Seismic Stories',{tags:['earthquakes','Japan']}),video('ad-gap','Seismic Stories',{description:'Earthquakes shake the ground. Visit our other channel for more videos. Japan has a rich literary tradition.'})];
+ for(const search of [engine,native.LEARNED_MEDIA_VIDEO_SEARCH]) {
+  const plan=search.makeLocalVideoPlan('earthquakes in Japan');
+  const results=search.searchSemanticVideos(catalog,plan);
+  assert.deepEqual(new Set(Array.from(ids(results))),new Set(['title','near','lead']));
+  assert.equal(results[0].video.id,'title');
+  for(const item of catalog.slice(3)) {
+   assert.equal(search.semanticCoverage(item,plan),false,item.id);
+   assert.equal(search.videoSearchReason(item,plan).relevance,'broader',item.id);
+  }
+  assert.equal(search.shouldEnrichVideoSearch('earthquakes in Japan',plan,[{video:catalog[3]}]),true);
+  assert.equal(search.shouldEnrichVideoSearch('earthquakes in Japan',plan,[{video:catalog[1]}]),false);
+  const reason=search.videoSearchReason(catalog[1],plan);
+  assert.equal(reason.relevance,'strong');assert.ok(Array.from(reason.support).some(text=>text.includes('Japan')));
+  const or=search.makeLocalVideoPlan('earthquakes in Japan or moving continents');
+  const extra=video('other-clause','Plate Tectonics Explained');
+  assert.deepEqual(new Set(Array.from(ids(search.searchSemanticVideos([...catalog,extra],or)))),new Set(['title','near','lead','other-clause']));
+ }
+});
+
+test('unrelated channel advertising cannot create nearby coverage or be rescued by model excerpts',()=>{
+ const item=video('ad','Seismic Stories',{description:'Earthquakes shake the ground. Visit our channel for Japan travel.'});
+ const plan=engine.makeLocalVideoPlan('earthquakes in Japan');
+ for(const search of [engine,native.LEARNED_MEDIA_VIDEO_SEARCH]) {
+  assert.equal(search.semanticCoverage(item,plan),false);
+  const reason=search.videoSearchReason(item,plan,100,['Earthquakes shake the ground. Visit our channel for Japan travel.']);
+  assert.equal(reason.relevance,'broader');assert.ok(!Array.from(reason.support).some(text=>text.includes('Japan travel')));
+ }
+});
+
+test('nearby ranking agrees with the yielding fallback and keeps strict filters',async()=>{
+ const plan={...engine.makeLocalVideoPlan('earthquakes in Japan'),minDate:'2024-01-01',maxDurationSeconds:700};
+ const catalog=[video('near','Seismic Stories',{description:'Earthquakes affect Japan.'}),video('old','Earthquakes in Japan',{publishedAt:'2020-01-01'}),video('short','Earthquakes in Japan #shorts'),video('unapproved','Earthquakes in Japan',{approved:false}),video('long','Earthquakes in Japan',{durationSeconds:900})];
+ const direct=engine.searchSemanticVideos(catalog,plan);assert.deepEqual(ids(direct),['near']);
+ assert.deepEqual(await engine.searchSemanticVideosYielding(catalog,plan),direct);
+});
