@@ -1784,3 +1784,40 @@ test('quoted evidence cannot authorize reassigned slots, missing citations or fo
   for(const card of result.cards)for(const e of card.evidence)assert.ok(card.sources[e.sourceIndex].extract.includes(e.quote));
  }
 });
+
+
+test('malformed first, middle and last slots recover without moving published cards',async t=>{
+ const {malformedItemOptions,assertSlotRecovery}=await import('./prompt-evaluation/recovery-cases.mjs');
+ const h={assert,geminiCallCount,candidateAssignments,groundingSlots};
+ for(const stage of ['candidate','grounding']) for(const reversed of [false,true]) for(const slot of [0,3,6]) {
+  await t.test(`${stage}, ${reversed ? 'reversed' : 'normal'} response, slot ${slot}`,async()=>{
+   const cache=require('../lib/wikipedia.ts').sharedWikipediaResolutionCache;
+   cache.pages.clear();cache.searches.clear();
+   const state=installNetworkMock(malformedItemOptions(slot,stage,reversed)),sessionId=await connectMock(state),published=[];
+   const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7,
+    onProgress:event=>{if(event.type==='card')published.push({slot:event.slot,card:structuredClone(event.card)});}});
+   assertSlotRecovery(h,{slot,stage,state,result,published});
+   assert.equal(result.validationDiagnostics.length,1);
+   assert.equal(result.validationDiagnostics[0].slot,slot);
+   assert.equal(result.validationDiagnostics[0].occurrences,1);
+   for(const card of result.cards) {
+    assert.equal(card.sentenceCount,3);
+    for(let sentence=0;sentence<3;sentence++)assert.ok(card.evidence.some(e=>e.sentence===sentence));
+    for(const e of card.evidence)assert.ok(card.sources[e.sourceIndex].extract.includes(e.quote));
+   }
+  });
+ }
+});
+
+
+test('truncated output recovers first, middle and last logical slots without reordering siblings',async t=>{
+ const {truncatedSlotOptions,assertSlotRecovery}=await import('./prompt-evaluation/recovery-cases.mjs');
+ const h={assert,geminiCallCount,candidateAssignments,groundingSlots};
+ for(const slot of [0,3,6]) await t.test(`unfinished slot ${slot}`,async()=>{
+  const cache=require('../lib/wikipedia.ts').sharedWikipediaResolutionCache;cache.pages.clear();cache.searches.clear();
+  const state=installNetworkMock(truncatedSlotOptions(slot)),sessionId=await connectMock(state),published=[];
+  const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7,
+   onProgress:event=>{if(event.type==='card')published.push({slot:event.slot,card:structuredClone(event.card)});}});
+  assertSlotRecovery(h,{slot,state,result,published});
+ });
+});

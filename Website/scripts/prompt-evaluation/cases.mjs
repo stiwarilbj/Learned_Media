@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { malformedItemOptions, truncatedSlotOptions, assertSlotRecovery } from './recovery-cases.mjs';
 import { measureCardCoverage, validCitation } from './card-metrics.mjs';
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures.json', import.meta.url)));
 
@@ -14,6 +15,7 @@ export function registerEvaluation(h) {
       duplicateRate:0, candidateDuplicateRate:0, outputBytes:0, promptBytes:0, geminiCalls:0,
       expectedSentences:0, cardTotal:0, sentenceCountValid:0, sentenceTotal:0, sentenceCited:0};
     let state;
+    const published=[];
     let questionInstructionPresent=true;
     const random = Math.random;
     Math.random = () => 0.5;
@@ -36,18 +38,17 @@ export function registerEvaluation(h) {
         }
         // Local search has no model output; outputBytes stays zero.
       } else {
-        let damaged=false;
-        const options = fixture.quotedSentence ? h.instructionQuotationOptions(fixture.quotedSentence)
+        const options = fixture.damagedSlot !== undefined ? (fixture.damageKind === 'truncated' ? truncatedSlotOptions(fixture.damagedSlot) : malformedItemOptions(fixture.damagedSlot))
+          : fixture.quotedSentence ? h.instructionQuotationOptions(fixture.quotedSentence)
           : fixture.id === 'weak-evidence' ? {needsEvidenceSlot:6,needsEvidenceOnce:true}
-          : fixture.id === 'malformed-output' ? {responseText(output,prompt){
-            if (!damaged && prompt.includes('Return one result for each slot')) {
-              damaged=true;
-              return '{"facts":['+output.facts.slice(0,-1).map(f=>JSON.stringify(f)).join(',')+',{"slot":0,"title":"unfinished';
-            }
-          }} : fixture.id === 'duplicate-candidates' ? {transformOutput(output,prompt){
+          : fixture.id === 'duplicate-candidates' ? {transformOutput(output,prompt){
             if (prompt.includes('Generate one batch of distinct')) output.facts.push({...output.facts[0]});
             return output;
           }} : {};
+        if (fixture.damagedSlot !== undefined) {
+          const cache = require('../lib/wikipedia.ts').sharedWikipediaResolutionCache;
+          cache.pages.clear(); cache.searches.clear();
+        }
         if (fixture.sentenceLength) {
           // Boundary fixtures replace the article body; do not reuse another fixture's evidence.
           const lengths = require('../lib/fact-quality.ts').SENTENCE_LENGTH_OPTIONS;
@@ -88,7 +89,8 @@ export function registerEvaluation(h) {
         } else {
           const args = h.generationArgs(sessionId);
           const expected = fixture.sentenceLength ?? args.settings.sentenceLength;
-          const result=await h.generateGeminiFacts({...args, settings:{...args.settings, sentenceLength:expected}, requestedCount:7});
+          const result=await h.generateGeminiFacts({...args, settings:{...args.settings, sentenceLength:expected}, requestedCount:7,
+            onProgress:event=>{if(event.type==='card')published.push({slot:event.slot,card:structuredClone(event.card)});}});
           Object.assign(row, measureCardCoverage(result.cards, expected));
           const fingerprints=result.cards.map(c=>c.body.toLowerCase().replace(/\s+/g,' ').trim());
           row.duplicateRate=(fingerprints.length-new Set(fingerprints).size)/fingerprints.length;
@@ -118,7 +120,7 @@ export function registerEvaluation(h) {
               assert.ok(fact.evidence.every(e=>e.evidenceIds.length && e.evidenceIds.every(id=>allowed.has(id))));
             }
           }
-          if (fixture.id==='malformed-output') assert.deepEqual(h.groundingSlots(state.groundingPrompts[1]).map(s=>s.slot),[0]);
+          if (fixture.damagedSlot !== undefined) assertSlotRecovery(h,{slot:fixture.damagedSlot,state,result,published});
           if (fixture.id==='weak-evidence') assert.deepEqual(h.candidateAssignments(state.candidatePrompts[1]).map(s=>s.slot),[6]);
         }
         row.geminiCalls=h.geminiCallCount(state);

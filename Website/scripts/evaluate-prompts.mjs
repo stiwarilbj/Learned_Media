@@ -24,7 +24,7 @@ try {
   const fixtures=JSON.parse(readFileSync(new URL('./prompt-evaluation/fixtures.json',import.meta.url)));
   if (cases.length!==fixtures.length) throw new Error('Evaluation did not run every fixed case.');
   const report={version:1,mode:'deterministic-replay',
-    suiteHash:hash(['./prompt-evaluation/fixtures.json','./prompt-evaluation/cases.mjs','./prompt-evaluation/card-metrics.mjs']),
+    suiteHash:hash(['./prompt-evaluation/fixtures.json','./prompt-evaluation/cases.mjs','./prompt-evaluation/card-metrics.mjs','./prompt-evaluation/recovery-cases.mjs']),
     promptHash:hash(['../lib/prompts.ts','../lib/prompt-instructions.json','../lib/evidence-dates.ts','../lib/evidence-date-patterns.json']),cases};
   const output=flag('--output');
   if (output) writeFileSync(output,JSON.stringify(report,null,2)+'\n');

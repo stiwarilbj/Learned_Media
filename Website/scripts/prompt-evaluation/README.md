@@ -180,3 +180,32 @@ parser behavior, citation enforcement, and recovery; they do not establish that
 a live model will always resist an instruction embedded in evidence. No prompt,
 UI, model policy, or ordinary request count changes. The expanded baseline keeps
 all fourteen existing cases' metrics and the prompt hash unchanged.
+
+## Recovery when the failed slot moves
+
+The existing `malformed-output` replay now explicitly identifies damaged slot 0.
+The same truncation is replayed for slot 3 (`malformed-output-middle`) and slot 6
+(`malformed-output-last`) in seven-card batches. Each response contains the six
+complete siblings followed by the unfinished item. The unfinished item's logical
+slot changes; its position must remain last in the wire text because truncation
+cannot preserve JSON that has not arrived yet.
+
+Each replay asserts that the initial six cards publish in slot order, the
+recovered card appends afterward, and the final collection matches immutable
+snapshots of every published card. Previously published IDs, topics, contents,
+and relative order must remain unchanged. Only the failed slot may appear in
+subsequent candidate or grounding requests. Each case retains all seven cards,
+21/21 cited sentences, one candidate call, and two grounding calls.
+
+Additional behavioral tests damage a complete item's title in place with the
+wrong JSON type. They exercise first, middle, and last slots in both candidate
+and grounding batches, with normal and reversed provider array order. Candidate
+recovery takes four calls; grounding recovery takes three. This catches code
+that associates responses by array position instead of slot ID. Native parser
+tests verify identical sibling-order preservation for malformed and truncated
+items at all three logical positions.
+
+No recovery or publication code needed changing. This expands deterministic
+regression coverage while keeping the prompts, UI, and retry sequence unchanged.
+All fifteen previous fixed cases retain their exact metrics in the expanded
+seventeen-case baseline.
