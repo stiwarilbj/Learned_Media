@@ -1,4 +1,4 @@
-import { searchTextForms, protectedSearchTerms } from "./search";
+import { searchTextForms, protectedSearchTerms, contextualSearchText } from "./search";
 /** Shared, dependency-free search policy. The native runtime is generated from this file. */
 export type VideoSearchPlan = {
   terms?: string[]; include?: string[]; alternatives?: string[]; exclude?: string[];
@@ -12,10 +12,11 @@ export type VideoSearchPlan = {
 type Video = { id: string; channelId: string; channelName: string; title: string; description: string; tags: string[]; topics: string[]; publishedAt: string; durationSeconds: number; approved: boolean; special?: boolean; sourceIds?: string[] };
 export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
-export const VIDEO_SEMANTIC_VERSION = 7;
+export const VIDEO_SEMANTIC_VERSION = 8;
 
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
+  ["united states", "usa", "american"], ["information technology", "computer technology"],
   ["gravitational lensing", "bending starlight", "light bending", "bending light", "light bends", "gravity bends light", "bent light"],
   ["black holes", "black hole"], ["population", "human population", "demography", "population growth", "number of people"],
   ["plate tectonics", "moving plates", "continental drift", "moving continents"],
@@ -34,7 +35,7 @@ const CONCEPTS = [
   ["democracy", "democratic government", "rule by the people"],
   ["election", "elections", "electoral", "voting"],
   ["border", "borders", "national boundaries", "country boundaries"],
-  ["artificial intelligence", "ai", "machine intelligence"],
+  ["artificial intelligence", "machine intelligence"],
   ["machine learning", "computers learning", "computer learning"],
   ["renewable energy", "renewable power", "clean energy"],
   ["solar energy", "solar power", "power from sunlight"],
@@ -62,6 +63,7 @@ function contains(text: string, phrase: string) { return (` ${text} `).includes(
 function meaningful(value: string) { return normalizeVideoQuery(value).split(" ").filter((word) => !STOP.has(word) && (word.length > 2 || word === "ai" || /^\d+$/.test(word))); }
 function expand(term: string) { const normalized = normalizeVideoQuery(term); return equivalentTerms.get(normalized) || [term]; }
 function groupsFor(value: string) {
+  value = contextualSearchText(value);
   let remaining = normalizeVideoQuery(value);
   const groups: NonNullable<VideoSearchPlan["conceptGroups"]> = [];
   for (const term of protectedSearchTerms(value)) {
@@ -172,7 +174,7 @@ const BOILERPLATE = /\b(subscribe|patreon|sponsor(?:ed)?|affiliate|merch|use cod
 function cleanDescription(value: string) { return value.split(/\n+|(?<=[.!?])\s+/).filter((part) => !BOILERPLATE.test(part)).join(" ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0,6000); }
 function fieldsFor(video: Video) {
   const cached = index.get(video); if (cached) return cached;
-  const fields = [ ["title",video.title], ["tags",(video.tags || []).join(", ")], ["description",cleanDescription(video.description || "")], ["topics",(video.topics || []).join(" ")] ].map(([name,value]) => ({name,value,text:searchTextForms(value).join(" "),words:new Set(searchTextForms(value).join(" ").split(" "))}));
+  const fields = [ ["title",video.title], ["tags",(video.tags || []).join(", ")], ["description",cleanDescription(video.description || "")], ["topics",(video.topics || []).join(" ")] ].map(([name,value]) => ({name,value,text:searchTextForms(contextualSearchText(value)).join(" "),words:new Set(searchTextForms(contextualSearchText(value)).join(" ").split(" "))}));
   index.set(video, fields); return fields;
 }
 function hasPrefix(words: Set<string>, word: string) { for (const candidate of words) if (candidate.length >= 5 && Math.abs(candidate.length-word.length) <= 2 && (candidate.startsWith(word) || word.startsWith(candidate))) return true; return false; }
@@ -185,7 +187,7 @@ function matchesTerm(term: string, field: Field) {
 }
 function passage(field: Field, term: string) {
   const sentences = field.name === "description" ? field.value.split(/(?<=[.!?])\s+/) : [field.value];
-  const matching = sentences.find((value) => matchesTerm(term,{...field,text:searchTextForms(value).join(" "),words:new Set(searchTextForms(value).join(" ").split(" "))}));
+  const matching = sentences.find((value) => matchesTerm(term,{...field,text:searchTextForms(contextualSearchText(value)).join(" "),words:new Set(searchTextForms(contextualSearchText(value)).join(" ").split(" "))}));
   const value = matching || field.value;
   const words = meaningful(term);
   const hit = value.toLowerCase().indexOf(words[0] || term.toLowerCase());

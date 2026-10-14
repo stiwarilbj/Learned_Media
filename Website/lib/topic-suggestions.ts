@@ -1,6 +1,6 @@
-import { normalizeSearchText, shouldExpandNaturalSearch, searchTextForms, protectedSearchTerms } from "./search";
+import { normalizeSearchText, shouldExpandNaturalSearch, searchTextForms, protectedSearchTerms, contextualSearchText } from "./search";
 import type { TopicNode } from "./types";
-export const TOPIC_SEARCH_VERSION = 6;
+export const TOPIC_SEARCH_VERSION = 7;
 export type TopicSuggestionGroup = "keyword" | "related" | "broader" | "explore";
 export type TopicSuggestion = {
     id: string;
@@ -48,6 +48,7 @@ export type TopicSemanticResult = {
 };
 const STOP = new Set("a about an and are as at be by can did do does explain find for from how i in into is it me of on or our please show some that the their them there these this to was were what when where which who why with would tell topics learn learning want know".split(" "));
 const CONCEPTS: TopicConcept[] = [
+    { label: "information technology", equivalents: ["information technology", "computer technology"], related: ["computer science"] },
     { label: "earthquakes", equivalents: ["earthquake", "earthquakes", "quake", "quakes", "tremors", "ground shaking", "shaking ground", "ground shake", "seismic activity", "earth tremor"], related: ["plate tectonics", "geology", "tsunamis", "faults", "seismic waves"] },
     { label: "volcanoes", equivalents: ["volcano", "volcanoes", "volcanic eruption", "erupting mountain", "molten rock", "lava flow", "magma", "ash cloud", "volcanology"], related: ["geology", "plate tectonics", "natural disasters"] },
     { label: "paleontology", equivalents: ["paleontology", "fossils", "fossil record", "fossil hunting", "prehistoric creatures", "ancient life", "extinct animals"], related: ["dinosaurs", "evolution", "mass extinctions", "archaeology"] },
@@ -57,7 +58,7 @@ const CONCEPTS: TopicConcept[] = [
     { label: "gravitational lensing", equivalents: ["gravitational lensing", "bending starlight", "light bending", "gravity bends light"], related: ["astrophysics", "astronomy", "general relativity", "gravity"] },
     { label: "psychology", equivalents: ["psychology", "human behavior", "how people think", "people think", "the mind", "mental processes"], related: ["cognitive science", "neuroscience", "philosophy of mind"] },
     { label: "climate change", equivalents: ["climate change", "climate crisis", "global warming", "rising temperatures", "changing climate"], related: ["climatology", "environmental science", "renewable energy", "conservation"] },
-    { label: "artificial intelligence", equivalents: ["artificial intelligence", "machine intelligence", "thinking machines", "computer intelligence", "generative ai", "ai"], related: ["computer science", "robotics", "machine learning"] },
+    { label: "artificial intelligence", equivalents: ["artificial intelligence", "machine intelligence", "thinking machines", "computer intelligence", "generative ai"], related: ["computer science", "robotics", "machine learning"] },
     { label: "economics", equivalents: ["economics", "how money works", "economic systems"], related: ["history of money", "finance", "economic history", "business"] },
     { label: "religion", equivalents: ["religion", "world religions", "spiritual traditions", "belief systems"], related: ["religious history", "philosophy", "mythology", "theology", "sacred texts"] },
     { label: "archaeology", equivalents: ["archaeology", "lost civilizations", "early human societies", "how societies began"], related: ["ancient history", "human origins", "anthropology"] },
@@ -67,7 +68,7 @@ const CONCEPTS: TopicConcept[] = [
     { label: "population", equivalents: ["population", "demography", "human population", "population growth"], related: ["migration", "urbanization"] },
     { label: "evolution", equivalents: ["evolution", "natural selection", "species evolve"], related: ["biology", "genetics", "darwin"] },
     { label: "japan", equivalents: ["japan", "japanese"], related: [] },
-    { label: "united states", equivalents: ["united states", "usa", "us", "american"], related: [] },
+    { label: "united states", equivalents: ["united states", "usa", "american"], related: [] },
     { label: "united kingdom", equivalents: ["united kingdom", "uk", "british", "britain"], related: [] }
 ];
 const wordCache = new Map<string, string[]>();
@@ -109,11 +110,12 @@ const conceptAliases = new Map(CONCEPTS.flatMap(c => c.equivalents.map(e => [nor
 const conceptsByPhrase = CONCEPTS.flatMap(c => c.equivalents.map(p => ({ phrase: normalizeSearchText(p), concept: c }))).sort((a, b) => b.phrase.length - a.phrase.length);
 export function validateTopicPlan(value: unknown): TopicQueryPlan {
     const v = value as Partial<TopicQueryPlan> | null;
-    const clean = (a: unknown) => Array.isArray(a) ? Array.from(new Set(a.filter((x): x is string => typeof x === "string").map(normalizeSearchText).filter(x => x.length > 1 && x.length <= 120))).slice(0, 12) : [];
+    const clean = (a: unknown) => Array.isArray(a) ? Array.from(new Set(a.filter((x): x is string => typeof x === "string").map(contextualSearchText).filter(x => x.length > 1 && x.length <= 120))).slice(0, 12) : [];
     return { groups: (Array.isArray(v?.groups) ? v.groups : []).slice(0, 8).flatMap(g => { if (!g || typeof g !== "object")
             return []; const equivalents = clean(g.equivalents); return equivalents.length ? [{ label: typeof g.label === "string" ? g.label.slice(0, 120) : equivalents[0], equivalents, related: clean(g.related) }] : []; }), alternatives: v?.alternatives === true };
 }
 export function localTopicPlan(query: string): TopicQueryPlan {
+    query = contextualSearchText(query);
     const clauses = query.split(/\bor\b/i);
     if (clauses.length > 1) {
         const plans = clauses.map(localTopicPlan);
@@ -144,7 +146,7 @@ export function createTopicSuggestionIndex(topics: TopicWithPath[]): TopicSugges
     if (fieldTokens.size > 100000)
         fieldTokens.clear();
     const pathIds = new Map(topics.map(t => [t.path.join("\0"), t.id]));
-    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => searchTextForms(value).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
+    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => searchTextForms(contextualSearchText(value)).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
     return { entries, byId: new Map(entries.map(e => [e.topic.id, e])) };
 }
 type Ranked = {
@@ -262,9 +264,9 @@ function planFor(query: string, enrichment: TopicQueryPlan | string[]): TopicQue
     return { groups: groups.map(g => ({ ...g, equivalents: Array.from(new Set(g.equivalents.flatMap(t => conceptAliases.get(normalizeSearchText(t)) || [t]))) })), anyOf: original.anyOf, alternatives: false };
 }
 export function searchTopicIndex(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = []): TopicSemanticResult { if (!query.trim())
-    return { suggestions: [], matchedIds: [], completeCoverage: false, visibleIds: [], matchingDescendants: [], directScores: [] }; const plan = planFor(query, enrichment); return finalize(index, query, index.entries.map(e => rank(e, query, plan))); }
+    return { suggestions: [], matchedIds: [], completeCoverage: false, visibleIds: [], matchingDescendants: [], directScores: [] }; query = contextualSearchText(query); const plan = planFor(query, enrichment); return finalize(index, query, index.entries.map(e => rank(e, query, plan))); }
 export function suggestTopics(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = []) { return searchTopicIndex(index, query, enrichment).suggestions; }
-export async function searchTopicIndexYielding(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = [], isCurrent: () => boolean = () => true) { const plan = planFor(query, enrichment), ranked: Ranked[] = []; for (let start = 0; start < index.entries.length; start += 400) {
+export async function searchTopicIndexYielding(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = [], isCurrent: () => boolean = () => true) { query = contextualSearchText(query); const plan = planFor(query, enrichment), ranked: Ranked[] = []; for (let start = 0; start < index.entries.length; start += 400) {
     if (!isCurrent())
         return null;
     for (const e of index.entries.slice(start, start + 400))

@@ -4,6 +4,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeSearchText = normalizeSearchText;
 exports.searchTextForms = searchTextForms;
+exports.contextualSearchText = contextualSearchText;
 exports.protectedSearchTerms = protectedSearchTerms;
 exports.shouldExpandNaturalSearch = shouldExpandNaturalSearch;
 exports.searchScoreNormalized = searchScoreNormalized;
@@ -18,6 +19,25 @@ function normalizeSearchText(value) { return foldSearchText(value); }
 /** Retain the compound spelling as well as its spaced search equivalent. */
 function searchTextForms(value) {
     return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
+}
+const SHORT_ALIASES = {
+    us: { expansion: "united states", context: /\b(?:united states|american|presidents?|congress|senate|constitution|elections?|politics|political|history|government|states|federal)\b/ },
+    ai: { expansion: "artificial intelligence", context: /\b(?:artificial|intelligence|machine|learning|neural|models?|robots?|robotics|generative|algorithms?|computers?|automation|chatbots?|tools|ethics)\b/ },
+    it: { expansion: "information technology", context: /\b(?:information|technology|computers?|networks?|networking|software|hardware|cybersecurity|security|support|infrastructure|systems|services|jobs|careers|departments?)\b/ }
+};
+/** Case alone is not disambiguation: require nearby domain words, not pronoun syntax. */
+function contextualSearchText(value) {
+    const text = foldSearchText(value, true);
+    return text.replace(/\b(?:us|ai|it)\b/g, (token, offset) => {
+        const alias = SHORT_ALIASES[token];
+        const before = normalizeSearchText(text.slice(0, offset)).split(" ").slice(-3).join(" ");
+        const after = normalizeSearchText(text.slice(offset + token.length)).split(" ").slice(0, 3).join(" ");
+        if (token === "us" && (/\b(?:tell|show|teach|help|give|let|ask|makes?|made) us$/.test(before + " us") || /^(?:about|how|why|what|when|where|who|to|with|the|a|an)\b/.test(after)))
+            return "";
+        if (token === "it" && (/\b(?:does|did|do|is|was|were|can|could|will|would|has|have|had) it$/.test(before + " it") || /^(?:is|was|does|did|can|will|would|has|seems|means|works)\b/.test(after)))
+            return "";
+        return alias.context.test(before + " " + after) ? alias.expansion : "";
+    }).replace(/\s+/g, " ").trim();
 }
 const compoundCache = new Map();
 /** Keep prefixes and short components together before stop-word filtering. */
@@ -121,9 +141,10 @@ exports.searchSemanticVideosYielding = searchSemanticVideosYielding;
 exports.videoSearchReason = videoSearchReason;
 exports.shouldEnrichVideoSearch = shouldEnrichVideoSearch;
 const search_1 = require("./search");
-exports.VIDEO_SEMANTIC_VERSION = 7;
+exports.VIDEO_SEMANTIC_VERSION = 8;
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
+    ["united states", "usa", "american"], ["information technology", "computer technology"],
     ["gravitational lensing", "bending starlight", "light bending", "bending light", "light bends", "gravity bends light", "bent light"],
     ["black holes", "black hole"], ["population", "human population", "demography", "population growth", "number of people"],
     ["plate tectonics", "moving plates", "continental drift", "moving continents"],
@@ -142,7 +163,7 @@ const CONCEPTS = [
     ["democracy", "democratic government", "rule by the people"],
     ["election", "elections", "electoral", "voting"],
     ["border", "borders", "national boundaries", "country boundaries"],
-    ["artificial intelligence", "ai", "machine intelligence"],
+    ["artificial intelligence", "machine intelligence"],
     ["machine learning", "computers learning", "computer learning"],
     ["renewable energy", "renewable power", "clean energy"],
     ["solar energy", "solar power", "power from sunlight"],
@@ -170,6 +191,7 @@ function contains(text, phrase) { return (` ${text} `).includes(` ${phrase} `); 
 function meaningful(value) { return normalizeVideoQuery(value).split(" ").filter((word) => !STOP.has(word) && (word.length > 2 || word === "ai" || /^\d+$/.test(word))); }
 function expand(term) { const normalized = normalizeVideoQuery(term); return equivalentTerms.get(normalized) || [term]; }
 function groupsFor(value) {
+    value = (0, search_1.contextualSearchText)(value);
     let remaining = normalizeVideoQuery(value);
     const groups = [];
     for (const term of (0, search_1.protectedSearchTerms)(value)) {
@@ -294,7 +316,7 @@ function fieldsFor(video) {
     const cached = index.get(video);
     if (cached)
         return cached;
-    const fields = [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]].map(([name, value]) => ({ name, value, text: (0, search_1.searchTextForms)(value).join(" "), words: new Set((0, search_1.searchTextForms)(value).join(" ").split(" ")) }));
+    const fields = [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]].map(([name, value]) => ({ name, value, text: (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" "), words: new Set((0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" ").split(" ")) }));
     index.set(video, fields);
     return fields;
 }
@@ -312,7 +334,7 @@ function matchesTerm(term, field) {
 }
 function passage(field, term) {
     const sentences = field.name === "description" ? field.value.split(/(?<=[.!?])\s+/) : [field.value];
-    const matching = sentences.find((value) => matchesTerm(term, { ...field, text: (0, search_1.searchTextForms)(value).join(" "), words: new Set((0, search_1.searchTextForms)(value).join(" ").split(" ")) }));
+    const matching = sentences.find((value) => matchesTerm(term, { ...field, text: (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" "), words: new Set((0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" ").split(" ")) }));
     const value = matching || field.value;
     const words = meaningful(term);
     const hit = value.toLowerCase().indexOf(words[0] || term.toLowerCase());

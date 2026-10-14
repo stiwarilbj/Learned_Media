@@ -90,3 +90,27 @@ test('hyphenated and spaced compounds retain prefixes and short components on we
  const {searchTextForms}=require('../lib/search.ts');
  assert.deepEqual(searchTextForms('Non‑Euclidean'),['non-euclidean','non euclidean']);
 });
+
+
+test('short aliases require context in queries and topic metadata on web and Mac',()=>{
+ const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ const samples=[['presidents','American Presidents'],['models','Artificial Intelligence Models'],['security','Information Technology Security'],['pronoun','Tell us about birds'],['bare','AI']].map(([id,label])=>({id,label,path:['Custom',label]}));
+ for(const search of [engine,scope.LEARNED_MEDIA_TOPIC_SEARCH]) {
+  const ix=search.createTopicSuggestionIndex([...topics,...samples]);
+  for(const [query,id] of [['US presidents','presidents'],['us presidents','presidents'],['AI models','models'],['ai models','models'],['IT security','security']]) {
+   const result=search.searchTopicIndex(ix,query);assert.ok(result.matchedIds.includes(id),query);assert.ok(result.completeCoverage,query);
+  }
+  for(const query of ['us','US','AI','ai','IT','it','tell us','show us','why does it']) {
+   const result=search.searchTopicIndex(ix,query);assert.equal(result.completeCoverage,false,query);assert.equal(result.matchedIds.length,0,query);
+   assert.equal(result.suggestions.length,100);assert.equal(new Set(result.suggestions.map(s=>s.id)).size,100);
+  }
+  assert.ok(!search.searchTopicIndex(ix,'United States').matchedIds.includes('pronoun'));
+  assert.ok(!search.searchTopicIndex(ix,'artificial intelligence').matchedIds.includes('bare'));
+  const ordinary=search.searchTopicIndex(ix,'tell us about earthquakes');
+  assert.ok(ordinary.matchedIds.length);assert.ok(!ordinary.matchedIds.includes('presidents'));
+ }
+ const {contextualSearchText}=require('../lib/search.ts');
+ assert.equal(contextualSearchText('Tell us about US presidents'),'tell about united states presidents');
+ assert.equal(contextualSearchText('Why does it support life?'),'why does support life');
+ assert.equal(contextualSearchText('non-Euclidean AI models'),'non-euclidean artificial intelligence models');
+});

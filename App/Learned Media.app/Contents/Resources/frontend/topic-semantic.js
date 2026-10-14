@@ -3,6 +3,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeSearchText = normalizeSearchText;
 exports.searchTextForms = searchTextForms;
+exports.contextualSearchText = contextualSearchText;
 exports.protectedSearchTerms = protectedSearchTerms;
 exports.shouldExpandNaturalSearch = shouldExpandNaturalSearch;
 exports.searchScoreNormalized = searchScoreNormalized;
@@ -17,6 +18,25 @@ function normalizeSearchText(value) { return foldSearchText(value); }
 /** Retain the compound spelling as well as its spaced search equivalent. */
 function searchTextForms(value) {
     return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
+}
+const SHORT_ALIASES = {
+    us: { expansion: "united states", context: /\b(?:united states|american|presidents?|congress|senate|constitution|elections?|politics|political|history|government|states|federal)\b/ },
+    ai: { expansion: "artificial intelligence", context: /\b(?:artificial|intelligence|machine|learning|neural|models?|robots?|robotics|generative|algorithms?|computers?|automation|chatbots?|tools|ethics)\b/ },
+    it: { expansion: "information technology", context: /\b(?:information|technology|computers?|networks?|networking|software|hardware|cybersecurity|security|support|infrastructure|systems|services|jobs|careers|departments?)\b/ }
+};
+/** Case alone is not disambiguation: require nearby domain words, not pronoun syntax. */
+function contextualSearchText(value) {
+    const text = foldSearchText(value, true);
+    return text.replace(/\b(?:us|ai|it)\b/g, (token, offset) => {
+        const alias = SHORT_ALIASES[token];
+        const before = normalizeSearchText(text.slice(0, offset)).split(" ").slice(-3).join(" ");
+        const after = normalizeSearchText(text.slice(offset + token.length)).split(" ").slice(0, 3).join(" ");
+        if (token === "us" && (/\b(?:tell|show|teach|help|give|let|ask|makes?|made) us$/.test(before + " us") || /^(?:about|how|why|what|when|where|who|to|with|the|a|an)\b/.test(after)))
+            return "";
+        if (token === "it" && (/\b(?:does|did|do|is|was|were|can|could|will|would|has|have|had) it$/.test(before + " it") || /^(?:is|was|does|did|can|will|would|has|seems|means|works)\b/.test(after)))
+            return "";
+        return alias.context.test(before + " " + after) ? alias.expansion : "";
+    }).replace(/\s+/g, " ").trim();
 }
 const compoundCache = new Map();
 /** Keep prefixes and short components together before stop-word filtering. */
@@ -114,9 +134,10 @@ exports.searchTopicIndex = searchTopicIndex;
 exports.suggestTopics = suggestTopics;
 exports.searchTopicIndexYielding = searchTopicIndexYielding;
 const search_1 = require("./search");
-exports.TOPIC_SEARCH_VERSION = 6;
+exports.TOPIC_SEARCH_VERSION = 7;
 const STOP = new Set("a about an and are as at be by can did do does explain find for from how i in into is it me of on or our please show some that the their them there these this to was were what when where which who why with would tell topics learn learning want know".split(" "));
 const CONCEPTS = [
+    { label: "information technology", equivalents: ["information technology", "computer technology"], related: ["computer science"] },
     { label: "earthquakes", equivalents: ["earthquake", "earthquakes", "quake", "quakes", "tremors", "ground shaking", "shaking ground", "ground shake", "seismic activity", "earth tremor"], related: ["plate tectonics", "geology", "tsunamis", "faults", "seismic waves"] },
     { label: "volcanoes", equivalents: ["volcano", "volcanoes", "volcanic eruption", "erupting mountain", "molten rock", "lava flow", "magma", "ash cloud", "volcanology"], related: ["geology", "plate tectonics", "natural disasters"] },
     { label: "paleontology", equivalents: ["paleontology", "fossils", "fossil record", "fossil hunting", "prehistoric creatures", "ancient life", "extinct animals"], related: ["dinosaurs", "evolution", "mass extinctions", "archaeology"] },
@@ -126,7 +147,7 @@ const CONCEPTS = [
     { label: "gravitational lensing", equivalents: ["gravitational lensing", "bending starlight", "light bending", "gravity bends light"], related: ["astrophysics", "astronomy", "general relativity", "gravity"] },
     { label: "psychology", equivalents: ["psychology", "human behavior", "how people think", "people think", "the mind", "mental processes"], related: ["cognitive science", "neuroscience", "philosophy of mind"] },
     { label: "climate change", equivalents: ["climate change", "climate crisis", "global warming", "rising temperatures", "changing climate"], related: ["climatology", "environmental science", "renewable energy", "conservation"] },
-    { label: "artificial intelligence", equivalents: ["artificial intelligence", "machine intelligence", "thinking machines", "computer intelligence", "generative ai", "ai"], related: ["computer science", "robotics", "machine learning"] },
+    { label: "artificial intelligence", equivalents: ["artificial intelligence", "machine intelligence", "thinking machines", "computer intelligence", "generative ai"], related: ["computer science", "robotics", "machine learning"] },
     { label: "economics", equivalents: ["economics", "how money works", "economic systems"], related: ["history of money", "finance", "economic history", "business"] },
     { label: "religion", equivalents: ["religion", "world religions", "spiritual traditions", "belief systems"], related: ["religious history", "philosophy", "mythology", "theology", "sacred texts"] },
     { label: "archaeology", equivalents: ["archaeology", "lost civilizations", "early human societies", "how societies began"], related: ["ancient history", "human origins", "anthropology"] },
@@ -136,7 +157,7 @@ const CONCEPTS = [
     { label: "population", equivalents: ["population", "demography", "human population", "population growth"], related: ["migration", "urbanization"] },
     { label: "evolution", equivalents: ["evolution", "natural selection", "species evolve"], related: ["biology", "genetics", "darwin"] },
     { label: "japan", equivalents: ["japan", "japanese"], related: [] },
-    { label: "united states", equivalents: ["united states", "usa", "us", "american"], related: [] },
+    { label: "united states", equivalents: ["united states", "usa", "american"], related: [] },
     { label: "united kingdom", equivalents: ["united kingdom", "uk", "british", "britain"], related: [] }
 ];
 const wordCache = new Map();
@@ -177,7 +198,7 @@ const conceptAliases = new Map(CONCEPTS.flatMap(c => c.equivalents.map(e => [(0,
 const conceptsByPhrase = CONCEPTS.flatMap(c => c.equivalents.map(p => ({ phrase: (0, search_1.normalizeSearchText)(p), concept: c }))).sort((a, b) => b.phrase.length - a.phrase.length);
 function validateTopicPlan(value) {
     const v = value;
-    const clean = (a) => Array.isArray(a) ? Array.from(new Set(a.filter((x) => typeof x === "string").map(search_1.normalizeSearchText).filter(x => x.length > 1 && x.length <= 120))).slice(0, 12) : [];
+    const clean = (a) => Array.isArray(a) ? Array.from(new Set(a.filter((x) => typeof x === "string").map(search_1.contextualSearchText).filter(x => x.length > 1 && x.length <= 120))).slice(0, 12) : [];
     return { groups: (Array.isArray(v?.groups) ? v.groups : []).slice(0, 8).flatMap(g => {
             if (!g || typeof g !== "object")
                 return [];
@@ -186,6 +207,7 @@ function validateTopicPlan(value) {
         }), alternatives: v?.alternatives === true };
 }
 function localTopicPlan(query) {
+    query = (0, search_1.contextualSearchText)(query);
     const clauses = query.split(/\bor\b/i);
     if (clauses.length > 1) {
         const plans = clauses.map(localTopicPlan);
@@ -216,7 +238,7 @@ function createTopicSuggestionIndex(topics) {
     if (fieldTokens.size > 100000)
         fieldTokens.clear();
     const pathIds = new Map(topics.map(t => [t.path.join("\0"), t.id]));
-    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => (0, search_1.searchTextForms)(value).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
+    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
     return { entries, byId: new Map(entries.map(e => [e.topic.id, e])) };
 }
 function rank(entry, query, plan) {
@@ -334,11 +356,13 @@ function planFor(query, enrichment) {
 function searchTopicIndex(index, query, enrichment = []) {
     if (!query.trim())
         return { suggestions: [], matchedIds: [], completeCoverage: false, visibleIds: [], matchingDescendants: [], directScores: [] };
+    query = (0, search_1.contextualSearchText)(query);
     const plan = planFor(query, enrichment);
     return finalize(index, query, index.entries.map(e => rank(e, query, plan)));
 }
 function suggestTopics(index, query, enrichment = []) { return searchTopicIndex(index, query, enrichment).suggestions; }
 async function searchTopicIndexYielding(index, query, enrichment = [], isCurrent = () => true) {
+    query = (0, search_1.contextualSearchText)(query);
     const plan = planFor(query, enrichment), ranked = [];
     for (let start = 0; start < index.entries.length; start += 400) {
         if (!isCurrent())

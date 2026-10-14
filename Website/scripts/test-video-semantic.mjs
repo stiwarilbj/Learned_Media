@@ -217,3 +217,17 @@ test('hyphenated compounds match spaced spellings without losing prefixes or X',
  const excluded=engine.makeLocalVideoPlan('geometry without non-Euclidean');
  assert.deepEqual(ids(engine.searchSemanticVideos(catalog,excluded)),['euclid']);
 });
+
+
+test('short aliases need domain context rather than capitalization or ordinary pronouns',()=>{
+ const catalog=[video('presidents','American Presidents'),video('models','Artificial Intelligence Models'),video('security','Information Technology Security'),video('pronoun','Tell us about birds'),video('bare','AI'),video('context','AI models explained'),video('it','Why does it support life?')];
+ for(const search of [engine,native.LEARNED_MEDIA_VIDEO_SEARCH]) {
+  for(const [query,expected] of [['US presidents',['presidents']],['us presidents',['presidents']],['AI models',['models','context']],['IT security',['security']]]) {
+   assert.deepEqual(new Set(Array.from(ids(search.searchSemanticVideos(catalog,search.makeLocalVideoPlan(query))))),new Set(expected),query);
+  }
+  for(const query of ['us','US','AI','IT','tell us','why does it']) assert.equal(search.searchSemanticVideos(catalog,search.makeLocalVideoPlan(query)).length,0,query);
+  assert.ok(!ids(search.searchSemanticVideos(catalog,search.makeLocalVideoPlan('United States'))).includes('pronoun'));
+  assert.ok(!ids(search.searchSemanticVideos(catalog,search.makeLocalVideoPlan('artificial intelligence'))).includes('bare'));
+  assert.ok(!ids(search.searchSemanticVideos(catalog,search.makeLocalVideoPlan('information technology support'))).includes('it'));
+ }
+});

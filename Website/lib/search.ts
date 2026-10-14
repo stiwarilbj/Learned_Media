@@ -11,6 +11,24 @@ export function searchTextForms(value: string) {
   return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
 }
 
+const SHORT_ALIASES: Record<string, { expansion: string; context: RegExp }> = {
+  us: { expansion: "united states", context: /\b(?:united states|american|presidents?|congress|senate|constitution|elections?|politics|political|history|government|states|federal)\b/ },
+  ai: { expansion: "artificial intelligence", context: /\b(?:artificial|intelligence|machine|learning|neural|models?|robots?|robotics|generative|algorithms?|computers?|automation|chatbots?|tools|ethics)\b/ },
+  it: { expansion: "information technology", context: /\b(?:information|technology|computers?|networks?|networking|software|hardware|cybersecurity|security|support|infrastructure|systems|services|jobs|careers|departments?)\b/ }
+};
+/** Case alone is not disambiguation: require nearby domain words, not pronoun syntax. */
+export function contextualSearchText(value: string) {
+  const text = foldSearchText(value, true);
+  return text.replace(/\b(?:us|ai|it)\b/g, (token: string, offset: number) => {
+    const alias = SHORT_ALIASES[token];
+    const before = normalizeSearchText(text.slice(0, offset)).split(" ").slice(-3).join(" ");
+    const after = normalizeSearchText(text.slice(offset + token.length)).split(" ").slice(0, 3).join(" ");
+    if (token === "us" && (/\b(?:tell|show|teach|help|give|let|ask|makes?|made) us$/.test(before + " us") || /^(?:about|how|why|what|when|where|who|to|with|the|a|an)\b/.test(after))) return "";
+    if (token === "it" && (/\b(?:does|did|do|is|was|were|can|could|will|would|has|have|had) it$/.test(before + " it") || /^(?:is|was|does|did|can|will|would|has|seems|means|works)\b/.test(after))) return "";
+    return alias.context.test(before + " " + after) ? alias.expansion : "";
+  }).replace(/\s+/g, " ").trim();
+}
+
 const compoundCache = new Map<string, string[]>();
 /** Keep prefixes and short components together before stop-word filtering. */
 export function protectedSearchTerms(value: string) {
