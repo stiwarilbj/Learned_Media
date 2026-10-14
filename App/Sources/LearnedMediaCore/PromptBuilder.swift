@@ -20,7 +20,8 @@ public enum PromptBuilder {
     /// Normalize only instructions; evidence and user input retain their exact text.
     public static func build(_ operation: PromptOperation, rules: [String] = [], fields: [PromptField] = []) -> String {
         var seenRules = Set<String>()
-        let instructions = ((PromptInstructions.rules[operation.rawValue] ?? []) + rules)
+        let priority = operation == .connection ? [] : (PromptInstructions.rules[operation == .question ? "questionPriority" : "taskPriority"] ?? [])
+        let instructions = ((PromptInstructions.rules[operation.rawValue] ?? []) + priority + rules)
             .flatMap { $0.components(separatedBy: "\n") }
             .map { $0.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") }
             .filter { !$0.isEmpty && seenRules.insert($0).inserted }

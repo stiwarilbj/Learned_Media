@@ -5,7 +5,8 @@ export type PromptField = { label: string; value: unknown; multiline?: boolean }
 
 /** Keep instructions separate from data; never normalize evidence or user text. */
 export function buildPrompt(operation: PromptOperation, rules: string[] = [], fields: PromptField[] = []) {
-  const uniqueRules = Array.from(new Set([...instructions[operation], ...rules]
+  const priority = operation === "connection" ? [] : instructions[operation === "question" ? "questionPriority" : "taskPriority"];
+  const uniqueRules = Array.from(new Set([...instructions[operation], ...priority, ...rules]
     .flatMap(rule => rule.split("\n"))
     .map(rule => rule.replace(/\s+/g, " ").trim()).filter(Boolean)));
   const seenFields = new Set<string>();

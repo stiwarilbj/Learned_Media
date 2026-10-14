@@ -39,3 +39,5 @@ Question answers pass the exact current query first, separately from supporting 
 Candidate generation sends all seven default slots in one batch, each with a stable ID and assigned topic. Candidates must use different facts and angles; weak or duplicate slots may be omitted rather than padded. The response schema caps candidates at the requested slot count and permits empty batches. Recovery requests only unfinished slots and preserves completed cards.
 
 Card prompts include only the assigned difficulty levels and requested sentence structure. Length limits match validation (exact sentence count, at least eight words and 35–600 characters per sentence). Inactive surprise mode and presentation-only display settings are omitted; difficulty constraints are shared with the native app.
+
+Prompt conflicts follow an explicit content priority: the current question/task, assigned topics and active mode, required format and length, then optional style. Learning answers retain the original question as their target; response schemas, evidence validation, and citations stay mandatory. Connection probes remain minimal.
