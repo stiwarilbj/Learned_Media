@@ -141,6 +141,7 @@ private struct WikipediaLookup {
     let searchTitles: [String]
     let claim: String
     let difficulty: Int
+    var topicPath: [String] = []
 }
 
 private actor WikipediaPageCache {
@@ -428,8 +429,13 @@ private final class WikipediaClient: @unchecked Sendable {
         let allExactTitles = queriesBySlot.values.flatMap { $0 }
         let exactPages = await pagesFor(allExactTitles)
         var fallbackQueryBySlot: [Int: String] = [:]
-        for lookup in lookups where !(queriesBySlot[lookup.slot] ?? []).contains(where: { exactPages[$0.lowercased()] != nil }) {
-            fallbackQueryBySlot[lookup.slot] = (queriesBySlot[lookup.slot] ?? []).joined(separator: " ")
+        for lookup in lookups {
+            let focus = lookup.claim + " " + lookup.title + " " + lookup.topicPath.suffix(2).joined(separator: " ")
+            let supportsClaim = (queriesBySlot[lookup.slot] ?? []).contains { title in
+                guard let extract = exactPages[title.lowercased()]?.extract else { return false }
+                return !FactQuality.evidence(extract, focus: focus, level: lookup.difficulty).isEmpty
+            }
+            if !supportsClaim { fallbackQueryBySlot[lookup.slot] = focus }
         }
         let uniqueFallbackQueries = Dictionary(fallbackQueryBySlot.values.map { ($0.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         let fallbackSearches = await withTaskGroup(of: (String, [String]).self, returning: [String: [String]].self) { group in
@@ -453,10 +459,10 @@ private final class WikipediaClient: @unchecked Sendable {
         for lookup in lookups {
             let exact = (queriesBySlot[lookup.slot] ?? []).compactMap { exactPages[$0.lowercased()] }
             let fallback = (fallbackTitles[lookup.slot] ?? []).compactMap { fallbackPages[$0.lowercased()] }
-            let pages = Array((exact.isEmpty ? fallback : exact).prefix(3))
+            let pages = Array((fallbackQueryBySlot[lookup.slot] != nil ? fallback : exact).prefix(3))
             resolved[lookup.slot] = pages.compactMap { page in
                 guard let title = page.title, let url = page.fullurl, let extract = page.extract else { return nil }
-                let evidence = FactQuality.evidence(extract, focus: lookup.title + " " + lookup.claim, level: lookup.difficulty)
+                let evidence = FactQuality.evidence(extract, focus: lookup.title + " " + lookup.claim + " " + lookup.topicPath.suffix(2).joined(separator: " "), level: lookup.difficulty)
                 guard !evidence.isEmpty else { return nil }
                 return ["title": title, "url": url, "canonicalUrl": url, "extract": evidence]
             }
@@ -1080,9 +1086,9 @@ private final class GeminiClient {
                     let id: String
                     if let existing = idByKey[span.key] { id = existing }
                     else {
-                        id = "e\(sourcePool.count + 1)"
+                        id = FactQuality.stableEvidenceID(span.key)
                         idByKey[span.key] = id
-                        sourcePool.append(["id": id, "title": source["title"] as? String ?? "Wikipedia", "section": span.section, "text": span.quote])
+                        sourcePool.append(["id": id, "title": String((source["title"] as? String ?? "Wikipedia").prefix(160)), "section": span.section, "text": span.quote])
                     }
                     allowedIDs.append(id)
                     localEvidence[id] = GeminiEvidence(sentence: 0, sourceIndex: sourceIndex, quote: span.quote, section: span.section)
@@ -1141,7 +1147,7 @@ private final class GeminiClient {
                           candidate.title?.isEmpty == false, candidate.claim?.isEmpty == false,
                           self.topicPathMatches(candidate.topicPath, assigned: slot.path),
                           prefetched[slotIndex] == nil else { continue }
-                    let lookup = WikipediaLookup(slot: slotIndex, title: candidate.title!, searchTitles: candidate.wikipediaSearchTitles ?? [], claim: candidate.claim!, difficulty: slot.level)
+                    let lookup = WikipediaLookup(slot: slotIndex, title: candidate.title!, searchTitles: candidate.wikipediaSearchTitles ?? [], claim: candidate.claim!, difficulty: slot.level, topicPath: slot.path)
                     prefetched[slotIndex] = (identity(candidate), Task { await self.wikipedia.resolveBatch([lookup])[slotIndex] ?? [] })
                 }
             })
@@ -1275,7 +1281,7 @@ private final class GeminiClient {
             let lookupSlots = slots.filter { $0.mode == "grounding" && $0.sources.isEmpty && accepted[$0.index] == nil }
             let lookups = lookupSlots.compactMap { slot -> WikipediaLookup? in
                 guard let candidate = slot.candidate, let title = candidate.title, let claim = candidate.claim else { return nil }
-                return WikipediaLookup(slot: slot.index, title: title, searchTitles: candidate.wikipediaSearchTitles ?? [], claim: claim, difficulty: slot.level)
+                return WikipediaLookup(slot: slot.index, title: title, searchTitles: candidate.wikipediaSearchTitles ?? [], claim: claim, difficulty: slot.level, topicPath: slot.path)
             }
             let resolved = await wikipedia.resolveBatch(lookups)
             for slotIndex in slots.indices where slots[slotIndex].mode == "grounding" && slots[slotIndex].sources.isEmpty {

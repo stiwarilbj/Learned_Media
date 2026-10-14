@@ -131,4 +131,22 @@ final class FactQualityTests: XCTestCase {
         let accepted = await ledger.accept(remembered)
         XCTAssertFalse(accepted)
     }
+    func testLocalEvidenceRankingAndStableIdentity() {
+        let focused = "Mercury barometers measured atmospheric pressure by balancing a column of dense liquid against the surrounding air. Operators recorded the column height and temperature to compare weather observations at different stations."
+        let generic = "Mercury appears in several unrelated traditions and stories whose names changed over the centuries. Curators kept these old stories in decorated volumes beside several collections of handwritten songs."
+        let unrelated = "Coastal crews repaired their bamboo frames with tarred cord after the storm damaged the lighthouse roof. The workers then carried their supplies to an inland storage shed before sunset."
+        let extract = "== Instruments ==\n\(generic)\n\(focused)\n\(unrelated)\n== References ==\n\(focused)"
+        let query = "Mercury barometer atmospheric pressure column height temperature"
+        let selected = FactQuality.evidence(extract, focus: query, level: 5)
+        XCTAssertTrue(selected.contains(focused))
+        XCTAssertFalse(selected.contains(generic) || selected.contains(unrelated))
+        XCTAssertTrue(selected.hasPrefix("[Section: Instruments]"))
+        XCTAssertEqual(FactQuality.evidence(extract, focus: query, level: 5), selected)
+        XCTAssertEqual(FactQuality.evidence("== Barometer ==\n" + unrelated, focus: "barometer pressure", level: 5), "")
+        XCTAssertEqual(FactQuality.evidence("== Instruments ==\n" + String(focused.dropLast()), focus: query, level: 5), "")
+        let key = "https://en.wikipedia.org/wiki/Pressure\u{0}Évidence\u{0}A precise quotation about pressure."
+        XCTAssertEqual(FactQuality.stableEvidenceID(key), "ecfc3b174d5b0577b")
+        XCTAssertNotEqual(FactQuality.stableEvidenceID(key + " changed"), FactQuality.stableEvidenceID(key))
+    }
+
 }

@@ -4,7 +4,7 @@ import type { Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelO
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
-import { difficultyRubric, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
+import { difficultyRubric, stableEvidenceId, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
 import type { YouTubeSearchCandidate } from "./youtube";
 import { requestCacheKey, SessionCache } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
@@ -712,6 +712,17 @@ function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbit
   ]);
 }
 
+async function lookupCandidateEvidence(slot: GenerationSlot, candidate: CandidateFact, signal: AbortSignal | undefined, cache: WikipediaResolutionCache) {
+  const focus = [candidate.claim, candidate.title, ...slot.path.slice(-2)].filter(Boolean).join(" ");
+  const queries = Array.from(new Set([candidate.title ?? "", ...(candidate.wikipediaSearchTitles ?? [])].filter(Boolean))).slice(0, 3);
+  const select = (sources: ResolvedWikipediaSource[]) => sources.map(source => ({ ...source,
+    extract: selectEvidence(source.extract ?? "", focus, slot.target) })).filter(source => source.extract);
+  const exact = select(await resolveWikipediaSources(queries, 3, signal, { includeImages: false, cache }));
+  if (exact.length) return exact;
+  // A plausible article title is not proof: search the claim/topic if no passage supports it.
+  return select(await resolveWikipediaSources([focus], 2, signal, { includeImages: false, cache }));
+}
+
 function evidenceForSlot(slot: GenerationSlot) {
   return (slot.sources ?? []).map((source, index) => ({ index, title: source.title, url: source.url, extract: source.extract }));
 }
@@ -760,9 +771,9 @@ function groundingPrompt(slots: GenerationSlot[], sentenceCount: number) {
       for (const span of groundingSpans(source, source.index)) {
         let id = idByKey.get(span.key);
         if (!id) {
-          id = `e${sourcePool.length + 1}`;
+          id = stableEvidenceId(span.key);
           idByKey.set(span.key, id);
-          sourcePool.push({ id, title: span.title, section: span.section, text: span.quote });
+          sourcePool.push({ id, title: span.title.slice(0, 160), section: span.section, text: span.quote });
         }
         allowedIds.push(id);
         localEvidence.set(id, { sourceIndex: span.sourceIndex, quote: span.quote, section: span.section });
@@ -839,10 +850,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       const startEvidenceLookup = (slot: GenerationSlot, candidate: CandidateFact) => {
         const identity = candidateIdentity(candidate);
         if (streamedCandidates.has(slot.index) || !candidate.title?.trim() || !candidate.claim?.trim() || !hasAssignedTopic(candidate, slot.path)) return;
-        const queries = [candidate.title, ...(candidate.wikipediaSearchTitles ?? [])].filter(Boolean).filter((query, index, all) => all.indexOf(query) === index).slice(0, 3);
-        const promise = resolveWikipediaSources(queries, 3, signal, { includeImages: false, cache: wikiCache })
-          .then(found => found.map(source => ({ ...source, extract: selectEvidence(source.extract ?? "", (candidate.claim ?? "") + " " + candidate.title, slot.target) })).filter(source => source.extract))
-          .catch(() => []);
+        const promise = lookupCandidateEvidence(slot, candidate, signal, wikiCache).catch(() => []);
         streamedCandidates.set(slot.index, { identity, promise });
       };
       try {
@@ -875,9 +883,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             const streamed = streamedCandidates.get(slot.index);
             if (streamed && streamed.identity === candidateIdentity(slot.candidate!)) slot.sources = await streamed.promise;
             else {
-              const queries = [slot.candidate!.title ?? "", ...(slot.candidate!.wikipediaSearchTitles ?? [])].filter(Boolean).filter((query, index, all) => all.indexOf(query) === index).slice(0, 3);
-              const found = await resolveWikipediaSources(queries, 3, signal, { includeImages: false, cache: wikiCache });
-              slot.sources = found.map(source => ({ ...source, extract: selectEvidence(source.extract ?? "", (slot.candidate!.claim ?? "") + " " + slot.candidate!.title, slot.target) })).filter(source => source.extract);
+              slot.sources = await lookupCandidateEvidence(slot, slot.candidate!, signal, wikiCache);
             }
             if (!slot.sources.length) throw new GeminiFailure("Wikipedia did not return supporting articles for this fact.");
             slot.mode = "grounding";

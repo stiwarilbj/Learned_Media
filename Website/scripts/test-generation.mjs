@@ -22,7 +22,7 @@ const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
 const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
 const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
-const { completeSentenceChunks, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
+const { completeSentenceChunks, selectEvidence, stableEvidenceId, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
 const { sharedWikipediaResolutionCache } = require("../lib/wikipedia.ts");
 const originalFetch = globalThis.fetch;
 const originalDateNow = Date.now;
@@ -184,6 +184,10 @@ function installNetworkMock(options = {}) {
       if (action === "query" && !title.startsWith("File:")) state.wikipediaStartedAt ||= performance.now();
       if (action === "query" && title.startsWith("File:")) {
         return jsonResponse({ query: { pages: { "-1": { imageinfo: [{ url: "https://upload.wikimedia.org/shared.jpg", thumburl: "https://upload.wikimedia.org/shared-thumb.jpg", descriptionurl: "https://commons.wikimedia.org/wiki/File:Shared.jpg", extmetadata: { Artist: { value: "Test Artist" } } }] } } } });
+      }
+      if (action === "query" && options.unrelatedExactEvidence && !state.unrelatedEvidenceReturned) {
+        state.unrelatedEvidenceReturned = true;
+        return jsonResponse({ query: { pages: { "43": { title: "Unrelated Article", fullurl: "https://en.wikipedia.org/wiki/Unrelated_Article", extract: "== Museum ==\nMuseum curators arranged portraits beside marble statues in a spacious exhibition hall. Visitors purchased printed catalogues containing descriptions of the artists and their decorated galleries." } } } });
       }
       if (action === "query") {
         return jsonResponse({ query: { pages: { "42": { title: "Shared Article", fullurl: "https://en.wikipedia.org/wiki/Shared_Article", extract: articleExtract(), pageimage: "Shared.jpg", thumbnail: { source: "https://upload.wikimedia.org/shared-thumb.jpg" }, original: { source: "https://upload.wikimedia.org/shared.jpg" } } } } });
@@ -397,6 +401,26 @@ await t.test("standalone card and question templates keep independent constraint
   assert.ok(!standalone.includes("Original user query") && !standalone.includes("Card sentence counts"));
 });
 
+await t.test("local evidence ranking sends only strong complete passages with stable IDs", () => {
+  const focused = "Mercury barometers measured atmospheric pressure by balancing a column of dense liquid against the surrounding air. Operators recorded the column height and temperature to compare weather observations at different stations.";
+  const generic = "Mercury appears in several unrelated traditions and stories whose names changed over the centuries. Curators kept these old stories in decorated volumes beside several collections of handwritten songs.";
+  const unrelated = "Coastal crews repaired their bamboo frames with tarred cord after the storm damaged the lighthouse roof. The workers then carried their supplies to an inland storage shed before sunset.";
+  const extract = `== Instruments ==\n${generic}\n${focused}\n${unrelated}\n== References ==\n${focused}`;
+  const query = "Mercury barometer atmospheric pressure column height temperature";
+  const selected = selectEvidence(extract, query, 5);
+  assert.ok(selected.includes(focused));
+  assert.ok(!selected.includes(generic) && !selected.includes(unrelated));
+  assert.ok(selected.startsWith("[Section: Instruments]"));
+  assert.ok((selected.match(/\[Section:/g) ?? []).length <= 2);
+  assert.equal(selectEvidence(extract, query, 5), selected);
+  assert.equal(selectEvidence(`== Barometer ==\n${unrelated}`, "barometer pressure", 5), "", "heading-only matches are not evidence");
+  assert.equal(selectEvidence(`== Instruments ==\n${focused.slice(0,-1)}`, query, 5), "", "unfinished passages are not supplied");
+  const key = "https://en.wikipedia.org/wiki/Pressure\u0000Évidence\u0000A precise quotation about pressure.";
+  assert.equal(stableEvidenceId(key), "ecfc3b174d5b0577b", "web and native use the same UTF-8 evidence identity");
+  assert.equal(stableEvidenceId(key), stableEvidenceId(key));
+  assert.notEqual(stableEvidenceId(key + " changed"), stableEvidenceId(key));
+});
+
 await t.test("writing prompts include only the requested length, difficulty, and citation mode", () => {
   for (const count of SENTENCE_LENGTH_OPTIONS) {
     const prompt = factWritingRules(count, "evidenceIds");
@@ -588,6 +612,19 @@ await t.test("active surprise guidance stays within assigned topics without pres
     assert.ok(prompt.includes("Difficulty 1/10:"));
     assert.ok(!prompt.includes("non-lead") && !prompt.includes("difficulty 5+") && !prompt.includes("displayMode"));
   }
+});
+
+await t.test("unsupported exact articles trigger claim/topic retrieval without another Gemini call", async () => {
+  sharedWikipediaResolutionCache.pages.clear();
+  sharedWikipediaResolutionCache.searches.clear();
+  const state = installNetworkMock({ unrelatedExactEvidence: true });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 });
+  assert.equal(result.completedCount, 1);
+  assert.equal(geminiCallCount(state), 2);
+  const wikiQueries = state.requests.filter(request => request.url.hostname === "en.wikipedia.org").map(request => request.url.searchParams.get("titles") ?? request.url.searchParams.get("srsearch") ?? "");
+  assert.ok(wikiQueries.some(query => query.includes(factBundle("amber").claim) && query.includes("amber topic")));
+  assert.ok(!state.groundingPrompts[0].includes("Unrelated Article"));
 });
 
 await t.test("candidate lookups overlap streamed output and image requests stay off the generation path", async () => {
@@ -802,6 +839,10 @@ await t.test("a missing grounded slot retries only grounding and returns all car
   assert.equal(geminiCallCount(state), 3);
   assert.equal(state.candidatePrompts.length, 1, "retry must reuse the failed slot's candidate");
   assert.equal(state.groundingPrompts.length, 2, "retry should request a new grounded result only for the missing slot");
+  const original = groundingSlots(state.groundingPrompts[0]).find(slot => slot.slot === 7);
+  const retry = groundingSlots(state.groundingPrompts[1])[0];
+  assert.deepEqual(retry.evidenceIds, original.evidenceIds, "evidence identity survives a smaller retry batch");
+  assert.ok(retry.evidenceIds.every(id => /^e[0-9a-f]{16}$/.test(id)));
 });
 
 await t.test("duplicate content is rejected and only that slot is regenerated", async () => {

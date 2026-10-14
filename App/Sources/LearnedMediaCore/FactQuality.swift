@@ -68,11 +68,12 @@ public enum FactQuality {
     public static func evidence(_ extract: String, focus: String, level: Int) -> String {
         let terms = words(focus)
         var section = "Introduction"
-        var passages: [(String, String, Double)] = []
+        var passages: [(String, String, Int)] = []
+        var position = 0
         for paragraph in extract.components(separatedBy: .newlines) {
             if paragraph.hasPrefix("==") { section = paragraph.trimmingCharacters(in: CharacterSet(charactersIn: "= ")); continue }
-            if ["References", "Notes", "External links", "Further reading", "Bibliography", "See also"].contains(section) || paragraph.count < 90 { continue }
-            if level >= 5 && section == "Introduction" { continue }
+            if ["References", "Notes", "External links", "Further reading", "Bibliography", "See also"].contains(section) || paragraph.count < 90 { position += 1; continue }
+            if level >= 5 && section == "Introduction" { position += 1; continue }
             var sentences: [String] = []
             paragraph.enumerateSubstrings(in: paragraph.startIndex..<paragraph.endIndex, options: .bySentences) { sentence, _, _, _ in
                 if let sentence { sentences.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -82,31 +83,38 @@ public enum FactQuality {
             for sentence in sentences {
                 if !chunk.isEmpty && chunk.count + sentence.count + 1 > 1200 {
                     if chunk.count >= 90 {
-                        let match = overlap(terms, words(chunk + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
-                        passages.append((section, chunk, match))
+                        passages.append((section, chunk, position)); position += 1
                     }
                     chunk = ""
                 }
                 if sentence.count > 1200 {
                     if chunk.count >= 90 {
-                        let match = overlap(terms, words(chunk + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
-                        passages.append((section, chunk, match))
+                        passages.append((section, chunk, position)); position += 1
                     }
                     chunk = ""
-                    let match = overlap(terms, words(sentence + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
-                    passages.append((section, sentence, match))
+                    passages.append((section, sentence, position)); position += 1
                 } else { chunk += (chunk.isEmpty ? "" : " ") + sentence }
             }
             if chunk.count >= 90 {
-                let match = overlap(terms, words(chunk + " " + section)) * 5 + (section != "Introduction" ? 0.3 : level >= 5 ? -3 : 0.4)
-                passages.append((section, chunk, match))
+                passages.append((section, chunk, position)); position += 1
             }
         }
-        let ranked = passages.shuffled().sorted { $0.2 > $1.2 }
-        let selected: [(String, String, Double)]
-        if let first = ranked.first { selected = ranked.filter { $0.0 == first.0 }.prefix(level >= 10 ? 2 : level >= 9 ? 3 : level >= 5 ? 3 : 4).map { $0 } }
-        else { selected = [] }
-        return selected.map { "[Section: \($0.0)]\n\($0.1)" }.joined(separator: "\n\n")
+        // Require body support, not a heading-only match, and rank deterministically.
+        let candidates = passages.compactMap { passage -> (Int, String, String, Double)? in
+            let coverage = overlap(terms, words(passage.1))
+            guard coverage > 0, passage.1.range(of: "[.!?][”’\"')\\]]*$", options: .regularExpression) != nil else { return nil }
+            return (passage.2, passage.0, passage.1, coverage * 5)
+        }.sorted { $0.3 == $1.3 ? $0.0 < $1.0 : $0.3 > $1.3 }
+        guard let best = candidates.first else { return "" }
+        let neighbor = candidates.dropFirst().first { $0.1 == best.1 && abs($0.0 - best.0) == 1 && $0.3 >= best.3 * 0.5 && $0.2 != best.2 }
+        return ([best] + (neighbor.map { [$0] } ?? [])).sorted { $0.0 < $1.0 }
+            .map { "[Section: \($0.1)]\n\($0.2)" }.joined(separator: "\n\n")
+    }
+
+    public static func stableEvidenceID(_ key: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in key.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        return "e" + String(format: "%016llx", hash)
     }
     private static func evidenceIsInSection(_ extract: String, quote: String, section: String) -> Bool {
         for passage in extract.components(separatedBy: "[Section: ").dropFirst() {

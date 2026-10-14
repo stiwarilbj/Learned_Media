@@ -152,26 +152,38 @@ export function mergeFactMemory(current: FactMemory[], incoming: FactMemory[]) {
   return [...map.values()];
 }
 
-/** Select passages across the article, not just the lead; preserve verbatim text for validation. */
-export function selectEvidence(extract: string, focus: string, difficulty: number, random = Math.random) {
+/** Rank complete passages locally; never send unrelated sections just to fill context. */
+export function selectEvidence(extract: string, focus: string, difficulty: number) {
   const words = tokens(focus);
   let section = "Introduction";
-  const passages: Array<{text: string; section: string; score: number}> = [];
+  const passages: Array<{ text: string; section: string; score: number; position: number }> = [];
+  let position = 0;
   for (const paragraph of extract.split(/\n+/)) {
     const heading = paragraph.match(/^=+\s*(.*?)\s*=+$/);
     if (heading) { section = heading[1]; continue; }
-    if (/^(References|Notes|External links|Further reading|Bibliography|See also)$/i.test(section) || paragraph.trim().length < 90) continue;
-    if (difficulty >= 5 && section === "Introduction") continue;
+    if (/^(References|Notes|External links|Further reading|Bibliography|See also)$/i.test(section) || paragraph.trim().length < 90) { position++; continue; }
+    if (difficulty >= 5 && section === "Introduction") { position++; continue; }
     for (const text of completeSentenceChunks(paragraph, 1200)) {
-      if (text.length < 90) continue;
-      passages.push({text, section, score: overlap(words, tokens(text + " " + section)) * 5 + (section !== "Introduction" ? .3 : difficulty >= 5 ? -3 : .4) + random() * .15});
+      const index = position++;
+      if (text.length < 90 || !/[.!?][”’"\')\]]*$/.test(text)) continue;
+      const coverage = overlap(words, tokens(text));
+      if (!coverage || passages.some(item => item.section === section && item.text === text)) continue;
+      passages.push({ text, section, score: coverage * 5, position: index });
     }
   }
-  const ranked = passages.sort((a,b) => b.score - a.score);
-  const selected = ranked[0]
-    ? ranked.filter(item => item.section === ranked[0].section).slice(0, difficulty >= 10 ? 2 : difficulty >= 9 ? 3 : difficulty >= 5 ? 3 : 4)
-    : [];
-  return selected.map(item => `[Section: ${item.section}]\n${item.text}`).join("\n\n");
+  const ranked = [...passages].sort((a, b) => b.score - a.score || a.position - b.position);
+  const best = ranked[0];
+  if (!best) return "";
+  const neighbor = ranked.find(item => item.section === best.section && Math.abs(item.position - best.position) === 1 && item.score >= best.score * 0.5);
+  return [best, ...(neighbor ? [neighbor] : [])].sort((a,b) => a.position - b.position)
+    .map(item => `[Section: ${item.section}]\n${item.text}`).join("\n\n");
+}
+
+/** Same UTF-8 hash on web and native; IDs depend on exact evidence, not batch position. */
+export function stableEvidenceId(key: string) {
+  let hash = BigInt("0xcbf29ce484222325");
+  for (const byte of new TextEncoder().encode(key)) hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * BigInt("0x100000001b3"));
+  return "e" + hash.toString(16).padStart(16, "0");
 }
 
 export type GroundedDraft = { title: string; hook: string; claim: string; sentences: string[]; evidence: Array<{ sentence: number; sourceIndex: number; quote: string; section?: string }> };
