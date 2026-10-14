@@ -2,7 +2,7 @@
 
 Run `npm run test:prompts` from Website before retaining a prompt change. CI runs this gate before the Pages build. It spends no Gemini quota and changes no UI or runtime policy.
 
-Eight fixed scenarios reuse the existing mocked provider, actual response parser, card recovery pipeline, citation restoration, answer cache, and production topic ranker:
+Nine fixed scenarios reuse the existing mocked provider, actual response parser, card recovery pipeline, citation restoration, answer cache, and production topic ranker:
 
 - Direct question: answer the original pressure question, include the locally selected cause-first instruction, cite its source, and reuse a capitalization variant without a second call.
 - Paraphrase: ground shaking finds Earthquakes without shared keywords.
@@ -12,6 +12,8 @@ Eight fixed scenarios reuse the existing mocked provider, actual response parser
 - Duplicate candidates: an exact repeated candidate is repaired locally; seven distinct published cards still take two calls.
 - Unrelated search: no strong matches or visible tree paths; 100 unique Explore more suggestions remain available with zero calls.
 - Multi-part question: supply both explicit question clauses and the per-item unsupported-evidence instruction in one request; reuse capitalization variants without another call.
+
+- Scoped question: retain place, time, audience, and comparison qualifiers in the existing answer request; preserve a valid citation and cached capitalization variants.
 
 ## Reports and comparison
 
@@ -50,10 +52,22 @@ npm run evaluate:prompts -- --compare scripts/prompt-evaluation/question-type-be
 
 ## Multi-part checklist comparison
 
-`coverage-before.json` records the previous builder against the same eight-case fixture set as the current baseline. The new case checks that both original clauses reach the existing answer request and that its prompt requires an answer or a specific evidence limitation for each. The previous builder fails the checklist contract; the new builder passes. Both use one operation call, produce 155 canned response bytes, and retain one valid citation. Prompt size grows from 6,079 to 6,373 bytes (294 bytes, about 4.8%); all other case metrics stay unchanged.
+`coverage-before.json` records the previous builder against the same eight-case fixture set as `coverage-after.json`. The new case checks that both original clauses reach the existing answer request and that its prompt requires an answer or a specific evidence limitation for each. The previous builder fails the checklist contract; the new builder passes. Both use one operation call, produce 155 canned response bytes, and retain one valid citation. Prompt size grows from 6,079 to 6,373 bytes (294 bytes, about 4.8%); all other case metrics stay unchanged.
 
 This measures prompt construction, not live Gemini compliance. The replay answer and evidence are fixed. Historical question-type comparison reports retain their original seven-case fixture identity and must be compared to each other, not to the expanded current baseline.
 
 ```sh
-npm run evaluate:prompts -- --compare scripts/prompt-evaluation/coverage-before.json scripts/prompt-evaluation/baseline.json
+npm run evaluate:prompts -- --compare scripts/prompt-evaluation/coverage-before.json scripts/prompt-evaluation/coverage-after.json
+```
+
+## Scope-field comparison
+
+`scope-before.json` and the current baseline use the same nine-case fixtures. The previous builder fails the new scope-field contract; the updated builder passes it. Both make one operation call, retain one valid citation, and produce 198 canned response bytes. The scoped prompt grows from 6,138 to 6,534 bytes (396 bytes, about 6.5%); other case metrics remain unchanged.
+
+This measures local extraction and prompt construction, not live Gemini compliance. Scope phrases come only from the question, preserve negations and subsequent modifiers, ignore quoted titles, and remain reference data. Extraction is conservative and bounded (4,000 input characters, six scopes, 300 characters per scope); the full original question is always sent even when a derived field is omitted. General place/context prepositions are retained without attempting geographic inference. No separate interpretation request is used. The original query and existing evidence validation remain authoritative.
+
+Historical seven- and eight-case comparison reports keep their respective fixture identities.
+
+```sh
+npm run evaluate:prompts -- --compare scripts/prompt-evaluation/scope-before.json scripts/prompt-evaluation/baseline.json
 ```

@@ -14,7 +14,7 @@
   {
     "id": "multiple-concepts",
     "query": "earthquakes in Japan",
-    "expected": "2011 Tōhoku Earthquake",
+    "expected": "2011 T\u014dhoku Earthquake",
     "maxCalls": 0
   },
   {
@@ -43,6 +43,16 @@
     "expectedChecklist": [
       "How did it work",
       "why was it abandoned"
+    ]
+  },
+  {
+    "id": "scoped-question",
+    "query": "How did this instrument detect pressure in Japan before 1900 for beginners compared with a barometer?",
+    "maxCalls": 1,
+    "answer": "The instrument used a diaphragm to detect pressure changes. The supplied evidence does not establish its use in Japan before 1900 or a comparison with a barometer.",
+    "requiredInstruction": "Keep the answer within Question scope, preserving limiting words and negations in their original clauses. Do not broaden place, time, audience, or comparison; explicitly state when the supplied evidence cannot support that scope. The Original user query remains authoritative.",
+    "expectedScope": [
+      "in Japan before 1900 for beginners compared with a barometer"
     ]
   }
 ]

@@ -71,6 +71,44 @@ public enum PromptBuilder {
         return (2...6).contains(items.count) && items.allSatisfy({ $0.utf16.count <= 300 && isQuestion($0) }) ? items : []
     }
 
+    /// Extract bounded scope phrases locally; the original question stays authoritative.
+    public static func questionScope(_ question: String?) -> [String] {
+        guard let question, question.utf16.count <= 4000 else { return [] }
+        let query = question.precomposedStringWithCanonicalMapping
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let units = Array(query.utf16)
+        var safe = Array(repeating: false, count: units.count)
+        var quote: UInt16? = nil
+        var escaped = false
+        for i in units.indices {
+            let char = units[i]
+            safe[i] = quote == nil && !escaped
+            if escaped { escaped = false; continue }
+            if char == 92 { escaped = true; continue }
+            if let closing = quote { if char == closing { quote = nil }; continue }
+            let previousIsWord = i > 0 && ((65...90).contains(units[i-1]) || (97...122).contains(units[i-1]) || (48...57).contains(units[i-1]))
+            if char == 34 || char == 8220 { quote = char == 8220 ? 8221 : char }
+            else if (char == 39 || char == 8216) && !previousIsWord { quote = char == 8216 ? 8217 : char }
+        }
+        let pattern = #"\b(?:(?:(?:not|only)\s+)?(?:outside|within|in|before|after|during|since|until)\s+|for\s+(?=(?:beginners|experts|children|students|adults|researchers)\b)|compared\s+(?:with|to)\s+|versus\s+|vs\.?\s+|(?:no\s+)?(?:earlier|later)\s+than\s+)[^?;!\n]+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [] }
+        let text = query as NSString
+        var scopes: [String] = [], seen = Set<String>()
+        let masked = String(decoding: units.enumerated().map { safe[$0.offset] ? $0.element : UInt16(32) }, as: UTF16.self)
+        for match in regex.matches(in: masked, range: NSRange(location: 0, length: text.length)) where safe[match.range.location] {
+            let prefix = text.substring(to: match.range.location)
+            let clausePrefix = prefix.components(separatedBy: CharacterSet(charactersIn: "?;!")).last ?? ""
+            let negated = clausePrefix.range(of: #"\b(?:not|never|except|without|only|just)\b|rather than|at least|at most"#, options: [.regularExpression, .caseInsensitive]) != nil
+            let scope = ((negated ? clausePrefix : "") + text.substring(with: match.range))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: #"[.\s]+$"#, with: "", options: .regularExpression)
+            guard scope.utf16.count <= 300 else { return [] }
+            if seen.insert(scope.lowercased()).inserted { scopes.append(scope) }
+        }
+        return scopes.count <= 6 ? scopes : []
+    }
+
     /// Match only the leading question, without changing the query sent to the model.
     public static func questionType(_ query: String?) -> QuestionType? {
         let normalized = (query ?? "").precomposedStringWithCanonicalMapping.lowercased()
@@ -140,6 +178,7 @@ public enum PromptBuilder {
     public static func question(card: [String: Any], query: String?, detailed: Bool = false,
                                 history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
         let checklist = coverageChecklist(query)
+        let scope = questionScope(query)
         let typeKey: String?
         switch questionType(query) {
         case .when: typeKey = "questionWhen"
@@ -151,13 +190,15 @@ public enum PromptBuilder {
             + (PromptInstructions.rules["questionEvidence"] ?? [])
             + (typeKey.flatMap { PromptInstructions.rules[$0] } ?? [])
             + (checklist.isEmpty ? [] : (PromptInstructions.rules["questionCoverage"] ?? []))
+            + (scope.isEmpty ? [] : (PromptInstructions.rules["questionScope"] ?? []))
             + (PromptInstructions.rules[detailed ? "answerDetailed" : "answerShort"] ?? [])
         return build(.question, rules: rules, fields: [
             PromptField("Original user query", query),
             PromptField("Supporting card context", supportingCard(card), reference: true),
             PromptField("Previous conversation (context only)", Array(history.suffix(6)), reference: true),
             PromptField("Wikipedia evidence", evidence, reference: true),
-            PromptField("Coverage checklist", checklist, reference: true)
+            PromptField("Coverage checklist", checklist, reference: true),
+            PromptField("Question scope", scope, reference: true)
         ])
     }
 

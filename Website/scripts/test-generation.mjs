@@ -16,7 +16,7 @@ Module._extensions[".ts"] = (module, filename) => {
 };
 
 const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey } = require("../lib/gemini.ts");
-const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt, buildSearchInterpretationPrompt, detectQuestionType, questionCoverageChecklist } = require("../lib/prompts.ts");
+const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt, buildSearchInterpretationPrompt, detectQuestionType, questionCoverageChecklist, questionScope } = require("../lib/prompts.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
@@ -1337,4 +1337,36 @@ test('multi-part answers use one existing request and reuse normalized cached qu
  const prompt=geminiCalls(state)[0].prompt;assert.ok(prompt.includes('Coverage checklist:'));assert.ok(prompt.includes('explicitly identify that item as unsupported'));
  const repeated=await generateLearningResponse({...args,question:'  HOW did it work, and WHY was it abandoned?  '});
  assert.equal(repeated.answer,answer.answer);assert.equal(geminiCallCount(state),1);
+});
+
+
+test("question scope retains qualifiers, negations and quoted-title boundaries",()=>{
+ const cases=[
+  ["How does it work only for beginners?",["How does it work only for beginners"]],["Why did it happen in Japan before 1900?", ["in Japan before 1900"]],
+  ["Explain it for beginners.", ["for beginners"]],
+  ["How does it work compared with a barometer?", ["compared with a barometer"]],
+  ["How did it work not in Japan but in China?", ["not in Japan but in China"]],
+  ["Why was it not used in Japan?", ["Why was it not used in Japan"]],
+  ["Why did it happen (in Japan)?", ["in Japan)"]],
+  ["Who wrote \"In Japan\" before 1900?", ["before 1900"]],
+  ["What is 'Before 1900'?", []],
+  ["How does it work?", []],
+  ["Why did it happen BEFORE 1900?", ["BEFORE 1900"]],
+  ["How did it work in Japan? Why did it fail after 1900?", ["in Japan", "after 1900"]],
+  ["How does it work for measuring pressure?", []],
+  ["How does it work in a diaphragm?", ["in a diaphragm"]]];
+ const rules=JSON.parse(readFileSync(new URL("../lib/prompt-instructions.json",import.meta.url)));
+ for(const [question,expected] of cases){
+  assert.deepEqual(questionScope(question),expected,question);
+  const prompt=buildQuestionPrompt({question,card:{body:"Used in Russia after 2000"},history:[{content:"Explain it for experts"}],evidence:[]});
+  assert.ok(prompt.includes("Original user query: "+question));
+  const field=prompt.split("\n\n").find(b=>b.startsWith("Question scope: "));
+  if(expected.length){assert.deepEqual(JSON.parse(field.slice("Question scope: ".length)),{kind:"reference_material",data:expected});assert.equal(prompt.split(rules.questionScope[0]).length-1,1);}
+  else {assert.equal(field,undefined);assert.ok(!prompt.includes(rules.questionScope[0]));}
+ }
+ assert.deepEqual(questionScope("How in "+"x".repeat(301)),[]);
+ assert.deepEqual(questionScope("x".repeat(4001)),[]);
+ assert.deepEqual(questionScope(undefined),[]);
+ const learn=buildLearningPrompt({action:"learn",question:"Why in Japan before 1900?",card:{},evidence:[]});
+ assert.ok(!learn.includes("Question scope:") && !learn.includes(rules.questionScope[0]));
 });

@@ -267,4 +267,40 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(standalone.contains("Prefer 2 to 4") || standalone.contains("Prefer 150 to 250") || standalone.contains("Original user query"))
     }
 
+
+    func testQuestionScopePreservesLimits() throws {
+        let cases: [(String, [String])] = [
+            ("How does it work only for beginners?", ["How does it work only for beginners"]),
+            ("Why did it happen in Japan before 1900?", ["in Japan before 1900"]),
+            ("Explain it for beginners.", ["for beginners"]),
+            ("How does it work compared with a barometer?", ["compared with a barometer"]),
+            ("How did it work not in Japan but in China?", ["not in Japan but in China"]),
+            ("Why was it not used in Japan?", ["Why was it not used in Japan"]),
+            ("Why did it happen (in Japan)?", ["in Japan)"]),
+            ("Who wrote \"In Japan\" before 1900?", ["before 1900"]),
+            ("What is 'Before 1900'?", []),
+            ("How does it work?", []),
+            ("Why did it happen BEFORE 1900?", ["BEFORE 1900"]),
+            ("How did it work in Japan? Why did it fail after 1900?", ["in Japan", "after 1900"]),
+            ("How does it work for measuring pressure?", []),
+            ("How does it work in a diaphragm?", ["in a diaphragm"])
+        ]
+        for (query, expected) in cases {
+            XCTAssertEqual(PromptBuilder.questionScope(query), expected, query)
+            let prompt = PromptBuilder.question(card: ["body": "Used in Russia"], query: query, evidence: [])
+            XCTAssertTrue(prompt.contains("Original user query: " + query))
+            if expected.isEmpty { XCTAssertFalse(prompt.contains("Question scope:")) }
+            else {
+                let field = try XCTUnwrap(prompt.components(separatedBy: "\n\n").first { $0.hasPrefix("Question scope: ") })
+                let data = Data(field.dropFirst("Question scope: ".count).utf8)
+                let envelope = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+                XCTAssertEqual(envelope["data"] as? [String], expected)
+                XCTAssertTrue(prompt.contains("preserving limiting words and negations"))
+            }
+        }
+        XCTAssertEqual(PromptBuilder.questionScope("How in " + String(repeating: "x", count: 301)), [])
+        XCTAssertEqual(PromptBuilder.questionScope(nil), [])
+        XCTAssertFalse(PromptBuilder.learning(action: .learn, card: [:], question: "Why in Japan?", evidence: []).contains("Question scope:"))
+    }
+
 }

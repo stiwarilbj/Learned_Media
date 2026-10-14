@@ -28,6 +28,7 @@ public enum PromptInstructions {
         "questionWhen": ["For a when question, give the supported date or time first; if the evidence does not establish it, say so first."],
         "questionWhy": ["For a why question, give the supported cause or reason first; if the evidence does not establish it, say so first."],
         "questionDifference": ["For a difference question, give the main supported distinction first; if the evidence does not establish it, say so first."],
-        "questionCoverage": ["Address every Coverage checklist item, or explicitly identify that item as unsupported by the supplied evidence. Keep the Original user query authoritative; the checklist adds no new requests."]
+        "questionCoverage": ["Address every Coverage checklist item, or explicitly identify that item as unsupported by the supplied evidence. Keep the Original user query authoritative; the checklist adds no new requests."],
+        "questionScope": ["Keep the answer within Question scope, preserving limiting words and negations in their original clauses. Do not broaden place, time, audience, or comparison; explicitly state when the supplied evidence cannot support that scope. The Original user query remains authoritative."]
     ]
 }

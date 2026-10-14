@@ -59,6 +59,41 @@ export function questionCoverageChecklist(question?: string): string[] {
   return items.length >= 2 && items.length <= 6 && items.every(item => item.length <= 300 && questionStart.test(item)) ? items : [];
 }
 
+/** Keep explicit scope phrases as query data, without an interpretation request. */
+export function questionScope(question?: string): string[] {
+  if (!question || question.length > 4000) return [];
+  const query = question.normalize("NFC").replace(/\s+/gu, " ").trim();
+  // Ignore qualifiers inside quoted titles; retain parenthetical qualifiers.
+  const safe: boolean[] = [];
+  let quote = "", escaped = false;
+  for (let i = 0; i < query.length; i++) {
+    const char = query[i];
+    safe[i] = !quote && !escaped;
+    if (escaped) { escaped = false; continue; }
+    if (char === "\\") { escaped = true; continue; }
+    if (quote) { if (char === quote) quote = ""; continue; }
+    if (char === '"' || char === "“") quote = char === "“" ? "”" : char;
+    else if ((char === "'" || char === "‘") && !/[a-z0-9]/iu.test(query[i - 1] ?? "")) quote = char === "‘" ? "’" : char;
+  }
+  const pattern = /\b(?:(?:(?:not|only)\s+)?(?:outside|within|in|before|after|during|since|until)\s+|for\s+(?=(?:beginners|experts|children|students|adults|researchers)\b)|compared\s+(?:with|to)\s+|versus\s+|vs\.?\s+|(?:no\s+)?(?:earlier|later)\s+than\s+)[^?;!\n]+/giu;
+  const seen = new Set<string>(), scopes: string[] = [];
+  const masked = query.split("").map((char, i) => safe[i] ? char : " ").join("");
+  for (const match of masked.matchAll(pattern)) {
+    if (!safe[match.index]) continue;
+    // Keep preceding negation and limits attached to their original clause.
+    const prefix = query.slice(0, match.index);
+    const clauseStart = Math.max(prefix.lastIndexOf("?"), prefix.lastIndexOf(";"), prefix.lastIndexOf("!")) + 1;
+    const clausePrefix = query.slice(clauseStart, match.index);
+    const phrase = query.slice(match.index, match.index + match[0].length);
+    const text = (/\b(?:not|never|except|without|only|just)\b|rather than|at least|at most/iu.test(clausePrefix)
+      ? clausePrefix + phrase : phrase).trim().replace(/[.\s]+$/u, "");
+    if (text.length > 300) return []; // The full original query still carries long scopes.
+    const key = text.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); scopes.push(text); }
+  }
+  return scopes.length <= 6 ? scopes : [];
+}
+
 /** Keep instructions separate from data; never normalize evidence or user text. */
 export function buildPrompt(operation: PromptOperation, rules: string[] = [], fields: PromptField[] = []) {
   const priority = operation === "connection" ? [] : instructions[operation === "question" ? "questionPriority" : "taskPriority"];
@@ -104,14 +139,17 @@ export function buildQuestionPrompt({ card, question, detailed, history, evidenc
   evidence: unknown[];
 }) {
   const checklist = questionCoverageChecklist(question);
+  const scope = questionScope(question);
   return buildPrompt("question", [...instructions.answerWriting, ...instructions.questionEvidence, ...questionTypeRules(question),
     ...(checklist.length ? instructions.questionCoverage : []),
+    ...(scope.length ? instructions.questionScope : []),
     ...instructions[detailed ? "answerDetailed" : "answerShort"]], [
     { label: "Original user query", value: question },
     { label: "Supporting card context", value: supportingCard(card), reference: true },
     { label: "Previous conversation (context only)", value: history?.slice(-6), reference: true },
     { label: "Wikipedia evidence", value: evidence, reference: true },
-    { label: "Coverage checklist", value: checklist, reference: true }
+    { label: "Coverage checklist", value: checklist, reference: true },
+    { label: "Question scope", value: scope, reference: true }
   ]);
 }
 
