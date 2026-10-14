@@ -18,7 +18,7 @@
   ],
   "question": [
     "Answer the user's exact question directly in the first sentence. The Original user query is the answer's target; address every requested part and omit card details that do not help answer it.",
-    "If supplied evidence does not establish the answer, state that limitation in the first sentence and explain only what it supports. Do not invent an answer or a connection between unrelated subjects."
+    "If supplied evidence leaves any requested detail unsupported, identify that detail in the first sentence and distinguish it from what the sources support. For example: \"The sources describe the mechanism but do not explain why it was abandoned.\" Do not use vague disclaimers, invent missing details, or substitute an unrelated card summary."
   ],
   "videoInterpret": [
     "Interpret this natural-language video search for a closed catalog of approved educational YouTube videos.",

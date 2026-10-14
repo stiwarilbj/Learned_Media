@@ -16,7 +16,7 @@ export function registerEvaluation(h) {
     const random = Math.random;
     Math.random = () => 0.5;
     try {
-      if (fixture.query && !['direct-question','multi-part-question','scoped-question'].includes(fixture.id)) {
+      if (fixture.query && !fixture.requiredInstruction) {
         const result = engine.searchTopicIndex(index, fixture.query);
         assert.equal(result.suggestions.length,100);
         assert.equal(new Set(result.suggestions.map(s=>s.id)).size,100);
@@ -47,13 +47,14 @@ export function registerEvaluation(h) {
           }} : {};
         state=h.installNetworkMock({...options,learningAnswer:fixture.answer});
         const sessionId=await h.connectMock(state);
-        if (['direct-question','multi-part-question','scoped-question'].includes(fixture.id)) {
+        if (fixture.requiredInstruction) {
           const fact=h.factBundle(h.words[0]);
           const card={id:'fixed-eval-card',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:h.articleExtract()}]};
           const args={apiKey:'test-key',sessionId,action:'question',card,question:fixture.query,history:[]};
           const answer=await h.generateLearningResponse(args);
           assert.match(answer.answer,/diaphragm.*pressure/);
           assert.equal(answer.citations.length,1);
+          if(fixture.id === "incomplete-evidence-answer") assert.equal(answer.answer,fixture.answer);
           row.citationTotal=answer.citations.length;
           row.citationValid=answer.citations.filter(c=>c.url===card.sources[0].url).length;
           const repeat=await h.generateLearningResponse({...args,question:'  '+fixture.query.toUpperCase()+'  '});
@@ -103,7 +104,7 @@ export function registerEvaluation(h) {
       assert.equal(row.citationValid,row.citationTotal);
       assert.equal(row.duplicateRate,0);
       assert.ok(row.geminiCalls<=fixture.maxCalls);
-      assert.ok(questionInstructionPresent,'Direct question is missing its type-specific instruction');
+      assert.ok(questionInstructionPresent,'Question is missing its required prompt contract');
       row.taskSuccess=true;
     } finally {
       Math.random=random;

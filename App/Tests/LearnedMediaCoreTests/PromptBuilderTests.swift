@@ -180,7 +180,7 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertTrue(blocks[0].contains("omit card details that do not help answer it"))
         XCTAssertTrue(blocks[0].contains("must not replace the current query"))
         XCTAssertTrue(blocks[0].contains("Supplemental sources may directly support the answer to the query"))
-        XCTAssertTrue(blocks[0].contains("state that limitation in the first sentence"))
+        XCTAssertTrue(blocks[0].contains("identify that detail in the first sentence"))
         XCTAssertFalse(blocks[0].contains("stay on its subject") || blocks[0].contains("100 to 160 words"))
         let learn = PromptBuilder.learning(action: .learn, card: card, question: question, history: history, evidence: evidence)
         XCTAssertTrue(learn.hasPrefix("Explain this one card"))
@@ -301,6 +301,23 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertEqual(PromptBuilder.questionScope("How in " + String(repeating: "x", count: 301)), [])
         XCTAssertEqual(PromptBuilder.questionScope(nil), [])
         XCTAssertFalse(PromptBuilder.learning(action: .learn, card: [:], question: "Why in Japan?", evidence: []).contains("Question scope:"))
+    }
+
+
+    func testIncompleteEvidenceNamesTheUnsupportedDetail() {
+        for query in ["Why was it abandoned?", "When was it abandoned?", "How did it work, and why was it abandoned?", "What's the difference compared with a barometer in Japan?"] {
+            for detailed in [false, true] {
+                let prompt = PromptBuilder.question(card: ["body": "The mechanism detects pressure."], query: query, detailed: detailed, evidence: [["extract": "The instrument used a diaphragm."]])
+                let block = prompt.components(separatedBy: "\n\n")[0]
+                let rule = PromptInstructions.rules["question"]![1]
+                XCTAssertEqual(block.components(separatedBy: rule).count, 2)
+                XCTAssertTrue(block.contains("The sources describe the mechanism but do not explain why it was abandoned."))
+                XCTAssertTrue(block.contains("Do not use vague disclaimers, invent missing details, or substitute an unrelated card summary."))
+                XCTAssertFalse(block.contains("state that limitation in the first sentence"))
+                XCTAssertTrue(prompt.contains("Original user query: " + query))
+            }
+        }
+        XCTAssertFalse(PromptBuilder.learning(action: .learn, card: [:], evidence: []).contains("identify that detail in the first sentence"))
     }
 
 }

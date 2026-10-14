@@ -14,7 +14,7 @@
   {
     "id": "multiple-concepts",
     "query": "earthquakes in Japan",
-    "expected": "2011 T\u014dhoku Earthquake",
+    "expected": "2011 Tōhoku Earthquake",
     "maxCalls": 0
   },
   {
@@ -54,5 +54,12 @@
     "expectedScope": [
       "in Japan before 1900 for beginners compared with a barometer"
     ]
+  },
+  {
+    "id": "incomplete-evidence-answer",
+    "query": "How did this instrument work, and why was it abandoned?",
+    "maxCalls": 1,
+    "answer": "The sources describe the mechanism but do not explain why it was abandoned. The instrument used a diaphragm to detect pressure changes.",
+    "requiredInstruction": "If supplied evidence leaves any requested detail unsupported, identify that detail in the first sentence and distinguish it from what the sources support. For example: \"The sources describe the mechanism but do not explain why it was abandoned.\" Do not use vague disclaimers, invent missing details, or substitute an unrelated card summary."
   }
 ]

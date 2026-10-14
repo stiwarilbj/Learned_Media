@@ -2,7 +2,7 @@
 
 Run `npm run test:prompts` from Website before retaining a prompt change. CI runs this gate before the Pages build. It spends no Gemini quota and changes no UI or runtime policy.
 
-Nine fixed scenarios reuse the existing mocked provider, actual response parser, card recovery pipeline, citation restoration, answer cache, and production topic ranker:
+Ten fixed scenarios reuse the existing mocked provider, actual response parser, card recovery pipeline, citation restoration, answer cache, and production topic ranker:
 
 - Direct question: answer the original pressure question, include the locally selected cause-first instruction, cite its source, and reuse a capitalization variant without a second call.
 - Paraphrase: ground shaking finds Earthquakes without shared keywords.
@@ -14,6 +14,8 @@ Nine fixed scenarios reuse the existing mocked provider, actual response parser,
 - Multi-part question: supply both explicit question clauses and the per-item unsupported-evidence instruction in one request; reuse capitalization variants without another call.
 
 - Scoped question: retain place, time, audience, and comparison qualifiers in the existing answer request; preserve a valid citation and cached capitalization variants.
+
+- Incomplete evidence answer: require a named unsupported detail instead of a generic disclaimer; preserve the mechanism explanation, citation, and answer-cache behavior.
 
 ## Reports and comparison
 
@@ -62,12 +64,24 @@ npm run evaluate:prompts -- --compare scripts/prompt-evaluation/coverage-before.
 
 ## Scope-field comparison
 
-`scope-before.json` and the current baseline use the same nine-case fixtures. The previous builder fails the new scope-field contract; the updated builder passes it. Both make one operation call, retain one valid citation, and produce 198 canned response bytes. The scoped prompt grows from 6,138 to 6,534 bytes (396 bytes, about 6.5%); other case metrics remain unchanged.
+`scope-before.json` and `scope-after.json` use the same nine-case fixtures. The previous builder fails the new scope-field contract; the updated builder passes it. Both make one operation call, retain one valid citation, and produce 198 canned response bytes. The scoped prompt grows from 6,138 to 6,534 bytes (396 bytes, about 6.5%); other case metrics remain unchanged.
 
 This measures local extraction and prompt construction, not live Gemini compliance. Scope phrases come only from the question, preserve negations and subsequent modifiers, ignore quoted titles, and remain reference data. Extraction is conservative and bounded (4,000 input characters, six scopes, 300 characters per scope); the full original question is always sent even when a derived field is omitted. General place/context prepositions are retained without attempting geographic inference. No separate interpretation request is used. The original query and existing evidence validation remain authoritative.
 
 Historical seven- and eight-case comparison reports keep their respective fixture identities.
 
 ```sh
-npm run evaluate:prompts -- --compare scripts/prompt-evaluation/scope-before.json scripts/prompt-evaluation/baseline.json
+npm run evaluate:prompts -- --compare scripts/prompt-evaluation/scope-before.json scripts/prompt-evaluation/scope-after.json
+```
+
+## Precise evidence limitations comparison
+
+`precise-evidence-before.json` and the current baseline use the same ten-case fixtures. The previous builder fails the new instruction contract; the updated builder passes. The incomplete-evidence case makes one operation call, retains one valid citation, and produces 170 canned response bytes in both runs. Its prompt grows from 6,399 to 6,541 bytes (142 bytes, about 2.2%). Other question prompts also grow by 142 bytes; generation and search prompts are unchanged. No response schema, UI, cache, or retry behavior changes.
+
+The question template now requires the specific unsupported detail in the first sentence, a distinction between supported and unsupported parts, and no vague disclaimer or unrelated summary. The quoted mechanism/abandonment sentence is an example, not a required response or an assertion about any source. Tests cover short/detailed, date, cause, multi-part, and comparison questions on web and native.
+
+This is deterministic prompt-construction verification with fixed provider responses, not measured live-model compliance. Historical reports must be compared only with their matching fixture set.
+
+```sh
+npm run evaluate:prompts -- --compare scripts/prompt-evaluation/precise-evidence-before.json scripts/prompt-evaluation/baseline.json
 ```

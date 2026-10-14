@@ -1,8 +1,8 @@
 {
   "version": 1,
   "mode": "deterministic-replay",
-  "suiteHash": "01b6d9d5aad0ae3cca86247c7f62c3503a48d0ab9dec6ee103be12feb840b9fe",
-  "promptHash": "6981036553352e2b35a7010541d794c8dd53873d28f4b1db28964ee9a66b8bb5",
+  "suiteHash": "9d6c32839a35d6bfd0c7cefc4471a6f47e50ff85d6f8d62e3e5291bc23cb0f05",
+  "promptHash": "cb4b582737dfb2f2b6ed2bf65d52dddf60dfadb0314f3177348fe3cd7667af8c",
   "cases": [
     {
       "id": "direct-question",
@@ -12,7 +12,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 94,
-      "promptBytes": 6193,
+      "promptBytes": 6335,
       "geminiCalls": 1
     },
     {
@@ -89,7 +89,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 155,
-      "promptBytes": 6373,
+      "promptBytes": 6515,
       "geminiCalls": 1
     },
     {
@@ -100,7 +100,18 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 198,
-      "promptBytes": 6534,
+      "promptBytes": 6676,
+      "geminiCalls": 1
+    },
+    {
+      "id": "incomplete-evidence-answer",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 170,
+      "promptBytes": 6541,
       "geminiCalls": 1
     }
   ]

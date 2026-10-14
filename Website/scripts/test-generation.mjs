@@ -572,7 +572,7 @@ await t.test("the original question takes priority over unrelated card details a
   assert.ok(blocks[0].includes("address every requested part and omit card details that do not help answer it"));
   assert.ok(blocks[0].includes("Previous conversation may clarify references but must not replace the current query"));
   assert.ok(blocks[0].includes("Supplemental sources may directly support the answer to the query"));
-  assert.ok(blocks[0].includes("state that limitation in the first sentence"));
+  assert.ok(blocks[0].includes("identify that detail in the first sentence"));
   assert.ok(!blocks[0].includes("stay on its subject") && !blocks[0].includes("100 to 160 words"));
   const learn = buildLearningPrompt({ action: "learn", card, question, history, evidence });
   assert.ok(learn.startsWith("Explain this one card"));
@@ -1369,4 +1369,22 @@ test("question scope retains qualifiers, negations and quoted-title boundaries",
  assert.deepEqual(questionScope(undefined),[]);
  const learn=buildLearningPrompt({action:"learn",question:"Why in Japan before 1900?",card:{},evidence:[]});
  assert.ok(!learn.includes("Question scope:") && !learn.includes(rules.questionScope[0]));
+});
+
+
+test('incomplete evidence instructions name missing details without unrelated summaries',()=>{
+ const rules=JSON.parse(readFileSync(new URL('../lib/prompt-instructions.json',import.meta.url)));
+ for(const question of ['Why was it abandoned?','When was it abandoned?','How did it work, and why was it abandoned?',"What's the difference compared with a barometer in Japan?"]){
+  for(const detailed of [false,true]){
+   const prompt=buildQuestionPrompt({question,detailed,card:{body:'The mechanism detects pressure.'},evidence:[{extract:'The instrument used a diaphragm.'}]});
+   const block=prompt.split('\n\n')[0];
+   assert.equal(block.split(rules.question[1]).length-1,1);
+   assert.ok(block.includes('The sources describe the mechanism but do not explain why it was abandoned.'));
+   assert.ok(block.includes('Do not use vague disclaimers, invent missing details, or substitute an unrelated card summary.'));
+   assert.ok(!block.includes('state that limitation in the first sentence'));
+   assert.ok(prompt.includes('Original user query: '+question));
+  }
+ }
+ const learn=buildLearningPrompt({action:'learn',card:{},evidence:[]});
+ assert.ok(!learn.includes(rules.question[1]));
 });
