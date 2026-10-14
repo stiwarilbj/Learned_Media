@@ -2,18 +2,19 @@ import instructions from "./prompt-instructions.json";
 import { factWritingRules, difficultyRubric } from "./fact-quality";
 
 export type PromptOperation = "connection" | "candidate" | "grounding" | "learn" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
-export type PromptField = { label: string; value: unknown; multiline?: boolean };
+export type PromptField = { label: string; value: unknown; multiline?: boolean; reference?: boolean };
 
 /** Keep instructions separate from data; never normalize evidence or user text. */
 export function buildPrompt(operation: PromptOperation, rules: string[] = [], fields: PromptField[] = []) {
   const priority = operation === "connection" ? [] : instructions[operation === "question" ? "questionPriority" : "taskPriority"];
-  const uniqueRules = Array.from(new Set([...instructions[operation], ...priority, ...rules]
+  const sourceData = fields.some(field => field.reference) ? instructions.sourceData : [];
+  const uniqueRules = Array.from(new Set([...instructions[operation], ...priority, ...sourceData, ...rules]
     .flatMap(rule => rule.split("\n"))
     .map(rule => rule.replace(/\s+/g, " ").trim()).filter(Boolean)));
   const seenFields = new Set<string>();
-  const data = fields.flatMap(({ label, value, multiline }) => {
+  const data = fields.flatMap(({ label, value, multiline, reference }) => {
     if (value === undefined || value === null || value === "" || Array.isArray(value) && !value.length) return [];
-    const text = typeof value === "string" ? value : JSON.stringify(value);
+    const text = reference ? JSON.stringify({ kind: "reference_material", data: value }) : typeof value === "string" ? value : JSON.stringify(value);
     const field = label + (multiline ? ":\n" : ": ") + text;
     if (seenFields.has(field)) return [];
     seenFields.add(field);
@@ -49,9 +50,9 @@ export function buildQuestionPrompt({ card, question, detailed, history, evidenc
   return buildPrompt("question", [...instructions.answerWriting, ...instructions.questionEvidence,
     ...instructions[detailed ? "answerDetailed" : "answerShort"]], [
     { label: "Original user query", value: question },
-    { label: "Supporting card context", value: supportingCard(card) },
-    { label: "Previous conversation (context only)", value: history?.slice(-6) },
-    { label: "Wikipedia evidence", value: evidence }
+    { label: "Supporting card context", value: supportingCard(card), reference: true },
+    { label: "Previous conversation (context only)", value: history?.slice(-6), reference: true },
+    { label: "Wikipedia evidence", value: evidence, reference: true }
   ]);
 }
 
@@ -65,7 +66,7 @@ export function buildLearningPrompt(options: {
 }) {
   if (options.action === "question") return buildQuestionPrompt(options);
   return buildPrompt("learn", instructions.learningEvidence, [
-    { label: "Card", value: supportingCard(options.card) },
-    { label: "Wikipedia evidence", value: options.evidence }
+    { label: "Card", value: supportingCard(options.card), reference: true },
+    { label: "Wikipedia evidence", value: options.evidence, reference: true }
   ]);
 }

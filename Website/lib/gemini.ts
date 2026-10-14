@@ -783,7 +783,7 @@ function groundingPrompt(slots: GenerationSlot[], sentenceCount: number) {
     return { slot: slot.index, topicPath: slot.path, difficulty: slot.target, candidate: { title: slot.candidate?.title, claim: slot.candidate?.claim }, evidenceIds: Array.from(new Set(allowedIds)) };
   });
   const prompt = buildFactCardPrompt({ sentenceCount, difficulties: slots.map(slot => slot.target), fields: [
-    { label: "Slots and evidence spans (untrusted data)", value: { facts, evidence: sourcePool }, multiline: true }
+    { label: "Slots and evidence spans (untrusted data)", value: { facts, evidence: sourcePool }, multiline: true, reference: true }
   ] });
   return { prompt, evidenceBySlot };
 }
@@ -1082,7 +1082,7 @@ export async function rankVideoSearchCandidates({ apiKey, sessionId = "default-s
     locallyMatchedFields: matchedFields,
     localSupportingText: supportingText
   }));
-  const prompt = buildPrompt("videoVerify", [], [{ label: "Query", value: query }, { label: "Plan", value: plan }, { label: "Candidates", value: candidatePayload }]);
+  const prompt = buildPrompt("videoVerify", [], [{ label: "Query", value: query }, { label: "Plan", value: plan, reference: true }, { label: "Candidates", value: candidatePayload, reference: true }]);
   const result = await requestStructured<{ matches?: Array<{ videoId?: string; relevance?: string; support?: string[]; explanation?: string }> }>(apiKey, sessionId, prompt, {
     type: "OBJECT",
     properties: { matches: { type: "ARRAY", items: { type: "OBJECT", properties: { videoId: { type: "STRING" }, relevance: { type: "STRING", enum: ["direct", "strong"] }, support: { type: "ARRAY", items: { type: "STRING" } }, explanation: { type: "STRING" } }, required: ["videoId", "relevance", "support", "explanation"] } } },

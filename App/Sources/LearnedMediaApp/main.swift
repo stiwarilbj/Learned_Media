@@ -1103,7 +1103,7 @@ private final class GeminiClient {
                     "evidenceIds": Array(Set(allowedIDs)).sorted()]
         }
         let prompt = PromptBuilder.factCard(sentenceCount: sentenceCount, difficulties: slots.map(\.level), fields: [
-            PromptField("Slots and evidence spans (untrusted data)", ["facts": values, "evidence": sourcePool], multiline: true)
+            PromptField("Slots and evidence spans (untrusted data)", ["facts": values, "evidence": sourcePool], multiline: true, reference: true)
         ])
         return GeminiGroundingPlan(prompt: prompt, evidenceBySlot: evidenceBySlot)
     }
@@ -1446,7 +1446,7 @@ private final class GeminiClient {
             let description = (video["description"] as? String ?? "").replacingOccurrences(of: "(?:subscribe|like and subscribe|follow us|social media|patreon|sponsor(?:ed)? by|use code|affiliate|merch(?:andise)?|join the discord|business inquiries|check out my|support the channel)[^.!?]*(?:[.!?]|$)", with: " ", options: .regularExpression).replacingOccurrences(of: "https?://\\S+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines).prefix(480)
             return ["videoId": video["id"] as? String ?? "", "title": video["title"] as? String ?? "", "creator": video["channelName"] as? String ?? "", "publishedAt": video["publishedAt"] as? String ?? "", "durationSeconds": video["durationSeconds"] as? Int ?? 0, "topics": video["topics"] as? [String] ?? [], "tags": Array((video["tags"] as? [String] ?? []).prefix(16)), "descriptionExcerpt": String(description), "locallyMatchedFields": candidate["matchedFields"] as? [String] ?? [], "localSupportingText": candidate["supportingText"] as? [String] ?? []]
         }
-        let prompt = PromptBuilder.build(.videoVerify, fields: [PromptField("Query", query), PromptField("Plan", plan), PromptField("Candidates", candidatePayload)])
+        let prompt = PromptBuilder.build(.videoVerify, fields: [PromptField("Query", query), PromptField("Plan", plan, reference: true), PromptField("Candidates", candidatePayload, reference: true)])
         let schema: [String: Any] = ["type": "OBJECT", "properties": ["matches": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": ["videoId": ["type": "STRING"], "relevance": ["type": "STRING", "enum": ["direct", "strong"]], "support": ["type": "ARRAY", "items": ["type": "STRING"]], "explanation": ["type": "STRING"]], "required": ["videoId", "relevance", "support", "explanation"]]]], "required": ["matches"]]
         let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 4096, cacheContext: "youtube-catalog:\(catalogVersion)")
         let envelope = try JSONDecoder().decode(GeminiVideoRankEnvelope.self, from: Data(result.text.utf8))
