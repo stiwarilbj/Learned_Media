@@ -704,14 +704,7 @@ private struct GeminiGenerationSlot {
     var lastError: String?
 }
 
-private struct GeminiStructuredCacheEntry {
-    let text: String
-    let model: String
-    let resolvedModel: String?
-    let outcomes: [[String: Any]]
-    let expiresAt: Date
-    var touchedAt: Date
-}
+private typealias GeminiStructuredResult = (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]])
 
 private struct GeminiCandidateGroupResult {
     let slots: [Int]
@@ -768,12 +761,12 @@ private final class GeminiClient {
     private let wikipedia = WikipediaClient()
     private let validatedEvidence = ValidatedCardEvidenceCache()
     private let scheduler = ModelScheduler()
-    private var structuredCache: [String: GeminiStructuredCacheEntry] = [:]
+    private let structuredCache = RequestWorkCache<GeminiStructuredResult>()
 
     func reset() async {
         await scheduler.acquireRequest(priority: 0)
         await scheduler.reset()
-        structuredCache.removeAll()
+        await structuredCache.clear()
         await scheduler.releaseRequest()
     }
 
@@ -894,29 +887,26 @@ private final class GeminiClient {
         if !(await scheduler.hasModels()) { await scheduler.update(GeminiModelPolicy.allowedModels) }
     }
 
-    private func structured(key: String, prompt: String, schema: [String: Any], stage: String, timeout: TimeInterval = 45, priority: Int = 0, allowedModels: [String]? = nil, maxOutputTokens: Int = 4096, cacheContext: String = "", streaming: Bool = false, onStreamAttemptStart: (() -> Void)? = nil, onStreamText: ((String) -> Void)? = nil) async throws -> (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]]) {
+    private func structured(key: String, prompt: String, schema: [String: Any], stage: String, timeout: TimeInterval = 45, priority: Int = 0, allowedModels: [String]? = nil, maxOutputTokens: Int = 4096, cacheContext: String = "", identity: Data? = nil, streaming: Bool = false, onStreamAttemptStart: (() -> Void)? = nil, onStreamText: ((String) -> Void)? = nil) async throws -> (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]]) {
+        try Task.checkCancellation()
+        if stage == "learning" {
+            let schemaData = try JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])
+            let cacheSource = Data("\(key)\u{0}\(stage)\u{0}\(allowedModels?.joined(separator: ",") ?? "all")\u{0}\(maxOutputTokens)\u{0}\(cacheContext)\u{0}".utf8) + (identity ?? Data(prompt.utf8)) + schemaData
+            let cacheKey = SHA256.hash(data: cacheSource).map { String(format: "%02x", $0) }.joined()
+            return try await structuredCache.value(key: cacheKey, reusable: { RequestIdentity.reusableJSON($0.text, schema: schema) }) {
+                try await self.queuedStructured(key: key, prompt: prompt, schema: schema, stage: stage, timeout: timeout, priority: priority, allowedModels: allowedModels, maxOutputTokens: maxOutputTokens, streaming: streaming, onStreamAttemptStart: onStreamAttemptStart, onStreamText: onStreamText)
+            }
+        }
+        return try await queuedStructured(key: key, prompt: prompt, schema: schema, stage: stage, timeout: timeout, priority: priority, allowedModels: allowedModels, maxOutputTokens: maxOutputTokens, streaming: streaming, onStreamAttemptStart: onStreamAttemptStart, onStreamText: onStreamText)
+    }
+
+    private func queuedStructured(key: String, prompt: String, schema: [String: Any], stage: String, timeout: TimeInterval, priority: Int, allowedModels: [String]?, maxOutputTokens: Int, streaming: Bool, onStreamAttemptStart: (() -> Void)?, onStreamText: ((String) -> Void)?) async throws -> GeminiStructuredResult {
         await scheduler.acquireRequest(priority: priority)
         do {
             try Task.checkCancellation()
             try await ensureModels(key: key)
             guard await scheduler.isReady() else { throw NativeError(message: "Connect Gemini and wait until both primary Flash Lite models pass their structured-output checks.", retryable: false) }
-            let schemaData = (try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])) ?? Data()
-            let cacheSource = Data("\(key)\u{0}\(stage)\u{0}\(allowedModels?.joined(separator: ",") ?? "all")\u{0}\(maxOutputTokens)\u{0}\(cacheContext)\u{0}\(prompt)".utf8) + schemaData
-            let cacheKey = SHA256.hash(data: cacheSource).map { String(format: "%02x", $0) }.joined()
-            if stage == "learning" {
-                structuredCache = structuredCache.filter { $0.value.expiresAt > Date() }
-                if var cached = structuredCache[cacheKey] {
-                    cached.touchedAt = Date()
-                    structuredCache[cacheKey] = cached
-                    await scheduler.releaseRequest()
-                    return (cached.text, cached.model, cached.resolvedModel, cached.outcomes)
-                }
-            }
             let result = try await performStructured(key: key, prompt: prompt, schema: schema, stage: stage, timeout: timeout, allowedModels: allowedModels, maxOutputTokens: maxOutputTokens, recover: priority == 0, streaming: streaming, onStreamAttemptStart: onStreamAttemptStart, onStreamText: onStreamText)
-            if stage == "learning" {
-                structuredCache[cacheKey] = GeminiStructuredCacheEntry(text: result.text, model: result.model, resolvedModel: result.resolvedModel, outcomes: result.outcomes, expiresAt: Date().addingTimeInterval(30 * 60), touchedAt: Date())
-                while structuredCache.count > 100, let oldest = structuredCache.min(by: { $0.value.touchedAt < $1.value.touchedAt })?.key { structuredCache[oldest] = nil }
-            }
             await scheduler.releaseRequest()
             return result
         } catch {
@@ -1032,7 +1022,7 @@ private final class GeminiClient {
             return ["status": "rate-limited", "message": "Gemini's project quota is cooling down. Retry after the displayed time.", "models": models, "eligibleModelCount": GeminiModelPolicy.allowedModels.count, "requiredWorkingModels": GeminiModelPolicy.requiredWorkingModels]
         }
         await scheduler.reset()
-        structuredCache.removeAll()
+        await structuredCache.clear()
         await scheduler.update(GeminiModelPolicy.allowedModels)
         var checks = GeminiModelPolicy.allowedModels.map { GeminiModelCheckResult(model: $0, status: "unchecked", latencyMs: 0, checkedAt: "", error: nil, resolvedModel: nil) }
         for model in GeminiModelPolicy.primaryModels {
@@ -1468,7 +1458,7 @@ private final class GeminiClient {
                                          "title": card["title"] as? String ?? "", "body": card["body"] as? String ?? ""]
         let prompt = PromptBuilder.learning(action: action == "learn" ? .learn : .question,
             card: cardIdentity, question: question, detailed: detailed, history: history, evidence: context)
-        let result = try await structured(key: key, prompt: prompt, schema: ["type": "OBJECT", "properties": ["answer": ["type": "STRING"], "citationIndexes": ["type": "ARRAY", "items": ["type": "INTEGER"]]], "required": ["answer", "citationIndexes"]], stage: "learning", maxOutputTokens: detailed ? 8192 : 4096)
+        let result = try await structured(key: key, prompt: prompt, schema: ["type": "OBJECT", "properties": ["answer": ["type": "STRING"], "citationIndexes": ["type": "ARRAY", "items": ["type": "INTEGER"]]], "required": ["answer", "citationIndexes"]], stage: "learning", maxOutputTokens: detailed ? 8192 : 4096, identity: try RequestIdentity.data(task: action == "learn" ? "learn" : "question", query: action == "question" ? question : nil, topics: cardIdentity["topicPath"] ?? [], filters: ["detailed": detailed], context: ["card": cardIdentity, "history": action == "question" ? Array(history.suffix(6)) : [], "evidence": context, "sourceUrls": sourceArray.prefix(5).map { $0["canonicalUrl"] as? String ?? $0["url"] as? String ?? "" }]))
         let envelope = try JSONDecoder().decode(GeminiAnswerEnvelope.self, from: Data(result.text.utf8))
         guard let answer = envelope.answer?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty else { throw NativeError(message: "Gemini returned an empty explanation.") }
         let citations = (envelope.citationIndexes ?? []).filter { $0 >= 0 && $0 < sourceArray.count }.prefix(3).map { sourceArray[$0] }
@@ -1479,7 +1469,7 @@ private final class GeminiClient {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using Smart search.", retryable: false) }
         let prompt = PromptBuilder.searchInterpretation(.videoInterpret, query: query)
         let schema: [String: Any] = ["type": "OBJECT", "properties": ["terms": ["type": "ARRAY", "items": ["type": "STRING"]], "include": ["type": "ARRAY", "items": ["type": "STRING"]], "alternatives": ["type": "ARRAY", "items": ["type": "STRING"]], "topics": ["type": "ARRAY", "items": ["type": "STRING"]], "conceptGroups": ["type": "ARRAY", "maxItems": 8, "items": ["type": "OBJECT", "properties": ["label": ["type": "STRING"], "terms": ["type": "ARRAY", "minItems": 1, "maxItems": 12, "items": ["type": "STRING"]], "related": ["type": "ARRAY", "maxItems": 12, "items": ["type": "STRING"]], "required": ["type": "BOOLEAN"]], "required": ["label", "terms", "related", "required"]]]], "required": ["conceptGroups", "topics"]]
-        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 1024, cacheContext: "youtube-catalog:\(catalogVersion)")
+        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 1024, cacheContext: "youtube-catalog:\(catalogVersion)", identity: try RequestIdentity.data(task: "videoInterpret", query: query))
         let envelope = try JSONDecoder().decode(GeminiVideoSearchEnvelope.self, from: Data(result.text.utf8))
         var output: [String: Any] = ["terms": Array((envelope.terms ?? []).prefix(24)), "include": Array((envelope.include ?? []).prefix(24)), "alternatives": Array((envelope.alternatives ?? []).prefix(32)), "topics": Array((envelope.topics ?? []).prefix(12))]
         if let groups = envelope.conceptGroups { output["conceptGroups"] = groups.prefix(8).map { ["label": String(($0.label ?? "").prefix(100)), "terms": Array(($0.terms ?? []).prefix(12)).map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)) }, "related": Array(($0.related ?? []).prefix(12)).map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)) }, "required": true] } }
@@ -1492,7 +1482,7 @@ private final class GeminiClient {
         let prompt = PromptBuilder.searchInterpretation(.topicInterpret, query: query)
         let list: [String: Any] = ["type": "ARRAY", "maxItems": 12, "items": ["type": "STRING"]]
         let schema: [String: Any] = ["type": "OBJECT", "properties": ["groups": ["type": "ARRAY", "maxItems": 8, "items": ["type": "OBJECT", "properties": ["label": ["type": "STRING"], "equivalents": list, "related": list], "required": ["label", "equivalents", "related"]]], "alternatives": ["type": "BOOLEAN"]], "required": ["groups", "alternatives"]]
-        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 1024, cacheContext: "topic-catalog:\(catalogVersion)")
+        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 1024, cacheContext: "topic-catalog:\(catalogVersion)", identity: try RequestIdentity.data(task: "topicInterpret", query: query))
         let plan = try JSONSerialization.jsonObject(with: Data(result.text.utf8)) as? [String: Any] ?? [:]
         return ["plan": plan, "modelOutcomes": result.outcomes]
     }
@@ -1508,7 +1498,7 @@ private final class GeminiClient {
         }
         let prompt = PromptBuilder.build(.videoVerify, fields: [PromptField("Query", query), PromptField("Plan", plan, reference: true), PromptField("Candidates", candidatePayload, reference: true)])
         let schema: [String: Any] = ["type": "OBJECT", "properties": ["matches": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": ["videoId": ["type": "STRING"], "relevance": ["type": "STRING", "enum": ["direct", "strong"]], "support": ["type": "ARRAY", "items": ["type": "STRING"]], "explanation": ["type": "STRING"]], "required": ["videoId", "relevance", "support", "explanation"]]]], "required": ["matches"]]
-        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 4096, cacheContext: "youtube-catalog:\(catalogVersion)")
+        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 4096, cacheContext: "youtube-catalog:\(catalogVersion)", identity: try RequestIdentity.data(task: "videoVerify", query: query, topics: plan["topics"] ?? [], filters: plan, context: candidatePayload))
         let envelope = try JSONDecoder().decode(GeminiVideoRankEnvelope.self, from: Data(result.text.utf8))
         let allowed = Set(candidatePayload.compactMap { $0["videoId"] as? String })
         var seen = Set<String>()

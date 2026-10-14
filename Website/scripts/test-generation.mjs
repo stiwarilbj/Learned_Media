@@ -188,7 +188,7 @@ function installNetworkMock(options = {}) {
           };
         }).filter(Boolean).reverse() };
       } else if (prompt.startsWith("Explain this one card") || prompt.startsWith("Answer the user's exact question")) {
-        output = { answer: "The instrument used a diaphragm to detect pressure changes.", citationIndexes: [0] };
+        output = { answer: options.emptyAnswer ? "" : "The instrument used a diaphragm to detect pressure changes.", citationIndexes: [0] };
       } else {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
       }
@@ -1126,4 +1126,72 @@ test('cancelled generation cannot spend a call even after the evidence cache is 
  await generateGeminiFacts(args);const calls=state.requests.length,controller=new AbortController();controller.abort();
  await assert.rejects(generateGeminiFacts({...args,signal:controller.signal}),/canceled/i);
  assert.equal(state.requests.length,calls);
+});
+
+test('answer requests share normalized questions but isolate detail, topics and context',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state),fact=factBundle(words[0]);
+ const card={id:'coalesced-answer',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:articleExtract()}]};
+ const args={apiKey:'test-key',sessionId,action:'question',card,question:'Why does this instrument detect pressure?',history:[]};
+ const before=geminiCallCount(state);
+ const [first,second]=await Promise.all([generateLearningResponse(args),generateLearningResponse({...args,question:'  WHY does this  instrument detect pressure?  '})]);
+ assert.equal(geminiCallCount(state)-before,1);assert.equal(first.answer,second.answer);
+ await generateLearningResponse({...args,question:'WHY DOES THIS INSTRUMENT DETECT PRESSURE?'});
+ assert.equal(geminiCallCount(state)-before,1);
+ for(const change of [{detailed:true},{history:[{role:'user',text:'Compare it with another instrument.'}]},{card:{...card,topicPath:['History']}},{card:{...card,body:card.body+' Updated context.'}}])await generateLearningResponse({...args,...change});
+ assert.equal(geminiCallCount(state)-before,5,'settings and context changes must not share an answer');
+});
+test('canonical request keys ignore query presentation and object order while preserving IDs and source text',()=>{
+ const {canonicalRequestIdentity,reusableStructuredValue}=require('../lib/session-cache.ts');
+ const first={task:'videoVerify',query:' Black  HOLES ',topics:['Science'],filters:{channelId:'UCAbC',minDurationSeconds:600},context:{quote:'Exact  Quotation.',id:'CaseSensitive'}};
+ assert.deepEqual(canonicalRequestIdentity(first),canonicalRequestIdentity({...first,query:'black holes',filters:{minDurationSeconds:600,channelId:'UCAbC'}}));
+ for(const change of [{task:'question'},{topics:['History']},{filters:{channelId:'ucabc',minDurationSeconds:600}},{context:{quote:'exact quotation.',id:'CaseSensitive'}}])assert.notDeepEqual(canonicalRequestIdentity(first),canonicalRequestIdentity({...first,...change}));
+ const schema={type:'OBJECT',required:['answer'],properties:{answer:{type:'STRING'}}};
+ assert.equal(reusableStructuredValue({answer:'Supported answer.'},schema),true);
+ for(const value of [{},{answer:''},{answer:'   '},{answer:123},null])assert.equal(reusableStructuredValue(value,schema),false);
+});
+
+test('empty answers are not cached as valid reusable work',async()=>{
+ const options={emptyAnswer:true},state=installNetworkMock(options),sessionId=await connectMock(state),fact=factBundle(words[0]);
+ const args={apiKey:'test-key',sessionId,action:'learn',card:{id:'invalid-answer-cache',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:articleExtract()}]}};
+ await assert.rejects(generateLearningResponse(args),/empty explanation/);const calls=geminiCallCount(state);options.emptyAnswer=false;
+ assert.ok((await generateLearningResponse(args)).answer);assert.equal(geminiCallCount(state)-calls,1);
+});
+
+test('one cancelled subscriber leaves shared Gemini work available to another',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state),network=globalThis.fetch;
+ let release,started;const gate=new Promise(resolve=>{release=resolve}),seen=new Promise(resolve=>{started=resolve});
+ globalThis.fetch=async(...args)=>{if(String(args[0]).includes('generativelanguage.googleapis.com')){started();await gate;}return network(...args);};
+ const controller=new AbortController(),args={apiKey:'test-key',sessionId,query:'why do stars explode',catalogVersion:'shared-cancel'};
+ const first=interpretNaturalSearch({...args,signal:controller.signal});const rejected=assert.rejects(first,/canceled/i);
+ const second=interpretNaturalSearch(args);await seen;await new Promise(resolve=>setTimeout(resolve,0));controller.abort();release();
+ await rejected;assert.ok((await second).plan.groups.length);assert.equal(geminiCallCount(state),1);
+});
+test('all cancelled work cannot poison a fresh request or its cache',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state),network=globalThis.fetch;
+ let release,started;const gate=new Promise(resolve=>{release=resolve}),seen=new Promise(resolve=>{started=resolve});let held=false;
+ globalThis.fetch=async(...args)=>{if(!held && String(args[0]).includes('generativelanguage.googleapis.com')){held=true;started();await gate;}return network(...args);};
+ const controller=new AbortController(),args={apiKey:'test-key',sessionId,query:'why do stars explode',catalogVersion:'all-cancel'};
+ const first=interpretNaturalSearch({...args,signal:controller.signal});const rejected=assert.rejects(first,/canceled/i);await seen;controller.abort();await rejected;
+ const fresh=interpretNaturalSearch(args);release();assert.ok((await fresh).plan.groups.length);
+ const calls=geminiCallCount(state);await interpretNaturalSearch(args);assert.equal(geminiCallCount(state),calls);assert.equal(calls,2);
+});
+
+test('answer identity includes only the conversation that is actually sent',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state),fact=factBundle(words[0]);
+ const args={apiKey:'test-key',sessionId,action:'question',question:'Why does this work?',card:{id:'history-window',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:articleExtract()}]},history:Array.from({length:7},(_,i)=>({role:'user',text:'Message '+i}))};
+ await generateLearningResponse(args);const calls=geminiCallCount(state);
+ await generateLearningResponse({...args,history:[{role:'user',text:'An older message changed'},...args.history.slice(1)]});
+ assert.equal(geminiCallCount(state),calls,'conversation outside the prompt must not invalidate the cache');
+});
+
+test('video verification shares query variants and isolates filters and candidate metadata',async()=>{
+ const state=installNetworkMock({videoMatches:[]}),sessionId=await connectMock(state);
+ const video={id:'context-video',channelId:'approved',channelName:'Science',title:'Black Holes',description:'Collapsed stars trap light.',tags:['astronomy'],topics:['Science'],publishedAt:'2025-01-01',durationSeconds:600,approved:true};
+ const args={apiKey:'test-key',sessionId,query:'black holes',plan:makeLocalVideoPlan('black holes'),catalogVersion:9,candidates:[{video,score:100,matchedFields:['title'],supportingText:['Black Holes']}]};
+ const before=geminiCallCount(state);
+ await Promise.all([rankVideoSearchCandidates(args),rankVideoSearchCandidates({...args,query:' BLACK  HOLES '})]);
+ await rankVideoSearchCandidates(args);assert.equal(geminiCallCount(state)-before,1);
+ await rankVideoSearchCandidates({...args,plan:{...args.plan,minDurationSeconds:500}});
+ await rankVideoSearchCandidates({...args,candidates:[{...args.candidates[0],video:{...video,description:'Updated metadata.'}}]});
+ assert.equal(geminiCallCount(state)-before,3);
 });

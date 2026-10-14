@@ -6,7 +6,7 @@ import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from 
 import { resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
 import { hashFactKey, difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
 import type { YouTubeSearchCandidate } from "./youtube";
-import { requestCacheKey, SessionCache } from "./session-cache";
+import { canonicalRequestIdentity, reusableStructuredValue, requestCacheKey, SessionCache, type RequestIdentity } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
 import { JsonArrayItemStreamParser } from "./stream-json";
 import { transientRetryDelayMs } from "./retry-timing";
@@ -464,7 +464,7 @@ function markModelFailure(pool: ModelPool, model: string, error: GeminiFailure) 
   return retryAt;
 }
 
-type StructuredRequestOptions = { priority?: "interactive" | "background"; models?: readonly string[]; maxOutputTokens?: number; cacheContext?: string; streaming?: boolean; onStreamAttemptStart?: () => void; onStreamText?: (text: string) => void };
+type StructuredRequestOptions = { priority?: "interactive" | "background"; models?: readonly string[]; maxOutputTokens?: number; cacheContext?: string; identity?: RequestIdentity; streaming?: boolean; onStreamAttemptStart?: () => void; onStreamText?: (text: string) => void };
 
 async function requestStructured<T>(apiKey: string, sessionId: string, prompt: string, responseSchema: Record<string, unknown>, stage: GeminiModelOutcome["stage"], timeoutMs = GENERATION_TIMEOUT_MS, signal?: AbortSignal, onProgress?: (event: GeminiProgressEvent) => void, options: StructuredRequestOptions = {}): Promise<{ value: T; model: string; resolvedModel?: string; outcomes: GeminiModelOutcome[] }> {
   const pool = await poolFor(apiKey, sessionId);
@@ -474,10 +474,11 @@ async function requestStructured<T>(apiKey: string, sessionId: string, prompt: s
   if (stage !== "learning") {
     return withRequestQueue(pool, signal, () => runStructuredRequest(pool, apiKey, prompt, responseSchema, stage, timeoutMs, signal ?? new AbortController().signal, onProgress, options), priority) as Promise<{ value: T; model: string; resolvedModel?: string; outcomes: GeminiModelOutcome[] }>;
   }
-  const cacheKey = requestCacheKey(pool.cacheScope, stage, options.models ?? "all", options.maxOutputTokens ?? "default", options.cacheContext ?? "", prompt, responseSchema);
+  const cacheKey = requestCacheKey(pool.cacheScope, stage, options.models ?? "all", options.maxOutputTokens ?? "default", options.cacheContext ?? "", options.identity ? canonicalRequestIdentity(options.identity) : prompt, responseSchema);
   const cached = pool.structuredCache.get(cacheKey);
   if (cached) return cached as { value: T; model: string; resolvedModel?: string; outcomes: GeminiModelOutcome[] };
   let flight = pool.structuredFlights.get(cacheKey);
+  if (flight?.controller.signal.aborted) { pool.structuredFlights.delete(cacheKey); flight = undefined; }
   if (!flight) {
     const controller = new AbortController();
     const created: StructuredFlight = {
@@ -487,11 +488,12 @@ async function requestStructured<T>(apiKey: string, sessionId: string, prompt: s
       promise: Promise.resolve({ value: {}, model: "", outcomes: [] })
     };
     created.promise = withRequestQueue(pool, controller.signal, () => runStructuredRequest(pool, apiKey, prompt, responseSchema, stage, timeoutMs, controller.signal, onProgress, options), priority).then((result) => {
-      pool.structuredCache.set(cacheKey, result);
+      if (controller.signal.aborted) throw abortError();
+      if (reusableStructuredValue(result.value, responseSchema)) pool.structuredCache.set(cacheKey, result);
       return result;
     }).finally(() => {
       created.settled = true;
-      pool.structuredFlights.delete(cacheKey);
+      if (pool.structuredFlights.get(cacheKey) === created) pool.structuredFlights.delete(cacheKey);
     });
     flight = created;
     pool.structuredFlights.set(cacheKey, flight);
@@ -1055,7 +1057,7 @@ export async function generateLearningResponse({ apiKey, sessionId = "default-se
   const prompt = buildLearningPrompt({ action, question, detailed, history,
     card: { topicPath: card.topicPath, hook: card.hook, title: card.title, body: card.body }, evidence: context
   });
-  const result = await requestStructured<{ answer?: string; citationIndexes?: number[] }>(apiKey, sessionId, prompt, { type: "OBJECT", properties: { answer: { type: "STRING" }, citationIndexes: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["answer", "citationIndexes"] }, "learning", GENERATION_TIMEOUT_MS, signal);
+  const result = await requestStructured<{ answer?: string; citationIndexes?: number[] }>(apiKey, sessionId, prompt, { type: "OBJECT", properties: { answer: { type: "STRING" }, citationIndexes: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["answer", "citationIndexes"] }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, {identity: {task: action === "question" ? "question" : "learn", query: action === "question" ? question : undefined, topics: card.topicPath, filters: {detailed: action === "question" && Boolean(detailed)}, context: {card: {hook: card.hook, title: card.title, body: card.body}, history: action === "question" ? history?.slice(-6) ?? [] : [], evidence: context, sourceUrls: sources.map(source => source.canonicalUrl ?? source.url)}}});
   if (!result.value.answer?.trim()) throw new GeminiFailure("Gemini returned an empty explanation.", undefined, result.outcomes, undefined, true);
   const indexes = Array.from(new Set((result.value.citationIndexes ?? []).filter((index) => index >= 0 && index < sources.length))).slice(0, 3);
   return { answer: result.value.answer.trim(), citations: (indexes.length ? indexes : [0]).map((index) => sources[index]).filter(Boolean), modelOutcomes: result.outcomes };
@@ -1073,7 +1075,7 @@ export async function interpretVideoSearch({ apiKey, sessionId = "default-sessio
       terms: { type: "ARRAY", items: { type: "STRING" } }, include: { type: "ARRAY", items: { type: "STRING" } }, alternatives: { type: "ARRAY", items: { type: "STRING" } }, topics: { type: "ARRAY", items: { type: "STRING" } }, conceptGroups: { type: "ARRAY", maxItems: 8, items: { type: "OBJECT", properties: { label: { type: "STRING" }, terms: { type: "ARRAY", minItems: 1, maxItems: 12, items: { type: "STRING" } }, related: { type: "ARRAY", maxItems: 12, items: { type: "STRING" } }, required: { type: "BOOLEAN" } }, required: ["label", "terms", "related", "required"] } }
     },
     required: ["conceptGroups", "topics"]
-  }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, { priority: "background", models: PRIMARY_FLASH_LITE_MODELS, maxOutputTokens: 2048, cacheContext: "youtube-catalog:" + catalogVersion });
+  }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, { priority: "background", models: PRIMARY_FLASH_LITE_MODELS, maxOutputTokens: 2048, cacheContext: "youtube-catalog:" + catalogVersion, identity: {task: "videoInterpret", query} });
   const plan: VideoSearchPlan = {
     terms: (result.value.terms ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean).slice(0, 24),
     include: (result.value.include ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean).slice(0, 24),
@@ -1089,7 +1091,7 @@ export async function interpretNaturalSearch({ apiKey, sessionId = "default-sess
   const prompt = buildSearchInterpretationPrompt("topicInterpret", query);
   const result = await requestStructured<TopicQueryPlan>(apiKey, sessionId, prompt, {
     type: "OBJECT", properties: { groups: { type: "ARRAY", maxItems: 8, items: { type: "OBJECT", properties: { label: { type: "STRING" }, equivalents: { type: "ARRAY", minItems: 1, maxItems: 12, items: { type: "STRING" } }, related: { type: "ARRAY", maxItems: 12, items: { type: "STRING" } } }, required: ["label", "equivalents", "related"] } }, alternatives: { type: "BOOLEAN" } }, required: ["groups", "alternatives"]
-  }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, { priority: "background", models: PRIMARY_FLASH_LITE_MODELS, maxOutputTokens: 1024, cacheContext: "topic-catalog:" + catalogVersion });
+  }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, { priority: "background", models: PRIMARY_FLASH_LITE_MODELS, maxOutputTokens: 1024, cacheContext: "topic-catalog:" + catalogVersion, identity: {task: "topicInterpret", query} });
   const plan = validateTopicPlan(result.value);
   return { plan, terms: plan.groups.flatMap(group => group.equivalents).slice(0,12), modelOutcomes: result.outcomes };
 }
@@ -1123,7 +1125,7 @@ export async function rankVideoSearchCandidates({ apiKey, sessionId = "default-s
     type: "OBJECT",
     properties: { matches: { type: "ARRAY", items: { type: "OBJECT", properties: { videoId: { type: "STRING" }, relevance: { type: "STRING", enum: ["direct", "strong"] }, support: { type: "ARRAY", items: { type: "STRING" } }, explanation: { type: "STRING" } }, required: ["videoId", "relevance", "support", "explanation"] } } },
     required: ["matches"]
-  }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, { priority: "background", models: PRIMARY_FLASH_LITE_MODELS, maxOutputTokens: 4096, cacheContext: "youtube-catalog:" + catalogVersion });
+  }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, { priority: "background", models: PRIMARY_FLASH_LITE_MODELS, maxOutputTokens: 4096, cacheContext: "youtube-catalog:" + catalogVersion, identity: {task: "videoVerify", query, topics: plan.topics, filters: plan, context: candidatePayload} });
   const allowed = new Set(boundedCandidates.map(({ video }) => video.id));
   const candidateById = new Map(boundedCandidates.map((candidate) => [candidate.video.id, candidate]));
   const seen = new Set<string>();
