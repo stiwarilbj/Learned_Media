@@ -3,6 +3,23 @@ import { factWritingRules, difficultyRubric } from "./fact-quality";
 
 export type PromptOperation = "connection" | "candidate" | "combined" | "grounding" | "learn" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
 export type PromptField = { label: string; value: unknown; multiline?: boolean; reference?: boolean };
+export type QuestionType = "when" | "why" | "difference";
+
+/** Match the leading question only; quoted context and later clauses do not choose its type. */
+export function detectQuestionType(question?: string): QuestionType | undefined {
+  const query = question?.normalize("NFC").toLowerCase().replace(/[’‘]/gu, "'")
+    .replace(/\s+/gu, " ").trim().replace(/^please\s+/u, "") ?? "";
+  if (/^why\b/u.test(query)) return "why";
+  if (/^when(?:\s+(?:exactly|approximately))?\s+(?:did|does|do|was|were|is|are|will|would|can|could|should|has|have|had)\b/u.test(query)
+    || /^when\s*[?!]*$/u.test(query)) return "when";
+  if (/^(?:what(?:'s| is| are))\s+the\s+(?:main\s+)?differences?(?=\s|[?!.:,]|$)/u.test(query)) return "difference";
+  return undefined;
+}
+
+function questionTypeRules(question?: string): string[] {
+  const type = detectQuestionType(question);
+  return type ? instructions[type === "when" ? "questionWhen" : type === "why" ? "questionWhy" : "questionDifference"] : [];
+}
 
 /** Keep instructions separate from data; never normalize evidence or user text. */
 export function buildPrompt(operation: PromptOperation, rules: string[] = [], fields: PromptField[] = []) {
@@ -48,7 +65,7 @@ export function buildQuestionPrompt({ card, question, detailed, history, evidenc
   history?: unknown[];
   evidence: unknown[];
 }) {
-  return buildPrompt("question", [...instructions.answerWriting, ...instructions.questionEvidence,
+  return buildPrompt("question", [...instructions.answerWriting, ...instructions.questionEvidence, ...questionTypeRules(question),
     ...instructions[detailed ? "answerDetailed" : "answerShort"]], [
     { label: "Original user query", value: question },
     { label: "Supporting card context", value: supportingCard(card), reference: true },

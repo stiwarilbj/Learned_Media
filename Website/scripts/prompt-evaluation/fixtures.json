@@ -1,9 +1,37 @@
 [
-  {"id":"direct-question","query":"Why does this instrument detect pressure?","maxCalls":1},
-  {"id":"paraphrase","query":"why does the ground shake","expected":"Earthquakes","maxCalls":0},
-  {"id":"multiple-concepts","query":"earthquakes in Japan","expected":"2011 Tōhoku Earthquake","maxCalls":0},
-  {"id":"weak-evidence","maxCalls":4},
-  {"id":"malformed-output","maxCalls":3},
-  {"id":"duplicate-candidates","maxCalls":2},
-  {"id":"unrelated-search","query":"zzzyxq","maxCalls":0}
+  {
+    "id": "direct-question",
+    "query": "Why does this instrument detect pressure?",
+    "maxCalls": 1,
+    "requiredInstruction": "For a why question, give the supported cause or reason first; if the evidence does not establish it, say so first."
+  },
+  {
+    "id": "paraphrase",
+    "query": "why does the ground shake",
+    "expected": "Earthquakes",
+    "maxCalls": 0
+  },
+  {
+    "id": "multiple-concepts",
+    "query": "earthquakes in Japan",
+    "expected": "2011 Tōhoku Earthquake",
+    "maxCalls": 0
+  },
+  {
+    "id": "weak-evidence",
+    "maxCalls": 4
+  },
+  {
+    "id": "malformed-output",
+    "maxCalls": 3
+  },
+  {
+    "id": "duplicate-candidates",
+    "maxCalls": 2
+  },
+  {
+    "id": "unrelated-search",
+    "query": "zzzyxq",
+    "maxCalls": 0
+  }
 ]

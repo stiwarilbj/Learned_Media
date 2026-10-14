@@ -2,6 +2,36 @@ import XCTest
 @testable import LearnedMediaCore
 
 final class PromptBuilderTests: XCTestCase {
+    func testQuestionTypesAddOnlyTheirApplicableInstruction() {
+        let cases: [(String?, QuestionType?)] = [
+            ("  WHEN was it built?  ", .when), ("When exactly did it happen?", .when), ("When?", .when),
+            ("Please why did it fail?", .why), ("WHY did it fail, and when was it repaired?", .why),
+            ("What's the difference between A and B?", .difference),
+            ("What’s the main difference between A and B?", .difference),
+            ("What are the differences between A and B?", .difference),
+            ("When I click it, why does it disappear?", nil), ("Explain when it happened.", nil),
+            ("What is the difference-maker?", nil), ("How does it work?", nil),
+            ("Somewhere it says why.", nil), ("", nil), (nil, nil)
+        ]
+        let keys: [(QuestionType, String)] = [(.when, "questionWhen"), (.why, "questionWhy"), (.difference, "questionDifference")]
+        for (query, type) in cases {
+            XCTAssertEqual(PromptBuilder.questionType(query), type)
+            let prompt = PromptBuilder.question(card: ["body": "When was it built? Why did it fail?"], query: query,
+                history: [["content": "What's the difference?"]], evidence: [])
+            for (kind, key) in keys {
+                let rule = PromptInstructions.rules[key]![0]
+                XCTAssertEqual(prompt.components(separatedBy: rule).count - 1, type == kind ? 1 : 0)
+            }
+            if let query, !query.isEmpty { XCTAssertTrue(prompt.contains("Original user query: " + query)) }
+        }
+        let learn = PromptBuilder.learning(action: .learn, card: ["body": "Why did it fail?"], question: "Why did it fail?", evidence: [])
+        XCTAssertFalse(learn.contains(PromptInstructions.rules["questionWhy"]![0]))
+        for operation in [PromptOperation.connection, .candidate, .grounding, .topicInterpret, .videoInterpret] {
+            let prompt = PromptBuilder.build(operation, fields: [PromptField("Query", "When was it built?")])
+            for (_, key) in keys { XCTAssertFalse(prompt.contains(PromptInstructions.rules[key]![0])) }
+        }
+    }
+
     func testCombinedCardsRetainWritingLimitsAndSlotOwnedEvidenceRules() {
         let prompt = PromptBuilder.factCard(sentenceCount: 3, difficulties: [5], fields: [PromptField("Evidence", [["id": "e1", "text": "Exact source passage."]], reference: true)], combined: true)
         XCTAssertTrue(prompt.contains("Choose candidates and write grounded cards in one batch"))

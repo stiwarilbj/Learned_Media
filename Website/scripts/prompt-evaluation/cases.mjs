@@ -12,6 +12,7 @@ export function registerEvaluation(h) {
     const row = {id:fixture.id, taskSuccess:false, citationValid:0, citationTotal:0,
       duplicateRate:0, candidateDuplicateRate:0, outputBytes:0, promptBytes:0, geminiCalls:0};
     let state;
+    let questionInstructionPresent=true;
     const random = Math.random;
     Math.random = () => 0.5;
     try {
@@ -58,6 +59,7 @@ export function registerEvaluation(h) {
           const repeat=await h.generateLearningResponse({...args,question:'  WHY does this instrument detect pressure?  '});
           assert.equal(repeat.answer,answer.answer);
           assert.ok(state.outputs[0].prompt.includes('Original user query: '+fixture.query));
+          questionInstructionPresent=state.outputs[0].prompt.includes(fixture.requiredInstruction);
         } else {
           const result=await h.generateGeminiFacts({...h.generationArgs(sessionId),requestedCount:7});
           assert.equal(result.completedCount,7);
@@ -92,6 +94,7 @@ export function registerEvaluation(h) {
       assert.equal(row.citationValid,row.citationTotal);
       assert.equal(row.duplicateRate,0);
       assert.ok(row.geminiCalls<=fixture.maxCalls);
+      assert.ok(questionInstructionPresent,'Direct question is missing its type-specific instruction');
       row.taskSuccess=true;
     } finally {
       Math.random=random;

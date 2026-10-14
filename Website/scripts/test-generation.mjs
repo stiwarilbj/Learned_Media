@@ -16,7 +16,7 @@ Module._extensions[".ts"] = (module, filename) => {
 };
 
 const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey } = require("../lib/gemini.ts");
-const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt, buildSearchInterpretationPrompt } = require("../lib/prompts.ts");
+const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt, buildSearchInterpretationPrompt, detectQuestionType } = require("../lib/prompts.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
@@ -1262,3 +1262,33 @@ if (process.env.PROMPT_EVALUATION_REPORT) {
     generateGeminiFacts, generateLearningResponse, factBundle, words, articleExtract,
     geminiCallCount, candidateAssignments, groundingSlots });
 }
+
+
+test('question types add exactly one applicable rule and preserve original input',()=>{
+ const rules=JSON.parse(readFileSync(new URL('../lib/prompt-instructions.json',import.meta.url)));
+ const cases=[['  WHEN was it built?  ','when'],['When exactly did it happen?','when'],['When?','when'],['Please why did it fail?','why'],['WHY did it fail, and when was it repaired?','why'],["What's the difference between A and B?",'difference'],['What’s the main difference between A and B?','difference'],['What are the differences between A and B?','difference'],['When I click it, why does it disappear?',undefined],['Explain when it happened.',undefined],['What is the difference-maker?',undefined],['How does it work?',undefined],['Somewhere it says why.',undefined],['',undefined],[undefined,undefined]];
+ for(const [question,type] of cases){
+  assert.equal(detectQuestionType(question),type,question);
+  const prompt=buildQuestionPrompt({card:{body:'When was it built? Why did it fail?'},question,history:[{content:"What's the difference?"}],evidence:[]});
+  for(const [kind,key] of [['when','questionWhen'],['why','questionWhy'],['difference','questionDifference']]){
+   const count=prompt.split(rules[key][0]).length-1;assert.equal(count,type===kind?1:0,question);
+  }
+  if(question)assert.ok(prompt.includes('Original user query: '+question));
+ }
+ const learning=buildLearningPrompt({action:'learn',question:'Why did it fail?',card:{body:'Why did it fail?'},evidence:[]});
+ assert.ok(!learning.includes(rules.questionWhy[0]));
+ for(const operation of ['connection','candidate','grounding','topicInterpret','videoInterpret']){
+  const prompt=buildPrompt(operation,[],[{label:'Query',value:'When was it built?'}]);
+  for(const key of ['questionWhen','questionWhy','questionDifference'])assert.ok(!prompt.includes(rules[key][0]));
+ }
+});
+
+test('typed questions still take one generation call each',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state),fact=factBundle(words[0]);
+ const card={id:'typed-question',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:articleExtract()}]};
+ for(const question of ['When was this instrument calibrated?','Why does this instrument detect pressure?',"What's the difference between this instrument and a barometer?"]){
+  const before=geminiCallCount(state);
+  await generateLearningResponse({apiKey:'test-key',sessionId,action:'question',card,question,history:[]});
+  assert.equal(geminiCallCount(state)-before,1);
+ }
+});

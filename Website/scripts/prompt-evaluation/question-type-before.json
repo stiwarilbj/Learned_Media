@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "mode": "deterministic-replay",
+  "suiteHash": "7da7d8634c5e6c108ebe6d65df036cc94070b9e3737f184b031a16ecefd6c144",
+  "promptHash": "722e8b986e93a9ec7e54175ee7af606f6401e8a2a717f800811f49c8d9b45c5c",
+  "cases": [
+    {
+      "id": "direct-question",
+      "taskSuccess": false,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 94,
+      "promptBytes": 6078,
+      "geminiCalls": 1
+    },
+    {
+      "id": "paraphrase",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    },
+    {
+      "id": "multiple-concepts",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    },
+    {
+      "id": "weak-evidence",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 6997,
+      "promptBytes": 15471,
+      "geminiCalls": 4
+    },
+    {
+      "id": "malformed-output",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 6545,
+      "promptBytes": 14079,
+      "geminiCalls": 3
+    },
+    {
+      "id": "duplicate-candidates",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0.125,
+      "outputBytes": 6732,
+      "promptBytes": 9707,
+      "geminiCalls": 2
+    },
+    {
+      "id": "unrelated-search",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    }
+  ]
+}

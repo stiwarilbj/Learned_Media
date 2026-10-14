@@ -4,6 +4,10 @@ public enum PromptOperation: String, CaseIterable {
     case connection, candidate, combined, grounding, learn, question, videoInterpret, topicInterpret, videoVerify
 }
 
+public enum QuestionType: String {
+    case when, why, difference
+}
+
 public struct PromptField {
     let label: String
     let value: Any?
@@ -19,6 +23,23 @@ public struct PromptField {
 }
 
 public enum PromptBuilder {
+    /// Match only the leading question, without changing the query sent to the model.
+    public static func questionType(_ query: String?) -> QuestionType? {
+        let normalized = (query ?? "").precomposedStringWithCanonicalMapping.lowercased()
+            .replacingOccurrences(of: "[’‘]", with: "'", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "^please\\s+", with: "", options: .regularExpression)
+        func matches(_ pattern: String) -> Bool {
+            normalized.range(of: pattern, options: .regularExpression) != nil
+        }
+        if matches("^why\\b") { return .why }
+        if matches("^when(?:\\s+(?:exactly|approximately))?\\s+(?:did|does|do|was|were|is|are|will|would|can|could|should|has|have|had)\\b")
+            || matches("^when\\s*[?!]*$") { return .when }
+        if matches("^(?:what(?:'s| is| are))\\s+the\\s+(?:main\\s+)?differences?(?=\\s|[?!.:,]|$)") { return .difference }
+        return nil
+    }
+
     /// Normalize only instructions; evidence and user input retain their exact text.
     public static func build(_ operation: PromptOperation, rules: [String] = [], fields: [PromptField] = []) -> String {
         var seenRules = Set<String>()
@@ -70,8 +91,16 @@ public enum PromptBuilder {
 
     public static func question(card: [String: Any], query: String?, detailed: Bool = false,
                                 history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
+        let typeKey: String?
+        switch questionType(query) {
+        case .when: typeKey = "questionWhen"
+        case .why: typeKey = "questionWhy"
+        case .difference: typeKey = "questionDifference"
+        case nil: typeKey = nil
+        }
         let rules = (PromptInstructions.rules["answerWriting"] ?? [])
             + (PromptInstructions.rules["questionEvidence"] ?? [])
+            + (typeKey.flatMap { PromptInstructions.rules[$0] } ?? [])
             + (PromptInstructions.rules[detailed ? "answerDetailed" : "answerShort"] ?? [])
         return build(.question, rules: rules, fields: [
             PromptField("Original user query", query),

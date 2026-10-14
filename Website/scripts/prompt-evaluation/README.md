@@ -4,7 +4,7 @@ Run `npm run test:prompts` from Website before retaining a prompt change. CI run
 
 Seven fixed scenarios reuse the existing mocked provider, actual response parser, card recovery pipeline, citation restoration, answer cache, and production topic ranker:
 
-- Direct question: answer the original pressure question, cite its source, reuse a capitalization variant without a second call.
+- Direct question: answer the original pressure question, include the locally selected cause-first instruction, cite its source, and reuse a capitalization variant without a second call.
 - Paraphrase: ground shaking finds Earthquakes without shared keywords.
 - Multiple concepts: Japanese earthquakes cover both ideas; Japan alone and earthquakes in other countries do not qualify.
 - Weak evidence: a structured needs-evidence result preserves six cards and retries only the unsupported slot.
@@ -36,3 +36,13 @@ These are deterministic regression evaluations, not live Gemini benchmarks. Cann
 Before keeping a wording change, run paired old/new model evaluations against these same inputs and failure conditions, record outputs and actual attempts, and compare reports with the same metric definitions and fixture identity. Review direct-question relevance, specific-claim support, and paraphrase quality manually as well. Keep live results separate from deterministic-replay reports; never label replay as observed model behavior. Credentials and paid requests are not part of this default suite.
 
 The existing full generation and semantic-search suites remain required; this small set supplements them. When intentionally expanding fixtures, evaluate both old and new prompt versions with that same expanded set; do not compare incompatible fixture hashes.
+
+## Question-type instruction comparison
+
+`question-type-before.json` records the previous prompt builder against the same expanded fixtures as the current baseline. The direct-question case additionally checks that its prompt contains the required cause-first directive. The old builder fails that contract; the new builder passes it. Both use one Gemini operation call, produce 94 response bytes, and retain one valid citation. The prompt increases from 6,078 to 6,193 bytes (115 bytes, about 1.9%).
+
+This is a measured prompt-construction improvement, not a claim of improved live-model answer quality. The provider answer is held fixed. The before report intentionally contains that one failed contract and is retained for review; the current passing baseline is advanced only after the paired comparison succeeds.
+
+```sh
+npm run evaluate:prompts -- --compare scripts/prompt-evaluation/question-type-before.json scripts/prompt-evaluation/baseline.json
+```
