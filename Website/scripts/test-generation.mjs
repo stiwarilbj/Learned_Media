@@ -140,14 +140,17 @@ function installNetworkMock(options = {}) {
           if (options.duplicateSlot === 5 && assignment.slot === 0 && attempt > 1) word = words[10];
           return { slot: assignment.slot, title: "Shared Article", claim: factBundle(word).claim, topicPath: assignment.topicPath, wikipediaSearchTitles: ["Shared Article"] };
         }).filter(Boolean).reverse() };
-      } else if (prompt.includes("Return one result for each slot")) {
+      } else if (prompt.includes("Return one result for each slot") || prompt.includes("Choose candidates and write grounded cards in one batch")) {
+        const combined = prompt.includes("Choose candidates and write grounded cards in one batch");
         state.groundingPrompts.push(prompt);
         const values = groundingSlots(prompt);
         output = { facts: values.map(value => {
           const slot = value.slot;
-          const claim = value.candidate.claim;
+          const cachedBundle = combined ? factBundles.find(bundle => value.evidence.some(span => span.text.includes(bundle.sentences[0]))) : undefined;
+          const claim = cachedBundle?.claim ?? value.candidate?.claim ?? "";
           const normalizedClaim = claim.toLowerCase();
           const word = words.find(candidate => normalizedClaim.startsWith(`${candidate} `) || normalizedClaim.includes(` ${candidate} `)) ?? words[slot];
+          if (combined && options.combinedInvalidSlot === slot) { return {slot,topicPath:value.topicPath,status:"grounded",claim,title:"Bad cached claim",hook:"A Wrong Claim Has No Evidence",sentences:sentenceSet(words[slot]),claimEvidenceIds:["foreign"],evidence:[{sentence:0,evidenceIds:["foreign"]}]}; }
           if (options.omitSlotOnce === slot && !state.omittedSlots.has(slot)) {
             state.omittedSlots.add(slot);
             return null;
@@ -174,6 +177,7 @@ function installNetworkMock(options = {}) {
           }
           return {
             slot,
+            ...(combined ? {topicPath: options.combinedWrongTopic === slot ? ["Wrong"] : value.topicPath} : {}),
             status: "grounded",
             claimEvidenceIds: options.invalidClaimEvidenceSlot === slot ? ["unknown-claim-evidence"] : options.missingClaimEvidenceSlot === slot ? undefined : [evidence[0].evidenceIds[0]],
             title: factBundle(word).title,
@@ -1073,4 +1077,53 @@ test('complete local coverage makes zero Gemini calls and weak coverage enriches
  assert.equal(state.requests.length,before+1,'many partial matches permit only one interpretation');
  await enrichIfNeeded(' BLACK HOLES AND GRAVITATIONAL LENSING ',partial);
  assert.equal(state.requests.length,before+1,'cached normalized interpretation spends no additional request');
+});
+
+test('validated cached evidence completes seven cards with one call and no Wikipedia lookups',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
+ await generateGeminiFacts(args);const calls=geminiCallCount(state),lookups=state.requests.filter(r=>r.url.hostname==='en.wikipedia.org').length;
+ const result=await generateGeminiFacts(args);
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state)-calls,1);
+ assert.equal(state.requests.filter(r=>r.url.hostname==='en.wikipedia.org').length,lookups);
+ assert.ok(state.groundingPrompts.at(-1).includes('Choose candidates and write grounded cards in one batch'));
+ assert.ok(result.cards.every(card=>card.evidence.length && card.evidence.every(e=>card.sources[e.sourceIndex].extract.includes(e.quote))));
+});
+test('combined validation failures preserve six cards and fall back only for the missing slot',async()=>{
+ const options={},state=installNetworkMock(options),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
+ await generateGeminiFacts(args);const candidates=state.candidatePrompts.length,calls=geminiCallCount(state);
+ options.combinedInvalidSlot=5;
+ const published=[];const result=await generateGeminiFacts({...args,onProgress:event=>{if(event.type==='card')published.push(event.slot);}});
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state)-calls,3,'one combined call plus candidate and grounding for one unfinished slot');
+ assert.equal(state.candidatePrompts.length,candidates+1);assert.deepEqual(candidateAssignments(state.candidatePrompts.at(-1)).map(a=>a.slot),[5]);
+ assert.equal(new Set(published).size,7);assert.equal(published.length,7);
+});
+test('missing topic evidence, expired evidence and used passages retain the regular two-call path',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
+ const warm=await generateGeminiFacts(args);
+ const calls=geminiCallCount(state);
+ await generateGeminiFacts({...args,requestedCount:8});
+ assert.equal(geminiCallCount(state)-calls,2,'every slot must have cached evidence');
+ const now=Date.now;Date.now=()=>now()+3600001;
+ const expiredCalls=geminiCallCount(state);await generateGeminiFacts(args);Date.now=now;
+ assert.equal(geminiCallCount(state)-expiredCalls,2,'expired validated evidence cannot enable the shortcut');
+ const avoid=warm.cards.map(card=>({fingerprint:'unused',evidenceKeys:card.evidence.map(e=>require('../lib/fact-quality.ts').hashFactKey(`${card.sources[e.sourceIndex].canonicalUrl ?? card.sources[e.sourceIndex].url}|${require('../lib/fact-quality.ts').normalizedText(e.section)}|${require('../lib/fact-quality.ts').normalizedText(e.quote)}`))}));
+ const previousCandidates=state.candidatePrompts.length;
+ await generateGeminiFacts({...args,avoid}).catch(()=>{});
+ assert.ok(state.candidatePrompts.length>previousCandidates,'used evidence cannot skip candidate selection');
+});
+
+test('combined cards with the wrong assigned topic fall back without losing valid cards',async()=>{
+ const options={},state=installNetworkMock(options),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
+ await generateGeminiFacts(args);const calls=geminiCallCount(state);
+ options.combinedWrongTopic=2;
+ const result=await generateGeminiFacts(args);
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state)-calls,3);
+ assert.deepEqual(candidateAssignments(state.candidatePrompts.at(-1)).map(a=>a.slot),[2]);
+ assert.ok(result.cards.every(card=>!card.topicPath.includes('Wrong')));
+});
+test('cancelled generation cannot spend a call even after the evidence cache is warm',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
+ await generateGeminiFacts(args);const calls=state.requests.length,controller=new AbortController();controller.abort();
+ await assert.rejects(generateGeminiFacts({...args,signal:controller.signal}),/canceled/i);
+ assert.equal(state.requests.length,calls);
 });

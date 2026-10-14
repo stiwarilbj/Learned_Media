@@ -1,7 +1,7 @@
 import instructions from "./prompt-instructions.json";
 import { factWritingRules, difficultyRubric } from "./fact-quality";
 
-export type PromptOperation = "connection" | "candidate" | "grounding" | "learn" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
+export type PromptOperation = "connection" | "candidate" | "combined" | "grounding" | "learn" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
 export type PromptField = { label: string; value: unknown; multiline?: boolean; reference?: boolean };
 
 /** Keep instructions separate from data; never normalize evidence or user text. */
@@ -24,12 +24,13 @@ export function buildPrompt(operation: PromptOperation, rules: string[] = [], fi
 }
 
 /** Standalone cards keep exact length, difficulty, and per-sentence evidence rules. */
-export function buildFactCardPrompt({ sentenceCount, difficulties, fields }: {
+export function buildFactCardPrompt({ sentenceCount, difficulties, fields, combined = false }: {
   sentenceCount: number;
   difficulties: number[];
   fields: PromptField[];
+  combined?: boolean;
 }) {
-  return buildPrompt("grounding", [factWritingRules(sentenceCount, "evidenceIds"),
+  return buildPrompt(combined ? "combined" : "grounding", [factWritingRules(sentenceCount, "evidenceIds"),
     ...Array.from(new Set(difficulties)).sort((a, b) => a - b).map(difficultyRubric)], fields);
 }
 

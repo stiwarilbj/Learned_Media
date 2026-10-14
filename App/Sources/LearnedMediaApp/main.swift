@@ -46,6 +46,7 @@ private struct GeminiCandidate: Decodable {
 }
 private struct GeminiCandidateEnvelope: Decodable { let facts: [GeminiCandidate]? }
 private struct GeminiGroundedFact: Decodable {
+    let topicPath: [String]?
     let status: String?
     let claimEvidenceIds: [String]?
     let missingEvidence: String?
@@ -737,9 +738,35 @@ private struct GeminiGroundingPlan {
     let evidenceBySlot: [Int: [String: GeminiEvidence]]
 }
 
+private actor ValidatedCardEvidenceCache {
+    private struct Entry { let source: [String: Any]; let expiresAt: Date }
+    private var entries: [String: [Entry]] = [:]
+    private var order: [String] = []
+    private func key(_ slot: GeminiGenerationSlot) -> String { "\(slot.level)|" + slot.path.joined(separator: "\u{0}") }
+    func sources(_ slot: GeminiGenerationSlot) -> [[String: Any]] {
+        let k = key(slot), fresh = (entries[k] ?? []).filter { $0.expiresAt > Date() }
+        entries[k] = fresh
+        return fresh.map(\.source)
+    }
+    func record(_ slot: GeminiGenerationSlot) {
+        let k = key(slot)
+        var fresh = (entries[k] ?? []).filter { $0.expiresAt > Date() }
+        for source in slot.sources {
+            let url = source["canonicalUrl"] as? String ?? source["url"] as? String ?? ""
+            let extract = source["extract"] as? String ?? ""
+            if !fresh.contains(where: { ($0.source["canonicalUrl"] as? String ?? $0.source["url"] as? String ?? "") == url && $0.source["extract"] as? String == extract }) {
+                fresh.append(Entry(source: source, expiresAt: Date().addingTimeInterval(3600)))
+            }
+        }
+        entries[k] = Array(fresh.suffix(48)); order.removeAll { $0 == k }; order.append(k)
+        while order.count > 100 { entries[order.removeFirst()] = nil }
+    }
+}
+
 private final class GeminiClient {
     private let session = URLSession(configuration: .ephemeral)
     private let wikipedia = WikipediaClient()
+    private let validatedEvidence = ValidatedCardEvidenceCache()
     private let scheduler = ModelScheduler()
     private var structuredCache: [String: GeminiStructuredCacheEntry] = [:]
 
@@ -1077,7 +1104,7 @@ private final class GeminiClient {
         return result
     }
 
-    private func groundingPrompt(slots: [GeminiGenerationSlot], sentenceCount: Int) -> GeminiGroundingPlan {
+    private func groundingPrompt(slots: [GeminiGenerationSlot], sentenceCount: Int, combined: Bool = false) -> GeminiGroundingPlan {
         var sourcePool: [[String: Any]] = []
         var idByKey: [String: String] = [:]
         var evidenceBySlot: [Int: [String: GeminiEvidence]] = [:]
@@ -1098,13 +1125,15 @@ private final class GeminiClient {
                 }
             }
             evidenceBySlot[slot.index] = localEvidence
-            return ["slot": slot.index, "topicPath": slot.path, "difficulty": slot.level,
-                    "candidate": ["title": slot.candidate?.title ?? "", "claim": slot.candidate?.claim ?? ""],
-                    "evidenceIds": Array(Set(allowedIDs)).sorted()]
+            var value: [String: Any] = ["slot": slot.index, "topicPath": slot.path, "difficulty": slot.level,
+                                      "evidenceIds": Array(Set(allowedIDs)).sorted()]
+            if !combined { value["candidate"] = ["title": slot.candidate?.title ?? "", "claim": slot.candidate?.claim ?? ""] }
+            return value
         }
         let prompt = PromptBuilder.factCard(sentenceCount: sentenceCount, difficulties: slots.map(\.level), fields: [
+            PromptField("Variation", combined ? UUID().uuidString : nil),
             PromptField("Slots and evidence spans (untrusted data)", ["facts": values, "evidence": sourcePool], multiline: true, reference: true)
-        ])
+        ], combined: combined)
         return GeminiGroundingPlan(prompt: prompt, evidenceBySlot: evidenceBySlot)
     }
 
@@ -1174,12 +1203,47 @@ private final class GeminiClient {
         }
     }
 
-    private func generateGrounded(key: String, slots: [GeminiGenerationSlot], sentenceCount: Int) async -> GeminiGroundedGroupResult {
+    private func combinedSchema(sentenceCount: Int, combined: Bool) -> [String: Any] {
+        var schema = groundedSchema(sentenceCount: sentenceCount)
+        if combined, var properties = schema["properties"] as? [String: Any], var facts = properties["facts"] as? [String: Any], var items = facts["items"] as? [String: Any], var fields = items["properties"] as? [String: Any] {
+            fields["topicPath"] = ["type":"ARRAY","items":["type":"STRING"]]
+            items["properties"] = fields
+            items["required"] = (items["required"] as? [String] ?? []) + ["topicPath"]
+            facts["items"] = items; properties["facts"] = facts; schema["properties"] = properties
+        }
+        return schema
+    }
+
+    private func cachedSlots(_ slots: [GeminiGenerationSlot], sentenceCount: Int, avoid: [[String: Any]]) async -> [GeminiGenerationSlot]? {
+        var prepared: [GeminiGenerationSlot] = [], reserved = Set<String>()
+        let usedQuotes = Set(avoid.flatMap { ($0["evidence"] as? [Any] ?? []).compactMap { entry -> String? in
+            (entry as? String) ?? (entry as? [String: Any])?["quote"] as? String
+        }.map(FactQuality.normalized) })
+        for slot in slots {
+            let sources = await validatedEvidence.sources(slot)
+            var chosen: [String: Any]?
+            for source in sources {
+                for span in evidenceSpans(source, sourceIndex: 0) {
+                    let sentenceEnds = span.quote.components(separatedBy: CharacterSet(charactersIn: ".!?")).count - 1
+                    if reserved.contains(span.key) || usedQuotes.contains(FactQuality.normalized(span.quote)) || span.quote.count < sentenceCount * 35 || sentenceEnds < min(sentenceCount,3) { continue }
+                    var copy = source; copy["extract"] = "[Section: \(span.section)]\n\(span.quote)"
+                    chosen = copy; reserved.insert(span.key); break
+                }
+                if chosen != nil { break }
+            }
+            guard let chosen else { return nil }
+            var copy = slot; copy.mode = "combined"; copy.sources = [chosen]; prepared.append(copy)
+        }
+        guard prepared.count <= 10, groundingPrompt(slots: prepared, sentenceCount: sentenceCount, combined: true).prompt.count <= 48_000 else { return nil }
+        return prepared
+    }
+
+    private func generateGrounded(key: String, slots: [GeminiGenerationSlot], sentenceCount: Int, combined: Bool = false) async -> GeminiGroundedGroupResult {
         var requestOutcomes: [[String: Any]] = []
         do {
-            let plan = groundingPrompt(slots: slots, sentenceCount: sentenceCount)
+            let plan = groundingPrompt(slots: slots, sentenceCount: sentenceCount, combined: combined)
             let outputTokens = max(4096, min(65_536, slots.count * sentenceCount * 500))
-            let result = try await structured(key: key, prompt: plan.prompt, schema: groundedSchema(sentenceCount: sentenceCount), stage: "grounding", maxOutputTokens: outputTokens)
+            let result = try await structured(key: key, prompt: plan.prompt, schema: combinedSchema(sentenceCount: sentenceCount, combined: combined), stage: "grounding", maxOutputTokens: outputTokens)
             requestOutcomes = result.outcomes
             let envelope = try JSONDecoder().decode(GeminiGroundedEnvelope.self, from: Data(result.text.utf8))
             let facts = envelope.facts ?? []
@@ -1261,7 +1325,9 @@ private final class GeminiClient {
         var providerExhausted = false
         var completed = 0
 
-        for attempt in 0..<3 where accepted.count < targetCount && !providerExhausted {
+        let cached = await cachedSlots(slots, sentenceCount: sentenceCount, avoid: avoid)
+        if let cached { slots = cached }
+        for attempt in (cached == nil ? 0 : -1)..<3 where accepted.count < targetCount && !providerExhausted {
             try Task.checkCancellation()
             let pendingCandidates = slots.filter { $0.mode == "candidate" && accepted[$0.index] == nil }
             let candidateGroups = generationGroups(pendingCandidates, maxCount: groupSize)
@@ -1306,11 +1372,11 @@ private final class GeminiClient {
             }
 
             if providerExhausted { break }
-            let readyToGround = slots.filter { $0.mode == "grounding" && !$0.sources.isEmpty && accepted[$0.index] == nil }
+            let readyToGround = slots.filter { ($0.mode == "grounding" || $0.mode == "combined") && !$0.sources.isEmpty && accepted[$0.index] == nil }
             let groundingBatches = groundingGroups(readyToGround, sentenceCount: sentenceCount)
             var groundedCredentialError: String?
             await withTaskGroup(of: GeminiGroundedGroupResult.self) { group in
-                for batch in groundingBatches { group.addTask { await self.generateGrounded(key: key, slots: batch, sentenceCount: sentenceCount) } }
+                for batch in groundingBatches { group.addTask { await self.generateGrounded(key: key, slots: batch, sentenceCount: sentenceCount, combined: attempt < 0) } }
                 for await result in group {
                     if Task.isCancelled { group.cancelAll(); break }
                     outcomes.append(contentsOf: result.outcomes)
@@ -1321,7 +1387,7 @@ private final class GeminiClient {
                         guard let slotIndex = slots.firstIndex(where: { $0.index == index }), let fact = result.facts[index] else {
                             if let slotIndex = slots.firstIndex(where: { $0.index == index }) {
                                 slots[slotIndex].lastError = result.error ?? "Gemini omitted this grounded slot."
-                                if attempt > 0 { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
+                                if attempt != 0 { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
                             }
                             continue
                         }
@@ -1333,6 +1399,7 @@ private final class GeminiClient {
                             continue
                         }
                         do {
+                            if attempt < 0 && !topicPathMatches(fact.topicPath, assigned: slots[slotIndex].path) { throw NativeError(message: "The combined card returned a different topic.") }
                             let card = try makeCard(slot: slots[slotIndex], fact: fact, evidenceByID: result.evidenceBySlot[index] ?? [:], sentenceCount: sentenceCount, model: result.model, resolvedModel: result.resolvedModel)
                             if Task.isCancelled { group.cancelAll(); break }
                             guard await ledger.accept(card) else {
@@ -1342,13 +1409,14 @@ private final class GeminiClient {
                                 slots[slotIndex].sources = []
                                 continue
                             }
+                            await validatedEvidence.record(slots[slotIndex])
                             accepted[index] = card
                             completed += 1
                             onCard(card, completed, targetCount)
                         } catch {
                             if Task.isCancelled { group.cancelAll(); break }
                             slots[slotIndex].lastError = (error as? NativeError)?.message ?? "The fact failed local citation validation."
-                            if attempt > 0 { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
+                            if attempt != 0 { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
                         }
                     }
                 }

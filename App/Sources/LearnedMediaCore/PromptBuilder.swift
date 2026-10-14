@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PromptOperation: String, CaseIterable {
-    case connection, candidate, grounding, learn, question, videoInterpret, topicInterpret, videoVerify
+    case connection, candidate, combined, grounding, learn, question, videoInterpret, topicInterpret, videoVerify
 }
 
 public struct PromptField {
@@ -59,8 +59,8 @@ public enum PromptBuilder {
         return build(operation, fields: [PromptField("Query", normalized)])
     }
 
-    public static func factCard(sentenceCount: Int, difficulties: [Int], fields: [PromptField]) -> String {
-        build(.grounding, rules: [FactQuality.writingRules(for: sentenceCount, evidenceIDs: true)]
+    public static func factCard(sentenceCount: Int, difficulties: [Int], fields: [PromptField], combined: Bool = false) -> String {
+        build(combined ? .combined : .grounding, rules: [FactQuality.writingRules(for: sentenceCount, evidenceIDs: true)]
             + Array(Set(difficulties)).sorted().map { FactQuality.rubric($0) }, fields: fields)
     }
 
