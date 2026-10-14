@@ -103,7 +103,7 @@ function streamedJsonResponse(output, model, delayMs = 0, onComplete = () => {},
 }
 
 function installNetworkMock(options = {}) {
-  const state = { requests: [], candidatePrompts: [], groundingPrompts: [], omittedSlots: new Set(), candidateStreamCompletedAt: 0, wikipediaStartedAt: 0, requestFailures: options.requestFailures || {}, requestFailureMessages: options.requestFailureMessages || {}, connectionFailures: options.connectionFailures || {}, connectionFailureMessages: options.connectionFailureMessages || {} };
+  const state = { outputs: [], requests: [], candidatePrompts: [], groundingPrompts: [], omittedSlots: new Set(), candidateStreamCompletedAt: 0, wikipediaStartedAt: 0, requestFailures: options.requestFailures || {}, requestFailureMessages: options.requestFailureMessages || {}, connectionFailures: options.connectionFailures || {}, connectionFailureMessages: options.connectionFailureMessages || {} };
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url ?? input.toString());
     const body = init.body ? JSON.parse(String(init.body)) : {};
@@ -194,6 +194,7 @@ function installNetworkMock(options = {}) {
       }
       if (options.transformOutput) output = options.transformOutput(output, prompt);
       const rawText = options.responseText?.(output, prompt);
+      if (process.env.PROMPT_EVALUATION_REPORT && !connectionCheck) state.outputs.push({ prompt, output, text: rawText ?? JSON.stringify(output) });
       if (url.pathname.includes(":streamGenerateContent")) {
         const candidateStream = prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates");
         return streamedJsonResponse(output, model, candidateStream ? options.streamChunkDelayMs || 0 : 0, candidateStream ? () => { state.candidateStreamCompletedAt = performance.now(); } : undefined, rawText);
@@ -1253,3 +1254,11 @@ test('malformed concept labels and related fields cannot erase valid equivalents
  assert.deepEqual(result.terms,['stellar evolution','supernova']);assert.deepEqual(result.plan.groups[0].related,[]);
  await interpretNaturalSearch({apiKey:'test-key',sessionId,query:'WHY DO STARS EXPLODE',catalogVersion:'bad-label'});assert.equal(geminiCallCount(state),1,'safely repaired usable plans can be cached');
 });
+
+// The fixed evaluation uses the same provider mock and production pipeline as behavioral tests.
+if (process.env.PROMPT_EVALUATION_REPORT) {
+  const { registerEvaluation } = await import('./prompt-evaluation/cases.mjs');
+  registerEvaluation({ test, assert, require, installNetworkMock, connectMock, generationArgs,
+    generateGeminiFacts, generateLearningResponse, factBundle, words, articleExtract,
+    geminiCallCount, candidateAssignments, groundingSlots });
+}

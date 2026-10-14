@@ -34,6 +34,8 @@ While connected, overdue creator sources refresh once a day. Use **Refresh video
 
 After editing shared instructions, run `npm run generate:prompts` to update the native Swift instructions. `npm run test:generation` checks that the generated copy is current and verifies prompt isolation, citations, and request counts.
 
+Run `npm run test:prompts` for the [fixed prompt failure set](scripts/prompt-evaluation/README.md). It reports task success, citation validity, duplicates, response size, and Gemini call count against a committed baseline. Pages CI rejects regressions. Replays use no API key; changed wording requires measured reliability gains rather than treating unchanged mock responses as proof of improvement.
+
 Question answers pass the exact current query first, separately from supporting card context and prior conversation. Question-specific instructions require a direct first-sentence answer, coverage of every requested part, and omission of irrelevant card details. Supplemental evidence can support the answer while remaining distinct from evidence for the card's claim.
 
 Candidate generation sends all seven default slots in one batch, each with a stable ID and assigned topic. Candidates must use different facts and angles; weak or duplicate slots may be omitted rather than padded. The response schema caps candidates at the requested slot count and permits empty batches. Recovery requests only unfinished slots and preserves completed cards.
