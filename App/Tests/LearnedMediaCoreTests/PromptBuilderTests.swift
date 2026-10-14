@@ -69,4 +69,22 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertEqual(decoded?.compactMap { $0["topicPath"] as? [String] }, Array(repeating: ["Science", "Physics"], count: 7))
     }
 
+    func testOnlyActiveWritingLimitsAreIncluded() {
+        for count in FactQuality.sentenceLengthOptions {
+            let rules = FactQuality.writingRules(for: count, evidenceIDs: true)
+            XCTAssertTrue(rules.contains("exactly \(count) complete, useful sentences"))
+            XCTAssertTrue(rules.contains("at least 8 words and 35–600 characters"))
+            XCTAssertFalse(rules.contains("provide a verbatim quotation"))
+            if count == 1 { XCTAssertFalse(rules.contains("sentence two") || rules.contains("sentence three")) }
+        }
+        for level in [1, 4, 5, 8, 9, 10] {
+            let rules = FactQuality.rubric(level)
+            XCTAssertTrue(rules.hasPrefix("Difficulty \(level)/10:"))
+            XCTAssertEqual(rules.contains("exceptionally obscure"), level == 10)
+            XCTAssertTrue(rules.contains(level < 5 ? "Introductory details are allowed" : "keep all sentence evidence in that section"))
+        }
+        let easy = PromptBuilder.build(.grounding, rules: [FactQuality.writingRules(for: 1, evidenceIDs: true), FactQuality.rubric(1)])
+        XCTAssertFalse(easy.contains("difficulty 5+") || easy.contains("non-lead"))
+    }
+
 }

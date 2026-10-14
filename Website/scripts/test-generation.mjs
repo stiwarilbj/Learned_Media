@@ -22,7 +22,7 @@ const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
 const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
 const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
-const { completeSentenceChunks } = require("../lib/fact-quality.ts");
+const { completeSentenceChunks, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
 const { sharedWikipediaResolutionCache } = require("../lib/wikipedia.ts");
 const originalFetch = globalThis.fetch;
 const originalDateNow = Date.now;
@@ -351,6 +351,27 @@ await t.test("prompt compaction deduplicates rules and fields while retaining ex
   assert.equal(buildPrompt("connection"), 'Return {"ok":true}.');
 });
 
+await t.test("writing prompts include only the requested length, difficulty, and citation mode", () => {
+  for (const count of SENTENCE_LENGTH_OPTIONS) {
+    const prompt = factWritingRules(count, "evidenceIds");
+    assert.ok(prompt.includes(`exactly ${count} complete, useful sentences`));
+    assert.equal((prompt.match(/Write exactly/g) ?? []).length, 1);
+    assert.ok(prompt.includes("at least 8 words and 35–600 characters"));
+    assert.ok(!prompt.includes("provide a verbatim quotation"));
+    if (count === 1) assert.ok(!prompt.includes("sentence two") && !prompt.includes("sentence three"));
+    if (count === 2) assert.ok(!prompt.includes("sentence three"));
+  }
+  for (const level of [1, 4, 5, 8, 9, 10]) {
+    const rubric = difficultyRubric(level);
+    assert.ok(rubric.startsWith(`Difficulty ${level}/10:`));
+    assert.ok(rubric.includes(level < 5 ? "Introductory details are allowed" : "keep all sentence evidence in that section"));
+    assert.equal(rubric.includes("exceptionally obscure"), level === 10);
+    assert.ok(!rubric.includes("difficulty 5+") && !rubric.includes("Difficulty 3/10"));
+  }
+  const easy = buildPrompt("grounding", [factWritingRules(1, "evidenceIds"), difficultyRubric(1)]);
+  assert.ok(!easy.includes("difficulty 5+") && !easy.includes("non-lead"));
+});
+
 await t.test("learning prompts contain only the active length and operation with compact source metadata", async () => {
   const state = installNetworkMock();
   const sessionId = await connectMock(state);
@@ -501,6 +522,26 @@ await t.test("default seven-card generation uses one candidate and one grounding
   assert.equal(schema.properties.facts.minItems, undefined, "omission is allowed rather than forcing padding");
   assert.equal(schema.properties.facts.items.properties.wikipediaSearchTitles.maxItems, 3);
   assert.ok(!candidate.includes("Optional thread context: none"));
+  assert.ok(!candidate.includes("Surprise mode:") && !candidate.includes("picture-text"));
+  assert.ok(candidate.includes("Difficulty 5/10:"));
+  assert.ok(!candidate.includes("Difficulty 9/10:") && !candidate.includes("Difficulty 10/10:"));
+});
+
+await t.test("active surprise guidance stays within assigned topics without presentation rules", async () => {
+  const state = installNetworkMock();
+  const sessionId = await connectMock(state);
+  const args = generationArgs(sessionId, { requestedCount: 1 });
+  args.settings = { obscurity: 1, displayMode: "text", sentenceLength: 3, surpriseMe: true };
+  const result = await generateGeminiFacts(args);
+  assert.equal(result.completedCount, 1);
+  assert.equal(geminiCallCount(state), 2);
+  const candidate = state.candidatePrompts[0];
+  assert.ok(candidate.includes("Surprise mode: Choose an unexpected angle within each assigned topic."));
+  assert.deepEqual(candidateAssignments(candidate)[0].topicPath, args.topicPaths[0].path);
+  for (const prompt of [candidate, state.groundingPrompts[0]]) {
+    assert.ok(prompt.includes("Difficulty 1/10:"));
+    assert.ok(!prompt.includes("non-lead") && !prompt.includes("difficulty 5+") && !prompt.includes("displayMode"));
+  }
 });
 
 await t.test("candidate lookups overlap streamed output and image requests stay off the generation path", async () => {

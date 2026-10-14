@@ -58,17 +58,16 @@ export function factWritingRules(sentenceCount: SentenceLength | number = 3, cit
     : "Keep all quotations within the same narrow passage whenever possible.";
   const resultRule = citationFormat === "evidenceIds" ? "" : " Return an empty facts array when the evidence cannot support the requested fact. Never silently substitute a different fact.";
   return [...promptInstructions.cardWriting, structure,
-    `Write exactly ${count} complete, useful sentences—no more and no fewer. Each sentence should normally contain at least 8 words and sufficient named detail; avoid fragments.`,
+    `Write exactly ${count} complete, useful sentences—no more and no fewer. Each sentence must contain at least 8 words and 35–600 characters, express one complete thought, and include supported detail.`,
     citationRule, supportRule, resultRule.trim()].filter(Boolean).join(" ");
 }
 
 export const FACT_WRITING_RULES = factWritingRules(3);
 
 export function difficultyRubric(level: number) {
-  if (level >= 10) return "Choose one exceptionally obscure, narrowly bounded detail from a named inner section and one specific paragraph or two adjacent paragraphs of the article. It must identify a lesser-known incident, document, exception, technical mechanism, experiment, measurement, or consequence by name, date, place, or other precise marker when the page supplies one. Never use the lead, infobox, a famous introductory fact, a whole-section summary, a standard biography, a childhood detail, or a plot overview. The claim should be difficult because the sourced detail is obscure, not because the language is difficult.";
-  if (level >= 9) return "Choose one obscure detail from one named non-lead section and one specific paragraph or tightly adjacent pair of paragraphs. Name the exact people, work, date, place, mechanism, document, or consequence supported by that passage. Reject leads, familiar trivia, biographies, childhood summaries, plot summaries, and whole-section overviews.";
-  if (level >= 5) return "Choose one fairly difficult, unfamiliar detail from one named non-lead Wikipedia section and one specific paragraph or tightly adjacent pair of paragraphs. State the exact event, mechanism, decision, named object, or documented consequence. Do not summarize the page or section, describe a person's life, or give a generic definition; the fact must be narrow enough that its supporting passage can be located directly.";
-  return "Choose one concrete detail from a specific sentence or paragraph of the assigned article. It may be easier to learn, but it must still name an event, object, place, person, date, mechanism, or consequence. Never give a broad topic overview, generic definition, biography, childhood summary, or plot summary.";
+  const target = Math.max(1, Math.min(10, Math.round(level)));
+  const key = target >= 10 ? "difficultyMaximum" : target >= 9 ? "difficultyHigh" : target >= 5 ? "difficultyMedium" : "difficultyLow";
+  return `Difficulty ${target}/10: ${promptInstructions[key].join(" ")}`;
 }
 
 export type FactMemory = Pick<FactCard, "id" | "title" | "hook" | "body" | "topicPath"> & {

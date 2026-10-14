@@ -705,7 +705,7 @@ function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbit
   const rubrics = Array.from(new Set(slots.map(slot => slot.target))).map(target => difficultyRubric(target)).join("\n");
   return buildPrompt("candidate", rubrics.split("\n"), [
     { label: "Assignments", value: assignments },
-    { label: "Surprise mode", value: settings.surpriseMe ? "on" : "off" },
+    { label: "Surprise mode", value: settings.surpriseMe ? "Choose an unexpected angle within each assigned topic." : undefined },
     { label: "Variation", value: randomSessionSecret().slice(0, 16) },
     { label: "Attempt", value: attempt + 1 },
     { label: "Optional thread context", value: rabbitHole }

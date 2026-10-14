@@ -37,3 +37,5 @@ After editing shared instructions, run `npm run generate:prompts` to update the 
 Question answers pass the exact current query first, separately from supporting card context and prior conversation. Question-specific instructions require a direct first-sentence answer, coverage of every requested part, and omission of irrelevant card details. Supplemental evidence can support the answer while remaining distinct from evidence for the card's claim.
 
 Candidate generation sends all seven default slots in one batch, each with a stable ID and assigned topic. Candidates must use different facts and angles; weak or duplicate slots may be omitted rather than padded. The response schema caps candidates at the requested slot count and permits empty batches. Recovery requests only unfinished slots and preserves completed cards.
+
+Card prompts include only the assigned difficulty levels and requested sentence structure. Length limits match validation (exact sentence count, at least eight words and 35–600 characters per sentence). Inactive surprise mode and presentation-only display settings are omitted; difficulty constraints are shared with the native app.

@@ -1031,7 +1031,7 @@ private final class GeminiClient {
 
     private func candidatePrompt(slots: [GeminiGenerationSlot], attempt: Int) -> String {
         let assignments = slots.map { ["slot": $0.index, "topicPath": $0.path, "difficulty": $0.level] as [String: Any] }
-        let rubrics = Array(Set(slots.map(\.level))).sorted().map { "Difficulty \($0)/10: \(FactQuality.rubric($0))" }.joined(separator: "\n")
+        let rubrics = Array(Set(slots.map(\.level))).sorted().map { FactQuality.rubric($0) }.joined(separator: "\n")
         return PromptBuilder.build(.candidate, rules: rubrics.components(separatedBy: "\n"), fields: [
             PromptField("Assignments", assignments), PromptField("Attempt", attempt + 1)
         ])
@@ -1069,7 +1069,7 @@ private final class GeminiClient {
     }
 
     private func groundingPrompt(slots: [GeminiGenerationSlot], sentenceCount: Int) -> GeminiGroundingPlan {
-        let rubrics = Array(Set(slots.map(\.level))).sorted().map { "Difficulty \($0)/10: \(FactQuality.rubric($0))" }.joined(separator: "\n")
+        let rubrics = Array(Set(slots.map(\.level))).sorted().map { FactQuality.rubric($0) }.joined(separator: "\n")
         var sourcePool: [[String: Any]] = []
         var idByKey: [String: String] = [:]
         var evidenceBySlot: [Int: [String: GeminiEvidence]] = [:]

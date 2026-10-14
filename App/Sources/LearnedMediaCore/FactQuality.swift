@@ -33,16 +33,15 @@ public enum FactQuality {
             : "Keep all quotations within the same narrow passage whenever possible."
         let resultRule = evidenceIDs ? "" : " Return an empty facts array if the evidence cannot support the candidate. Never silently substitute a different fact."
         return ((PromptInstructions.rules["cardWriting"] ?? []) + [structure,
-            "Write exactly \(count) complete, useful sentences—no more and no fewer. Each sentence should normally contain at least 8 words and sufficient named detail; avoid fragments.",
+            "Write exactly \(count) complete, useful sentences—no more and no fewer. Each sentence must contain at least 8 words and 35–600 characters, express one complete thought, and include supported detail.",
             citationRule, supportRule, resultRule.trimmingCharacters(in: .whitespacesAndNewlines)])
             .filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     public static func rubric(_ level: Int) -> String {
-        if level >= 10 { return "Choose one exceptionally obscure, narrowly bounded detail from a named inner section and one specific paragraph or two adjacent paragraphs of the article. It must identify a lesser-known incident, document, exception, technical mechanism, experiment, measurement, or consequence by name, date, place, or other precise marker when the page supplies one. Never use the lead, infobox, a famous introductory fact, a whole-section summary, a standard biography, a childhood detail, or a plot overview. The claim should be difficult because the sourced detail is obscure, not because the language is difficult." }
-        if level >= 9 { return "Choose one obscure detail from one named non-lead section and one specific paragraph or tightly adjacent pair of paragraphs. Name the exact people, work, date, place, mechanism, document, or consequence supported by that passage. Reject leads, familiar trivia, biographies, childhood summaries, plot summaries, and whole-section overviews." }
-        if level >= 5 { return "Choose one fairly difficult, unfamiliar detail from one named non-lead Wikipedia section and one specific paragraph or tightly adjacent pair of paragraphs. State the exact event, mechanism, decision, named object, or documented consequence. Do not summarize the page or section, describe a person's life, or give a generic definition; the fact must be narrow enough that its supporting passage can be located directly." }
-        return "Choose one concrete detail from a specific sentence or paragraph of the assigned article. It may be easier to learn, but it must still name an event, object, place, person, date, mechanism, or consequence. Never give a broad topic overview, generic definition, biography, childhood summary, or plot summary."
+        let target = max(1, min(10, level))
+        let key = target >= 10 ? "difficultyMaximum" : target >= 9 ? "difficultyHigh" : target >= 5 ? "difficultyMedium" : "difficultyLow"
+        return "Difficulty \(target)/10: " + (PromptInstructions.rules[key] ?? []).joined(separator: " ")
     }
     public static func normalized(_ text: String) -> String {
         text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX")).lowercased().replacingOccurrences(of: "[^a-z0-9]+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)

@@ -1,6 +1,6 @@
 import instructions from "./prompt-instructions.json";
 
-export type PromptOperation = Exclude<keyof typeof instructions, "learningEvidence" | "questionEvidence" | "cardWriting">;
+export type PromptOperation = "connection" | "candidate" | "grounding" | "learn" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
 export type PromptField = { label: string; value: unknown; multiline?: boolean };
 
 /** Keep instructions separate from data; never normalize evidence or user text. */
