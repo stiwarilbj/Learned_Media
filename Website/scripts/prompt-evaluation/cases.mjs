@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { measureCardCoverage, validCitation } from './card-metrics.mjs';
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures.json', import.meta.url)));
 
 export function registerEvaluation(h) {
@@ -10,7 +11,8 @@ export function registerEvaluation(h) {
   const rows = [];
   for (const fixture of fixtures) test(`prompt evaluation: ${fixture.id}`, async () => {
     const row = {id:fixture.id, taskSuccess:false, citationValid:0, citationTotal:0,
-      duplicateRate:0, candidateDuplicateRate:0, outputBytes:0, promptBytes:0, geminiCalls:0};
+      duplicateRate:0, candidateDuplicateRate:0, outputBytes:0, promptBytes:0, geminiCalls:0,
+      expectedSentences:0, cardTotal:0, sentenceCountValid:0, sentenceTotal:0, sentenceCited:0};
     let state;
     let questionInstructionPresent=true;
     const random = Math.random;
@@ -45,7 +47,14 @@ export function registerEvaluation(h) {
             if (prompt.includes('Generate one batch of distinct')) output.facts.push({...output.facts[0]});
             return output;
           }} : {};
-        state=h.installNetworkMock({...options,learningAnswer:fixture.answer,evidencePrefix:fixture.evidencePrefix});
+        if (fixture.sentenceLength) {
+          // Boundary fixtures replace the article body; do not reuse another fixture's evidence.
+          const lengths = require('../lib/fact-quality.ts').SENTENCE_LENGTH_OPTIONS;
+          assert.equal(fixture.sentenceLength,fixture.id === 'shortest-card-length' ? Math.min(...lengths) : Math.max(...lengths));
+          const cache = require('../lib/wikipedia.ts').sharedWikipediaResolutionCache;
+          cache.pages.clear(); cache.searches.clear();
+        }
+        state=h.installNetworkMock({...options,learningAnswer:fixture.answer,evidencePrefix:fixture.evidencePrefix, sourceSentenceCount:Math.max(3,fixture.sentenceLength ?? 3)});
         const sessionId=await h.connectMock(state);
         if (fixture.requiredInstruction) {
           const fact=h.factBundle(h.words[0]);
@@ -76,25 +85,24 @@ export function registerEvaluation(h) {
             assert.ok(answer.answer.includes('does not explain why it was abandoned'));
           }
         } else {
-          const result=await h.generateGeminiFacts({...h.generationArgs(sessionId),requestedCount:7});
-          assert.equal(result.completedCount,7);
+          const args = h.generationArgs(sessionId);
+          const expected = fixture.sentenceLength ?? args.settings.sentenceLength;
+          const result=await h.generateGeminiFacts({...args, settings:{...args.settings, sentenceLength:expected}, requestedCount:7});
+          Object.assign(row, measureCardCoverage(result.cards, expected));
           const fingerprints=result.cards.map(c=>c.body.toLowerCase().replace(/\s+/g,' ').trim());
           row.duplicateRate=(fingerprints.length-new Set(fingerprints).size)/fingerprints.length;
           for (const card of result.cards) {
             assert.ok(card.evidence.length);
             for (const e of card.evidence) {
               row.citationTotal++;
-              if (card.sources[e.sourceIndex]?.extract?.includes(e.quote) && e.section) row.citationValid++;
+              if (validCitation(card,e)) row.citationValid++;
             }
           }
+          assert.equal(result.completedCount,7);
           if (fixture.id==='malformed-output') assert.deepEqual(h.groundingSlots(state.groundingPrompts[1]).map(s=>s.slot),[0]);
           if (fixture.id==='weak-evidence') assert.deepEqual(h.candidateAssignments(state.candidatePrompts[1]).map(s=>s.slot),[6]);
         }
         row.geminiCalls=h.geminiCallCount(state);
-        for (const response of state.outputs) {
-          row.outputBytes+=Buffer.byteLength(response.text);
-          row.promptBytes+=Buffer.byteLength(response.prompt);
-        }
         const candidates=state.outputs.filter(r=>r.prompt.includes('Generate one batch of distinct')).flatMap(r=>r.output.facts);
         if (candidates.length) {
           // Measure duplicates within each batch; retries may legitimately repeat a slot.
@@ -106,12 +114,20 @@ export function registerEvaluation(h) {
           row.candidateDuplicateRate=duplicates/candidates.length;
         }
       }
+      assert.equal(row.sentenceCountValid,row.cardTotal,'Published sentence counts must match the requested length');
+      assert.equal(row.sentenceCited,row.sentenceTotal,'Every published sentence needs complete valid citations');
       assert.equal(row.citationValid,row.citationTotal);
       assert.equal(row.duplicateRate,0);
       assert.ok(row.geminiCalls<=fixture.maxCalls);
+      if (fixture.expectedCalls !== undefined) assert.equal(row.geminiCalls,fixture.expectedCalls,'Boundary generation must retain the two-call pipeline');
       assert.ok(questionInstructionPresent,'Question is missing its required prompt contract');
       row.taskSuccess=true;
     } finally {
+      if (state) {
+        row.geminiCalls=h.geminiCallCount(state);
+        row.outputBytes=state.outputs.reduce((sum,response)=>sum+Buffer.byteLength(response.text),0);
+        row.promptBytes=state.outputs.reduce((sum,response)=>sum+Buffer.byteLength(response.prompt),0);
+      }
       Math.random=random;
       rows.push(row);
       writeFileSync(process.env.PROMPT_EVALUATION_REPORT,JSON.stringify(rows,null,2)+'\n');

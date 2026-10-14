@@ -95,5 +95,17 @@
     "answer": "The differential pressure instrument (DPI) used a diaphragm to detect pressure changes. DPI indicated the pressure difference; the sources supply only the initials XYZ and do not establish their expansion.",
     "requiredInstruction": "Expand an unfamiliar acronym only when needed to understand the card or answer, once at its first appearance, using an expansion explicitly supplied by the evidence. Use the acronym afterward; never invent an expansion from initials alone.",
     "evidencePrefix": "[Section: Instrument]\nThe differential pressure instrument (DPI) used a diaphragm to detect pressure changes. The record also mentions XYZ without an expansion.\n\n"
+  },
+  {
+    "id": "shortest-card-length",
+    "sentenceLength": 1,
+    "maxCalls": 2,
+    "expectedCalls": 2
+  },
+  {
+    "id": "longest-card-length",
+    "sentenceLength": 10,
+    "maxCalls": 2,
+    "expectedCalls": 2
   }
 ]

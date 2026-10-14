@@ -20,6 +20,19 @@ export function compareReports(baseline,candidate) {
       if (typeof r.taskSuccess!=='boolean' || ['citationTotal','citationValid','duplicateRate','candidateDuplicateRate','outputBytes','promptBytes','geminiCalls'].some(k=>!Number.isFinite(r[k]) || r[k]<0)
         || r.citationValid>r.citationTotal || r.duplicateRate>1 || r.candidateDuplicateRate>1) errors.push(`${old.id}: invalid metrics`);
     }
+    const sentenceMetrics=['expectedSentences','cardTotal','sentenceCountValid','sentenceTotal','sentenceCited'];
+    // Historical paired reports without these metrics remain comparable with each other.
+    if (sentenceMetrics.some(k=>k in old || k in next)) {
+      for (const r of [old,next]) {
+        if (sentenceMetrics.some(k=>!Number.isInteger(r[k]) || r[k]<0)
+          || r.sentenceCountValid>r.cardTotal || r.sentenceCited>r.sentenceTotal
+          || (r.cardTotal>0 && (r.expectedSentences<1 || r.expectedSentences>10))) errors.push(`${old.id}: invalid sentence metrics`);
+      }
+      if (next.expectedSentences!==old.expectedSentences) errors.push(`${old.id}: requested sentence length changed`);
+      if (next.cardTotal<old.cardTotal || next.sentenceCountValid!==next.cardTotal
+        || next.sentenceTotal!==next.cardTotal*next.expectedSentences) errors.push(`${old.id}: sentence counts failed`);
+      if (next.sentenceCited!==next.sentenceTotal) errors.push(`${old.id}: sentence citation coverage incomplete`);
+    }
     if (!next.taskSuccess) errors.push(`${old.id}: task failed`);
     if (validity(next)<validity(old)) errors.push(`${old.id}: citation validity regressed`);
     if (next.citationTotal<old.citationTotal) errors.push(`${old.id}: citation coverage decreased`);

@@ -110,3 +110,45 @@ The required-contract case improves from failing to passing; request counts,
 citation validity, duplicates, and output sizes remain unchanged. Each writing
 prompt adds 240 UTF-8 bytes (below the per-case 10% growth limit). Replay checks
 prompt construction and held-fixed responses, not live model compliance.
+
+
+## Sentence-length boundaries
+
+The fixed replay set includes seven-card batches at the shortest and longest
+supported settings, currently **1 and 10 sentences**. Each fixture checks its
+setting against `SENTENCE_LENGTH_OPTIONS` so a newly supported boundary requires
+an explicit fixture update. The provider mock reads the sentence instruction
+from the real grounding prompt; it does not infer the answer length from the
+fixture. The long fixture supplies ten distinct, complete sentences per source
+section, rather than padding a three-sentence response with repetitions. Evidence
+caches are cleared between boundary fixtures to prevent cross-case contamination.
+
+The report records these dimensions separately:
+
+- **Sentence counts:** independently segment each published body and check its
+  actual count, terminal punctuation, and `sentenceCount` metadata. Every card
+  must match the requested length.
+- **Complete citations:** every body sentence must have valid evidence with an
+  exact quotation, section, and source. A valid citation on just one sentence
+  does not establish coverage for the rest of the card.
+- **Response size:** total UTF-8 response-text bytes, including retries, measured
+  separately for each boundary. The existing 10% per-case growth limit applies.
+- **Call count:** exactly two generation calls for each successful boundary
+  batch, excluding connection probes and Wikipedia lookups.
+
+| Setting | Correct card lengths | Cited sentences | Response bytes | Gemini calls |
+| --- | --- | --- | ---: | ---: |
+| 1 sentence | 7/7 | 7/7 | 4,597 | 2 |
+| 10 sentences | 7/7 | 70/70 | 13,366 | 2 |
+
+Negative tests independently remove a citation, alter its source/quotation/section,
+change the sentence count, remove final punctuation, grow response bytes, and add
+a call. Each relevant gate must reject the regression even if task success and
+other metrics remain unchanged. Failed scenarios still record actual byte and
+call totals.
+
+The baseline was deliberately expanded for these cases; all twelve existing
+cases retain their exact previous metrics and the prompt hash is unchanged.
+Historical paired reports without sentence metrics remain comparable to each
+other, but cannot silently be compared with reports containing the new metrics.
+This is deterministic replay coverage, not evidence of live Gemini compliance.

@@ -43,8 +43,17 @@ const factBundles = [
 ];
 let testNumber = 0;
 
-function sentenceSet(word) {
-  return factBundles[words.indexOf(word)].sentences;
+function sentenceSet(word, count = 3) {
+  const extra = [
+    `The ${word} record describes the surrounding workshop and its carefully maintained equipment.`,
+    `A separate ${word} notebook lists the materials stored beside the working apparatus.`,
+    `The ${word} entry includes a drawing showing the arrangement of the supporting frame.`,
+    `An attached ${word} sketch labels the wooden cover beside the inspection opening.`,
+    `The ${word} notes describe the protective case used during transport between buildings.`,
+    `A later ${word} inventory records the tools retained inside the original storage cabinet.`,
+    `The final ${word} annotation identifies the archive holding the surviving workshop documents.`
+  ];
+  return [...factBundles[words.indexOf(word)].sentences, ...extra].slice(0, count);
 }
 
 function factBundle(word) {
@@ -55,8 +64,8 @@ function sectionName(word) {
   return word[0].toUpperCase() + word.slice(1) + " record";
 }
 
-function articleExtract() {
-  return words.map(word => `==${sectionName(word)}==\n${sentenceSet(word).join(" ")}`).join("\n\n");
+function articleExtract(count = 3) {
+  return words.map(word => `==${sectionName(word)}==\n${sentenceSet(word, count).join(" ")}`).join("\n\n");
 }
 
 function jsonResponse(payload, status = 200) {
@@ -163,7 +172,9 @@ function installNetworkMock(options = {}) {
             state.omittedSlots.add("evidence:" + slot);
             return { slot, status: "needs_evidence", claim, missingEvidence: "The passage mentions the subject but does not establish the claimed mechanism." };
           }
-          const sentences = sentenceSet(word);
+          // Read the actual writing instruction, rather than silently following fixture settings.
+          const count = Number(prompt.match(/Write exactly (\d+) complete, useful sentences/)?.[1] ?? 3);
+          const sentences = sentenceSet(word, count);
           const quotes = options.invalidSlot === slot ? sentences.map((quote, index) => index === 0 ? "This quotation does not occur in the supplied Wikipedia passage." : quote) : sentences;
           const evidence = sentences.map((quote, sentence) => {
             const match = value.evidence.find(span => span.text === quote);
@@ -221,7 +232,7 @@ function installNetworkMock(options = {}) {
         return jsonResponse({ query: { pages: { "42": { title: "Shared Article", fullurl: "https://en.wikipedia.org/wiki/Shared_Article", extract: options.duplicatePassages ? words.map(word => {
           const paragraph = sentenceSet(word).join(" ");
           return `==${sectionName(word)}==\n${paragraph}\n${paragraph.replaceAll(" ", "  ")}`;
-        }).join("\n\n") : options.articleText ?? (options.evidencePrefix ?? "") + articleExtract(), pageimage: "Shared.jpg", thumbnail: { source: "https://upload.wikimedia.org/shared-thumb.jpg" }, original: { source: "https://upload.wikimedia.org/shared.jpg" } } } } });
+        }).join("\n\n") : options.articleText ?? (options.evidencePrefix ?? "") + articleExtract(options.sourceSentenceCount ?? 3), pageimage: "Shared.jpg", thumbnail: { source: "https://upload.wikimedia.org/shared-thumb.jpg" }, original: { source: "https://upload.wikimedia.org/shared.jpg" } } } } });
       }
     }
     throw new Error(`Unexpected request: ${url.toString()}`);
