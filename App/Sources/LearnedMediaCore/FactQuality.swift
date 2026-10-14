@@ -146,7 +146,7 @@ public enum FactQuality {
         }
         return false
     }
-    public static func validate(title: String, hook: String, claim: String, sentences: [String], evidence: [[String: Any]], sources: [[String: Any]], expectedSentences: Any? = 3, difficulty: Int = 0) -> Bool {
+    public static func validate(title: String, hook: String, claim: String, sentences: [String], evidence: [[String: Any]], sources: [[String: Any]], expectedSentences: Any? = 3, difficulty: Int = 0, claimEvidence: [String]? = nil) -> Bool {
         let expected = sentenceCount(expectedSentences)
         let count = hook.split(whereSeparator: { $0.isWhitespace }).count
         guard !title.isEmpty, !claim.isEmpty, normalized(title) != normalized(hook), (4...12).contains(count), sentences.count == expected, evidence.count <= 12 else { return false }
@@ -160,6 +160,7 @@ public enum FactQuality {
             guard (35...600).contains(sentence.count), sentence.split(whereSeparator: { $0.isWhitespace }).count >= 8, sentence.range(of: "[.!?][”\"']?$", options: .regularExpression) != nil else { return false }
             let quotes = evidence.filter { $0["sentence"] as? Int == index }
             if quotes.isEmpty { return false }
+            guard QuantityValidation.unsupported(sentence, passages: quotes.compactMap { $0["quote"] as? String }).isEmpty else { return false }
             for item in quotes {
                 guard let source = item["sourceIndex"] as? Int, sources.indices.contains(source), let quote = item["quote"] as? String, quote.count >= 30,
                       let extract = sources[source]["extract"] as? String, normalized(extract).contains(normalized(quote)) else { return false }
@@ -169,6 +170,11 @@ public enum FactQuality {
                 }
             }
         }
+        let allQuotes = evidence.compactMap { $0["quote"] as? String }
+        if let claimEvidence, claimEvidence.isEmpty || !claimEvidence.allSatisfy({ allQuotes.contains($0) }) { return false }
+        guard QuantityValidation.unsupported(claim, passages: claimEvidence ?? allQuotes).isEmpty,
+              QuantityValidation.unsupported(title, passages: allQuotes).isEmpty,
+              QuantityValidation.unsupported(hook, passages: allQuotes).isEmpty else { return false }
         if difficulty >= 5 && sections.contains(where: { $0 == "introduction" || $0 == "lead" }) { return false }
         if difficulty > 0 && sections.count != 1 { return false }
         return true

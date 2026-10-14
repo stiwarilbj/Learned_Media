@@ -971,11 +971,12 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             if (fact.status !== "grounded") throw new GeminiFailure("The grounded result is missing a valid evidence status.");
             const assignedEvidence = grounding.evidenceBySlot.get(slot.index) ?? new Map<string, GroundingEvidence>();
             // Claim support is explicit and must use this slot's supplied evidence, independently of sentence citations.
-            restoreEvidenceReferences([{ sentence: 0, evidenceIds: fact.claimEvidenceIds }], assignedEvidence, sentenceCount);
+            const claimEvidence = restoreEvidenceReferences([{ sentence: 0, evidenceIds: fact.claimEvidenceIds }], assignedEvidence, sentenceCount);
             const localFact: GroundedDraft = {
               title: fact.title ?? "",
               hook: fact.hook ?? "",
               claim: fact.claim ?? "",
+              claimEvidence: claimEvidence.map(item => item.quote),
               sentences: fact.sentences ?? [],
               evidence: restoreEvidenceReferences(fact.evidence, assignedEvidence, sentenceCount)
             };

@@ -175,4 +175,32 @@ final class FactQualityTests: XCTestCase {
         XCTAssertNotEqual(FactQuality.stableEvidenceID(key + " changed"), FactQuality.stableEvidenceID(key))
     }
 
+
+    func testQuantitiesMatchSharedFixtures() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Website/scripts/quantity-fixtures.json"))
+        let fixtures = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        for fixture in fixtures {
+            let claim = try XCTUnwrap(fixture["claim"] as? String)
+            let passages = try XCTUnwrap(fixture["passages"] as? [String])
+            XCTAssertEqual(QuantityValidation.unsupported(claim, passages: passages).isEmpty, fixture["valid"] as? Bool, claim)
+        }
+    }
+    func testPublicationRejectsQuantityMismatches() {
+        let quote = "The expedition travelled 12 kilometres along the coastline during its survey."
+        let other = "The expedition carried 12 kilograms of equipment for its coastal survey."
+        let sources: [[String: Any]] = [["extract": quote + " " + other]]
+        let evidence: [[String: Any]] = [["sentence": 0, "sourceIndex": 0, "quote": quote]]
+        func valid(_ sentence: String, claim: String = "The expedition travelled 12 km.", claimEvidence: [String]? = nil, title: String = "The Coastal Expedition Route", hook: String = "A Survey Followed The Coastline") -> Bool {
+            FactQuality.validate(title: title, hook: hook, claim: claim, sentences: [sentence], evidence: evidence, sources: sources, expectedSentences: 1, claimEvidence: claimEvidence)
+        }
+        XCTAssertTrue(valid(quote))
+        XCTAssertTrue(valid(quote.replacingOccurrences(of: "12 kilometres", with: "12000 metres")))
+        XCTAssertFalse(valid(quote.replacingOccurrences(of: "kilometres", with: "miles")))
+        XCTAssertFalse(valid(quote, claim: "The expedition travelled 12 miles."))
+        XCTAssertFalse(valid(quote, claimEvidence: [other]))
+        XCTAssertFalse(valid(quote, title: "The 12 Mile Coastal Expedition Route"))
+        XCTAssertFalse(valid(quote, hook: "A Survey Covered 12 Miles"))
+    }
+
 }

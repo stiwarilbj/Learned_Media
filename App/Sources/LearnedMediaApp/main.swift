@@ -1281,7 +1281,7 @@ private final class GeminiClient {
                 return GeminiEvidence(sentence: reference.sentence, sourceIndex: match.sourceIndex, quote: match.quote, section: match.section)
             }
         }
-        guard FactQuality.validate(title: title, hook: hook, claim: claim, sentences: sentences, evidence: quotes.map { $0.dictionary }, sources: slot.sources, expectedSentences: sentenceCount, difficulty: slot.level) else {
+        guard FactQuality.validate(title: title, hook: hook, claim: claim, sentences: sentences, evidence: quotes.map { $0.dictionary }, sources: slot.sources, expectedSentences: sentenceCount, difficulty: slot.level, claimEvidence: (fact.claimEvidenceIds ?? []).compactMap { evidenceByID[$0]?.quote }) else {
             throw NativeError(message: "The fact did not contain \(sentenceCount) supported sentences with matching headings.")
         }
         let indexes = Array(Set(quotes.map(\.sourceIndex))).sorted()

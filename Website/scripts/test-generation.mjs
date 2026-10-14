@@ -1388,3 +1388,33 @@ test('incomplete evidence instructions name missing details without unrelated su
  const learn=buildLearningPrompt({action:'learn',card:{},evidence:[]});
  assert.ok(!learn.includes(rules.question[1]));
 });
+
+
+test('numerical claims match values and units using shared web/native fixtures',()=>{
+ const {unsupportedQuantities}=require('../lib/quantity-validation.ts');
+ const fixtures=JSON.parse(readFileSync(new URL('./quantity-fixtures.json',import.meta.url)));
+ for(const {claim,passages,valid} of fixtures) assert.equal(unsupportedQuantities(claim,passages).length===0,valid,claim+' / '+passages.join(' | '));
+});
+
+test('publication checks sentence-specific quantities, main-claim evidence and headings',()=>{
+ const {validateDraft}=require('../lib/fact-quality.ts');
+ const a='The expedition travelled 12 kilometres along the coastline during its survey.';
+ const b='The expedition carried 12 kilograms of equipment for its coastal survey.';
+ const sources=[{title:'Survey',url:'https://en.wikipedia.org/wiki/Survey',extract:a+' '+b}];
+ const draft={title:'The Coastal Expedition Route',hook:'A Survey Followed The Coastline',claim:a,sentences:[a],evidence:[{sentence:0,sourceIndex:0,quote:a}],claimEvidence:[a]};
+ assert.doesNotThrow(()=>validateDraft(draft,sources,1));
+ assert.doesNotThrow(()=>validateDraft({...draft,sentences:[a.replace('12 kilometres','12000 metres')]},sources,1));
+ for(const changed of [{sentences:[a.replace('kilometres','miles')]},{claim:a.replace('kilometres','miles')},{title:'The 12 Mile Coastal Expedition Route'},{hook:'A Survey Covered 12 Miles'},{sentences:[a.replace('kilometres','kilograms')]},{claimEvidence:[b]}]) assert.throws(()=>validateDraft({...draft,...changed},sources,1),/unsupported numbers or units|main claim evidence/);
+ const two={...draft,sentences:[a,b],evidence:[{sentence:0,sourceIndex:0,quote:b},{sentence:1,sourceIndex:0,quote:a}]};
+ assert.throws(()=>validateDraft(two,sources,2),/unsupported numbers or units/,'other sentence passages cannot establish a quantity');
+});
+
+test('unsupported quantities retry only the affected grounded slot and preserve six valid cards',async()=>{
+ let damaged=false;
+ const state=installNetworkMock({transformOutput(output,prompt){if(!damaged && prompt.includes('Return one result for each slot')){damaged=true;const fact=output.facts.find(f=>f.slot===6);fact.sentences=[...fact.sentences];fact.sentences[0]=fact.sentences[0].replace(/\.$/,' over 12 miles.');}return output;}}),sessionId=await connectMock(state);
+ const published=[];const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7,onProgress:e=>{if(e.type==='card')published.push(e.slot);}});
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),3);
+ assert.equal(state.candidatePrompts.length,1);assert.deepEqual(groundingSlots(state.groundingPrompts[1]).map(s=>s.slot),[6]);
+ assert.equal(published.length,7);assert.equal(new Set(published).size,7);
+ assert.ok(result.cards.every(card=>!card.body.includes('12 miles')));
+});

@@ -1,0 +1,450 @@
+[
+  {
+    "claim": "It travelled 12 km.",
+    "passages": [
+      "It travelled 12 kilometres."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 12 miles.",
+    "passages": [
+      "It travelled 12 kilometres."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled 12000 metres.",
+    "passages": [
+      "It travelled 12 kilometres."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 12-kilometres.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled twelve miles.",
+    "passages": [
+      "It travelled 12 kilometres."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled twelve kilometres.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled twenty-one kilometres.",
+    "passages": [
+      "It travelled 21 km."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It weighed 12 kg.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "The measurement was 12.5 cm.",
+    "passages": [
+      "The measurement was 12.50 centimetres."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "The measurement was 12.5 cm.",
+    "passages": [
+      "The measurement was 125 centimetres."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "The route was 1,200 metres.",
+    "passages": [
+      "The route was 1.2 km."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 7.46 miles.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled about 7.46 miles.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled about 7.47 miles.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled about 12.1 km.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled 1 mile.",
+    "passages": [
+      "It travelled 1609.344 metres."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It lasted 60 minutes.",
+    "passages": [
+      "It lasted 1 hour."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It lasted 30 days.",
+    "passages": [
+      "It lasted 1 month."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It weighed 1000 grams.",
+    "passages": [
+      "It weighed 1 kg."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It weighed 0.45359237 kg.",
+    "passages": [
+      "It weighed 1 pound."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It weighed 1 ton.",
+    "passages": [
+      "It weighed 1000 kg."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It measured 32°F.",
+    "passages": [
+      "It measured 0°C."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It measured -40°F.",
+    "passages": [
+      "It measured −40°C."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It measured 273.15 K.",
+    "passages": [
+      "It measured 0°C."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It measured -12 m.",
+    "passages": [
+      "It measured 12 metres."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It measured 12 m².",
+    "passages": [
+      "It measured 12 metres."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It measured 10000 m².",
+    "passages": [
+      "It measured 1 hectare."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 36 km/h.",
+    "passages": [
+      "It travelled 10 metres per second."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 12 km.",
+    "passages": [
+      "It travelled 12 km/h."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled 12 miles per second.",
+    "passages": [
+      "It travelled 12 miles."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled 12 cm/s.",
+    "passages": [
+      "It travelled 12 cm."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled 12 cm/s.",
+    "passages": [
+      "It travelled 12 cm/s."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "The rate was 12 percent.",
+    "passages": [
+      "The rate was 12%."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "The rate was 12%.",
+    "passages": [
+      "The rate was 12 metres."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "There were 12.",
+    "passages": [
+      "There were 13."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It began in 1847.",
+    "passages": [
+      "It began in 1847."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It began in 1847.",
+    "passages": [
+      "It began in 1848."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It counted 1e3 particles.",
+    "passages": [
+      "It counted 1000 particles."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It counted 12 million particles.",
+    "passages": [
+      "It counted 12 particles."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It counted 12 million particles.",
+    "passages": [
+      "It counted 12000000 particles."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 12 km.",
+    "passages": [
+      "It travelled 112 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Nothing quantitative was claimed.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 12 furlongs.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled 12 km.",
+    "passages": [
+      "The unrelated archive listed 12."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It counted 999999999999999999999 particles.",
+    "passages": [
+      "It counted 999999999999999999999 particles."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It measured 10000 m^2.",
+    "passages": [
+      "It measured 1 hectare."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It measured 12parsecs.",
+    "passages": [
+      "It measured 12 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It measured 12parsecs.",
+    "passages": [
+      "It measured 12parsecs."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "The temperature rose by 18°F.",
+    "passages": [
+      "The temperature rose by 10°C."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "The temperature rose by 50°F.",
+    "passages": [
+      "The temperature rose by 10°C."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "The temperature was 50°F.",
+    "passages": [
+      "The temperature rose by 10°C."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "The temperature rose to 50°F.",
+    "passages": [
+      "The temperature rose to 10°C."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It measured 1e-15 km.",
+    "passages": [
+      "It measured 0 metres."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It lasted 7 minutes.",
+    "passages": [
+      "It lasted seven-minutes."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 20 km.",
+    "passages": [
+      "It travelled one hundred and twenty kilometres."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled 120 km.",
+    "passages": [
+      "It travelled one hundred and twenty kilometres."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled twelve million km.",
+    "passages": [
+      "It travelled 12000000 kilometres."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled about 7.46 thousand metres.",
+    "passages": [
+      "It travelled 7.456 kilometres."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It counted 6.02214076e23 particles.",
+    "passages": [
+      "It counted 6.02214076e23 particles."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 100000000000000000000 metres.",
+    "passages": [
+      "It travelled 1e17 kilometres."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "The route covered 12-50 km.",
+    "passages": [
+      "The route covered 12-15 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "The route covered 12-15 km.",
+    "passages": [
+      "The route covered 12–15 km."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "It travelled 12,5 km.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "It travelled 12.5.3 km.",
+    "passages": [
+      "It travelled 12 km."
+    ],
+    "valid": false
+  }
+]
