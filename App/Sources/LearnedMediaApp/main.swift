@@ -1072,7 +1072,7 @@ private final class GeminiClient {
                 else { quotes.append(current) }
             }
             let url = source["canonicalUrl"] as? String ?? source["url"] as? String ?? ""
-            for quote in quotes where quote.count >= 30 { result.append((section, quote, "\(url)\u{0}\(section)\u{0}\(quote)")) }
+            for quote in quotes where quote.count >= 30 { result.append((section, quote, FactQuality.evidencePassageKey(sourceURL: url, section: section, quote: quote))) }
         }
         return result
     }
@@ -1094,7 +1094,7 @@ private final class GeminiClient {
                         sourcePool.append(["id": id, "title": String((source["title"] as? String ?? "Wikipedia").prefix(160)), "section": span.section, "text": span.quote])
                     }
                     allowedIDs.append(id)
-                    localEvidence[id] = GeminiEvidence(sentence: 0, sourceIndex: sourceIndex, quote: span.quote, section: span.section)
+                    if localEvidence[id] == nil { localEvidence[id] = GeminiEvidence(sentence: 0, sourceIndex: sourceIndex, quote: span.quote, section: span.section) }
                 }
             }
             evidenceBySlot[slot.index] = localEvidence

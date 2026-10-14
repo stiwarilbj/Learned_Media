@@ -4,7 +4,7 @@ import type { Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelO
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
-import { difficultyRubric, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
+import { difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
 import type { YouTubeSearchCandidate } from "./youtube";
 import { requestCacheKey, SessionCache } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
@@ -724,7 +724,7 @@ async function lookupCandidateEvidence(slot: GenerationSlot, candidate: Candidat
 }
 
 function evidenceForSlot(slot: GenerationSlot) {
-  return (slot.sources ?? []).map((source, index) => ({ index, title: source.title, url: source.url, extract: source.extract }));
+  return (slot.sources ?? []).map((source, index) => ({ index, title: source.title, url: source.url, canonicalUrl: source.canonicalUrl, extract: source.extract }));
 }
 
 function splitGroundingGroups(slots: GenerationSlot[], sentenceCount: number) {
@@ -753,7 +753,7 @@ function groundingSpans(source: ResolvedWikipediaSource, sourceIndex: number) {
     for (const paragraph of value.slice(lineEnd + 1).split(/\n{2,}/)) {
       for (const quote of completeSentenceChunks(paragraph, 1200)) {
         if (quote.length < 30) continue;
-        spans.push({ key: `${source.canonicalUrl ?? source.url}\u0000${heading}\u0000${quote}`, title: source.title ?? "Wikipedia", sourceIndex, quote, section: heading });
+        spans.push({ key: evidencePassageKey(source.canonicalUrl ?? source.url, heading, quote), title: source.title ?? "Wikipedia", sourceIndex, quote, section: heading });
       }
     }
   }
@@ -776,7 +776,7 @@ function groundingPrompt(slots: GenerationSlot[], sentenceCount: number) {
           sourcePool.push({ id, title: span.title.slice(0, 160), section: span.section, text: span.quote });
         }
         allowedIds.push(id);
-        localEvidence.set(id, { sourceIndex: span.sourceIndex, quote: span.quote, section: span.section });
+        if (!localEvidence.has(id)) localEvidence.set(id, { sourceIndex: span.sourceIndex, quote: span.quote, section: span.section });
       }
     });
     evidenceBySlot.set(slot.index, localEvidence);

@@ -111,6 +111,14 @@ public enum FactQuality {
             .map { "[Section: \($0.1)]\n\($0.2)" }.joined(separator: "\n\n")
     }
 
+    /// Normalize formatting only; do not merge different source sections or factual text.
+    public static func evidencePassageKey(sourceURL: String, section: String, quote: String) -> String {
+        func normalize(_ text: String) -> String {
+            text.precomposedStringWithCanonicalMapping.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return sourceURL.trimmingCharacters(in: .whitespacesAndNewlines) + "\u{0}" + normalize(section) + "\u{0}" + normalize(quote)
+    }
+
     public static func stableEvidenceID(_ key: String) -> String {
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in key.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }

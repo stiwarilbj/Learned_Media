@@ -22,7 +22,7 @@ const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
 const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
 const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
-const { completeSentenceChunks, selectEvidence, stableEvidenceId, restoreEvidenceReferences, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
+const { completeSentenceChunks, selectEvidence, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
 const { sharedWikipediaResolutionCache } = require("../lib/wikipedia.ts");
 const originalFetch = globalThis.fetch;
 const originalDateNow = Date.now;
@@ -203,7 +203,10 @@ function installNetworkMock(options = {}) {
         return jsonResponse({ query: { pages: { "43": { title: "Unrelated Article", fullurl: "https://en.wikipedia.org/wiki/Unrelated_Article", extract: "== Museum ==\nMuseum curators arranged portraits beside marble statues in a spacious exhibition hall. Visitors purchased printed catalogues containing descriptions of the artists and their decorated galleries." } } } });
       }
       if (action === "query") {
-        return jsonResponse({ query: { pages: { "42": { title: "Shared Article", fullurl: "https://en.wikipedia.org/wiki/Shared_Article", extract: articleExtract(), pageimage: "Shared.jpg", thumbnail: { source: "https://upload.wikimedia.org/shared-thumb.jpg" }, original: { source: "https://upload.wikimedia.org/shared.jpg" } } } } });
+        return jsonResponse({ query: { pages: { "42": { title: "Shared Article", fullurl: "https://en.wikipedia.org/wiki/Shared_Article", extract: options.duplicatePassages ? words.map(word => {
+          const paragraph = sentenceSet(word).join(" ");
+          return `==${sectionName(word)}==\n${paragraph}\n${paragraph.replaceAll(" ", "  ")}`;
+        }).join("\n\n") : articleExtract(), pageimage: "Shared.jpg", thumbnail: { source: "https://upload.wikimedia.org/shared-thumb.jpg" }, original: { source: "https://upload.wikimedia.org/shared.jpg" } } } } });
       }
     }
     throw new Error(`Unexpected request: ${url.toString()}`);
@@ -432,6 +435,39 @@ await t.test("local evidence ranking sends only strong complete passages with st
   assert.equal(stableEvidenceId(key), "ecfc3b174d5b0577b", "web and native use the same UTF-8 evidence identity");
   assert.equal(stableEvidenceId(key), stableEvidenceId(key));
   assert.notEqual(stableEvidenceId(key + " changed"), stableEvidenceId(key));
+});
+
+await t.test("passage identity deduplicates formatting while preserving source sections and exact facts", () => {
+  const url = "https://en.wikipedia.org/wiki/Pressure";
+  const quote = "A precise café measurement recorded 3.5 units, not 35 units.";
+  const key = evidencePassageKey(url, "Évidence records", quote);
+  assert.equal(stableEvidenceId(key), "ebfac99220a71d1d4", "normalized identity agrees with native");
+  assert.equal(key, evidencePassageKey(url, " E\u0301vidence   records ", quote.replace("café", "cafe\u0301").replaceAll(" ", "\t ")));
+  assert.equal(stableEvidenceId(key), stableEvidenceId(evidencePassageKey(url, "Évidence records", quote + "\n")));
+  for (const other of [evidencePassageKey(url + "_Other", "Évidence records", quote),
+    evidencePassageKey(url, "Different section", quote), evidencePassageKey(url, "Évidence records", quote.replace("3.5", "35")),
+    evidencePassageKey(url, "Évidence records", quote.replace("not ", ""))]) assert.notEqual(key, other);
+});
+
+await t.test("grounding pools normalized repeated passages once and restores original citations", async () => {
+  sharedWikipediaResolutionCache.pages.clear();
+  sharedWikipediaResolutionCache.searches.clear();
+  try {
+    const state = installNetworkMock({ duplicatePassages: true });
+    const sessionId = await connectMock(state);
+    const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 7 });
+    assert.equal(result.completedCount, 7);
+    assert.equal(geminiCallCount(state), 2);
+    const slots = groundingSlots(state.groundingPrompts[0]);
+    const pool = slots[0].allEvidence;
+    assert.equal(pool.length, 7, "each slot's whitespace-variant duplicate should occupy one passage");
+    assert.equal(new Set(pool.map(span => evidencePassageKey("source", span.section, span.text))).size, pool.length);
+    assert.ok(slots.every(slot => slot.evidenceIds.length === 1));
+    assert.ok(result.cards.every(card => card.evidence.every(item => card.sources[item.sourceIndex].extract.includes(item.quote))));
+  } finally {
+    sharedWikipediaResolutionCache.pages.clear();
+    sharedWikipediaResolutionCache.searches.clear();
+  }
 });
 
 await t.test("writing prompts include only the requested length, difficulty, and citation mode", () => {

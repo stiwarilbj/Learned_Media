@@ -143,6 +143,20 @@ final class FactQualityTests: XCTestCase {
         let accepted = await ledger.accept(remembered)
         XCTAssertFalse(accepted)
     }
+    func testPassageIdentityDeduplicatesOnlyFormattingWithinSourceSection() {
+        let url = "https://en.wikipedia.org/wiki/Pressure"
+        let quote = "A precise café measurement recorded 3.5 units, not 35 units."
+        let key = FactQuality.evidencePassageKey(sourceURL: url, section: "Évidence records", quote: quote)
+        XCTAssertEqual(FactQuality.stableEvidenceID(key), "ebfac99220a71d1d4")
+        let variant = quote.replacingOccurrences(of: "café", with: "cafe\u{301}").replacingOccurrences(of: " ", with: "\t ")
+        XCTAssertEqual(key, FactQuality.evidencePassageKey(sourceURL: url, section: " E\u{301}vidence   records ", quote: variant))
+        XCTAssertEqual(FactQuality.stableEvidenceID(key), FactQuality.stableEvidenceID(FactQuality.evidencePassageKey(sourceURL: url, section: "Évidence records", quote: quote + "\n")))
+        XCTAssertNotEqual(key, FactQuality.evidencePassageKey(sourceURL: url + "_Other", section: "Évidence records", quote: quote))
+        XCTAssertNotEqual(key, FactQuality.evidencePassageKey(sourceURL: url, section: "Different section", quote: quote))
+        XCTAssertNotEqual(key, FactQuality.evidencePassageKey(sourceURL: url, section: "Évidence records", quote: quote.replacingOccurrences(of: "3.5", with: "35")))
+        XCTAssertNotEqual(key, FactQuality.evidencePassageKey(sourceURL: url, section: "Évidence records", quote: quote.replacingOccurrences(of: "not ", with: "")))
+    }
+
     func testLocalEvidenceRankingAndStableIdentity() {
         let focused = "Mercury barometers measured atmospheric pressure by balancing a column of dense liquid against the surrounding air. Operators recorded the column height and temperature to compare weather observations at different stations."
         let generic = "Mercury appears in several unrelated traditions and stories whose names changed over the centuries. Curators kept these old stories in decorated volumes beside several collections of handwritten songs."

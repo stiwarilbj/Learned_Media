@@ -179,7 +179,13 @@ export function selectEvidence(extract: string, focus: string, difficulty: numbe
     .map(item => `[Section: ${item.section}]\n${item.text}`).join("\n\n");
 }
 
-/** Same UTF-8 hash on web and native; IDs depend on exact evidence, not batch position. */
+/** Conservative identity: formatting variants share an ID; source, section and meaning stay distinct. */
+export function evidencePassageKey(sourceUrl: string, section: string, quote: string) {
+  const normalize = (text: string) => text.normalize("NFC").replace(/\s+/gu, " ").trim();
+  return `${sourceUrl.trim()}\u0000${normalize(section)}\u0000${normalize(quote)}`;
+}
+
+/** Same UTF-8 hash on web and native; IDs depend on passage identity, not batch position. */
 export function stableEvidenceId(key: string) {
   let hash = BigInt("0xcbf29ce484222325");
   for (const byte of new TextEncoder().encode(key)) hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * BigInt("0x100000001b3"));
