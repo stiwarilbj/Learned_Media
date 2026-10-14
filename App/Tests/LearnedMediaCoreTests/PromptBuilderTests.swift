@@ -55,4 +55,18 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(learn.contains(question) || learn.contains("Previous conversation (context only):"))
     }
 
+    func testCandidateBatchKeepsSevenAssignedIDsAndAllowsOmittingWeakFacts() throws {
+        let assignments: [[String: Any]] = (0..<7).map { ["slot": $0, "topicPath": ["Science", "Physics"], "difficulty": 5] }
+        let prompt = PromptBuilder.build(.candidate, fields: [PromptField("Assignments", assignments)])
+        XCTAssertTrue(prompt.contains("Return each ID at most once"))
+        XCTAssertTrue(prompt.contains("different fact and angle across the batch, including slots with the same topic"))
+        XCTAssertTrue(prompt.contains("Different titles or wording of the same underlying claim do not count as distinct facts"))
+        XCTAssertTrue(prompt.contains("omit that slot instead of padding the batch"))
+        XCTAssertTrue(prompt.contains("Return an empty facts array if none qualifies"))
+        let payload = prompt.components(separatedBy: "Assignments: ")[1]
+        let decoded = try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [[String: Any]]
+        XCTAssertEqual(decoded?.compactMap { $0["slot"] as? Int }, Array(0..<7))
+        XCTAssertEqual(decoded?.compactMap { $0["topicPath"] as? [String] }, Array(repeating: ["Science", "Physics"], count: 7))
+    }
+
 }

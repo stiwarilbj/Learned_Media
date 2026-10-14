@@ -1017,8 +1017,8 @@ private final class GeminiClient {
         return ["status": status, "message": ready ? "Gemini connected. Both primary Flash Lite models passed; other models are automatic fallbacks." : "Both primary Flash Lite models must pass. Check their status and retry the connection.", "models": dictionaries, "eligibleModelCount": GeminiModelPolicy.allowedModels.count, "requiredWorkingModels": GeminiModelPolicy.requiredWorkingModels]
     }
 
-    private func candidateSchema() -> [String: Any] {
-        ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": ["slot": ["type": "INTEGER"], "title": ["type": "STRING"], "claim": ["type": "STRING"], "topicPath": ["type": "ARRAY", "items": ["type": "STRING"]], "wikipediaSearchTitles": ["type": "ARRAY", "items": ["type": "STRING"]]], "required": ["slot", "title", "claim", "topicPath", "wikipediaSearchTitles"]]]], "required": ["facts"]]
+    private func candidateSchema(slotCount: Int) -> [String: Any] {
+        ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "maxItems": slotCount, "items": ["type": "OBJECT", "properties": ["slot": ["type": "INTEGER"], "title": ["type": "STRING"], "claim": ["type": "STRING"], "topicPath": ["type": "ARRAY", "items": ["type": "STRING"]], "wikipediaSearchTitles": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["slot", "title", "claim", "topicPath", "wikipediaSearchTitles"]]]], "required": ["facts"]]
     }
 
     private func groundedSchema(sentenceCount: Int) -> [String: Any] {
@@ -1129,7 +1129,7 @@ private final class GeminiClient {
             [candidate.title ?? "", candidate.claim ?? "", candidate.topicPath?.joined(separator: "\u{0}") ?? "", candidate.wikipediaSearchTitles?.joined(separator: "\u{0}") ?? ""].joined(separator: "\u{1}")
         }
         do {
-            let result = try await structured(key: key, prompt: candidatePrompt(slots: slots, attempt: attempt), schema: candidateSchema(), stage: "candidate", maxOutputTokens: 4096, streaming: true, onStreamAttemptStart: {
+            let result = try await structured(key: key, prompt: candidatePrompt(slots: slots, attempt: attempt), schema: candidateSchema(slotCount: slots.count), stage: "candidate", maxOutputTokens: 4096, streaming: true, onStreamAttemptStart: {
                 parser.reset()
                 prefetched.values.forEach { $0.task.cancel() }
                 prefetched.removeAll()

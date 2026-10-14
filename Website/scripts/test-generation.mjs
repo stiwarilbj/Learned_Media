@@ -123,15 +123,20 @@ function installNetworkMock(options = {}) {
         output = { terms: ["black holes"], include: [], alternatives: ["gravitational lensing"], exclude: [], topics: ["Science"], sort: "relevance" };
       } else if (prompt.includes("Check these approved videos against the plan")) {
         output = { matches: [] };
-      } else if (prompt.includes("Generate exactly one candidate for every supplied slot")) {
+      } else if (prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates")) {
         state.candidatePrompts.push(prompt);
         const attempt = Number(prompt.match(/Attempt: (\d+)/)?.[1] ?? 1);
         output = { facts: candidateAssignments(prompt).map(assignment => {
+          if (options.omitCandidateOnce === assignment.slot && !state.omittedSlots.has("candidate:" + assignment.slot)) {
+            state.omittedSlots.add("candidate:" + assignment.slot);
+            return null;
+          }
+          if (options.omitAllCandidates) return null;
           let word = words[assignment.slot];
           if (options.duplicateSlot === 5 && assignment.slot === 5 && attempt === 1) word = words[0];
           if (options.duplicateSlot === 5 && assignment.slot === 0 && attempt > 1) word = words[10];
           return { slot: assignment.slot, title: "Shared Article", claim: factBundle(word).claim, topicPath: assignment.topicPath, wikipediaSearchTitles: ["Shared Article"] };
-        }).reverse() };
+        }).filter(Boolean).reverse() };
       } else if (prompt.includes("Return one grounded fact for each slot")) {
         state.groundingPrompts.push(prompt);
         const values = groundingSlots(prompt);
@@ -168,7 +173,7 @@ function installNetworkMock(options = {}) {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
       }
       if (url.pathname.includes(":streamGenerateContent")) {
-        const candidateStream = prompt.includes("Generate exactly one candidate for every supplied slot");
+        const candidateStream = prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates");
         return streamedJsonResponse(output, model, candidateStream ? options.streamChunkDelayMs || 0 : 0, candidateStream ? () => { state.candidateStreamCompletedAt = performance.now(); } : undefined);
       }
       return jsonResponse({ candidates: [{ content: { parts: [{ text: JSON.stringify(output) }] } }], modelVersion: model });
@@ -486,6 +491,15 @@ await t.test("default seven-card generation uses one candidate and one grounding
   assert.ok(grounding.includes("only evidence IDs assigned to that slot"));
   assert.ok(!grounding.includes("provide a verbatim quotation"));
   assert.equal(candidate.match(/Assignments:/g).length, 1);
+  const assignments = candidateAssignments(candidate);
+  assert.deepEqual(assignments.map(item => item.slot), [0, 1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(assignments.map(item => item.topicPath), args.topicPaths.slice(0, 7).map(item => item.path));
+  assert.ok(candidate.includes("different fact and angle across the batch"));
+  assert.ok(candidate.includes("omit that slot instead of padding the batch"));
+  const schema = state.requests.find(request => request.url.pathname.includes(":streamGenerateContent")).body.generationConfig.responseSchema;
+  assert.equal(schema.properties.facts.maxItems, 7);
+  assert.equal(schema.properties.facts.minItems, undefined, "omission is allowed rather than forcing padding");
+  assert.equal(schema.properties.facts.items.properties.wikipediaSearchTitles.maxItems, 3);
   assert.ok(!candidate.includes("Optional thread context: none"));
 });
 
@@ -668,6 +682,29 @@ await t.test("ten three-sentence cards use one candidate and one grounding call,
   }
   assert.ok(state.requests.filter(request => request.url.hostname === "en.wikipedia.org" && request.url.searchParams.get("titles") === "Shared Article").length <= 1, "the repeated article title should be fetched at most once per generation batch and may come from the session cache");
   assert.equal(state.requests.filter(request => request.url.searchParams.get("titles") === "File:Shared.jpg").length, 0, "generation must return before requesting card images");
+});
+
+await t.test("an omitted candidate retries only its assigned slot while preserving six completed cards", async () => {
+  const state = installNetworkMock({ omitCandidateOnce: 3 });
+  const sessionId = await connectMock(state);
+  const args = { ...generationArgs(sessionId), requestedCount: 7 };
+  const result = await generateGeminiFacts(args);
+  assert.equal(result.completedCount, 7);
+  assert.equal(result.partial, false);
+  assert.deepEqual(state.candidatePrompts.map(prompt => candidateAssignments(prompt).map(item => item.slot)), [[0, 1, 2, 3, 4, 5, 6], [3]]);
+  assert.deepEqual(state.groundingPrompts.map(prompt => groundingSlots(prompt).map(item => item.slot)), [[0, 1, 2, 4, 5, 6], [3]]);
+  assert.deepEqual(candidateAssignments(state.candidatePrompts[1])[0].topicPath, args.topicPaths[3].path);
+  assert.equal(geminiCallCount(state), 4);
+  assert.equal(new Set(result.cards.map(card => card.title + ":" + card.body)).size, 7);
+});
+
+await t.test("empty candidate batches retry without grounding or misreporting a provider failure", async () => {
+  const state = installNetworkMock({ omitAllCandidates: true });
+  const sessionId = await connectMock(state);
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 7 }), /omitted a slot/);
+  assert.equal(state.candidatePrompts.length, 3);
+  assert.equal(state.groundingPrompts.length, 0);
+  assert.equal(geminiCallCount(state), 3);
 });
 
 await t.test("a missing grounded slot retries only grounding and returns all cards", async () => {

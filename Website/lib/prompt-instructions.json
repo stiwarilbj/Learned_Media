@@ -3,8 +3,10 @@
     "Return {\"ok\":true}."
   ],
   "candidate": [
-    "Generate exactly one candidate for every supplied slot: a narrow, Wikipedia-verifiable detail with one to three exact English Wikipedia article titles.",
-    "Keep each slot and topic path unchanged; avoid broad or repeated claims."
+    "Generate one batch of distinct, narrow, Wikipedia-verifiable candidates for the supplied slot IDs.",
+    "Aim for one candidate per assigned ID. Return each ID at most once, with its assigned topicPath unchanged and one to three exact English Wikipedia article titles.",
+    "Each candidate must cover a different fact and angle across the batch, including slots with the same topic. Different titles or wording of the same underlying claim do not count as distinct facts.",
+    "If a slot would repeat a claim or add a weak, broad, or unverifiable fact, omit that slot instead of padding the batch. Return an empty facts array if none qualifies."
   ],
   "grounding": [
     "Return one grounded fact for each slot. Omit unsupported slots; never substitute a different claim.",

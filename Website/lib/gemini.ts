@@ -679,8 +679,8 @@ function factAvoidKeySet(fact: FactMemory) {
   ]);
 }
 
-function candidateSchema() {
-  return { type: "OBJECT", properties: { facts: { type: "ARRAY", items: { type: "OBJECT", properties: { slot: { type: "INTEGER" }, title: { type: "STRING" }, claim: { type: "STRING" }, topicPath: { type: "ARRAY", items: { type: "STRING" } }, wikipediaSearchTitles: { type: "ARRAY", items: { type: "STRING" } } }, required: ["slot", "title", "claim", "topicPath", "wikipediaSearchTitles"] } } }, required: ["facts"] };
+function candidateSchema(slotCount: number) {
+  return { type: "OBJECT", properties: { facts: { type: "ARRAY", maxItems: slotCount, items: { type: "OBJECT", properties: { slot: { type: "INTEGER" }, title: { type: "STRING" }, claim: { type: "STRING" }, topicPath: { type: "ARRAY", items: { type: "STRING" } }, wikipediaSearchTitles: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } } }, required: ["slot", "title", "claim", "topicPath", "wikipediaSearchTitles"] } } }, required: ["facts"] };
 }
 function groundedSchema(sentenceCount: number) {
   return { type: "OBJECT", properties: { facts: { type: "ARRAY", items: { type: "OBJECT", properties: {
@@ -847,7 +847,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
         streamedCandidates.set(slot.index, { identity, promise });
       };
       try {
-        const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(group, settings, rabbitHole, round), candidateSchema(), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
+        const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(group, settings, rabbitHole, round), candidateSchema(group.length), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
           maxOutputTokens: 4096,
           streaming: true,
           onStreamAttemptStart: () => { streamParser.reset(); streamedCandidates.clear(); },
