@@ -1,8 +1,8 @@
 {
   "version": 1,
   "mode": "deterministic-replay",
-  "suiteHash": "389aa3e7d2ab4a3b67586d0e65acbf1d77513ec9385e3b56318bdd0ee3cfe947",
-  "promptHash": "90f67fdf300f00fba8a8b99302517772be25a12aa7685924ade7879fc7757d0f",
+  "suiteHash": "1ef29a684ec4ebd4070f35dec1ef45a3ef9a018b022ee47be312765b33b8474a",
+  "promptHash": "b1868d029fd8f09c5c6235e5536acd3e1d093279860e6da8d628f78eb0ff8311",
   "cases": [
     {
       "id": "direct-question",
@@ -12,7 +12,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 94,
-      "promptBytes": 6547,
+      "promptBytes": 6787,
       "geminiCalls": 1
     },
     {
@@ -45,7 +45,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 6997,
-      "promptBytes": 15895,
+      "promptBytes": 16375,
       "geminiCalls": 4
     },
     {
@@ -56,7 +56,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 6545,
-      "promptBytes": 14503,
+      "promptBytes": 14983,
       "geminiCalls": 3
     },
     {
@@ -67,7 +67,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0.125,
       "outputBytes": 6732,
-      "promptBytes": 9919,
+      "promptBytes": 10159,
       "geminiCalls": 2
     },
     {
@@ -89,7 +89,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 155,
-      "promptBytes": 6727,
+      "promptBytes": 6967,
       "geminiCalls": 1
     },
     {
@@ -100,7 +100,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 198,
-      "promptBytes": 6888,
+      "promptBytes": 7128,
       "geminiCalls": 1
     },
     {
@@ -111,7 +111,7 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 170,
-      "promptBytes": 6753,
+      "promptBytes": 6993,
       "geminiCalls": 1
     },
     {
@@ -122,7 +122,18 @@
       "duplicateRate": 0,
       "candidateDuplicateRate": 0,
       "outputBytes": 177,
-      "promptBytes": 6883,
+      "promptBytes": 7123,
+      "geminiCalls": 1
+    },
+    {
+      "id": "evidence-backed-acronym",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 240,
+      "promptBytes": 7152,
       "geminiCalls": 1
     }
   ]

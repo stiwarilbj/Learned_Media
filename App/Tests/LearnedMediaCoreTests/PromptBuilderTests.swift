@@ -320,4 +320,18 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(PromptBuilder.learning(action: .learn, card: [:], evidence: []).contains("identify that detail in the first sentence"))
     }
 
+    func testAcronymGuidanceUsesEvidenceOnlyInWritingOperations() {
+        let rule = PromptInstructions.rules["acronymWriting"]![0]
+        let evidence = "The differential pressure instrument (DPI) uses a diaphragm. XYZ has no expansion here."
+        for operation in PromptOperation.allCases {
+            let writing = [PromptOperation.grounding, .combined, .learn, .question].contains(operation)
+            let prompt = PromptBuilder.build(operation, fields: [PromptField("Evidence", ["extract": evidence], reference: true)])
+            XCTAssertEqual(prompt.components(separatedBy: rule).count - 1, writing ? 1 : 0)
+            XCTAssertTrue(prompt.contains(evidence))
+        }
+        XCTAssertTrue(rule.contains("once at its first appearance"))
+        XCTAssertTrue(rule.contains("explicitly supplied by the evidence"))
+        XCTAssertTrue(rule.contains("never invent an expansion from initials alone"))
+    }
+
 }

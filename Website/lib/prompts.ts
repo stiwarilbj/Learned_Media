@@ -101,7 +101,8 @@ export function buildPrompt(operation: PromptOperation, rules: string[] = [], fi
   const sourceData = fields.some(field => field.reference) ? instructions.sourceData : [];
   const datedEvidence = ["grounding", "combined", "learn", "question"].includes(operation);
   const dateRules = datedEvidence ? instructions.evidenceDates : [];
-  const uniqueRules = Array.from(new Set([...instructions[operation], ...priority, ...sourceData, ...dateRules, ...rules]
+  const acronymRules = datedEvidence ? instructions.acronymWriting : [];
+  const uniqueRules = Array.from(new Set([...instructions[operation], ...priority, ...sourceData, ...dateRules, ...acronymRules, ...rules]
     .flatMap(rule => rule.split("\n"))
     .map(rule => rule.replace(/\s+/g, " ").trim()).filter(Boolean)));
   const seenFields = new Set<string>();

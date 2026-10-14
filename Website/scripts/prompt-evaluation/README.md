@@ -97,3 +97,16 @@ Web/native fixture tests cover mixed roles, same-year roles, full dates, ancient
 ```sh
 npm run evaluate:prompts -- --compare scripts/prompt-evaluation/date-roles-before.json scripts/prompt-evaluation/date-roles-after.json
 ```
+
+### Evidence-backed acronym guidance
+
+`acronym-before.json` and `acronym-after.json` replay the same twelve cases.
+The added case supplies the expansion of DPI but only the initials XYZ. The
+writing contract permits a first-use expansion only when needed and explicitly
+supported, then uses the acronym without repeating its expansion. Connection,
+candidate, and search prompts receive no acronym instruction.
+
+The required-contract case improves from failing to passing; request counts,
+citation validity, duplicates, and output sizes remain unchanged. Each writing
+prompt adds 240 UTF-8 bytes (below the per-case 10% growth limit). Replay checks
+prompt construction and held-fixed responses, not live model compliance.

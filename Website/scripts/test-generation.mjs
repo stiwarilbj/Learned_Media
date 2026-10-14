@@ -1493,3 +1493,18 @@ test('unsupported causal wording preserves six cards and recovers only the affec
  assert.deepEqual(slots.slice(0,6).sort(),[0,1,2,3,4,5]);assert.equal(new Set(slots).size,7);
  assert.ok(result.cards.every(c=>!c.body.includes('caused the tower')));
 });
+
+
+test('acronym guidance is evidence-bound and limited to writing operations',()=>{
+ const {buildPrompt}=require('../lib/prompts.ts');
+ const rule=require('../lib/prompt-instructions.json').acronymWriting[0];
+ const evidence='The differential pressure instrument (DPI) uses a diaphragm. XYZ has no expansion here.';
+ for(const operation of ['grounding','combined','learn','question']) {
+  const prompt=buildPrompt(operation,[rule],[{label:'Evidence',value:{extract:evidence},reference:true}]);
+  assert.equal(prompt.split(rule).length-1,1);
+  assert.ok(prompt.includes(evidence));
+  assert.match(rule,/only when needed/); assert.match(rule,/once at its first appearance/);
+  assert.match(rule,/explicitly supplied by the evidence/); assert.match(rule,/never invent/);
+ }
+ for(const operation of ['connection','candidate','videoInterpret','topicInterpret','videoVerify']) assert.ok(!buildPrompt(operation).includes(rule));
+});

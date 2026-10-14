@@ -133,7 +133,8 @@ public enum PromptBuilder {
         let sourceData = fields.contains(where: { $0.reference }) ? (PromptInstructions.rules["sourceData"] ?? []) : []
         let datedEvidence = [PromptOperation.grounding, .combined, .learn, .question].contains(operation)
         let dateRules = datedEvidence ? (PromptInstructions.rules["evidenceDates"] ?? []) : []
-        let instructions = ((PromptInstructions.rules[operation.rawValue] ?? []) + priority + sourceData + dateRules + rules)
+        let acronymRules = datedEvidence ? (PromptInstructions.rules["acronymWriting"] ?? []) : []
+        let instructions = ((PromptInstructions.rules[operation.rawValue] ?? []) + priority + sourceData + dateRules + acronymRules + rules)
             .flatMap { $0.components(separatedBy: "\n") }
             .map { $0.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") }
             .filter { !$0.isEmpty && seenRules.insert($0).inserted }

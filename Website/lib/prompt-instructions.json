@@ -103,5 +103,8 @@
   ],
   "evidenceDates": [
     "dateRoles describe the cited wording. Never use an article's publication or revision date as its subject's event or discovery date. Preserve uncertainty; identify an unstated requested event date as unsupported."
+  ],
+  "acronymWriting": [
+    "Expand an unfamiliar acronym only when needed to understand the card or answer, once at its first appearance, using an expansion explicitly supplied by the evidence. Use the acronym afterward; never invent an expansion from initials alone."
   ]
 }

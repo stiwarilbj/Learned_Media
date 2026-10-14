@@ -14,7 +14,7 @@
   {
     "id": "multiple-concepts",
     "query": "earthquakes in Japan",
-    "expected": "2011 Tōhoku Earthquake",
+    "expected": "2011 T\u014dhoku Earthquake",
     "maxCalls": 0
   },
   {
@@ -87,5 +87,13 @@
         "role": "discovery"
       }
     ]
+  },
+  {
+    "id": "evidence-backed-acronym",
+    "query": "How did DPI detect pressure, and what does XYZ mean?",
+    "maxCalls": 1,
+    "answer": "The differential pressure instrument (DPI) used a diaphragm to detect pressure changes. DPI indicated the pressure difference; the sources supply only the initials XYZ and do not establish their expansion.",
+    "requiredInstruction": "Expand an unfamiliar acronym only when needed to understand the card or answer, once at its first appearance, using an expansion explicitly supplied by the evidence. Use the acronym afterward; never invent an expansion from initials alone.",
+    "evidencePrefix": "[Section: Instrument]\nThe differential pressure instrument (DPI) used a diaphragm to detect pressure changes. The record also mentions XYZ without an expansion.\n\n"
   }
 ]
