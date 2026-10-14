@@ -76,12 +76,24 @@ npm run evaluate:prompts -- --compare scripts/prompt-evaluation/scope-before.jso
 
 ## Precise evidence limitations comparison
 
-`precise-evidence-before.json` and the current baseline use the same ten-case fixtures. The previous builder fails the new instruction contract; the updated builder passes. The incomplete-evidence case makes one operation call, retains one valid citation, and produces 170 canned response bytes in both runs. Its prompt grows from 6,399 to 6,541 bytes (142 bytes, about 2.2%). Other question prompts also grow by 142 bytes; generation and search prompts are unchanged. No response schema, UI, cache, or retry behavior changes.
+`precise-evidence-before.json` and `precise-evidence-after.json` use the same ten-case fixtures. The previous builder fails the new instruction contract; the updated builder passes. The incomplete-evidence case makes one operation call, retains one valid citation, and produces 170 canned response bytes in both runs. Its prompt grows from 6,399 to 6,541 bytes (142 bytes, about 2.2%). Other question prompts also grow by 142 bytes; generation and search prompts are unchanged. No response schema, UI, cache, or retry behavior changes.
 
 The question template now requires the specific unsupported detail in the first sentence, a distinction between supported and unsupported parts, and no vague disclaimer or unrelated summary. The quoted mechanism/abandonment sentence is an example, not a required response or an assertion about any source. Tests cover short/detailed, date, cause, multi-part, and comparison questions on web and native.
 
 This is deterministic prompt-construction verification with fixed provider responses, not measured live-model compliance. Historical reports must be compared only with their matching fixture set.
 
 ```sh
-npm run evaluate:prompts -- --compare scripts/prompt-evaluation/precise-evidence-before.json scripts/prompt-evaluation/baseline.json
+npm run evaluate:prompts -- --compare scripts/prompt-evaluation/precise-evidence-before.json scripts/prompt-evaluation/precise-evidence-after.json
+```
+
+## Evidence date roles comparison
+
+`date-roles-before.json` and `date-roles-after.json` use the same eleven-case fixtures. The new case requires event, publication, discovery, and revision labels in the actual answer prompt, alongside the instruction against substituting article publication/revision dates for subject event/discovery dates. The previous builder fails that contract; the updated builder passes. Both make one operation call, retain one valid citation, and produce 177 canned response bytes. Prompt size grows from 6,487 to 6,883 bytes (396 bytes, about 6.1%). Other cases retain their call counts, output sizes, citation validity, and duplicate metrics; prompt growth stays below the 10% gate.
+
+Labels are derived locally from explicit date predicates in supplied `text` or `extract` fields, using shared web/native patterns. Plain years and titles do not establish a role. Each label includes a UTF-16 source offset so repeated years with different roles remain distinguishable. Labels describe the wording, not certainty: negated or tentative statements remain authoritative in the unchanged excerpt. Dates with unrecognized wording remain unlabeled. Processing is bounded to 16,000 source characters and 24 labels per passage; truncated date endings are omitted. No source discovery, model, or API request is added. Persisted sources, quotations, evidence IDs, and UI are unchanged.
+
+Web/native fixture tests cover mixed roles, same-year roles, full dates, ancient dates, Unicode offsets, unknown roles, input bounds, and prompt-only annotations. A grounding integration test checks that labels reach the provider request, seven cards still take two calls, and restored quotations remain exact. Replay measures prompt construction, not live Gemini compliance. Historical comparisons retain matching before/after reports.
+
+```sh
+npm run evaluate:prompts -- --compare scripts/prompt-evaluation/date-roles-before.json scripts/prompt-evaluation/date-roles-after.json
 ```

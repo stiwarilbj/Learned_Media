@@ -1,0 +1,18 @@
+[
+  {
+    "role": "event",
+    "pattern": "\\b(?:occurred|happened|took place)(?:\\s+(?:(?:on|in)\\s+)?|\\s*:\\s*)((?:[12][0-9]{3}-[01][0-9]-[0-3][0-9]|(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?:[0-3]?[0-9](?:st|nd|rd|th)?,?\\s+)?(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))|[0-3]?[0-9]\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))|(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))))(?![\\p{L}\\p{N}]|[-/]\\d)"
+  },
+  {
+    "role": "publication",
+    "pattern": "\\b(?:published|publication date)(?:\\s+(?:(?:on|in)\\s+)?|\\s*:\\s*)((?:[12][0-9]{3}-[01][0-9]-[0-3][0-9]|(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?:[0-3]?[0-9](?:st|nd|rd|th)?,?\\s+)?(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))|[0-3]?[0-9]\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))|(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))))(?![\\p{L}\\p{N}]|[-/]\\d)"
+  },
+  {
+    "role": "discovery",
+    "pattern": "\\b(?:discovered|discovery date)(?:\\s+(?:(?:on|in)\\s+)?|\\s*:\\s*)((?:[12][0-9]{3}-[01][0-9]-[0-3][0-9]|(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?:[0-3]?[0-9](?:st|nd|rd|th)?,?\\s+)?(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))|[0-3]?[0-9]\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))|(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))))(?![\\p{L}\\p{N}]|[-/]\\d)"
+  },
+  {
+    "role": "revision",
+    "pattern": "\\b(?:revised|updated|last modified|revision date)(?:\\s+(?:(?:on|in)\\s+)?|\\s*:\\s*)((?:[12][0-9]{3}-[01][0-9]-[0-3][0-9]|(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?:[0-3]?[0-9](?:st|nd|rd|th)?,?\\s+)?(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))|[0-3]?[0-9]\\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))|(?:[12][0-9]{3}|[1-9][0-9]{0,3}\\s+(?:BCE|BC|CE|AD))))(?![\\p{L}\\p{N}]|[-/]\\d)"
+  }
+]

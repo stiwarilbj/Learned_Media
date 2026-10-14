@@ -131,7 +131,9 @@ public enum PromptBuilder {
         var seenRules = Set<String>()
         let priority = operation == .connection ? [] : (PromptInstructions.rules[operation == .question ? "questionPriority" : "taskPriority"] ?? [])
         let sourceData = fields.contains(where: { $0.reference }) ? (PromptInstructions.rules["sourceData"] ?? []) : []
-        let instructions = ((PromptInstructions.rules[operation.rawValue] ?? []) + priority + sourceData + rules)
+        let datedEvidence = [PromptOperation.grounding, .combined, .learn, .question].contains(operation)
+        let dateRules = datedEvidence ? (PromptInstructions.rules["evidenceDates"] ?? []) : []
+        let instructions = ((PromptInstructions.rules[operation.rawValue] ?? []) + priority + sourceData + dateRules + rules)
             .flatMap { $0.components(separatedBy: "\n") }
             .map { $0.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") }
             .filter { !$0.isEmpty && seenRules.insert($0).inserted }
@@ -142,7 +144,7 @@ public enum PromptBuilder {
             if field.reference {
                 if let array = value as? [Any], array.isEmpty { return nil }
                 if let string = value as? String, string.isEmpty { return nil }
-                guard let serialized = try? JSONSerialization.data(withJSONObject: ["kind": "reference_material", "data": value], options: [.sortedKeys]),
+                guard let serialized = try? JSONSerialization.data(withJSONObject: ["kind": "reference_material", "data": datedEvidence ? EvidenceDates.annotate(value) : value], options: [.sortedKeys]),
                       let string = String(data: serialized, encoding: .utf8) else { return nil }
                 text = string
             } else if let string = value as? String {

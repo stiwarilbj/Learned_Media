@@ -1,3 +1,4 @@
+import { annotateEvidenceDates } from "./evidence-dates";
 import instructions from "./prompt-instructions.json";
 import { factWritingRules, difficultyRubric } from "./fact-quality";
 
@@ -98,13 +99,15 @@ export function questionScope(question?: string): string[] {
 export function buildPrompt(operation: PromptOperation, rules: string[] = [], fields: PromptField[] = []) {
   const priority = operation === "connection" ? [] : instructions[operation === "question" ? "questionPriority" : "taskPriority"];
   const sourceData = fields.some(field => field.reference) ? instructions.sourceData : [];
-  const uniqueRules = Array.from(new Set([...instructions[operation], ...priority, ...sourceData, ...rules]
+  const datedEvidence = ["grounding", "combined", "learn", "question"].includes(operation);
+  const dateRules = datedEvidence ? instructions.evidenceDates : [];
+  const uniqueRules = Array.from(new Set([...instructions[operation], ...priority, ...sourceData, ...dateRules, ...rules]
     .flatMap(rule => rule.split("\n"))
     .map(rule => rule.replace(/\s+/g, " ").trim()).filter(Boolean)));
   const seenFields = new Set<string>();
   const data = fields.flatMap(({ label, value, multiline, reference }) => {
     if (value === undefined || value === null || value === "" || Array.isArray(value) && !value.length) return [];
-    const text = reference ? JSON.stringify({ kind: "reference_material", data: value }) : typeof value === "string" ? value : JSON.stringify(value);
+    const text = reference ? JSON.stringify({ kind: "reference_material", data: datedEvidence ? annotateEvidenceDates(value) : value }) : typeof value === "string" ? value : JSON.stringify(value);
     const field = label + (multiline ? ":\n" : ": ") + text;
     if (seenFields.has(field)) return [];
     seenFields.add(field);

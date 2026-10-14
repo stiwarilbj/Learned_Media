@@ -45,11 +45,11 @@ export function registerEvaluation(h) {
             if (prompt.includes('Generate one batch of distinct')) output.facts.push({...output.facts[0]});
             return output;
           }} : {};
-        state=h.installNetworkMock({...options,learningAnswer:fixture.answer});
+        state=h.installNetworkMock({...options,learningAnswer:fixture.answer,evidencePrefix:fixture.evidencePrefix});
         const sessionId=await h.connectMock(state);
         if (fixture.requiredInstruction) {
           const fact=h.factBundle(h.words[0]);
-          const card={id:'fixed-eval-card',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:h.articleExtract()}]};
+          const card={id:'fixed-eval-card',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:(fixture.evidencePrefix ?? "")+h.articleExtract()}]};
           const args={apiKey:'test-key',sessionId,action:'question',card,question:fixture.query,history:[]};
           const answer=await h.generateLearningResponse(args);
           assert.match(answer.answer,/diaphragm.*pressure/);
@@ -61,6 +61,11 @@ export function registerEvaluation(h) {
           assert.equal(repeat.answer,answer.answer);
           assert.ok(state.outputs[0].prompt.includes('Original user query: '+fixture.query));
           questionInstructionPresent=state.outputs[0].prompt.includes(fixture.requiredInstruction);
+          if(fixture.expectedDateRoles){
+            const field=state.outputs[0].prompt.split("\n\n").find(b=>b.startsWith("Wikipedia evidence: "));
+            const evidence=field ? JSON.parse(field.slice("Wikipedia evidence: ".length)).data : [];
+            questionInstructionPresent &&= JSON.stringify((evidence[0]?.dateRoles ?? []).map(({date,role})=>({date,role})))===JSON.stringify(fixture.expectedDateRoles);
+          }
           if(fixture.expectedScope){
             const field=state.outputs[0].prompt.split('\n\n').find(b=>b.startsWith('Question scope: '));
             questionInstructionPresent &&= !!field && JSON.stringify(JSON.parse(field.slice('Question scope: '.length)).data)===JSON.stringify(fixture.expectedScope);

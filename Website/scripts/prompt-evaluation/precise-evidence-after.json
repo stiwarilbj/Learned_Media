@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "mode": "deterministic-replay",
+  "suiteHash": "9d6c32839a35d6bfd0c7cefc4471a6f47e50ff85d6f8d62e3e5291bc23cb0f05",
+  "promptHash": "cb4b582737dfb2f2b6ed2bf65d52dddf60dfadb0314f3177348fe3cd7667af8c",
+  "cases": [
+    {
+      "id": "direct-question",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 94,
+      "promptBytes": 6335,
+      "geminiCalls": 1
+    },
+    {
+      "id": "paraphrase",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    },
+    {
+      "id": "multiple-concepts",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    },
+    {
+      "id": "weak-evidence",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 6997,
+      "promptBytes": 15471,
+      "geminiCalls": 4
+    },
+    {
+      "id": "malformed-output",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 6545,
+      "promptBytes": 14079,
+      "geminiCalls": 3
+    },
+    {
+      "id": "duplicate-candidates",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0.125,
+      "outputBytes": 6732,
+      "promptBytes": 9707,
+      "geminiCalls": 2
+    },
+    {
+      "id": "unrelated-search",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    },
+    {
+      "id": "multi-part-question",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 155,
+      "promptBytes": 6515,
+      "geminiCalls": 1
+    },
+    {
+      "id": "scoped-question",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 198,
+      "promptBytes": 6676,
+      "geminiCalls": 1
+    },
+    {
+      "id": "incomplete-evidence-answer",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 170,
+      "promptBytes": 6541,
+      "geminiCalls": 1
+    }
+  ]
+}

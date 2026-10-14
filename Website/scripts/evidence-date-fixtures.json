@@ -1,0 +1,149 @@
+[
+  {
+    "text": "The earthquake occurred in 1847. The article was published in 2020 and revised in 2023. The remains were discovered in 1898.",
+    "dates": [
+      {
+        "date": "1847",
+        "role": "event",
+        "at": 27
+      },
+      {
+        "date": "2020",
+        "role": "publication",
+        "at": 62
+      },
+      {
+        "date": "2023",
+        "role": "revision",
+        "at": 82
+      },
+      {
+        "date": "1898",
+        "role": "discovery",
+        "at": 119
+      }
+    ]
+  },
+  {
+    "text": "The discovery occurred in 2020; the report was published in 2020.",
+    "dates": [
+      {
+        "date": "2020",
+        "role": "event",
+        "at": 26
+      },
+      {
+        "date": "2020",
+        "role": "publication",
+        "at": 60
+      }
+    ]
+  },
+  {
+    "text": "It happened on 3 May 1847. Published: January 2, 2020. Last modified: 2023-09-14. Discovered in May 1898.",
+    "dates": [
+      {
+        "date": "3 May 1847",
+        "role": "event",
+        "at": 15
+      },
+      {
+        "date": "January 2, 2020",
+        "role": "publication",
+        "at": 38
+      },
+      {
+        "date": "2023-09-14",
+        "role": "revision",
+        "at": 70
+      },
+      {
+        "date": "May 1898",
+        "role": "discovery",
+        "at": 96
+      }
+    ]
+  },
+  {
+    "text": "The battle took place in 44 BC. Publication date: 2001. Discovery date: 1905. Revision date: 2024.",
+    "dates": [
+      {
+        "date": "44 BC",
+        "role": "event",
+        "at": 25
+      },
+      {
+        "date": "2001",
+        "role": "publication",
+        "at": 50
+      },
+      {
+        "date": "1905",
+        "role": "discovery",
+        "at": 72
+      },
+      {
+        "date": "2024",
+        "role": "revision",
+        "at": 93
+      }
+    ]
+  },
+  {
+    "text": "🌍 The event occurred in 1847. The article was published in 2020. It describes 1850.",
+    "dates": [
+      {
+        "date": "1847",
+        "role": "event",
+        "at": 25
+      },
+      {
+        "date": "2020",
+        "role": "publication",
+        "at": 60
+      }
+    ]
+  },
+  {
+    "text": "The event occurred in 1847. The article published in 2020 describes an event in 1850.",
+    "dates": [
+      {
+        "date": "1847",
+        "role": "event",
+        "at": 22
+      },
+      {
+        "date": "2020",
+        "role": "publication",
+        "at": 53
+      }
+    ]
+  },
+  {
+    "text": "In 1847 the machine existed; the page has the heading 2020. The article discusses 2011.",
+    "dates": []
+  },
+  {
+    "text": "The paper was published in 20201 and the incident occurred in 12000. It was updated in 2023/45.",
+    "dates": []
+  },
+  {
+    "text": "The publication was planned in 2020. The date is unknown, but 1847 is mentioned.",
+    "dates": []
+  },
+  {
+    "text": "The paper was not published in 2020. The event may have occurred in 1847.",
+    "dates": [
+      {
+        "date": "2020",
+        "role": "publication",
+        "at": 31
+      },
+      {
+        "date": "1847",
+        "role": "event",
+        "at": 68
+      }
+    ]
+  }
+]

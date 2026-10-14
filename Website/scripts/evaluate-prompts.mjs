@@ -25,7 +25,7 @@ try {
   if (cases.length!==fixtures.length) throw new Error('Evaluation did not run every fixed case.');
   const report={version:1,mode:'deterministic-replay',
     suiteHash:hash(['./prompt-evaluation/fixtures.json','./prompt-evaluation/cases.mjs']),
-    promptHash:hash(['../lib/prompts.ts','../lib/prompt-instructions.json']),cases};
+    promptHash:hash(['../lib/prompts.ts','../lib/prompt-instructions.json','../lib/evidence-dates.ts','../lib/evidence-date-patterns.json']),cases};
   const output=flag('--output');
   if (output) writeFileSync(output,JSON.stringify(report,null,2)+'\n');
   console.table(cases.map(c=>({case:c.id,success:c.taskSuccess,citations:c.citationTotal ? `${c.citationValid}/${c.citationTotal}` : 'N/A',duplicates:c.duplicateRate,outputBytes:c.outputBytes,promptBytes:c.promptBytes,calls:c.geminiCalls})));

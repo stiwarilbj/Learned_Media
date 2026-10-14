@@ -100,5 +100,8 @@
   ],
   "questionScope": [
     "Keep the answer within Question scope, preserving limiting words and negations in their original clauses. Do not broaden place, time, audience, or comparison; explicitly state when the supplied evidence cannot support that scope. The Original user query remains authoritative."
+  ],
+  "evidenceDates": [
+    "dateRoles describe the cited wording. Never use an article's publication or revision date as its subject's event or discovery date. Preserve uncertainty; identify an unstated requested event date as unsupported."
   ]
 }

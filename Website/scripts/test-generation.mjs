@@ -216,7 +216,7 @@ function installNetworkMock(options = {}) {
         return jsonResponse({ query: { pages: { "42": { title: "Shared Article", fullurl: "https://en.wikipedia.org/wiki/Shared_Article", extract: options.duplicatePassages ? words.map(word => {
           const paragraph = sentenceSet(word).join(" ");
           return `==${sectionName(word)}==\n${paragraph}\n${paragraph.replaceAll(" ", "  ")}`;
-        }).join("\n\n") : articleExtract(), pageimage: "Shared.jpg", thumbnail: { source: "https://upload.wikimedia.org/shared-thumb.jpg" }, original: { source: "https://upload.wikimedia.org/shared.jpg" } } } } });
+        }).join("\n\n") : options.articleText ?? (options.evidencePrefix ?? "") + articleExtract(), pageimage: "Shared.jpg", thumbnail: { source: "https://upload.wikimedia.org/shared-thumb.jpg" }, original: { source: "https://upload.wikimedia.org/shared.jpg" } } } } });
       }
     }
     throw new Error(`Unexpected request: ${url.toString()}`);
@@ -1417,4 +1417,50 @@ test('unsupported quantities retry only the affected grounded slot and preserve 
  assert.equal(state.candidatePrompts.length,1);assert.deepEqual(groundingSlots(state.groundingPrompts[1]).map(s=>s.slot),[6]);
  assert.equal(published.length,7);assert.equal(new Set(published).size,7);
  assert.ok(result.cards.every(card=>!card.body.includes('12 miles')));
+});
+
+test('date roles use explicit wording and exact offsets with shared native fixtures',()=>{
+ const {evidenceDates,annotateEvidenceDates}=require('../lib/evidence-dates.ts');
+ for(const {text,dates} of JSON.parse(readFileSync(new URL('./evidence-date-fixtures.json',import.meta.url)))){
+  assert.deepEqual(evidenceDates(text),dates,text);
+  for(const date of dates)assert.equal(text.slice(date.at,date.at+date.date.length),date.date);
+ }
+ const source={title:'Published in 2020',section:'1847',text:'The event occurred in 1847.',dateRoles:[{date:'2020',role:'event'}]};
+ const copy=structuredClone(source),annotated=annotateEvidenceDates({facts:[{slot:0,evidenceIds:['e1']}],evidence:[{...source,id:'e1'}]});
+ assert.deepEqual(source,copy);
+ assert.deepEqual(annotated.evidence[0].dateRoles,[{date:'1847',role:'event',at:22}]);
+ assert.equal(annotated.evidence[0].text,source.text);assert.equal(annotated.evidence[0].id,'e1');
+ assert.deepEqual(annotateEvidenceDates({title:'Published in 2020',extract:'A thing from 1847.'}),{title:'Published in 2020',extract:'A thing from 1847.'});
+ assert.equal(evidenceDates('Published in 2020. '.repeat(100)).length,24);
+ assert.deepEqual(evidenceDates('x'.repeat(16000)+' Published in 2020.'),[]);
+ assert.deepEqual(evidenceDates('x'.repeat(16000-' Published in 2020'.length)+' Published in 20201'),[]);
+});
+
+test('only evidence writing operations receive date roles and the compact date rule',()=>{
+ const rules=JSON.parse(readFileSync(new URL('../lib/prompt-instructions.json',import.meta.url)));
+ const text='The event occurred in 1847. The report was published in 2020.';
+ for(const operation of ['grounding','combined','learn','question']){
+  const prompt=buildPrompt(operation,[],[{label:'Evidence',value:[{id:'e1',text}],reference:true}]);
+  assert.equal(prompt.split(rules.evidenceDates[0]).length-1,1);
+  const source=JSON.parse(prompt.split('\n\n')[1].slice('Evidence: '.length)).data[0];
+  assert.equal(source.text,text);assert.equal(source.id,'e1');
+  assert.deepEqual(source.dateRoles.map(({date,role})=>({date,role})),[{date:'1847',role:'event'},{date:'2020',role:'publication'}]);
+ }
+ for(const operation of ['connection','candidate','topicInterpret','videoInterpret','videoVerify']){
+  const prompt=buildPrompt(operation,[],[{label:'Data',value:{text},reference:true}]);
+  assert.ok(!prompt.includes(rules.evidenceDates[0]));assert.ok(!prompt.includes('dateRoles'));
+ }
+});
+
+test('date roles reach real grounding requests without altering restored citations',async()=>{
+ // Expire prior fixtures' one-hour Wikipedia cache before supplying a different source passage.
+ const now=originalDateNow()+24*60*60*1000;Date.now=()=>now;
+ const articleText=words.map(word=>`==${sectionName(word)}==\n${sentenceSet(word).map((sentence,i)=>i===0 ? sentence.replace(/\.$/, ', after an event occurred in 1847 and a report was published in 2020 and revised in 2023.') : sentence).join(' ')}`).join('\n\n');
+ const state=installNetworkMock({articleText}),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),2);
+ const spans=groundingSlots(state.groundingPrompts[0])[0].allEvidence;
+ assert.ok(spans.some(span=>span.dateRoles?.some(d=>d.role==='publication'&&d.date==='2020')),JSON.stringify(spans));
+ assert.ok(spans.some(span=>span.dateRoles?.some(d=>d.role==='event'&&d.date==='1847')));
+ for(const card of result.cards)for(const citation of card.evidence)assert.ok(card.sources[citation.sourceIndex].extract.includes(citation.quote));
 });

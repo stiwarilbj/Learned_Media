@@ -61,5 +61,31 @@
     "maxCalls": 1,
     "answer": "The sources describe the mechanism but do not explain why it was abandoned. The instrument used a diaphragm to detect pressure changes.",
     "requiredInstruction": "If supplied evidence leaves any requested detail unsupported, identify that detail in the first sentence and distinguish it from what the sources support. For example: \"The sources describe the mechanism but do not explain why it was abandoned.\" Do not use vague disclaimers, invent missing details, or substitute an unrelated card summary."
+  },
+  {
+    "id": "evidence-date-roles",
+    "query": "When did this instrument first detect pressure?",
+    "maxCalls": 1,
+    "answer": "The event occurred in 1847: the instrument used a diaphragm to detect pressure changes. The article was published in 2020 and revised in 2023.",
+    "requiredInstruction": "dateRoles describe the cited wording. Never use an article's publication or revision date as its subject's event or discovery date. Preserve uncertainty; identify an unstated requested event date as unsupported.",
+    "evidencePrefix": "[Section: Chronology]\nThe event occurred in 1847. The article was published in 2020 and revised in 2023. The instrument was discovered in 1898.\n\n",
+    "expectedDateRoles": [
+      {
+        "date": "1847",
+        "role": "event"
+      },
+      {
+        "date": "2020",
+        "role": "publication"
+      },
+      {
+        "date": "2023",
+        "role": "revision"
+      },
+      {
+        "date": "1898",
+        "role": "discovery"
+      }
+    ]
   }
 ]
