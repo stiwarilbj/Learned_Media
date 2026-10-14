@@ -107,6 +107,7 @@ export type YouTubeSearchPlanLike = {
   topics?: string[];
   topicHints?: string[];
   conceptGroups?: YouTubeSearchConceptGroup[];
+  anyOf?: number[][];
   channel?: string;
   channelId?: string;
   dateIntent?: "upload" | "event" | "either";
@@ -118,6 +119,7 @@ export type YouTubeSearchPlanLike = {
 };
 
 export type YouTubeSearchCandidate = {
+  coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
   video: YouTubeVideo;
   score: number;
   matchedFields: string[];

@@ -64,7 +64,7 @@ type YouTubeWorkspaceActivity = YouTubeActivityState;
 type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
 type CardSearchWorkerReply = { type: "ready"; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey: string; ids: string[] };
-type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
+type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ coverage?: YouTubeSearchCandidate["coverage"]; videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
 type YouTubeWorkerSearchRequest = { query: string; plan: VideoSearchPlan; topic: YouTubeTopic | "All"; channelId?: string; limit: number; excludedIds?: string[]; expanded?: boolean; viewKey?: string };
 type ConfirmationRequest = {
   title: string;
@@ -2203,7 +2203,7 @@ export default function HomePage() {
         try {
           const reply = await requestYouTubeWorkerSearch({ query: queryText, plan: candidatePlan, topic: workspace.selectedTopic, channelId: workspace.selectedChannelId, limit }, controller.signal);
           if (reply.type !== "results") return [];
-          return reply.candidates.flatMap((candidate) => { const video = youtubeIndexes.videoById.get(candidate.videoId); return video ? [{ video, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText }] : []; });
+          return reply.candidates.flatMap((candidate) => { const video = youtubeIndexes.videoById.get(candidate.videoId); return video ? [{ video, coverage: candidate.coverage, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText }] : []; });
         } catch (error) {
           if (controller.signal.aborted) throw error;
           if (revision !== youtubeSearchWorkerRevision.current) { controller.abort(); throw error; }

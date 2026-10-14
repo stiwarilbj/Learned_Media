@@ -127,3 +127,48 @@ test('local upload and duration boundaries reject missing metadata and remain st
  const datePlan=engine.makeLocalVideoPlan('bending starlight uploaded since 2024');
  assert.deepEqual(engine.searchSemanticVideos([video('old','Gravitational Lensing',{publishedAt:'2020-01-01'})],{...datePlan,dateIntent:'event'}),[]);
 });
+
+
+test('concept coverage tracks complete AND matches across separate metadata fields',()=>{
+ const plan=engine.makeLocalVideoPlan('black holes and bending starlight');
+ const catalog=[video('complete','Gravitational Lensing',{description:'Black holes bend the paths of distant light.'}),video('partial','Gravitational Lensing'),video('unrelated','Continental Drift')];
+ const results=engine.searchSemanticVideos(catalog,plan);
+ assert.deepEqual(ids(results),['complete']);
+ assert.equal(results[0].coverage.complete,true);assert.equal(results[0].coverage.matchedConcepts.length,2);assert.deepEqual(results[0].coverage.missingConcepts,[]);
+ const partial=engine.videoConceptCoverage(catalog[1],plan);
+ assert.equal(partial.complete,false);assert.equal(partial.matchedConcepts.length,1);assert.equal(partial.missingConcepts.length,1);
+ assert.equal(engine.semanticCoverage(catalog[1],plan),false);
+});
+
+test('OR accepts one complete synonym-based clause across fields without accepting partial clauses',()=>{
+ const plan=engine.makeLocalVideoPlan('black holes and bending starlight or moving continents');
+ const catalog=[video('first','Light Bending',{description:'An explanation of black holes.'}),video('second','Plate Tectonics Explained'),video('partial','Bending Starlight'),video('none','The Ocean')];
+ assert.equal(plan.anyOf.length,2);
+ assert.deepEqual(new Set(ids(engine.searchSemanticVideos(catalog,plan))),new Set(['first','second']));
+ for(const item of catalog.slice(0,2)){assert.equal(engine.semanticCoverage(item,plan),true);assert.deepEqual(engine.videoConceptCoverage(item,plan).missingConcepts,[]);}
+ assert.equal(engine.videoConceptCoverage(catalog[2],plan).complete,false);
+ const interpreted={conceptGroups:[{label:'light bending',terms:['gravitational lensing'],required:false}]};
+ const merged=engine.mergeVideoSearchPlans(plan,interpreted,[]);
+ assert.deepEqual(merged.anyOf,plan.anyOf);
+ assert.deepEqual(new Set(ids(engine.searchSemanticVideos(catalog,merged))),new Set(['first','second']));
+ const ordinary=engine.mergeVideoSearchPlans(engine.makeLocalVideoPlan('black holes and bending starlight'),{...interpreted,anyOf:[[0]]},[]);
+ assert.ok(ordinary.conceptGroups.every(g=>g.required));
+ assert.deepEqual(ids(engine.searchSemanticVideos(catalog,ordinary)),['first']);
+ assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(catalog,merged))),engine.searchSemanticVideos(catalog,merged));
+});
+
+
+test('legacy multi-term plans require every term and quoted OR alternatives stay separate',()=>{
+ const legacy={terms:['black holes','gravitational lensing']};
+ assert.deepEqual(ids(engine.searchSemanticVideos(videos,legacy,'All','c1')),['both']);
+ const quoted=engine.makeLocalVideoPlan('"black holes" or "gravitational lensing"');
+ assert.deepEqual(new Set(ids(engine.searchSemanticVideos(videos,quoted,'All','c1'))),new Set(['lens','description','both','hole']));
+ assert.equal(engine.makeLocalVideoPlan('"black holes or volcanoes"').anyOf,undefined,'OR inside one quoted expression remains inside that concept');
+});
+
+
+test('enrichment cannot combine independent requested concepts into one interchangeable group',()=>{
+ const plan=engine.mergeVideoSearchPlans(engine.makeLocalVideoPlan('black holes and gravitational lensing'),{conceptGroups:[{terms:['black holes','gravitational lensing'],required:true}]},[]);
+ assert.deepEqual(ids(engine.searchSemanticVideos(videos,plan,'All','c1')),['both']);
+ assert.equal(plan.conceptGroups.length,2);
+});

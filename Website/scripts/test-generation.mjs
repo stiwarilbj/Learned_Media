@@ -123,7 +123,7 @@ function installNetworkMock(options = {}) {
       } else if (prompt.includes("Interpret this unresolved learning-topic query")) {
         output = { groups: [{label:"stellar evolution",equivalents:["stellar evolution", "supernova"],related:[]}], alternatives:false };
       } else if (prompt.includes("Interpret this natural-language video search")) {
-        output = { conceptGroups: [{label:"black holes",terms:["black holes", "collapsed stars"],related:["gravitational lensing"],required:true}], exclude: ["stars"], topics: ["Science"], sort: "random", channelId: "invented", minDate: "2099-01-01", maxDurationSeconds: 1 };
+        output = { conceptGroups: [{label:"black holes",terms:["black holes", "collapsed stars"],related:["gravitational lensing"],required:false}], exclude: ["stars"], topics: ["Science"], sort: "random", channelId: "invented", minDate: "2099-01-01", maxDurationSeconds: 1 };
       } else if (prompt.includes("Check these approved videos against the plan")) {
         output = { matches: [] };
       } else if (prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates")) {
@@ -601,6 +601,7 @@ await t.test("successful search interpretations coalesce and invalidate by catal
   const [videoFirst, videoDuplicate] = await Promise.all([interpretVideoSearch(videoArgs), interpretVideoSearch({ ...videoArgs, query: " VIDEOS   ABOUT BLACK HOLES " })]);
   assert.deepEqual(videoFirst.plan, videoDuplicate.plan);
   assert.deepEqual(videoFirst.plan.conceptGroups[0].related, ["gravitational lensing"]);
+  assert.equal(videoFirst.plan.conceptGroups[0].required, true, "interpretation cannot make a requested concept optional");
   assert.deepEqual(videoFirst.plan.terms, [], "the plan does not need duplicated top-level concepts");
   for (const field of ["exclude", "channel", "channelId", "dateIntent", "minDate", "maxDate", "minDurationSeconds", "maxDurationSeconds", "sort"]) {
     assert.equal(videoFirst.plan[field], undefined, "unsolicited model filters must be discarded: " + field);

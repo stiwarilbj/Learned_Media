@@ -19,7 +19,7 @@ type Request =
   | { type: "update"; revision: number; upserts: YouTubeVideo[]; removeIds: string[] }
   | { type: "cancel"; requestId: number }
   | SearchRequest;
-type CandidateReply = { videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
+type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
 type Reply = { type: "ready"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
@@ -64,7 +64,7 @@ async function search(request: SearchRequest) {
     const batch = orderedVideos.slice(start, start + chunkSize);
     const matches = searchYouTubeCandidates(batch, request.plan, request.topic, request.channelId, request.limit, request.excludedIds ?? [], Boolean(request.expanded));
     for (const match of matches) {
-      const entry = { candidate: { videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: start + batch.findIndex((video) => video.id === match.video.id) };
+      const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: start + batch.findIndex((video) => video.id === match.video.id) };
       (match.matchedFields.includes("semantic-fallback") ? fallback : direct).push(entry);
     }
     if (start + chunkSize < orderedVideos.length) {

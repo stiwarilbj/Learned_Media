@@ -1,12 +1,13 @@
 import { normalizeSearchText } from "./search";
 import type { TopicNode } from "./types";
-export const TOPIC_SEARCH_VERSION = 2;
+export const TOPIC_SEARCH_VERSION = 3;
 export type TopicSuggestionGroup = "keyword" | "related" | "explore";
 export type TopicSuggestion = {
     id: string;
     label: string;
     path: string[];
     group: TopicSuggestionGroup;
+    coverage: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 };
 export type TopicConcept = {
     label: string;
@@ -50,7 +51,7 @@ const CONCEPTS: TopicConcept[] = [
     { label: "paleontology", equivalents: ["paleontology", "fossils", "fossil record", "fossil hunting", "prehistoric creatures", "ancient life", "extinct animals"], related: ["dinosaurs", "evolution", "mass extinctions", "archaeology"] },
     { label: "ancient dna", equivalents: ["ancient dna", "ancient genetics", "old human dna", "genetic ancestry"], related: ["genetics", "human origins", "archaeology", "evolution"] },
     { label: "extraterrestrial life", equivalents: ["extraterrestrial life", "life beyond earth", "alien life", "life on other planets", "search for extraterrestrial life"], related: ["astronomy", "space exploration", "planets", "astrophysics"] },
-    { label: "astronomy", equivalents: ["astronomy", "outer space", "the cosmos", "stars and planets"], related: ["space exploration", "astrophysics", "spaceflight"] },
+    { label: "astronomy", equivalents: ["astronomy", "outer space", "the cosmos"], related: ["space exploration", "astrophysics", "spaceflight"] },
     { label: "gravitational lensing", equivalents: ["gravitational lensing", "bending starlight", "light bending", "gravity bends light"], related: ["astrophysics", "astronomy", "general relativity", "gravity"] },
     { label: "psychology", equivalents: ["psychology", "human behavior", "how people think", "people think", "the mind", "mental processes"], related: ["cognitive science", "neuroscience", "philosophy of mind"] },
     { label: "climate change", equivalents: ["climate change", "climate crisis", "global warming", "rising temperatures", "changing climate"], related: ["climatology", "environmental science", "renewable energy", "conservation"] },
@@ -137,6 +138,8 @@ type Ranked = {
     direct: number;
     score: number;
     covered: number;
+    matchedConcepts: number[];
+    missingConcepts: number[];
 };
 function rank(entry: Entry, query: string, plan: TopicQueryPlan): Ranked {
     const queryWords = words(query), q = normalizeSearchText(query);
@@ -165,9 +168,12 @@ function rank(entry: Entry, query: string, plan: TopicQueryPlan): Ranked {
             score += 30;
     }
     const complete = plan.groups.length > 0 && (plan.anyOf?.length ? plan.anyOf.some(clause => clause.every(i => coveredGroups.has(i))) : plan.alternatives ? covered > 0 : covered === plan.groups.length);
-    return { entry, complete, direct, covered, score: score + (complete ? 10000 : 0) + covered * 500 + direct };
+    const clauses = plan.anyOf?.length ? plan.anyOf : plan.alternatives ? plan.groups.map((_,i) => [i]) : [plan.groups.map((_,i) => i)];
+    const missingConcepts = clauses.map(clause => clause.filter(i => !coveredGroups.has(i))).sort((a,b) => a.length-b.length)[0] || [];
+    return { entry, complete, direct, covered, matchedConcepts: [...coveredGroups], missingConcepts, score: score + (complete ? 10000 : 0) + covered * 500 + direct };
 }
 function finalize(index: TopicSuggestionIndex, query: string, ranked: Ranked[]): TopicSemanticResult {
+    const byOrder = [...ranked];
     ranked.sort((a, b) => b.score - a.score || a.entry.order - b.entry.order);
     const direct = ranked.filter(r => r.direct > 0).slice(0, 10), used = new Set(direct.map(r => r.entry.topic.id));
     const anchors = ranked.filter(r => r.covered > 0 || r.score > 0).slice(0, 20);
@@ -191,7 +197,7 @@ function finalize(index: TopicSuggestionIndex, query: string, ranked: Ranked[]):
         if (used.has(entry.topic.id))
             continue;
         used.add(entry.topic.id);
-        fallback.push({ entry, score: 0, direct: 0, complete: false, covered: 0 });
+        fallback.push({ ...byOrder[entry.order], score: 0, direct: 0 });
     }
     // A stride may share factors with a custom catalog's size.
     for (const entry of index.entries) {
@@ -199,10 +205,10 @@ function finalize(index: TopicSuggestionIndex, query: string, ranked: Ranked[]):
             break;
         if (!used.has(entry.topic.id)) {
             used.add(entry.topic.id);
-            fallback.push({ entry, score: 0, direct: 0, complete: false, covered: 0 });
+            fallback.push({ ...byOrder[entry.order], score: 0, direct: 0 });
         }
     }
-    const suggest = (r: Ranked, group: TopicSuggestionGroup): TopicSuggestion => ({ id: r.entry.topic.id, label: r.entry.topic.label, path: r.entry.topic.path, group });
+    const suggest = (r: Ranked, group: TopicSuggestionGroup): TopicSuggestion => ({ id: r.entry.topic.id, label: r.entry.topic.label, path: r.entry.topic.path, group, coverage: { matchedConcepts: r.matchedConcepts, missingConcepts: r.missingConcepts, complete: r.complete } });
     const matched = ranked.filter(r => r.complete), visible = new Set<string>(), ancestors = new Set<string>();
     for (const { entry } of matched) {
         visible.add(entry.topic.id);
@@ -215,15 +221,23 @@ function finalize(index: TopicSuggestionIndex, query: string, ranked: Ranked[]):
     }
     return { suggestions: [...direct.map(r => suggest(r, "keyword")), ...related.map(r => suggest(r, "related")), ...fallback.map(r => suggest(r, "explore"))], matchedIds: matched.map(r => r.entry.topic.id), completeCoverage: matched.length > 0, visibleIds: [...visible], matchingDescendants: [...ancestors], directScores: matched.map(r => [r.entry.topic.id, r.score]) };
 }
+function enrichTopicGroup(group: TopicConcept, enriched: TopicConcept[]) {
+    const equivalents = new Set(group.equivalents.flatMap(t => conceptAliases.get(normalizeSearchText(t)) || [normalizeSearchText(t)]));
+    const matches = enriched.filter(other => other.equivalents.some(t => equivalents.has(normalizeSearchText(t))));
+    const added = matches.flatMap(g => g.equivalents).filter(term => { const known = conceptAliases.get(normalizeSearchText(term)); return !known || known.some(value => equivalents.has(normalizeSearchText(value))); });
+    return { ...group, equivalents: [...new Set([...group.equivalents, ...added])], related: [...group.related, ...matches.flatMap(g => g.related)] };
+}
 function planFor(query: string, enrichment: TopicQueryPlan | string[]): TopicQueryPlan {
     const p = Array.isArray(enrichment) ? enrichment.length ? { groups: [{ label: "subject", equivalents: enrichment, related: [] }] } : localTopicPlan(query) : validateTopicPlan(enrichment);
-    const plan = p.groups.length ? p : localTopicPlan(query);
-    if (!Array.isArray(enrichment) && p.groups.length) {
-        for (const original of localTopicPlan(query).groups.filter(g => CONCEPTS.includes(g)))
-            if (!plan.groups.some(g => g.equivalents.some(t => original.equivalents.includes(normalizeSearchText(t)))))
-                plan.groups.push(original);
-    }
-    return { ...plan, groups: plan.groups.map(g => ({ ...g, equivalents: Array.from(new Set(g.equivalents.flatMap(t => conceptAliases.get(normalizeSearchText(t)) || [t]))) })) };
+    const original = localTopicPlan(query);
+    // Each recognized idea remains a distinct requirement, even if enrichment combines them.
+    const protectedGroups = original.groups.filter(g => CONCEPTS.includes(g));
+    const enriched = p.groups.length ? p.groups : original.groups;
+    const groups = original.anyOf?.length ? original.groups.map(group => enrichTopicGroup(group, enriched)) : [
+        ...enriched.filter(group => !protectedGroups.some(original => original.equivalents.some(term => group.equivalents.includes(normalizeSearchText(term))))),
+        ...protectedGroups.map(group => enrichTopicGroup(group, enriched))
+    ];
+    return { groups: groups.map(g => ({ ...g, equivalents: Array.from(new Set(g.equivalents.flatMap(t => conceptAliases.get(normalizeSearchText(t)) || [t]))) })), anyOf: original.anyOf, alternatives: false };
 }
 export function searchTopicIndex(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = []): TopicSemanticResult { if (!query.trim())
     return { suggestions: [], matchedIds: [], completeCoverage: false, visibleIds: [], matchingDescendants: [], directScores: [] }; const plan = planFor(query, enrichment); return finalize(index, query, index.entries.map(e => rank(e, query, plan))); }

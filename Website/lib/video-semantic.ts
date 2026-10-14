@@ -3,13 +3,15 @@ export type VideoSearchPlan = {
   terms?: string[]; include?: string[]; alternatives?: string[]; exclude?: string[];
   topics?: string[]; topicHints?: string[];
   conceptGroups?: Array<{ label?: string; terms: string[]; related?: string[]; required?: boolean }>;
+  anyOf?: number[][];
   channel?: string; channelId?: string; dateIntent?: "upload" | "event" | "either";
   minDate?: string; maxDate?: string; minDurationSeconds?: number; maxDurationSeconds?: number;
   sort?: "relevance" | "newest" | "oldest" | "random";
 };
 type Video = { id: string; channelId: string; channelName: string; title: string; description: string; tags: string[]; topics: string[]; publishedAt: string; durationSeconds: number; approved: boolean; special?: boolean; sourceIds?: string[] };
-export type SemanticCandidate<T extends Video> = { video: T; score: number; matchedFields: string[]; supportingText: string[] };
-export const VIDEO_SEMANTIC_VERSION = 3;
+export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
+export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
+export const VIDEO_SEMANTIC_VERSION = 4;
 
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
@@ -108,14 +110,18 @@ export function makeLocalVideoPlan(query: string, channels: Array<{ id: string; 
   }
   if (!namedChannel && /(?:\bchannel\s+|@)[\w.-]+/i.test(core)) plan.channelId = "__unknown_channel__";
   core = core.replace(/\b(newest|latest|oldest|earliest|random)\b/gi, (sort) => { plan.sort = /newest|latest/i.test(sort) ? "newest" : /oldest|earliest/i.test(sort) ? "oldest" : "random"; return " "; });
-  const quoted: Array<{label:string;terms:string[];required:boolean}> = [];
-  core = core.replace(/"([^"\n]+)"/g, (_, phrase: string) => { quoted.push({label:phrase,terms:[phrase],required:true}); return " "; });
-  const orParts = core.split(/\bor\b/i);
+  const clauseGroups = (value: string) => {
+    const quoted: NonNullable<VideoSearchPlan["conceptGroups"]> = [];
+    const unquoted = value.replace(/"([^"\n]+)"/g, (_, phrase: string) => { quoted.push({ label: phrase, terms: [phrase], required: true }); return " "; });
+    return [...groupsFor(unquoted), ...quoted];
+  };
+  const orParts = core.split(/\bor\b(?=(?:[^"]*"[^"]*")*[^"]*$)/i);
   if (orParts.length > 1) {
-    // Alternatives are whole clauses; each clause keeps its own AND coverage.
-    plan.conceptGroups = [{ label: "either alternative", terms: orParts.map((part) => meaningful(part).join(" ")).filter(Boolean), required: true }];
-  } else plan.conceptGroups = groupsFor(core);
-  plan.conceptGroups = [...(plan.conceptGroups || []), ...quoted];
+    const clauses = orParts.map(clauseGroups).filter(groups => groups.length);
+    plan.conceptGroups = clauses.flat();
+    let offset = 0;
+    plan.anyOf = clauses.map(groups => { const ids = groups.map((_, i) => offset + i); offset += groups.length; return ids; });
+  } else plan.conceptGroups = clauseGroups(core);
   plan.terms = [meaningful(core).join(" ")].filter(Boolean);
   return plan;
 }
@@ -129,11 +135,31 @@ export function mergeVideoSearchPlans(local: VideoSearchPlan, interpreted: Video
     include: interpreted.include ?? local.include,
     alternatives: interpreted.alternatives,
     topicHints: interpreted.topics,
-    conceptGroups: interpreted.conceptGroups?.length ? interpreted.conceptGroups : [
-      ...(interpreted.terms?.length === 1 ? [{ label: "subject", terms: [...interpreted.terms], required: true }] : interpreted.terms?.length ? makeLocalVideoPlan(interpreted.terms.join(" and ")).conceptGroups || [] : local.conceptGroups || []),
-      ...(interpreted.include || []).map((term) => ({ label: term, terms: expand(term), required: true }))
-    ]
+    // The original query owns AND/OR structure; enrichment cannot make ideas optional.
+    anyOf: local.anyOf,
+    conceptGroups: local.anyOf?.length
+      ? (local.conceptGroups || []).map(group => enrichVideoGroup(group, interpreted.conceptGroups || []))
+      : preserveVideoConcepts(local.conceptGroups || [], interpreted.conceptGroups?.length ? interpreted.conceptGroups : [
+        ...(interpreted.terms?.length === 1 ? [{ label: "subject", terms: [...interpreted.terms], required: true }] : interpreted.terms?.length ? makeLocalVideoPlan(interpreted.terms.join(" and ")).conceptGroups || [] : local.conceptGroups || []),
+        ...(interpreted.include || []).map(term => ({ label: term, terms: expand(term), required: true }))
+      ])
+
   };
+}
+function sameVideoConcept(a: NonNullable<VideoSearchPlan["conceptGroups"]>[number], b: NonNullable<VideoSearchPlan["conceptGroups"]>[number]) {
+  const terms = new Set(a.terms.flatMap(expand).map(normalizeVideoQuery));
+  return b.terms.flatMap(expand).some(term => terms.has(normalizeVideoQuery(term)));
+}
+function enrichVideoGroup(group: NonNullable<VideoSearchPlan["conceptGroups"]>[number], enriched: NonNullable<VideoSearchPlan["conceptGroups"]>) {
+  const matches = enriched.filter(other => sameVideoConcept(group, other));
+  return { ...group, required: true, terms: [...new Set([...group.terms, ...matches.flatMap(other => other.terms).filter(term => { const known = equivalentTerms.get(normalizeVideoQuery(term)); return !known || known.some(value => group.terms.flatMap(expand).map(normalizeVideoQuery).includes(normalizeVideoQuery(value))); })])], related: matches.flatMap(other => other.related || []) };
+}
+function preserveVideoConcepts(local: NonNullable<VideoSearchPlan["conceptGroups"]>, enriched: NonNullable<VideoSearchPlan["conceptGroups"]>) {
+  const protectedGroups = local.filter(group => CONCEPTS.some(terms => terms[0] === group.label));
+  return [
+    ...enriched.filter(group => !protectedGroups.some(original => sameVideoConcept(original, group))).map(group => ({ ...group, required: true })),
+    ...protectedGroups.map(group => enrichVideoGroup(group, enriched))
+  ];
 }
 type Field = { name: string; value: string; text: string; words: Set<string> };
 const index = new WeakMap<Video, Field[]>();
@@ -163,7 +189,7 @@ function passage(field: Field, term: string) {
 }
 function requiredGroups(plan: VideoSearchPlan): NonNullable<VideoSearchPlan["conceptGroups"]> {
   if (plan.conceptGroups?.length) return [...plan.conceptGroups, ...(plan.include || []).filter((term) => !plan.conceptGroups!.some((group) => group.terms.some((variant) => normalizeVideoQuery(variant) === normalizeVideoQuery(term)))).map((term) => ({terms:expand(term),required:true}))];
-  return [...(plan.terms?.length ? [{terms:plan.terms.flatMap(expand),required:true}] : []), ...(plan.include || []).map((term) => ({terms:expand(term),required:true}))];
+  return [...(plan.terms || []).map(term => ({terms:expand(term),required:true})), ...(plan.include || []).map((term) => ({terms:expand(term),required:true}))];
 }
 export function eligibleSemanticVideo(video: Video, plan: VideoSearchPlan, topic = "All", selectedChannelId?: string, excludedIds = new Set<string>()) {
   if (!video.approved || excludedIds.has(video.id) || /#shorts?\b|\byoutube shorts?\b|\bshorts video\b/i.test(video.title) || /#shorts?\b/i.test(video.description || "") || (video.tags || []).some((tag) => ["shorts", "youtube short", "youtube shorts"].includes(normalizeVideoQuery(tag)))) return false;
@@ -180,10 +206,20 @@ export function eligibleSemanticVideo(video: Video, plan: VideoSearchPlan, topic
   const fields = fieldsFor(video);
   return !(plan.exclude || []).some((term) => expand(term).some((variant) => fields.some((field) => matchesTerm(variant,field))));
 }
+function coverageFor(groups: NonNullable<VideoSearchPlan["conceptGroups"]>, matchedConcepts: number[], anyOf?: number[][]): VideoConceptCoverage {
+  const matched = new Set(matchedConcepts);
+  const required = groups.flatMap((group, i) => group.required !== false && group.terms.length ? [i] : []);
+  const clauses = anyOf?.length ? anyOf.map(clause => [...clause.filter(i => groups[i]?.required !== false), ...required.filter(i => !anyOf.some(c => c.includes(i)))]) : [required];
+  const missing = clauses.map(clause => clause.filter(i => !matched.has(i))).sort((a,b) => a.length-b.length)[0] || [];
+  return { matchedConcepts, missingConcepts: missing, complete: !missing.length };
+}
+export function videoConceptCoverage<T extends Video>(video: T, plan: VideoSearchPlan): VideoConceptCoverage {
+  const fields = fieldsFor(video), groups = requiredGroups(plan);
+  const matched = groups.flatMap((group, i) => group.terms.flatMap(expand).some(term => fields.filter(field => field.name !== "topics").some(field => matchesTerm(term,field))) ? [i] : []);
+  return coverageFor(groups, matched, plan.anyOf);
+}
 export function semanticCoverage<T extends Video>(video: T, plan: VideoSearchPlan) {
-  const fields = fieldsFor(video);
-  const groups = requiredGroups(plan).filter((group) => group.required !== false && group.terms.length);
-  return groups.length > 0 && groups.every((group) => group.terms.flatMap(expand).some((term) => fields.filter((field) => field.name !== "topics").some((field) => matchesTerm(term,field))));
+  return requiredGroups(plan).length > 0 && videoConceptCoverage(video,plan).complete;
 }
 export function compareSemanticCandidates<T extends Video>(a: SemanticCandidate<T>, b: SemanticCandidate<T>, sort?: VideoSearchPlan["sort"]) {
   if (sort === "newest") return b.video.publishedAt.localeCompare(a.video.publishedAt) || b.score-a.score;
@@ -197,20 +233,20 @@ export function searchSemanticVideos<T extends Video>(videos: T[], plan: VideoSe
   for (const video of videos) {
     if (!eligibleSemanticVideo(video,plan,topic,channelId,excludedIds)) continue;
     const fields = fieldsFor(video), evidence: Array<{field:Field;term:string;score:number}> = [];
-    let complete = true;
-    for (const group of groups) {
+    const matchedConcepts: number[] = [];
+    for (const [groupIndex, group] of groups.entries()) {
       const matches = group.terms.flatMap((term) => fields.filter((field) => field.name !== "topics" && matchesTerm(term,field)).map((field) => ({field,term,score:field.name === "title" ? 20 : field.name === "tags" ? 12 : 8})));
       matches.sort((a,b) => b.score-a.score);
-      if (!matches.length && group.required !== false) { complete=false; break; }
-      if (matches.length) evidence.push(matches[0]);
+      if (matches.length) { evidence.push(matches[0]); matchedConcepts.push(groupIndex); }
     }
     const filterOnly = !groups.length && Boolean(plan.channelId || channelId || topic !== "All" || plan.minDate || plan.maxDate || plan.minDurationSeconds !== undefined || plan.maxDurationSeconds !== undefined || plan.sort && plan.sort !== "relevance");
-    if (!complete || !evidence.length && !filterOnly) continue;
+    const coverage = coverageFor(groups, matchedConcepts, plan.anyOf);
+    if (!coverage.complete || !evidence.length && !filterOnly) continue;
     const title = fields[0].text;
     const exactTitle = (plan.terms || []).some((term) => contains(title,normalizeVideoQuery(term)));
     const relatedBonus = Math.min(3, related.filter(term => fields.some(field => matchesTerm(term, field))).length);
     const hint = (video.topics || []).some((topic) => (plan.topicHints || []).includes(topic));
-    results.push({video,score:100*evidence.length + evidence.reduce((sum,item)=>sum+item.score,0)+(exactTitle?10:0)+(hint?1:0)+relatedBonus,matchedFields:[...new Set(evidence.map((item)=>item.field.name))],supportingText:[...new Set(evidence.map((item)=>passage(item.field,item.term)))].slice(0,3)});
+    results.push({video,coverage,score:100*evidence.length + evidence.reduce((sum,item)=>sum+item.score,0)+(exactTitle?10:0)+(hint?1:0)+relatedBonus,matchedFields:[...new Set(evidence.map((item)=>item.field.name))],supportingText:[...new Set(evidence.map((item)=>passage(item.field,item.term)))].slice(0,3)});
   }
   return results.sort((a,b)=>compareSemanticCandidates(a,b,plan.sort)).slice(0,Math.max(1,limit));
 }

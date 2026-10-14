@@ -17,3 +17,38 @@ test('custom topics and parent paths share the same index and contain no fact sl
 test('structured interpretations preserve each required idea and bound malformed output',()=>{const plan=engine.validateTopicPlan({groups:[{label:'quakes',equivalents:['earthquakes'],related:['volcanoes']},{label:'Japan',equivalents:['Japan'],related:[]}],alternatives:false});const r=engine.searchTopicIndex(index,'unrecognized wording',plan);assert.ok(matched(r).includes('2011 Tōhoku Earthquake'));assert.ok(!matched(r).includes('Japan'));assert.deepEqual(engine.validateTopicPlan({groups:[null,{equivalents:[1,'', 'x'.repeat(121)]}]}).groups,[]);assert.equal(engine.validateTopicPlan({groups:Array(20).fill({equivalents:Array(30).fill('earthquake'),related:[]})}).groups.length,8);});
 test('shared generated Mac engine has identical matching, ordering and visibility',()=>{const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);const native=scope.LEARNED_MEDIA_TOPIC_SEARCH,nativeIndex=native.createTopicSuggestionIndex(topics);for(const q of ['why does the ground shake','earthquakes in Japan','how people think','zzzyxq'])assert.deepEqual(JSON.parse(JSON.stringify(native.searchTopicIndex(nativeIndex,q))),engine.searchTopicIndex(index,q));});
 test('yielding fallback cancels stale work and agrees with synchronous ranking',async()=>{let current=true;const pending=engine.searchTopicIndexYielding(index,'ground shaking',[],()=>current);current=false;assert.equal(await pending,null);const r=await engine.searchTopicIndexYielding(index,'ground shaking');assert.deepEqual(r,engine.searchTopicIndex(index,'ground shaking'));});
+
+
+test('topic suggestions report coverage and complete matches precede partial recommendations',()=>{
+ const r=engine.searchTopicIndex(index,'earthquakes in Japan');
+ const complete=r.suggestions.find(s=>s.label==='2011 Tōhoku Earthquake'),partial=r.suggestions.find(s=>s.label==='Japan');
+ assert.ok(complete);assert.equal(complete.coverage.complete,true);assert.equal(complete.coverage.matchedConcepts.length,2);assert.deepEqual(complete.coverage.missingConcepts,[]);
+ if(partial){assert.equal(partial.coverage.complete,false);assert.equal(partial.coverage.matchedConcepts.length,1);assert.equal(partial.coverage.missingConcepts.length,1);assert.ok(r.suggestions.indexOf(complete)<r.suggestions.indexOf(partial));}
+ for(const section of ['keyword','related']){let sawPartial=false;for(const s of r.suggestions.filter(s=>s.group===section)){if(!s.coverage.complete)sawPartial=true;else assert.equal(sawPartial,false);}}
+ assert.equal(r.suggestions.length,100);assert.equal(new Set(r.suggestions.map(s=>s.id)).size,100);
+});
+
+test('topic enrichment cannot convert AND to OR or drop concepts within an explicit alternative',()=>{
+ const enrichment={groups:[{label:'quakes',equivalents:['earthquake'],related:[]},{label:'minds',equivalents:['psychology'],related:[]}],alternatives:true};
+ const and=engine.searchTopicIndex(index,'earthquakes and psychology',enrichment);
+ assert.equal(and.matchedIds.length,0);assert.equal(and.completeCoverage,false);
+ const query='earthquakes in Japan or volcanoes in Italy';
+ const or=engine.searchTopicIndex(index,query,{groups:[{label:'quakes',equivalents:['earthquake'],related:[]},{label:'volcanoes',equivalents:['volcano'],related:[]}],alternatives:true});
+ assert.ok(matched(or).includes('2011 Tōhoku Earthquake'));assert.ok(!matched(or).includes('Japan'));assert.ok(!matched(or).includes('2023 Turkey–Syria Earthquakes'));
+ const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ assert.deepEqual(JSON.parse(JSON.stringify(scope.LEARNED_MEDIA_TOPIC_SEARCH.searchTopicIndex(scope.LEARNED_MEDIA_TOPIC_SEARCH.createTopicSuggestionIndex(topics),query,enrichment))),engine.searchTopicIndex(index,query,enrichment));
+});
+
+
+test('a broad astronomy alias cannot replace two explicitly requested subjects',()=>{
+ const catalog=[{id:'stars',label:'Stars',path:['Astronomy','Stars']},{id:'planets',label:'Planets',path:['Astronomy','Planets']},{id:'both',label:'Stars and Planets',path:['Astronomy','Stars and Planets']}];
+ const result=engine.searchTopicIndex(engine.createTopicSuggestionIndex(catalog),'stars and planets');
+ assert.deepEqual(result.matchedIds,['both']);
+ assert.ok(result.suggestions.find(s=>s.id==='stars').coverage.missingConcepts.length);
+});
+
+
+test('enrichment cannot merge earthquakes and Japan into interchangeable expressions',()=>{
+ const result=engine.searchTopicIndex(index,'earthquakes in Japan',{groups:[{label:'combined',equivalents:['earthquake','Japan'],related:[]}],alternatives:true});
+ assert.ok(matched(result).includes('2011 Tōhoku Earthquake'));assert.ok(!matched(result).includes('Japan'));assert.ok(!matched(result).includes('2023 Turkey–Syria Earthquakes'));
+});

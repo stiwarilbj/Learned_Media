@@ -1414,7 +1414,7 @@ private final class GeminiClient {
         let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 1024, cacheContext: "youtube-catalog:\(catalogVersion)")
         let envelope = try JSONDecoder().decode(GeminiVideoSearchEnvelope.self, from: Data(result.text.utf8))
         var output: [String: Any] = ["terms": Array((envelope.terms ?? []).prefix(24)), "include": Array((envelope.include ?? []).prefix(24)), "alternatives": Array((envelope.alternatives ?? []).prefix(32)), "topics": Array((envelope.topics ?? []).prefix(12))]
-        if let groups = envelope.conceptGroups { output["conceptGroups"] = groups.prefix(8).map { ["label": String(($0.label ?? "").prefix(100)), "terms": Array(($0.terms ?? []).prefix(12)).map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)) }, "related": Array(($0.related ?? []).prefix(12)).map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)) }, "required": $0.required ?? true] } }
+        if let groups = envelope.conceptGroups { output["conceptGroups"] = groups.prefix(8).map { ["label": String(($0.label ?? "").prefix(100)), "terms": Array(($0.terms ?? []).prefix(12)).map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)) }, "related": Array(($0.related ?? []).prefix(12)).map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)) }, "required": true] } }
         output["modelOutcomes"] = result.outcomes
         return output
     }
