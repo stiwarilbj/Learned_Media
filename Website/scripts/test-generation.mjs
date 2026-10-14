@@ -1540,3 +1540,49 @@ test('learning answers preserve BOMs inside strings after boundary cleanup',asyn
  const result=await generateLearningResponse({apiKey:'test-key',sessionId,action:'question',card,question:'How did it detect pressure?'});
  assert.equal(result.answer,answer);assert.equal(geminiCallCount(state),1);
 });
+
+test('conflicting duplicate JSON properties reject only ambiguous objects',()=>{
+ const {parseStructuredResponse}=require('../lib/structured-response.ts');
+ const item={type:'OBJECT',properties:{slot:{type:'INTEGER'},claim:{type:'STRING'},evidenceIds:{type:'ARRAY',items:{type:'STRING'}}},required:['slot','claim']};
+ const schema={type:'OBJECT',properties:{facts:{type:'ARRAY',items:item},answer:{type:'STRING'}}};
+ const good={slot:0,claim:'A quoted "slot":1 stays text. \uFEFF'};
+ const safe=JSON.stringify(good);
+ for(const bad of ['{"slot":1,"slot":2,"claim":"Bad"}','{"slot":1,"sl\\u006ft":2,"claim":"Bad"}','{"slot":1,"claim":"First","claim":"Second"}','{"slot":1,"claim":"Bad","evidenceIds":["e1"],"evidenceIds":["e2"]}','{"slot":1,"claim":"Bad","slot":"1"}']){
+  const raw='{"facts":['+bad+','+safe+']}';
+  assert.deepEqual(parseStructuredResponse(raw,schema).facts,[good]);
+  const parser=new JsonArrayItemStreamParser('facts'),streamed=[];
+  for(const character of raw)streamed.push(...parser.push(character));
+  assert.deepEqual(streamed,[good]);
+  assert.deepEqual(parseStructuredResponse(raw.slice(0,-2)+',{"slot":9,"claim":"unfinished',schema).facts,[good]);
+ }
+ const identical='{"facts":[{"slot":1,"slot":1,"claim":"Same","claim":"S\\u0061me","evidenceIds":["e1"],"evidenceIds":["e1"]}]}';
+ assert.deepEqual(parseStructuredResponse(identical,schema).facts,[{slot:1,claim:'Same',evidenceIds:['e1']}]);
+ assert.throws(()=>parseStructuredResponse('{"answer":"First","answer":"Second"}',schema));
+ assert.throws(()=>parseStructuredResponse('{"facts":[],"facts":['+safe+']}',schema));
+ const nested={type:'OBJECT',properties:{groups:{type:'ARRAY',items:{type:'OBJECT',properties:{terms:{type:'ARRAY',items:{type:'STRING'}}},required:['terms']}}}};
+ assert.deepEqual(parseStructuredResponse('{"groups":[{"terms":["earthquakes"],"terms":["Japan"]},{"terms":["stars"]}]}',nested),{groups:[{terms:['stars']}]});
+});
+
+test('conflicting grounded slot fields recover only unfinished cards',async()=>{
+ let corrupted=false;
+ const state=installNetworkMock({responseText(output,prompt){
+  if(!corrupted&&prompt.includes('Return one result for each slot')){
+   corrupted=true;
+   return JSON.stringify(output).replace(/"slot":1,/, '"slot":1,"slot":2,');
+  }
+ }}),sessionId=await connectMock(state);
+ const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+ assert.equal(result.completedCount,7);assert.equal(state.groundingPrompts.length,2);
+ assert.deepEqual(groundingSlots(state.groundingPrompts[1]).map(item=>item.slot),[1]);
+ assert.equal(geminiCallCount(state),3);
+});
+
+test('duplicate-field comparison respects JSON types, nesting and exact string data',()=>{
+ const {rejectConflictingJsonFields:check}=require('../lib/json-duplicates.ts');
+ assert.equal(check('{"value":true,"value":1}'),'null');
+ assert.equal(check('{"value":null,"value":null}'),'{"value":null,"value":null}');
+ const same='{"value":{"a":1,"b":2},"value":{"b":2,"a":1}}';
+ assert.equal(check(same),same);
+ assert.equal(check('{"value":[1,2],"value":[2,1]}'),'null');
+ assert.deepEqual(JSON.parse(check('{"items":[{"evidence":{"id":"e1","id":"e2"}},{"quote":"\\uFEFF \\\"id\\\":1, \\\"id\\\":2"}]}')),{items:[{evidence:null},{quote:'\uFEFF "id":1, "id":2'}]});
+});

@@ -33,6 +33,34 @@ final class StructuredResponseTests: XCTestCase {
         XCTAssertEqual((recovered["facts"] as? [[String: Any]])?.first?["claim"] as? String, claim)
     }
 
+    func testConflictingDuplicateFieldsRejectOnlyTheirItem() throws {
+        let good = #"{"slot":0,"claim":"Good"}"#
+        for bad in [#"{"slot":1,"slot":2,"claim":"Bad"}"#, #"{"slot":1,"sl\u006ft":2,"claim":"Bad"}"#, #"{"slot":1,"claim":"First","claim":"Second"}"#, #"{"slot":1,"claim":"Bad","evidenceIds":["e1"],"evidenceIds":["e2"]}"#, #"{"slot":1,"slot":"1","claim":"Bad"}"#] {
+            let raw = "{\"facts\":[" + bad + "," + good + "]}"
+            let parsed = try StructuredResponse.parse(raw, schema: schema)
+            XCTAssertEqual((parsed["facts"] as? [[String: Any]])?.compactMap { $0["slot"] as? Int }, [0])
+            let parser = JSONArrayItemStreamParser(property: "facts")
+            var streamed: [[String: Any]] = []
+            for character in raw { streamed += parser.append(String(character)) }
+            XCTAssertEqual(streamed.compactMap { $0["slot"] as? Int }, [0])
+            let partial = String(raw.dropLast(2)) + ",{\"slot\":9,\"claim\":\"unfinished"
+            let recovered = try StructuredResponse.parse(partial, schema: schema)
+            XCTAssertEqual((recovered["facts"] as? [[String: Any]])?.compactMap { $0["slot"] as? Int }, [0])
+        }
+        let identical = #"{"facts":[{"slot":1,"slot":1,"claim":"Same","claim":"S\u0061me","evidenceIds":["e1"],"evidenceIds":["e1"]}]}"#
+        let parsed = try StructuredResponse.parse(identical, schema: schema)
+        XCTAssertEqual((parsed["facts"] as? [[String: Any]])?.first?["claim"] as? String, "Same")
+        XCTAssertThrowsError(try StructuredResponse.parse("{\"facts\":[],\"facts\":[" + good + "]}", schema: schema))
+    }
+
+    func testDuplicateFieldComparisonKeepsTypesAndObjectOrder() throws {
+        XCTAssertEqual(StructuredResponse.rejectConflictingFields(#"{"value":true,"value":1}"#), "null")
+        let identical = #"{"value":{"a":1,"b":2},"value":{"b":2,"a":1}}"#
+        XCTAssertEqual(StructuredResponse.rejectConflictingFields(identical), identical)
+        XCTAssertEqual(StructuredResponse.rejectConflictingFields(#"{"value":[1,2],"value":[2,1]}"#), "null")
+        XCTAssertEqual(StructuredResponse.rejectConflictingFields(#"{"items":[{"evidence":{"id":"e1","id":"e2"}},{"id":"good"}]}"#), #"{"items":[{"evidence":null},{"id":"good"}]}"#)
+    }
+
     func testMalformedItemAndOptionalFieldDoNotDiscardValidCards() throws {
         let parsed = try StructuredResponse.parse(#"{"facts":[{"slot":0,"claim":"Valid","hook":123},null,{"slot":1,"claim":123},{"slot":2,"claim":"Other valid"}]}"#, schema: schema)
         struct Item: Decodable { let slot: Int; let claim: String; let hook: String? }

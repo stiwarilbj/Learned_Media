@@ -1,3 +1,4 @@
+import { rejectConflictingJsonFields } from "./json-duplicates";
 import { JsonArrayItemStreamParser } from "./stream-json";
 
 /** Strip only the response-boundary BOM; quoted text is never rewritten. */
@@ -99,7 +100,7 @@ export function normalizeStructuredValue(value: unknown, schema: Schema, field =
 }
 
 export function parseStructuredResponse(raw: string, schema: Schema): Record<string, unknown> {
-  const text = trailingCommas(stripResponseBom(raw).trim().replace(/^```(?:json)?\s*|\s*```$/gi, "").trim());
+  const text = rejectConflictingJsonFields(trailingCommas(stripResponseBom(raw).trim().replace(/^```(?:json)?\s*|\s*```$/gi, "").trim()));
   let parsed: unknown;
   try { parsed = JSON.parse(text); }
   catch {

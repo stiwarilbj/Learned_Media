@@ -26,6 +26,55 @@ public enum StructuredResponse {
         try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)).value
     }
 
+    /// Reject conflicting keys before a JSON decoder can silently choose one value.
+    static func rejectConflictingFields(_ text: String) -> String {
+        struct Frame {
+            let object: Bool
+            let start: Int
+            var entry: Int
+            var colon = -1
+            var values: [String: Data] = [:]
+            var conflict = false
+        }
+        let chars = Array(text)
+        var stack: [Frame] = [], rejected: [(Int, Int)] = []
+        var quoted = false, escaped = false
+        func retain(_ frame: inout Frame, _ end: Int) {
+            guard frame.object, frame.colon >= 0,
+                  let key = (try? decodeJSON(String(chars[frame.entry..<frame.colon]))) as? String,
+                  let value = try? decodeJSON(String(chars[(frame.colon + 1)..<end])),
+                  let canonical = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]) else { return }
+            if let previous = frame.values[key], previous != canonical { frame.conflict = true }
+            frame.values[key] = canonical
+        }
+        for index in chars.indices {
+            let c = chars[index]
+            if quoted {
+                if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { quoted = false }
+                continue
+            }
+            if c == "\"" { quoted = true; continue }
+            if c == "{" || c == "[" {
+                stack.append(Frame(object: c == "{", start: index, entry: index + 1))
+            } else if !stack.isEmpty {
+                let last = stack.count - 1
+                if c == ":", stack[last].object, stack[last].colon < 0 { stack[last].colon = index }
+                else if c == "," {
+                    retain(&stack[last], index); stack[last].entry = index + 1; stack[last].colon = -1
+                } else if c == "}" || c == "]" {
+                    var frame = stack.removeLast(); retain(&frame, index)
+                    if frame.conflict { rejected.append((frame.start, index + 1)) }
+                }
+            }
+        }
+        var output = "", cursor = 0
+        for (start, end) in rejected.sorted(by: { $0.0 < $1.0 }) {
+            guard start >= cursor else { continue }
+            output += String(chars[cursor..<start]) + "null"; cursor = end
+        }
+        return output + String(chars[cursor...])
+    }
+
     private static let setFields: Set<String> = ["evidenceIds", "claimEvidenceIds", "terms", "include", "alternatives", "topics", "related", "equivalents", "wikipediaSearchTitles", "facts", "evidence"]
 
     private static func repairCommas(_ text: String) -> String {
@@ -124,7 +173,7 @@ public enum StructuredResponse {
     }
 
     public static func parse(_ raw: String, schema: [String: Any]) throws -> [String: Any] {
-        let text = repairCommas(stripResponseBom(raw).trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^```(?:json)?\\s*|\\s*```$", with: "", options: [.regularExpression, .caseInsensitive]).trimmingCharacters(in: .whitespacesAndNewlines))
+        let text = rejectConflictingFields(repairCommas(stripResponseBom(raw).trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^```(?:json)?\\s*|\\s*```$", with: "", options: [.regularExpression, .caseInsensitive]).trimmingCharacters(in: .whitespacesAndNewlines)))
         let parsed: Any
         if let object = try? decodeJSON(text) { parsed = object }
         else {

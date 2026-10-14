@@ -121,7 +121,7 @@ public final class JSONArrayItemStreamParser {
                 stack.removeLast()
                 if character == "}", arrayDepth > 0, stack.count == arrayDepth, let start = itemStart {
                     let raw = String(buffer[start...index])
-                    if let value = (try? StructuredResponse.decodeJSON(raw)) as? [String: Any] { items.append(value) }
+                    if let value = (try? StructuredResponse.decodeJSON(StructuredResponse.rejectConflictingFields(raw))) as? [String: Any] { items.append(value) }
                     itemStart = nil
                 }
                 if character == "]", arrayDepth > 0, stack.count + 1 == arrayDepth { arrayDepth = 0 }

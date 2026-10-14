@@ -1,3 +1,5 @@
+import { rejectConflictingJsonFields } from "./json-duplicates";
+
 /** Incrementally extracts object entries from a named array in a JSON object. */
 export class JsonArrayItemStreamParser {
   private buffer = "";
@@ -71,7 +73,7 @@ export class JsonArrayItemStreamParser {
         this.stack.pop();
         if (char === "}" && this.arrayDepth > 0 && this.stack.length === this.arrayDepth && this.itemStart >= 0) {
           try {
-            const value = JSON.parse(this.buffer.slice(this.itemStart, index + 1)) as unknown;
+            const value = JSON.parse(rejectConflictingJsonFields(this.buffer.slice(this.itemStart, index + 1))) as unknown;
             if (value && typeof value === "object" && !Array.isArray(value)) items.push(value as Record<string, unknown>);
           } catch { /* The completed outer JSON response remains authoritative. */ }
           this.itemStart = -1;
