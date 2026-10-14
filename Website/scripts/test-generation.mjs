@@ -16,6 +16,7 @@ Module._extensions[".ts"] = (module, filename) => {
 };
 
 const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, testGeminiKey } = require("../lib/gemini.ts");
+const { buildPrompt } = require("../lib/prompts.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
@@ -161,6 +162,8 @@ function installNetworkMock(options = {}) {
             evidence
           };
         }).filter(Boolean).reverse() };
+      } else if (prompt.startsWith("Explain this one card") || prompt.startsWith("Answer the user's exact question")) {
+        output = { answer: "The instrument used a diaphragm to detect pressure changes.", citationIndexes: [0] };
       } else {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
       }
@@ -324,6 +327,49 @@ await t.test("video searches preserve channel, exclusion, date, duration, approv
   assert.deepEqual(searchYouTubeCandidates(videos, { ...plan, dateIntent: "event" }).map(candidate => candidate.video.id), ["match", "too-old"], "historical subject dates must not filter upload dates");
 });
 
+await t.test("prompt compaction deduplicates rules and fields while retaining exact data", () => {
+  const source = "[Section: Record]\nA  verbatim quotation.\n\nA second paragraph.";
+  const prompt = buildPrompt("topicInterpret", ["  Preserve   intent. ", "Preserve intent."], [
+    { label: "Query", value: "Why  does the ground shake?" },
+    { label: "Query", value: "Why  does the ground shake?" },
+    { label: "Absent", value: undefined }, { label: "History", value: [] },
+    { label: "Evidence", value: source, multiline: true },
+    { label: "Flag", value: false }, { label: "Index", value: 0 }
+  ]);
+  assert.equal(prompt.match(/Preserve intent\./g).length, 1);
+  assert.equal(prompt.match(/Query:/g).length, 1);
+  assert.ok(prompt.includes(source));
+  assert.ok(prompt.includes("Why  does the ground shake?"));
+  assert.ok(prompt.includes("Flag: false") && prompt.includes("Index: 0"));
+  assert.ok(!prompt.includes("Absent:") && !prompt.includes("History:"));
+  assert.ok(!prompt.includes("complete sentences") && !prompt.includes("citationIndexes"));
+  assert.equal(buildPrompt("connection"), 'Return {"ok":true}.');
+});
+
+await t.test("learning prompts contain only the active length and operation with compact source metadata", async () => {
+  const state = installNetworkMock();
+  const sessionId = await connectMock(state);
+  const fact = factBundle("amber");
+  const card = { id: "prompt-card", hook: fact.hook, title: fact.title, body: fact.sentences.join(" "), topicPath: ["Science"], sources: [{ title: "Shared Article", url: "https://en.wikipedia.org/wiki/Shared_Article", extract: articleExtract() }] };
+  const question = "How did it measure pressure?";
+  for (const detailed of [false, true]) {
+    const result = await generateLearningResponse({ apiKey: "test-key", sessionId, action: "question", card, question, detailed });
+    assert.equal(result.citations[0].url, card.sources[0].url);
+    const prompt = geminiCalls(state).at(-1).prompt;
+    assert.ok(prompt.startsWith("Answer the user's exact question"));
+    assert.ok(prompt.includes(question));
+    assert.ok(prompt.includes(detailed ? "150 to 250 words" : "2 to 4 sentences"));
+    assert.ok(!prompt.includes(detailed ? "2 to 4 sentences" : "150 to 250 words"));
+    assert.ok(!prompt.includes("More Details:") && !prompt.includes("wikipediaSearchTitles"));
+    assert.ok(!prompt.includes(card.sources[0].url), "citation URLs stay local");
+  }
+  await generateLearningResponse({ apiKey: "test-key", sessionId, action: "learn", card });
+  const prompt = geminiCalls(state).at(-1).prompt;
+  assert.ok(prompt.startsWith("Explain this one card"));
+  assert.ok(!prompt.includes("User question:") && !prompt.includes("2 to 4 sentences"));
+  assert.equal(geminiCallCount(state), 3);
+});
+
 await t.test("successful search interpretations coalesce and invalidate by catalog and credential", async () => {
   const state = installNetworkMock();
   const sessionId = await connectMock(state);
@@ -410,6 +456,14 @@ await t.test("default seven-card generation uses one candidate and one grounding
   assert.deepEqual(state.groundingPrompts.map(prompt => groundingSlots(prompt).length), [7]);
   assert.deepEqual(geminiCalls(state).map(call => call.model), [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[0]]);
   assertNoModelRepeatsWithinLogicalRequest(state);
+  const candidate = state.candidatePrompts[0];
+  const grounding = state.groundingPrompts[0];
+  assert.ok(!candidate.includes("citationIndexes") && !candidate.includes("complete, useful sentences"));
+  assert.ok(grounding.includes("exactly 3 complete, useful sentences"));
+  assert.ok(grounding.includes("only evidence IDs assigned to that slot"));
+  assert.ok(!grounding.includes("provide a verbatim quotation"));
+  assert.equal(candidate.match(/Assignments:/g).length, 1);
+  assert.ok(!candidate.includes("Optional thread context: none"));
 });
 
 await t.test("candidate lookups overlap streamed output and image requests stay off the generation path", async () => {

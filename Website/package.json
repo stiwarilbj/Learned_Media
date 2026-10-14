@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "build:github-pages": "node scripts/build-github-pages.mjs",
-    "test:generation": "node scripts/test-generation.mjs",
+    "test:generation": "node scripts/build-native-prompts.mjs --check && node scripts/test-generation.mjs",
     "test:responsive-data": "node scripts/test-responsive-data.mjs",
     "test:video-semantic": "node scripts/test-video-semantic.mjs",
     "test:search-workers": "node scripts/test-search-workers.mjs",
@@ -14,7 +14,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
-    "test:topic-semantic": "node scripts/test-topic-semantic.mjs"
+    "test:topic-semantic": "node scripts/test-topic-semantic.mjs",
+    "generate:prompts": "node scripts/build-native-prompts.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.5.2",

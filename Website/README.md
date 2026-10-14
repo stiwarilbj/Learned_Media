@@ -27,3 +27,9 @@ On GitHub Pages, Gemini and Wikipedia requests run directly in your browser. You
 The Videos workspace uses the same session-only rule for its YouTube key. Settings includes direct links to create a Google Cloud project, enable YouTube Data API v3, and create a restricted API key. The imported catalog is kept in IndexedDB and only approved creators and individually approved videos are used.
 
 While connected, overdue creator sources refresh once a day. Use **Refresh videos** for an immediate scan. 3Blue1Brown is limited to the approved Neural Networks and Statistics playlists, including future additions.
+
+### Prompt instructions
+
+`lib/prompts.ts` builds one instruction block per operation, followed by labeled task data. `lib/prompt-instructions.json` is the shared source for connection, card, answer, and search rules. Empty optional fields and identical rules/fields are omitted; evidence and user text retain their exact content. Catalog versions remain in request cache keys rather than model prompts.
+
+After editing shared instructions, run `npm run generate:prompts` to update the native Swift instructions. `npm run test:generation` checks that the generated copy is current and verifies prompt isolation, citations, and request counts.
