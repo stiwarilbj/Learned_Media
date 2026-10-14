@@ -94,5 +94,8 @@
   ],
   "questionDifference": [
     "For a difference question, give the main supported distinction first; if the evidence does not establish it, say so first."
+  ],
+  "questionCoverage": [
+    "Address every Coverage checklist item, or explicitly identify that item as unsupported by the supplied evidence. Keep the Original user query authoritative; the checklist adds no new requests."
   ]
 }

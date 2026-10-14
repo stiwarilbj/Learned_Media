@@ -23,6 +23,54 @@ public struct PromptField {
 }
 
 public enum PromptBuilder {
+    /// Retain explicit question clauses; do not split quoted or parenthetical text.
+    public static func coverageChecklist(_ question: String?) -> [String] {
+        guard let question, question.utf16.count <= 4000 else { return [] }
+        let query = question.precomposedStringWithCanonicalMapping
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let questionStart = "^(?:please\\s+)?(?:how|why|when|where|who|what|which|can|could|does|do|did|is|are|was|were|will|would|should|has|have|had)\\b"
+        func isQuestion(_ text: String) -> Bool {
+            text.range(of: questionStart, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        guard isQuestion(query) else { return [] }
+        let units = Array(query.utf16)
+        var safe = Array(repeating: false, count: units.count)
+        var quote: UInt16? = nil
+        var depth = 0, escaped = false
+        func isWord(_ char: UInt16) -> Bool {
+            (65...90).contains(char) || (97...122).contains(char) || (48...57).contains(char)
+        }
+        for i in units.indices {
+            let char = units[i]
+            safe[i] = quote == nil && depth == 0 && !escaped
+            if escaped { escaped = false; continue }
+            if char == 92 { escaped = true; continue }
+            if let closing = quote { if char == closing { quote = nil }; continue }
+            if char == 34 || char == 8220 { quote = char == 8220 ? 8221 : char }
+            else if (char == 39 || char == 8216) && (i == 0 || !isWord(units[i - 1])) { quote = char == 8216 ? 8217 : char }
+            else if [UInt16(40), 91, 123].contains(char) { depth += 1 }
+            else if [UInt16(41), 93, 125].contains(char) { depth = max(0, depth - 1) }
+        }
+        let pattern = "(?:[,;]?\\s+(?:and|also|plus)\\s+|[?,;]\\s*)(?=(?:how|why|when|where|who|what|which|can|could|does|do|did|is|are|was|were|will|would|should|has|have|had)\\b)"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [] }
+        let text = query as NSString
+        var parts: [String] = [], start = 0
+        for match in regex.matches(in: query, range: NSRange(location: 0, length: text.length)) where safe[match.range.location] {
+            parts.append(text.substring(with: NSRange(location: start, length: match.range.location - start)))
+            start = NSMaxRange(match.range)
+        }
+        guard !parts.isEmpty else { return [] }
+        parts.append(text.substring(from: start))
+        var seen = Set<String>()
+        let items = parts.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\\?+$", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { seen.insert($0.lowercased()).inserted }
+        return (2...6).contains(items.count) && items.allSatisfy({ $0.utf16.count <= 300 && isQuestion($0) }) ? items : []
+    }
+
     /// Match only the leading question, without changing the query sent to the model.
     public static func questionType(_ query: String?) -> QuestionType? {
         let normalized = (query ?? "").precomposedStringWithCanonicalMapping.lowercased()
@@ -91,6 +139,7 @@ public enum PromptBuilder {
 
     public static func question(card: [String: Any], query: String?, detailed: Bool = false,
                                 history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
+        let checklist = coverageChecklist(query)
         let typeKey: String?
         switch questionType(query) {
         case .when: typeKey = "questionWhen"
@@ -101,12 +150,14 @@ public enum PromptBuilder {
         let rules = (PromptInstructions.rules["answerWriting"] ?? [])
             + (PromptInstructions.rules["questionEvidence"] ?? [])
             + (typeKey.flatMap { PromptInstructions.rules[$0] } ?? [])
+            + (checklist.isEmpty ? [] : (PromptInstructions.rules["questionCoverage"] ?? []))
             + (PromptInstructions.rules[detailed ? "answerDetailed" : "answerShort"] ?? [])
         return build(.question, rules: rules, fields: [
             PromptField("Original user query", query),
             PromptField("Supporting card context", supportingCard(card), reference: true),
             PromptField("Previous conversation (context only)", Array(history.suffix(6)), reference: true),
-            PromptField("Wikipedia evidence", evidence, reference: true)
+            PromptField("Wikipedia evidence", evidence, reference: true),
+            PromptField("Coverage checklist", checklist, reference: true)
         ])
     }
 

@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "mode": "deterministic-replay",
+  "suiteHash": "3110e2a672fbc9d9864f32daba8cf9b664f03d0936c912cb991d09c6bd2bb22c",
+  "promptHash": "fa215e4b7e26e2270c53816f7b3fae29fc1e0f28f476a14527ca021bada3ca16",
+  "cases": [
+    {
+      "id": "direct-question",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 94,
+      "promptBytes": 6193,
+      "geminiCalls": 1
+    },
+    {
+      "id": "paraphrase",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    },
+    {
+      "id": "multiple-concepts",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    },
+    {
+      "id": "weak-evidence",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 6997,
+      "promptBytes": 15471,
+      "geminiCalls": 4
+    },
+    {
+      "id": "malformed-output",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 6545,
+      "promptBytes": 14079,
+      "geminiCalls": 3
+    },
+    {
+      "id": "duplicate-candidates",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0.125,
+      "outputBytes": 6732,
+      "promptBytes": 9707,
+      "geminiCalls": 2
+    },
+    {
+      "id": "unrelated-search",
+      "taskSuccess": true,
+      "citationValid": 0,
+      "citationTotal": 0,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 0,
+      "promptBytes": 0,
+      "geminiCalls": 0
+    },
+    {
+      "id": "multi-part-question",
+      "taskSuccess": false,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 155,
+      "promptBytes": 6079,
+      "geminiCalls": 1
+    }
+  ]
+}

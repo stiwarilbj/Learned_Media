@@ -16,7 +16,7 @@ export function registerEvaluation(h) {
     const random = Math.random;
     Math.random = () => 0.5;
     try {
-      if (fixture.query && fixture.id !== 'direct-question') {
+      if (fixture.query && !['direct-question','multi-part-question'].includes(fixture.id)) {
         const result = engine.searchTopicIndex(index, fixture.query);
         assert.equal(result.suggestions.length,100);
         assert.equal(new Set(result.suggestions.map(s=>s.id)).size,100);
@@ -45,9 +45,9 @@ export function registerEvaluation(h) {
             if (prompt.includes('Generate one batch of distinct')) output.facts.push({...output.facts[0]});
             return output;
           }} : {};
-        state=h.installNetworkMock(options);
+        state=h.installNetworkMock({...options,learningAnswer:fixture.answer});
         const sessionId=await h.connectMock(state);
-        if (fixture.id==='direct-question') {
+        if (['direct-question','multi-part-question'].includes(fixture.id)) {
           const fact=h.factBundle(h.words[0]);
           const card={id:'fixed-eval-card',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:h.articleExtract()}]};
           const args={apiKey:'test-key',sessionId,action:'question',card,question:fixture.query,history:[]};
@@ -56,10 +56,15 @@ export function registerEvaluation(h) {
           assert.equal(answer.citations.length,1);
           row.citationTotal=answer.citations.length;
           row.citationValid=answer.citations.filter(c=>c.url===card.sources[0].url).length;
-          const repeat=await h.generateLearningResponse({...args,question:'  WHY does this instrument detect pressure?  '});
+          const repeat=await h.generateLearningResponse({...args,question:'  '+fixture.query.toUpperCase()+'  '});
           assert.equal(repeat.answer,answer.answer);
           assert.ok(state.outputs[0].prompt.includes('Original user query: '+fixture.query));
           questionInstructionPresent=state.outputs[0].prompt.includes(fixture.requiredInstruction);
+          if(fixture.expectedChecklist){
+            const field=state.outputs[0].prompt.split('\n\n').find(b=>b.startsWith('Coverage checklist: '));
+            questionInstructionPresent &&= !!field && JSON.stringify(JSON.parse(field.slice('Coverage checklist: '.length)).data)===JSON.stringify(fixture.expectedChecklist);
+            assert.ok(answer.answer.includes('does not explain why it was abandoned'));
+          }
         } else {
           const result=await h.generateGeminiFacts({...h.generationArgs(sessionId),requestedCount:7});
           assert.equal(result.completedCount,7);

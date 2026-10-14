@@ -1,8 +1,8 @@
 {
   "version": 1,
   "mode": "deterministic-replay",
-  "suiteHash": "7da7d8634c5e6c108ebe6d65df036cc94070b9e3737f184b031a16ecefd6c144",
-  "promptHash": "fa215e4b7e26e2270c53816f7b3fae29fc1e0f28f476a14527ca021bada3ca16",
+  "suiteHash": "3110e2a672fbc9d9864f32daba8cf9b664f03d0936c912cb991d09c6bd2bb22c",
+  "promptHash": "27cafcb846114986adcd30534f5a33e385b3cbabd8fd3981c915b315fe69d199",
   "cases": [
     {
       "id": "direct-question",
@@ -80,6 +80,17 @@
       "outputBytes": 0,
       "promptBytes": 0,
       "geminiCalls": 0
+    },
+    {
+      "id": "multi-part-question",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 155,
+      "promptBytes": 6373,
+      "geminiCalls": 1
     }
   ]
 }

@@ -33,5 +33,16 @@
     "id": "unrelated-search",
     "query": "zzzyxq",
     "maxCalls": 0
+  },
+  {
+    "id": "multi-part-question",
+    "query": "How did it work, and why was it abandoned?",
+    "maxCalls": 1,
+    "answer": "The instrument used a diaphragm to detect pressure changes. The supplied evidence does not explain why it was abandoned.",
+    "requiredInstruction": "Address every Coverage checklist item, or explicitly identify that item as unsupported by the supplied evidence. Keep the Original user query authoritative; the checklist adds no new requests.",
+    "expectedChecklist": [
+      "How did it work",
+      "why was it abandoned"
+    ]
   }
 ]

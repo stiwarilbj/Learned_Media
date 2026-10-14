@@ -32,6 +32,50 @@ final class PromptBuilderTests: XCTestCase {
         }
     }
 
+    func testCoverageChecklistRetainsOnlyExplicitQuestionClauses() throws {
+        let cases: [(String, [String])] = [
+            ("How did it work, and why was it abandoned?", ["How did it work", "why was it abandoned"]),
+            ("  HOW did it work?  WHY was it abandoned?  ", ["HOW did it work", "WHY was it abandoned"]),
+            ("When was it built; where was it used, and who designed it?", ["When was it built", "where was it used", "who designed it"]),
+            ("What's the difference between A and B? Also how are they similar?", ["What's the difference between A and B", "how are they similar"]),
+            ("How did it work and was it safe?", ["How did it work", "was it safe"]),
+            ("How did it work 🧭, and why did it stop?", ["How did it work 🧭", "why did it stop"]),
+            ("What is “How and Why”, and who wrote it?", ["What is “How and Why”", "who wrote it"]),
+            ("Who wrote 'When and Why', and where was it published?", ["Who wrote 'When and Why'", "where was it published"]),
+            ("How does it work (and why is that surprising), and when was it invented?", ["How does it work (and why is that surprising)", "when was it invented"]),
+            ("How does it work? How does it work?", []),
+            ("What is War and Peace?", []),
+            ("Why was it abandoned?", []),
+            ("How or why did it fail?", []),
+            ("How does \"A and why B\" work?", []),
+            ("Explain how it worked and why it failed.", []),
+            ("How did it work, and why?", ["How did it work", "why"]),
+            ("", [])
+        ]
+        for (query, expected) in cases {
+            XCTAssertEqual(PromptBuilder.coverageChecklist(query), expected, query)
+            let prompt = PromptBuilder.question(card: ["body": "Why was it abandoned, and how did it work?"], query: query,
+                history: [["content": "How did it work, and why was it abandoned?"]], evidence: [])
+            let field = prompt.components(separatedBy: "\n\n").first { $0.hasPrefix("Coverage checklist: ") }
+            let rule = PromptInstructions.rules["questionCoverage"]![0]
+            if expected.isEmpty { XCTAssertNil(field); XCTAssertFalse(prompt.contains(rule)) }
+            else {
+                let serialized = try XCTUnwrap(field).dropFirst("Coverage checklist: ".count)
+                let envelope = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(serialized.utf8)) as? [String: Any])
+                XCTAssertEqual(envelope["data"] as? [String], expected)
+                XCTAssertEqual(envelope["kind"] as? String, "reference_material")
+                XCTAssertEqual(prompt.components(separatedBy: rule).count - 1, 1)
+            }
+            if !query.isEmpty { XCTAssertTrue(prompt.contains("Original user query: " + query)) }
+        }
+        XCTAssertEqual(PromptBuilder.coverageChecklist(nil), [])
+        XCTAssertEqual(PromptBuilder.coverageChecklist("How " + String(repeating: "x", count: 4000)), [])
+        XCTAssertEqual(PromptBuilder.coverageChecklist("How " + String(repeating: "x", count: 301) + ", and why did it fail?"), [])
+        XCTAssertEqual(PromptBuilder.coverageChecklist((0..<7).map { "How did it work \($0)?" }.joined(separator: " ")), [])
+        let learn = PromptBuilder.learning(action: .learn, card: ["body": cases[0].0], question: cases[0].0, evidence: [])
+        XCTAssertFalse(learn.contains("Coverage checklist:") || learn.contains(PromptInstructions.rules["questionCoverage"]![0]))
+    }
+
     func testCombinedCardsRetainWritingLimitsAndSlotOwnedEvidenceRules() {
         let prompt = PromptBuilder.factCard(sentenceCount: 3, difficulties: [5], fields: [PromptField("Evidence", [["id": "e1", "text": "Exact source passage."]], reference: true)], combined: true)
         XCTAssertTrue(prompt.contains("Choose candidates and write grounded cards in one batch"))

@@ -16,7 +16,7 @@ Module._extensions[".ts"] = (module, filename) => {
 };
 
 const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey } = require("../lib/gemini.ts");
-const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt, buildSearchInterpretationPrompt, detectQuestionType } = require("../lib/prompts.ts");
+const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt, buildSearchInterpretationPrompt, detectQuestionType, questionCoverageChecklist } = require("../lib/prompts.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
@@ -188,7 +188,7 @@ function installNetworkMock(options = {}) {
           };
         }).filter(Boolean).reverse() };
       } else if (prompt.startsWith("Explain this one card") || prompt.startsWith("Answer the user's exact question")) {
-        output = { answer: options.emptyAnswer ? "" : "The instrument used a diaphragm to detect pressure changes.", citationIndexes: [0] };
+        output = { answer: options.emptyAnswer ? "" : options.learningAnswer ?? "The instrument used a diaphragm to detect pressure changes.", citationIndexes: [0] };
       } else {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
       }
@@ -1291,4 +1291,50 @@ test('typed questions still take one generation call each',async()=>{
   await generateLearningResponse({apiKey:'test-key',sessionId,action:'question',card,question,history:[]});
   assert.equal(geminiCallCount(state)-before,1);
  }
+});
+
+
+test('multi-part checklists retain explicit questions without splitting names, quotes or parentheses',()=>{
+ const cases=[
+  ['How did it work, and why was it abandoned?',['How did it work','why was it abandoned']],
+  ['  HOW did it work?  WHY was it abandoned?  ',['HOW did it work','WHY was it abandoned']],
+  ['When was it built; where was it used, and who designed it?',['When was it built','where was it used','who designed it']],
+  ["What's the difference between A and B? Also how are they similar?",["What's the difference between A and B",'how are they similar']],
+  ['How did it work and was it safe?',['How did it work','was it safe']],
+  ['How did it work 🧭, and why did it stop?',['How did it work 🧭','why did it stop']],
+  ['What is “How and Why”, and who wrote it?',['What is “How and Why”','who wrote it']],
+  ["Who wrote 'When and Why', and where was it published?",["Who wrote 'When and Why'",'where was it published']],
+  ['How does it work (and why is that surprising), and when was it invented?',['How does it work (and why is that surprising)','when was it invented']],
+  ['How does it work? How does it work?',[]],
+  ['What is War and Peace?',[]],['Why was it abandoned?',[]],['How or why did it fail?',[]],
+  ['How does "A and why B" work?',[]],['Explain how it worked and why it failed.',[]],
+  ['How did it work, and why?', ['How did it work','why']],
+  ['',[]],[undefined,[]],
+  [Array(7).fill('How did it work').map((v,i)=>v+' '+i+'?').join(' '),[]],
+  ['How '+ 'x'.repeat(301) + ', and why did it fail?',[]]
+ ];
+ const rules=JSON.parse(readFileSync(new URL('../lib/prompt-instructions.json',import.meta.url)));
+ for(const [question,expected] of cases){
+  assert.deepEqual(questionCoverageChecklist(question),expected,question);
+  const prompt=buildQuestionPrompt({card:{body:'Why was it abandoned, and how did it work?'},question,history:[{content:'How did it work, and why was it abandoned?'}],evidence:[]});
+  const field=prompt.split('\n\n').find(block=>block.startsWith('Coverage checklist: '));
+  if(expected.length){assert.deepEqual(JSON.parse(field.slice('Coverage checklist: '.length)),{kind:'reference_material',data:expected});assert.equal(prompt.split(rules.questionCoverage[0]).length-1,1);}
+  else {assert.equal(field,undefined);assert.ok(!prompt.includes(rules.questionCoverage[0]));}
+  if(question)assert.ok(prompt.includes('Original user query: '+question));
+ }
+ assert.deepEqual(questionCoverageChecklist('How '+ 'x'.repeat(4000)),[]);
+ const learn=buildLearningPrompt({action:'learn',question:cases[0][0],card:{body:cases[0][0]},evidence:[]});
+ assert.ok(!learn.includes('Coverage checklist:') && !learn.includes(rules.questionCoverage[0]));
+});
+
+test('multi-part answers use one existing request and reuse normalized cached questions',async()=>{
+ const state=installNetworkMock({learningAnswer:'A diaphragm detected pressure changes. The supplied evidence does not explain why it was abandoned.'}),sessionId=await connectMock(state),fact=factBundle(words[0]);
+ const card={id:'coverage-answer',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:articleExtract()}]};
+ const args={apiKey:'test-key',sessionId,action:'question',card,question:'How did it work, and why was it abandoned?',history:[]};
+ const answer=await generateLearningResponse(args);
+ assert.ok(answer.answer.includes('does not explain why it was abandoned'));assert.equal(answer.citations.length,1);
+ assert.equal(geminiCallCount(state),1);
+ const prompt=geminiCalls(state)[0].prompt;assert.ok(prompt.includes('Coverage checklist:'));assert.ok(prompt.includes('explicitly identify that item as unsupported'));
+ const repeated=await generateLearningResponse({...args,question:'  HOW did it work, and WHY was it abandoned?  '});
+ assert.equal(repeated.answer,answer.answer);assert.equal(geminiCallCount(state),1);
 });
