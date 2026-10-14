@@ -73,3 +73,68 @@ test('independent published-body measurements catch wrong lengths and incomplete
   }
  }
 });
+
+test('comparison report displays all metric transitions beside case decisions',async()=>{
+ const {formatComparison}=await import('./prompt-evaluation/report.mjs');
+ const old=copy(),next=copy();
+ const id='shortest-card-length';
+ Object.assign(old.cases.find(c=>c.id===id),{outputBytes:6700,geminiCalls:2});
+ Object.assign(next.cases.find(c=>c.id===id),{outputBytes:5900,geminiCalls:3,citationValid:6,duplicateRate:0.1,candidateDuplicateRate:0.2});
+ const text=formatComparison(old,next);
+ assert.match(text,/Acceptance: REJECTED/);
+ assert.ok(text.includes(`${id}: REJECT`));
+ for (const expected of ['success: pass → pass','citations: 7/7 (100%) → 6/7 (85.71%)',
+  'duplicates: 0% → 10%','candidate duplicates: 0% → 20%',
+  'output: 6,700 → 5,900 bytes','calls: 2 → 3','prompt: ',
+  'sentence counts: 7/7 @ 1 → 7/7 @ 1','cited sentences: 7/7 → 7/7',
+  `${id}: Gemini calls increased`,`${id}: citation validity regressed`]) assert.ok(text.includes(expected),expected);
+ assert.ok(text.includes(`${old.cases[0].id}: PASS`),'other cases retain their own decision');
+});
+
+test('comparison report distinguishes no citations and preserves global prompt gates',async()=>{
+ const {formatComparison}=await import('./prompt-evaluation/report.mjs');
+ const next=copy();next.promptHash='a'.repeat(64);
+ const text=formatComparison(baseline,next);
+ assert.match(text,/Acceptance: REJECTED; reliability improved: no/);
+ assert.match(text,/citations: N\/A \(0\/0\) → N\/A \(0\/0\)/);
+ assert.match(text,/Changed prompts need a measured reliability improvement/);
+ assert.ok(baseline.cases.every(row=>text.includes(`${row.id}: PASS`)),'per-case gates do not replace the suite-wide decision');
+ const old=copy();old.cases[0].taskSuccess=false;
+ const accepted=formatComparison(old,next);
+ assert.match(accepted,/Acceptance: ACCEPTED; reliability improved: yes/);
+ assert.match(accepted,/success: fail → pass/);
+});
+
+test('comparison report exposes missing, extra, and invalid case metrics',async()=>{
+ const {formatComparison}=await import('./prompt-evaluation/report.mjs');
+ const next=copy(),removed=next.cases.shift();
+ next.cases.push({...removed,id:'extra-case'});
+ next.cases[0].geminiCalls=null;
+ const text=formatComparison(baseline,next);
+ assert.ok(text.includes(`${removed.id}: REJECT`));
+ assert.match(text,/extra-case: REJECT/);
+ assert.match(text,/citations: missing →/);
+ assert.match(text,/calls: 0 → N\/A/);
+ assert.match(text,/invalid metrics/);
+});
+
+test('compare CLI prints transitions and retains acceptance exit codes',async()=>{
+ const {mkdtempSync,writeFileSync,rmSync}=await import('node:fs');
+ const {tmpdir}=await import('node:os');
+ const {join}=await import('node:path');
+ const {spawnSync}=await import('node:child_process');
+ const directory=mkdtempSync(join(tmpdir(),'lm-comparison-test-'));
+ try {
+  const oldPath=join(directory,'baseline.json'),newPath=join(directory,'candidate.json');
+  writeFileSync(oldPath,JSON.stringify(baseline));
+  for (const reject of [false,true]) {
+   const next=copy();if (reject) next.cases[0].geminiCalls++;
+   writeFileSync(newPath,JSON.stringify(next));
+   const run=spawnSync(process.execPath,[new URL('./evaluate-prompts.mjs',import.meta.url).pathname,'--compare',oldPath,newPath],{encoding:'utf8'});
+   assert.equal(run.status,reject ? 1 : 0,run.stderr);
+   assert.ok(run.stdout.includes(`Acceptance: ${reject ? 'REJECTED' : 'ACCEPTED'}`));
+   assert.ok(run.stdout.includes(`calls: 1 → ${reject ? 2 : 1}`));
+   assert.ok(run.stdout.includes(`"accepted": ${!reject}`),'retain the existing JSON decision');
+  }
+ } finally {rmSync(directory,{recursive:true,force:true});}
+});

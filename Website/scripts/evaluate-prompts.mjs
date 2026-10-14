@@ -4,13 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { compareReports } from './prompt-evaluation/compare.mjs';
+import { formatComparison } from './prompt-evaluation/report.mjs';
 const args=process.argv.slice(2);
 const flag=name=>{const i=args.indexOf(name);return i<0 ? undefined : args[i+1];};
 const hash=paths=>createHash('sha256').update(paths.map(p=>readFileSync(new URL(p,import.meta.url))).map(b=>b.toString()).join('\n')).digest('hex');
 if (args.includes('--compare')) {
   const [a,b]=args.slice(args.indexOf('--compare')+1);
   if (!a || !b) throw new Error('Usage: --compare baseline.json candidate.json');
-  const result=compareReports(JSON.parse(readFileSync(a)),JSON.parse(readFileSync(b)));
+  const baseline=JSON.parse(readFileSync(a)),candidate=JSON.parse(readFileSync(b));
+  const result=compareReports(baseline,candidate);
+  console.log(formatComparison(baseline,candidate,result));
   console.log(JSON.stringify(result,null,2));
   process.exit(result.accepted ? 0 : 1);
 }
@@ -28,11 +31,12 @@ try {
     promptHash:hash(['../lib/prompts.ts','../lib/prompt-instructions.json','../lib/evidence-dates.ts','../lib/evidence-date-patterns.json']),cases};
   const output=flag('--output');
   if (output) writeFileSync(output,JSON.stringify(report,null,2)+'\n');
-  console.table(cases.map(c=>({case:c.id,success:c.taskSuccess,sentenceCounts:c.cardTotal ? `${c.sentenceCountValid}/${c.cardTotal} @ ${c.expectedSentences}` : 'N/A',sentenceCitations:c.sentenceTotal ? `${c.sentenceCited}/${c.sentenceTotal}` : 'N/A',citations:c.citationTotal ? `${c.citationValid}/${c.citationTotal}` : 'N/A',duplicates:c.duplicateRate,outputBytes:c.outputBytes,promptBytes:c.promptBytes,calls:c.geminiCalls})));
+  if (args.includes('--capture')) console.table(cases.map(c=>({case:c.id,success:c.taskSuccess,sentenceCounts:c.cardTotal ? `${c.sentenceCountValid}/${c.cardTotal} @ ${c.expectedSentences}` : 'N/A',sentenceCitations:c.sentenceTotal ? `${c.sentenceCited}/${c.sentenceTotal}` : 'N/A',citations:c.citationTotal ? `${c.citationValid}/${c.citationTotal}` : 'N/A',duplicates:c.duplicateRate,outputBytes:c.outputBytes,promptBytes:c.promptBytes,calls:c.geminiCalls})));
   const baseline=flag('--baseline') || new URL('./prompt-evaluation/baseline.json',import.meta.url);
   if (!args.includes('--capture')) {
-    const comparison=compareReports(JSON.parse(readFileSync(baseline)),report);
-    for (const error of comparison.errors) console.error(error);
+    const previous=JSON.parse(readFileSync(baseline));
+    const comparison=compareReports(previous,report);
+    console.log(formatComparison(previous,report,comparison));
     if (!comparison.accepted) process.exitCode=1;
   }
   if (result.status!==0) process.exitCode=1;

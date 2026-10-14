@@ -24,6 +24,29 @@ npm run evaluate:prompts -- --output /tmp/candidate.json
 npm run evaluate:prompts -- --compare scripts/prompt-evaluation/baseline.json /tmp/candidate.json
 ```
 
+Normal evaluation and `--compare` print the overall acceptance decision followed
+by each case's metric-gate decision and **baseline → candidate** values. For example:
+
+```text
+Acceptance: REJECTED; reliability improved: no
+Metrics: baseline → candidate
+shortest-card-length: REJECT
+  success: pass → pass | citations: 7/7 (100%) → 7/7 (100%) | duplicates: 0% → 0% | candidate duplicates: 0% → 0%
+  output: 6,700 → 5,900 bytes | prompt: 9,000 → 9,000 bytes | calls: 2 → 3
+  sentence counts: 7/7 @ 1 → 7/7 @ 1 | cited sentences: 7/7 → 7/7
+Rejection reasons:
+  - shortest-card-length: Gemini calls increased
+```
+
+Citation counts and percentages are both visible; cases without citations show
+`N/A (0/0)`. Missing/extra cases and invalid metrics remain visible and rejected.
+Per-case PASS covers that case's gates; the overall decision also enforces suite
+identity and the requirement for changed prompts to demonstrate a reliability
+improvement somewhere in the suite. All rejection reasons remain listed.
+`--compare` retains its JSON acceptance summary and success/failure exit codes.
+Capture mode has no baseline comparison and keeps its candidate-only table.
+Saved JSON reports and acceptance thresholds remain unchanged.
+
 Reports include prompt-version and fixture hashes and per-case metrics. The committed baseline is an explicit review artifact, never updated by normal checks. To capture another baseline deliberately, use `--capture --output /tmp/baseline.json`; `--capture` bypasses comparison, but still fails if a scenario fails. Do not overwrite the committed baseline to make a regression pass.
 
 - **Task success:** every scenario assertion passes, including expected card/suggestion count, meaning coverage, retry slots, and caching.
