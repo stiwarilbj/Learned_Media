@@ -42,6 +42,16 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(PromptBuilder.build(.topicInterpret, fields: [PromptField("Query", "ground shake")]).contains("Fields marked kind="))
     }
 
+    func testSearchInterpretationNormalizesOnlyCaseAndWhitespace() {
+        for operation in [PromptOperation.topicInterpret, .videoInterpret] {
+            let first = PromptBuilder.searchInterpretation(operation, query: "  EARTHQUAKES  in Japan? ")
+            XCTAssertEqual(first, PromptBuilder.searchInterpretation(operation, query: "earthquakes in japan?"))
+            XCTAssertTrue(first.contains("compact structured plan"))
+            XCTAssertTrue(first.hasSuffix("Query: earthquakes in japan?"))
+            XCTAssertNotEqual(first, PromptBuilder.searchInterpretation(operation, query: "earthquakes outside japan?"))
+        }
+    }
+
     func testOperationInstructionsAndCitationFormat() {
         XCTAssertEqual(PromptBuilder.build(.connection), "Return {\"ok\":true}.")
         for operation in [PromptOperation.topicInterpret, .videoInterpret, .videoVerify] {

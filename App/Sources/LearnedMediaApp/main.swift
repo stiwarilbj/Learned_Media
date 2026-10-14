@@ -77,7 +77,7 @@ private struct GeminiEvidence {
 }
 private struct GeminiGroundedEnvelope: Decodable { let facts: [GeminiGroundedFact]? }
 private struct GeminiAnswerEnvelope: Decodable { let answer: String?; let citationIndexes: [Int]? }
-private struct GeminiVideoConceptGroup: Decodable { let label: String?; let terms: [String]?; let required: Bool? }
+private struct GeminiVideoConceptGroup: Decodable { let label: String?; let terms: [String]?; let related: [String]?; let required: Bool? }
 private struct GeminiVideoSearchEnvelope: Decodable {
     let terms: [String]?
     let include: [String]?
@@ -1409,12 +1409,12 @@ private final class GeminiClient {
 
     func interpretVideoSearch(key: String, query: String, catalogVersion: Int) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using Smart search.", retryable: false) }
-        let prompt = PromptBuilder.build(.videoInterpret, fields: [PromptField("Query", query)])
-        let schema: [String: Any] = ["type": "OBJECT", "properties": ["terms": ["type": "ARRAY", "items": ["type": "STRING"]], "include": ["type": "ARRAY", "items": ["type": "STRING"]], "alternatives": ["type": "ARRAY", "items": ["type": "STRING"]], "exclude": ["type": "ARRAY", "items": ["type": "STRING"]], "topics": ["type": "ARRAY", "items": ["type": "STRING"]], "conceptGroups": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": ["label": ["type": "STRING"], "terms": ["type": "ARRAY", "items": ["type": "STRING"]], "required": ["type": "BOOLEAN"]], "required": ["terms"]]], "channel": ["type": "STRING"], "channelId": ["type": "STRING"], "dateIntent": ["type": "STRING", "enum": ["upload", "event", "either"]], "minDate": ["type": "STRING"], "maxDate": ["type": "STRING"], "minDurationSeconds": ["type": "INTEGER"], "maxDurationSeconds": ["type": "INTEGER"], "sort": ["type": "STRING", "enum": ["relevance", "newest", "oldest", "random"]]], "required": ["terms", "include", "exclude", "topics"]]
+        let prompt = PromptBuilder.searchInterpretation(.videoInterpret, query: query)
+        let schema: [String: Any] = ["type": "OBJECT", "properties": ["terms": ["type": "ARRAY", "items": ["type": "STRING"]], "include": ["type": "ARRAY", "items": ["type": "STRING"]], "alternatives": ["type": "ARRAY", "items": ["type": "STRING"]], "exclude": ["type": "ARRAY", "items": ["type": "STRING"]], "topics": ["type": "ARRAY", "items": ["type": "STRING"]], "conceptGroups": ["type": "ARRAY", "maxItems": 8, "items": ["type": "OBJECT", "properties": ["label": ["type": "STRING"], "terms": ["type": "ARRAY", "minItems": 1, "maxItems": 12, "items": ["type": "STRING"]], "related": ["type": "ARRAY", "maxItems": 12, "items": ["type": "STRING"]], "required": ["type": "BOOLEAN"]], "required": ["label", "terms", "related", "required"]]], "channel": ["type": "STRING"], "channelId": ["type": "STRING"], "dateIntent": ["type": "STRING", "enum": ["upload", "event", "either"]], "minDate": ["type": "STRING"], "maxDate": ["type": "STRING"], "minDurationSeconds": ["type": "INTEGER"], "maxDurationSeconds": ["type": "INTEGER"], "sort": ["type": "STRING", "enum": ["relevance", "newest", "oldest", "random"]]], "required": ["conceptGroups", "exclude", "topics"]]
         let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 1024, cacheContext: "youtube-catalog:\(catalogVersion)")
         let envelope = try JSONDecoder().decode(GeminiVideoSearchEnvelope.self, from: Data(result.text.utf8))
         var output: [String: Any] = ["terms": Array((envelope.terms ?? []).prefix(24)), "include": Array((envelope.include ?? []).prefix(24)), "alternatives": Array((envelope.alternatives ?? []).prefix(32)), "exclude": Array((envelope.exclude ?? []).prefix(24)), "topics": Array((envelope.topics ?? []).prefix(12))]
-        if let groups = envelope.conceptGroups { output["conceptGroups"] = groups.prefix(8).map { ["label": $0.label ?? "", "terms": Array(($0.terms ?? []).prefix(12)), "required": $0.required ?? true] } }
+        if let groups = envelope.conceptGroups { output["conceptGroups"] = groups.prefix(8).map { ["label": String(($0.label ?? "").prefix(100)), "terms": Array(($0.terms ?? []).prefix(12)).map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)) }, "related": Array(($0.related ?? []).prefix(12)).map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100)) }, "required": $0.required ?? true] } }
         if let channel = envelope.channel, !channel.isEmpty { output["channel"] = channel }
         if let channelId = envelope.channelId, !channelId.isEmpty { output["channelId"] = channelId }
         if let dateIntent = envelope.dateIntent, ["upload", "event", "either"].contains(dateIntent) { output["dateIntent"] = dateIntent }
@@ -1429,9 +1429,9 @@ private final class GeminiClient {
 
     func interpretNaturalSearch(key: String, query: String, catalogVersion: Int) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using natural-language search.", retryable: false) }
-        let prompt = PromptBuilder.build(.topicInterpret, fields: [PromptField("Query", query)])
-        let list: [String: Any] = ["type": "ARRAY", "items": ["type": "STRING"]]
-        let schema: [String: Any] = ["type": "OBJECT", "properties": ["groups": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": ["label": ["type": "STRING"], "equivalents": list, "related": list], "required": ["label", "equivalents", "related"]]], "alternatives": ["type": "BOOLEAN"]], "required": ["groups", "alternatives"]]
+        let prompt = PromptBuilder.searchInterpretation(.topicInterpret, query: query)
+        let list: [String: Any] = ["type": "ARRAY", "maxItems": 12, "items": ["type": "STRING"]]
+        let schema: [String: Any] = ["type": "OBJECT", "properties": ["groups": ["type": "ARRAY", "maxItems": 8, "items": ["type": "OBJECT", "properties": ["label": ["type": "STRING"], "equivalents": list, "related": list], "required": ["label", "equivalents", "related"]]], "alternatives": ["type": "BOOLEAN"]], "required": ["groups", "alternatives"]]
         let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", priority: 1, allowedModels: GeminiModelPolicy.primaryModels, maxOutputTokens: 1024, cacheContext: "topic-catalog:\(catalogVersion)")
         let plan = try JSONSerialization.jsonObject(with: Data(result.text.utf8)) as? [String: Any] ?? [:]
         return ["plan": plan, "modelOutcomes": result.outcomes]

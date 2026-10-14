@@ -70,3 +70,8 @@ export function buildLearningPrompt(options: {
     { label: "Wikipedia evidence", value: options.evidence, reference: true }
   ]);
 }
+
+/** Normalize interpretation cache inputs only; preserve punctuation, places, and query meaning. */
+export function buildSearchInterpretationPrompt(operation: "topicInterpret" | "videoInterpret", query: string) {
+  return buildPrompt(operation, [], [{ label: "Query", value: query.normalize("NFC").toLowerCase().replace(/\s+/gu, " ").trim() }]);
+}

@@ -16,10 +16,11 @@ Module._extensions[".ts"] = (module, filename) => {
 };
 
 const { ALLOWED_GEMINI_MODELS, expandTopicSearch, generateGeminiFacts, generateLearningResponse, interpretNaturalSearch, interpretVideoSearch, testGeminiKey } = require("../lib/gemini.ts");
-const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt } = require("../lib/prompts.ts");
+const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionPrompt, buildSearchInterpretationPrompt } = require("../lib/prompts.ts");
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
+const { searchSemanticVideos, mergeVideoSearchPlans, makeLocalVideoPlan } = require("../lib/video-semantic.ts");
 const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
 const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
 const { completeSentenceChunks, selectEvidence, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
@@ -122,7 +123,7 @@ function installNetworkMock(options = {}) {
       } else if (prompt.includes("Interpret this unresolved learning-topic query")) {
         output = { groups: [{label:"stellar evolution",equivalents:["stellar evolution", "supernova"],related:[]}], alternatives:false };
       } else if (prompt.includes("Interpret this natural-language video search")) {
-        output = { terms: ["black holes"], include: [], alternatives: ["gravitational lensing"], exclude: [], topics: ["Science"], sort: "relevance" };
+        output = { conceptGroups: [{label:"black holes",terms:["black holes", "collapsed stars"],related:["gravitational lensing"],required:true}], exclude: [], topics: ["Science"], sort: "relevance" };
       } else if (prompt.includes("Check these approved videos against the plan")) {
         output = { matches: [] };
       } else if (prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates")) {
@@ -570,6 +571,17 @@ await t.test("the original question takes priority over unrelated card details a
   assert.ok(!learn.includes(question) && !learn.includes("Previous conversation (context only):"));
 });
 
+await t.test("search interpretation produces one normalized compact plan without rewriting the query", () => {
+  for (const operation of ["topicInterpret", "videoInterpret"]) {
+    const first = buildSearchInterpretationPrompt(operation, "  EARTHQUAKES  in Japan? ");
+    assert.equal(first, buildSearchInterpretationPrompt(operation, "earthquakes in japan?"));
+    assert.ok(first.includes("compact structured plan"));
+    assert.ok(first.includes("related"));
+    assert.ok(first.endsWith("Query: earthquakes in japan?"));
+    assert.notEqual(first, buildSearchInterpretationPrompt(operation, "earthquakes outside japan?"));
+  }
+});
+
 await t.test("successful search interpretations coalesce and invalidate by catalog and credential", async () => {
   const state = installNetworkMock();
   const sessionId = await connectMock(state);
@@ -579,16 +591,23 @@ await t.test("successful search interpretations coalesce and invalidate by catal
   assert.deepEqual(duplicate.terms, first.terms);
   const topicCalls = () => geminiCalls(state).filter(call => call.prompt.includes("Interpret this unresolved learning-topic query"));
   assert.equal(topicCalls().length, 1, "identical pending interpretations should share one Gemini request");
-  await interpretNaturalSearch(topicArgs);
+  await interpretNaturalSearch({ ...topicArgs, query: "  WHY  DO SOME STARS EXPLODE AT THE END OF THEIR LIFE  " });
   assert.equal(topicCalls().length, 1, "successful responses should be cached for the session");
   await interpretNaturalSearch({ ...topicArgs, catalogVersion: 2 });
   assert.equal(topicCalls().length, 2, "a catalog version change should invalidate cached interpretation");
 
   const videoArgs = { apiKey: "test-key", sessionId, query: "videos about black holes", catalogVersion: 4 };
-  await interpretVideoSearch(videoArgs);
+  const [videoFirst, videoDuplicate] = await Promise.all([interpretVideoSearch(videoArgs), interpretVideoSearch({ ...videoArgs, query: " VIDEOS   ABOUT BLACK HOLES " })]);
+  assert.deepEqual(videoFirst.plan, videoDuplicate.plan);
+  assert.deepEqual(videoFirst.plan.conceptGroups[0].related, ["gravitational lensing"]);
+  assert.deepEqual(videoFirst.plan.terms, [], "the plan does not need duplicated top-level concepts");
   await interpretVideoSearch(videoArgs);
   const videoCalls = () => geminiCalls(state).filter(call => call.prompt.includes("Interpret this natural-language video search"));
   assert.equal(videoCalls().length, 1, "identical video plans should be cached");
+  const plan = mergeVideoSearchPlans(makeLocalVideoPlan(videoArgs.query), videoFirst.plan, []);
+  const localMatches = searchSemanticVideos([{ id: "meaning-match", channelId: "approved", channelName: "Science", title: "Collapsed stars trap light", description: "An explanation of stellar collapse.", tags: [], topics: ["Science"], publishedAt: "2025-01-01", durationSeconds: 600, approved: true }], plan);
+  assert.deepEqual(localMatches.map(match => match.video.id), ["meaning-match"]);
+  assert.equal(videoCalls().length, 1, "the interpretation's equivalent phrases rank locally without a second query-restatement call");
   await interpretVideoSearch({ ...videoArgs, catalogVersion: 5 });
   assert.equal(videoCalls().length, 2, "a video catalog change should invalidate cached plans");
 

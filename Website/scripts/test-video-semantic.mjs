@@ -82,3 +82,14 @@ test('supporting passages include matches late in a long metadata sentence',()=>
  const found=engine.searchSemanticVideos([long],engine.makeLocalVideoPlan('bending starlight'));
  assert.ok(found[0].supportingText[0].includes('gravitational lensing'));
 });
+
+test('related plan terms rank complete matches but never satisfy missing concepts',()=>{
+ const plan={conceptGroups:[{label:'light bending',terms:['gravitational lensing'],related:['black holes'],required:true}]};
+ const matches=engine.searchSemanticVideos(videos,plan,'All','c1');
+ assert.ok(ids(matches).includes('both'));
+ assert.ok(!ids(matches).includes('hole'),'related-only matches cannot satisfy lensing');
+ const base=engine.searchSemanticVideos(videos,{conceptGroups:[{terms:['gravitational lensing'],required:true}]},'All','c1');
+ assert.ok(matches.find(x=>x.video.id==='both').score>base.find(x=>x.video.id==='both').score);
+ const legacy=engine.mergeVideoSearchPlans(engine.makeLocalVideoPlan('gravitational lensing'),{terms:['gravitational lensing'],alternatives:['black holes']},[]);
+ assert.ok(!ids(engine.searchSemanticVideos(videos,legacy)).includes('hole'));
+});

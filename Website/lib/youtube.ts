@@ -93,6 +93,7 @@ export type YouTubeImportProgress = {
 };
 
 export type YouTubeSearchConceptGroup = {
+  related?: string[];
   label?: string;
   terms: string[];
   required?: boolean;

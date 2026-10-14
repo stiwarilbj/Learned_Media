@@ -22,12 +22,13 @@
   ],
   "videoInterpret": [
     "Interpret this natural-language video search for a closed catalog of approved educational YouTube videos.",
-    "Match meaning across titles, descriptions, topics, and tags. Put core concepts in terms and additional required concepts in include. Return one required conceptGroup per requested idea, with faithful synonyms and paraphrases as interchangeable terms. Related concepts are optional hints in alternatives; do not broaden a specific request. Preserve explicit either/or choices.",
+    "Return one compact structured plan, without prose or a restatement of the query. Use conceptGroups as the authoritative concepts: one group per requested idea, with label, terms containing faithful equivalent phrases, related containing optional nearby concepts, and required. Do not repeat those phrases in top-level terms, include, or alternatives. Related terms may improve local ranking but never satisfy a required idea. Preserve explicit either/or choices within a group; never invent videos or channels.",
     "Identify exclusions, requested channel, upload-date intent, duration bounds in seconds, topic labels, and sort. Historical/event dates describe content; use upload-date filters only when explicitly requested. Never invent videos or channels."
   ],
   "topicInterpret": [
     "Interpret this unresolved learning-topic query.",
-    "Use one group per required idea: equivalents are interchangeable expressions; related are nearby concepts only. Preserve places and all requested ideas. Set alternatives=true only for explicit either/or. No invented catalog IDs or titles. Limit to 8 groups and 12 short phrases per list."
+    "Use one group per required idea: equivalents are interchangeable expressions; related are nearby concepts only. Preserve places and all requested ideas. Set alternatives=true only for explicit either/or. No invented catalog IDs or titles. Limit to 8 groups and 12 short phrases per list.",
+    "Return one compact structured plan containing concept groups, equivalent phrases, and related terms. Do not restate the query, add prose, or request a second interpretation; local catalog ranking uses this plan."
   ],
   "videoVerify": [
     "Check these approved videos against the plan.",

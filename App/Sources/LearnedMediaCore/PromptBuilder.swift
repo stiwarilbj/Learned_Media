@@ -53,6 +53,12 @@ public enum PromptBuilder {
         return ([instructions.joined(separator: " ")] + data).joined(separator: "\n\n")
     }
 
+    public static func searchInterpretation(_ operation: PromptOperation, query: String) -> String {
+        precondition(operation == .topicInterpret || operation == .videoInterpret)
+        let normalized = query.precomposedStringWithCanonicalMapping.lowercased().replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        return build(operation, fields: [PromptField("Query", normalized)])
+    }
+
     public static func factCard(sentenceCount: Int, difficulties: [Int], fields: [PromptField]) -> String {
         build(.grounding, rules: [FactQuality.writingRules(for: sentenceCount, evidenceIDs: true)]
             + Array(Set(difficulties)).sorted().map { FactQuality.rubric($0) }, fields: fields)
