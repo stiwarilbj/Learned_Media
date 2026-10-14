@@ -161,6 +161,7 @@ public enum FactQuality {
             let quotes = evidence.filter { $0["sentence"] as? Int == index }
             if quotes.isEmpty { return false }
             guard QuantityValidation.unsupported(sentence, passages: quotes.compactMap { $0["quote"] as? String }).isEmpty else { return false }
+            guard CausalValidation.unsupported(sentence, passages: quotes.compactMap { $0["quote"] as? String }).isEmpty else { return false }
             for item in quotes {
                 guard let source = item["sourceIndex"] as? Int, sources.indices.contains(source), let quote = item["quote"] as? String, quote.count >= 30,
                       let extract = sources[source]["extract"] as? String, normalized(extract).contains(normalized(quote)) else { return false }
@@ -175,6 +176,9 @@ public enum FactQuality {
         guard QuantityValidation.unsupported(claim, passages: claimEvidence ?? allQuotes).isEmpty,
               QuantityValidation.unsupported(title, passages: allQuotes).isEmpty,
               QuantityValidation.unsupported(hook, passages: allQuotes).isEmpty else { return false }
+        guard CausalValidation.unsupported(claim, passages: claimEvidence ?? allQuotes).isEmpty,
+              CausalValidation.unsupported(title, passages: allQuotes).isEmpty,
+              CausalValidation.unsupported(hook, passages: allQuotes).isEmpty else { return false }
         if difficulty >= 5 && sections.contains(where: { $0 == "introduction" || $0 == "lead" }) { return false }
         if difficulty > 0 && sections.count != 1 { return false }
         return true

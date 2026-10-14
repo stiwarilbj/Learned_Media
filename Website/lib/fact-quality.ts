@@ -1,3 +1,4 @@
+import { unsupportedCausality } from "./causal-validation";
 import { unsupportedQuantities } from "./quantity-validation";
 import promptInstructions from "./prompt-instructions.json";
 import type { FactCard, WikipediaSource } from "./types";
@@ -234,12 +235,14 @@ export function validateDraft(draft: GroundedDraft, sources: WikipediaSource[], 
     if (!quotes.length || quotes.some(item => !Number.isInteger(item.sourceIndex) || !sources[item.sourceIndex] || typeof item.quote !== "string" || item.quote.trim().length < 30 || !normalizedText(sources[item.sourceIndex].extract ?? "").includes(normalizedText(item.quote)) || (difficulty > 0 && !item.section?.trim()) || (difficulty > 0 && !evidenceSection(sources[item.sourceIndex].extract ?? "", item.quote, item.section?.trim() ?? "")))) throw new Error("A sentence does not have a matching quotation in its specific Wikipedia passage.");
     const unsupported = unsupportedQuantities(draft.sentences[sentence], quotes.map(item => item.quote));
     if (unsupported.length) throw new Error(`A sentence contains unsupported numbers or units: ${unsupported.join(", ")}.`);
+    if (unsupportedCausality(draft.sentences[sentence], quotes.map(item => item.quote)).length) throw new Error("A sentence contains unsupported causal wording; its own evidence must establish the relationship, not co-occurrence.");
     quotes.forEach(item => { if (item.section) sections.add(normalizedText(item.section)); });
   }
   const allQuotes = draft.evidence.map(item => item.quote);
   if (draft.claimEvidence && (!Array.isArray(draft.claimEvidence) || !draft.claimEvidence.length || draft.claimEvidence.some(quote => !allQuotes.includes(quote)))) throw new Error("The card’s main claim evidence is missing from its sentence citations.");
   const unsupported = [...unsupportedQuantities(draft.claim, draft.claimEvidence ?? allQuotes), ...unsupportedQuantities(draft.title, allQuotes), ...unsupportedQuantities(draft.hook, allQuotes)];
   if (unsupported.length) throw new Error(`The card contains unsupported numbers or units: ${unsupported.join(", ")}.`);
+  if ([...unsupportedCausality(draft.claim, draft.claimEvidence ?? allQuotes), ...unsupportedCausality(draft.title, allQuotes), ...unsupportedCausality(draft.hook, allQuotes)].length) throw new Error("The card contains unsupported causal wording; evidence must establish the same cause and outcome.");
   if (difficulty >= 5 && [...sections].some(section => section === "introduction" || section === "lead")) throw new Error("This difficulty requires an inner Wikipedia section, not the article lead.");
   if (difficulty > 0 && sections.size !== 1) throw new Error("Every generated fact must stay inside one narrowly bounded Wikipedia section.");
 }

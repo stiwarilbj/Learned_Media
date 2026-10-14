@@ -1,0 +1,149 @@
+[
+  {
+    "claim": "Flooding caused the bridge to collapse.",
+    "passages": [
+      "Flooding and bridge collapse occurred together."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding caused the bridge to collapse.",
+    "passages": [
+      "Flooding caused the bridge to collapse."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "Flooding led to bridge collapse.",
+    "passages": [
+      "The bridge collapse was caused by flooding."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "Flooding caused the bridge to collapse.",
+    "passages": [
+      "The bridge collapsed because of flooding."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "Flooding caused bridge collapse.",
+    "passages": [
+      "Bridge collapse caused flooding."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding caused bridge collapse.",
+    "passages": [
+      "Flooding caused crop damage. Bridge collapse was recorded the same day."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding caused bridge collapse.",
+    "passages": [
+      "Flooding occurred that morning. Tremors caused bridge collapse."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding caused bridge collapse.",
+    "passages": [
+      "Flooding did not cause bridge collapse."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding caused bridge collapse.",
+    "passages": [
+      "Flooding might have caused bridge collapse."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding caused bridge collapse.",
+    "passages": [
+      "Flooding caused bridge collapse if the supports were weakened."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding may have caused bridge collapse.",
+    "passages": [
+      "Flooding might have caused bridge collapse."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "Flooding did not cause bridge collapse.",
+    "passages": [
+      "Flooding did not cause bridge collapse."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "The barrier prevented floodwater from reaching the village.",
+    "passages": [
+      "The barrier stopped floodwater from reaching the village."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "The barrier prevented floodwater from reaching the village.",
+    "passages": [
+      "The barrier was designed to prevent floodwater from reaching the village."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "The barrier prevented floodwater from reaching the village.",
+    "passages": [
+      "The barrier and village existed when floodwater arrived."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "The barrier prevented flooding.",
+    "passages": [
+      "The barrier reduced flooding."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding led to bridge collapse.",
+    "passages": [
+      "The report discussed flooding. The report led to bridge collapse."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "The cause of bridge collapse was investigated.",
+    "passages": [
+      "The report discussed bridge collapse."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "Flooding and bridge collapse happened on the same day.",
+    "passages": [
+      "Flooding and bridge collapse happened on the same day."
+    ],
+    "valid": true
+  },
+  {
+    "claim": "Flooding caused bridge collapse and tremors caused crop damage.",
+    "passages": [
+      "Flooding caused bridge collapse and tremors caused crop damage."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Flooding caused bridge collapse.",
+    "passages": [
+      "Did flooding cause bridge collapse?"
+    ],
+    "valid": false
+  }
+]

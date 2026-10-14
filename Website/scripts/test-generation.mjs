@@ -1464,3 +1464,32 @@ test('date roles reach real grounding requests without altering restored citatio
  assert.ok(spans.some(span=>span.dateRoles?.some(d=>d.role==='event'&&d.date==='1847')));
  for(const card of result.cards)for(const citation of card.evidence)assert.ok(card.sources[citation.sourceIndex].extract.includes(citation.quote));
 });
+
+test('causal claims require explicit directional support using shared native fixtures',()=>{
+ const {unsupportedCausality}=require('../lib/causal-validation.ts');
+ for(const {claim,passages,valid} of JSON.parse(readFileSync(new URL('./causal-fixtures.json',import.meta.url))))assert.equal(unsupportedCausality(claim,passages).length===0,valid,claim+' / '+passages.join(' | '));
+});
+
+test('causal publication checks use sentence and main-claim evidence without borrowing support',()=>{
+ const {validateDraft}=require('../lib/fact-quality.ts');
+ const causal='Flooding caused the bridge to collapse during the severe storm.';
+ const together='Flooding and bridge collapse occurred together during the severe storm.';
+ const source={title:'Bridge',url:'https://en.wikipedia.org/wiki/Bridge',extract:causal+' '+together};
+ const draft={title:'The Bridge Collapsed During Flooding',hook:'Storm Flooding Damaged The Bridge',claim:causal,sentences:[causal],evidence:[{sentence:0,sourceIndex:0,quote:causal}],claimEvidence:[causal]};
+ assert.doesNotThrow(()=>validateDraft(draft,[source],1));
+ assert.throws(()=>validateDraft({...draft,evidence:[{sentence:0,sourceIndex:0,quote:together}],claimEvidence:[together]},[source],1),/unsupported causal wording/);
+ assert.throws(()=>validateDraft({...draft,sentences:[together],evidence:[{sentence:0,sourceIndex:0,quote:together}],claimEvidence:[together]},[source],1),/unsupported causal wording/);
+ const two={...draft,sentences:[causal,together],evidence:[{sentence:0,sourceIndex:0,quote:together},{sentence:1,sourceIndex:0,quote:causal}]};
+ assert.throws(()=>validateDraft(two,[source],2),/unsupported causal wording/);
+ assert.throws(()=>validateDraft({...draft,claim:together,sentences:[together],evidence:[{sentence:0,sourceIndex:0,quote:together}],claimEvidence:[together],title:'Flooding Caused The Bridge Collapse'},[source],1),/unsupported causal wording/);
+});
+
+test('unsupported causal wording preserves six cards and recovers only the affected slot',async()=>{
+ let damaged=false;
+ const state=installNetworkMock({transformOutput(output,prompt){if(!damaged&&prompt.includes('Return one result for each slot')){damaged=true;const fact=output.facts.find(f=>f.slot===6);fact.sentences=[...fact.sentences];fact.sentences[0]=fact.sentences[0].replace(/\.$/,' and caused the tower to collapse.');}return output;}}),sessionId=await connectMock(state);
+ const slots=[];const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7,onProgress:e=>{if(e.type==='card')slots.push(e.slot);}});
+ assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),3);assert.equal(state.candidatePrompts.length,1);
+ assert.deepEqual(groundingSlots(state.groundingPrompts[1]).map(s=>s.slot),[6]);
+ assert.deepEqual(slots.slice(0,6).sort(),[0,1,2,3,4,5]);assert.equal(new Set(slots).size,7);
+ assert.ok(result.cards.every(c=>!c.body.includes('caused the tower')));
+});
