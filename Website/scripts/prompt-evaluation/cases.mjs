@@ -37,7 +37,8 @@ export function registerEvaluation(h) {
         // Local search has no model output; outputBytes stays zero.
       } else {
         let damaged=false;
-        const options = fixture.id === 'weak-evidence' ? {needsEvidenceSlot:6,needsEvidenceOnce:true}
+        const options = fixture.quotedSentence ? h.instructionQuotationOptions(fixture.quotedSentence)
+          : fixture.id === 'weak-evidence' ? {needsEvidenceSlot:6,needsEvidenceOnce:true}
           : fixture.id === 'malformed-output' ? {responseText(output,prompt){
             if (!damaged && prompt.includes('Return one result for each slot')) {
               damaged=true;
@@ -99,6 +100,24 @@ export function registerEvaluation(h) {
             }
           }
           assert.equal(result.completedCount,7);
+          if (fixture.quotedSentence) {
+            const assignments=h.candidateAssignments(state.candidatePrompts[0]);
+            assert.deepEqual(assignments.map(slot=>slot.slot),[0,1,2,3,4,5,6]);
+            const grounded=h.groundingSlots(state.groundingPrompts[0]);
+            assert.deepEqual(grounded.map(slot=>slot.slot),[0,1,2,3,4,5,6]);
+            assert.deepEqual(grounded.map(slot=>slot.topicPath),assignments.map(slot=>slot.topicPath));
+            const card=result.cards.find(c=>c.topicPath.join('/')===assignments[0].topicPath.join('/'));
+            assert.ok(card.body.includes(fixture.quotedSentence));
+            assert.ok(card.evidence.some(e=>e.sentence===1 && e.quote.includes(fixture.quotedSentence)));
+            const raw=state.outputs.find(response=>response.prompt.includes('Return one result for each slot')).output;
+            assert.deepEqual(raw.facts.map(f=>f.slot).sort((a,b)=>a-b),[0,1,2,3,4,5,6]);
+            for(const fact of raw.facts) {
+              const allowed=new Set(grounded.find(slot=>slot.slot===fact.slot).evidenceIds);
+              assert.ok(fact.claimEvidenceIds.every(id=>allowed.has(id)));
+              assert.equal(new Set(fact.evidence.map(e=>e.sentence)).size,expected);
+              assert.ok(fact.evidence.every(e=>e.evidenceIds.length && e.evidenceIds.every(id=>allowed.has(id))));
+            }
+          }
           if (fixture.id==='malformed-output') assert.deepEqual(h.groundingSlots(state.groundingPrompts[1]).map(s=>s.slot),[0]);
           if (fixture.id==='weak-evidence') assert.deepEqual(h.candidateAssignments(state.candidatePrompts[1]).map(s=>s.slot),[6]);
         }
@@ -119,7 +138,7 @@ export function registerEvaluation(h) {
       assert.equal(row.citationValid,row.citationTotal);
       assert.equal(row.duplicateRate,0);
       assert.ok(row.geminiCalls<=fixture.maxCalls);
-      if (fixture.expectedCalls !== undefined) assert.equal(row.geminiCalls,fixture.expectedCalls,'Boundary generation must retain the two-call pipeline');
+      if (fixture.expectedCalls !== undefined) assert.equal(row.geminiCalls,fixture.expectedCalls,'Generation must retain the two-call pipeline');
       assert.ok(questionInstructionPresent,'Question is missing its required prompt contract');
       row.taskSuccess=true;
     } finally {

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "mode": "deterministic-replay",
-  "suiteHash": "5eeb595e1aee24818b3671ec6bd14545f9f242afd6f650de61beaf5be4dfafc6",
+  "suiteHash": "a97e9424d453c391e8222aca4108a6bc33227c6d83b8edba82fecd56ba387b8e",
   "promptHash": "b1868d029fd8f09c5c6235e5536acd3e1d093279860e6da8d628f78eb0ff8311",
   "cases": [
     {
@@ -227,6 +227,22 @@
       "sentenceCountValid": 7,
       "sentenceTotal": 70,
       "sentenceCited": 70
+    },
+    {
+      "id": "quoted-instruction-evidence",
+      "taskSuccess": true,
+      "citationValid": 21,
+      "citationTotal": 21,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 6558,
+      "promptBytes": 10211,
+      "geminiCalls": 2,
+      "expectedSentences": 3,
+      "cardTotal": 7,
+      "sentenceCountValid": 7,
+      "sentenceTotal": 21,
+      "sentenceCited": 21
     }
   ]
 }
