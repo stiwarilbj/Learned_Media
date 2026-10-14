@@ -1,6 +1,6 @@
-import { normalizeSearchText } from "./search";
+import { normalizeSearchText, shouldExpandNaturalSearch } from "./search";
 import type { TopicNode } from "./types";
-export const TOPIC_SEARCH_VERSION = 4;
+export const TOPIC_SEARCH_VERSION = 5;
 export type TopicSuggestionGroup = "keyword" | "related" | "broader" | "explore";
 export type TopicSuggestion = {
     id: string;
@@ -125,7 +125,7 @@ export function localTopicPlan(query: string): TopicQueryPlan {
         groups.push({ label: w, equivalents: [w], related: [] });
     return { groups, alternatives: /\bor\b/i.test(query) };
 }
-export function shouldEnrichTopics(query: string, completeCoverage: boolean) { return !completeCoverage && words(query).length >= 2; }
+export function shouldEnrichTopics(query: string, completeCoverage: boolean) { return shouldExpandNaturalSearch(query, completeCoverage); }
 function geographicContext(value: string) { const s = normalizeSearchText(value); return /\b(tohoku|kanto|sanriku|kobe|tokyo|osaka|kyoto|fukushima|nankai)\b/.test(s) ? "japan japanese" : ""; }
 export function createTopicSuggestionIndex(topics: TopicWithPath[]): TopicSuggestionIndex {
     if (fieldTokens.size > 100000)

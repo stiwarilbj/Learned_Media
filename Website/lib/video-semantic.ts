@@ -11,7 +11,7 @@ export type VideoSearchPlan = {
 type Video = { id: string; channelId: string; channelName: string; title: string; description: string; tags: string[]; topics: string[]; publishedAt: string; durationSeconds: number; approved: boolean; special?: boolean; sourceIds?: string[] };
 export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
-export const VIDEO_SEMANTIC_VERSION = 5;
+export const VIDEO_SEMANTIC_VERSION = 6;
 
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
@@ -295,4 +295,10 @@ export function videoSearchReason<T extends Video>(video: T, plan: VideoSearchPl
       : support.length ? "Broader recommendation: the metadata below does not establish every requested concept."
       : "Matches your browsing filters; no meaning-based metadata match was found."
   };
+}
+
+/** Optional interpretation is warranted only for meaningful queries without full local coverage. */
+export function shouldEnrichVideoSearch<T extends Video>(query: string, plan: VideoSearchPlan, candidates: Array<{ video: T }>) {
+  if (!requiredGroups(plan).length || meaningful(query).length < 2) return false;
+  return !candidates.some(candidate => semanticCoverage(candidate.video, plan));
 }

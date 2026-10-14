@@ -804,7 +804,7 @@
   }
   const videoSearch = window.LEARNED_MEDIA_VIDEO_SEARCH;
   let youtubeSemanticWorker = null, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0;
-  let youtubeById = new Map(), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "", youtubeSearchExpedite = null;
+  let youtubeById = new Map(), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "";
   let youtubeSearchPlan = null, youtubeSearchHasMore = true, youtubeSearchPaging = false, youtubePagingController = null, youtubeBrowseOrder = "newest", youtubeSearchVisibleCount = 80;
   const youtubeWorkerPending = new Map();
   function localVideoReason(candidate) { return videoSearch.videoSearchReason(candidate.video, youtubeSearchPlan || videoSearch.makeLocalVideoPlan(state.youtube.searchText), candidate.score); }
@@ -861,7 +861,7 @@
     const query=state.youtube.searchText.trim(); if(!query) return;
     videoSearchIndex();
     const cacheKey=scopedCacheKey(state.key,["video-semantic",videoSearch.VIDEO_SEMANTIC_VERSION,youtubeIndexRevision,state.youtube.catalogVersion,state.youtube.topic,state.youtube.selectedChannelId,state.youtube.order,videoSearch.normalizeVideoQuery(query)]);
-    if(youtubeSearchInFlightKey===cacheKey && youtubeSearchController) { if(!automatic && youtubeSearchExpedite) youtubeSearchExpedite(); return; }
+    if(youtubeSearchInFlightKey===cacheKey && youtubeSearchController) { return; }
     if(youtubeSearchController) youtubeSearchController.abort(); cancelYoutubeSearchRequests();
     const controller=new AbortController(), signal=controller.signal, token=++youtubeSearchToken, revision=youtubeIndexRevision;
     youtubeSearchController=controller; youtubeSearchInFlightKey=cacheKey;
@@ -873,13 +873,13 @@
       let candidates=await localVideoCandidates(plan,80,signal);
       let ranked=candidates.map(function(candidate){return Object.assign({videoId:candidate.video.id},videoSearch.videoSearchReason(candidate.video,plan,candidate.score));});
       publish(candidates.map(function(candidate){return candidate.video.id;}),Object.fromEntries(ranked.map(function(match){return [match.videoId,match];})));
-      const needs=!candidates.length && (!automatic || shouldExpandNaturalSearch(query,0));
+      const needs=videoSearch.shouldEnrichVideoSearch(query,plan,candidates);
       let optionalFailed=false;
       if(needs && state.key.trim() && state.geminiStatus==="connected") {
-        if(automatic) await new Promise(function(resolve,reject){
-          const done=function(){clearTimeout(timer);signal.removeEventListener("abort",abort);youtubeSearchExpedite=null;resolve();};
-          const timer=setTimeout(done,1500), abort=function(){clearTimeout(timer);youtubeSearchExpedite=null;reject(new DOMException("Search canceled","AbortError"));};
-          youtubeSearchExpedite=done; if(signal.aborted) abort(); else signal.addEventListener("abort",abort,{once:true});
+        await new Promise(function(resolve,reject){
+          const done=function(){clearTimeout(timer);signal.removeEventListener("abort",abort);resolve();};
+          const timer=setTimeout(done,1500), abort=function(){clearTimeout(timer);reject(new DOMException("Search canceled","AbortError"));};
+          if(signal.aborted) abort(); else signal.addEventListener("abort",abort,{once:true});
         });
         if(signal.aborted) return;
         state.youtubeSmartLoading=true;state.youtubeSearchPhase="interpreting";render();
@@ -906,7 +906,7 @@
       if(!optionalFailed && (!needs || state.key.trim() && state.geminiStatus==="connected"))youtubeSmartSearchCache.set(cacheKey,{ids:ids,reasons:reasons,plan:plan,expanded:needs && Boolean(state.key.trim() && state.geminiStatus==="connected")});
       if(!automatic)showToast(ids.length+" relevant approved video"+(ids.length===1?"":"s")+" matched your search.");
     } catch(error){if(!signal.aborted){state.youtubeSearchPhase="error";state.youtubeSearchError=error.message || "Video search could not complete.";}}
-    finally{if(youtubeSearchController===controller){youtubeSearchController=null;youtubeSearchInFlightKey="";youtubeSearchExpedite=null;state.youtubeSmartLoading=false;render();}if(token===youtubeSearchToken)youtubeSearchRequests=[];}
+    finally{if(youtubeSearchController===controller){youtubeSearchController=null;youtubeSearchInFlightKey="";state.youtubeSmartLoading=false;render();}if(token===youtubeSearchToken)youtubeSearchRequests=[];}
   }
   function cancelYoutubeSearch(){if(youtubePagingController)youtubePagingController.abort();if(youtubeSearchController)youtubeSearchController.abort();youtubeSearchController=null;youtubeSearchInFlightKey="";youtubeSearchToken++;cancelYoutubeSearchRequests();state.youtubeSmartLoading=false;state.youtubeSearchPhase="idle";}
   function automaticYoutubeSearch(){

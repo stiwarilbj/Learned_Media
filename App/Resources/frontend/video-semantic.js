@@ -13,7 +13,8 @@ exports.compareSemanticCandidates = compareSemanticCandidates;
 exports.searchSemanticVideos = searchSemanticVideos;
 exports.searchSemanticVideosYielding = searchSemanticVideosYielding;
 exports.videoSearchReason = videoSearchReason;
-exports.VIDEO_SEMANTIC_VERSION = 5;
+exports.shouldEnrichVideoSearch = shouldEnrichVideoSearch;
+exports.VIDEO_SEMANTIC_VERSION = 6;
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
     ["gravitational lensing", "bending starlight", "light bending", "bending light", "light bends", "gravity bends light", "bent light"],
@@ -338,6 +339,12 @@ function videoSearchReason(video, plan, localScore = 0, suppliedSupport = []) {
             : support.length ? "Broader recommendation: the metadata below does not establish every requested concept."
                 : "Matches your browsing filters; no meaning-based metadata match was found."
     };
+}
+/** Optional interpretation is warranted only for meaningful queries without full local coverage. */
+function shouldEnrichVideoSearch(query, plan, candidates) {
+    if (!requiredGroups(plan).length || meaningful(query).length < 2)
+        return false;
+    return !candidates.some(candidate => semanticCoverage(candidate.video, plan));
 }
 
 scope.LEARNED_MEDIA_VIDEO_SEARCH = exports; })(globalThis);

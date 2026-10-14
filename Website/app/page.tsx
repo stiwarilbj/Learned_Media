@@ -11,7 +11,7 @@ import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFac
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { findTopicById, TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
-import { normalizeSearchText, rankSearchResults, shouldExpandNaturalSearch } from "@/lib/search";
+import { normalizeSearchText, rankSearchResults } from "@/lib/search";
 import { requestCacheKey, requestCacheScope, SessionCache } from "@/lib/session-cache";
 import { createTopicSuggestionIndex, suggestTopics, shouldEnrichTopics, TOPIC_SEARCH_VERSION, type TopicQueryPlan } from "@/lib/topic-suggestions";
 import { searchTopicsWithYieldingFallback } from "@/lib/topic-search-fallback";
@@ -22,7 +22,7 @@ import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-pr
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
-import { videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
+import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -506,7 +506,6 @@ export default function HomePage() {
   const youtubeSearchPlan = useRef<VideoSearchPlan | null>(null);
   const youtubeSearchMoreAbort = useRef<AbortController | null>(null);
   const youtubeSearchResultsRef = useRef<YouTubeVideo[]>([]);
-  const youtubeSearchExpedite = useRef<(() => void) | null>(null);
   const youtubeBrowsingOrder = useRef<YouTubeWorkspaceState["channelOrder"]>("newest");
   const [youtubeSearchHasMore, setYoutubeSearchHasMore] = useState(true);
   const youtubeSearchAbortController = useRef<AbortController | null>(null);
@@ -2180,7 +2179,7 @@ export default function HomePage() {
     const snapshot = JSON.stringify([revision, workspace.catalogVersion, workspace.selectedTopic, workspace.selectedChannelId ?? "all", workspace.channelOrder, normalizeSearchText(queryText)]);
     const cacheKey = requestCacheKey(requestCacheScope(sessionIdRef.current, apiKey.trim()), "semantic-video-search", VIDEO_SEMANTIC_VERSION, snapshot);
     // Enter, the button, and automatic search share one pending operation.
-    if (youtubeSearchActiveKey.current === cacheKey && youtubeSearchAbortController.current) { if (!automatic) youtubeSearchExpedite.current?.(); return; }
+    if (youtubeSearchActiveKey.current === cacheKey && youtubeSearchAbortController.current) { return; }
     youtubeSearchAbortController.current?.abort();
     youtubeSearchMoreAbort.current?.abort();
     const controller = new AbortController();
@@ -2214,14 +2213,13 @@ export default function HomePage() {
       let candidates = await getCandidates(plan);
       let ranked = candidates.map(reason);
       publish(candidates.map((candidate) => candidate.video), Object.fromEntries(ranked.map((match) => [match.videoId, match])));
-      const needsInterpretation = !candidates.length && (!automatic || shouldExpandNaturalSearch(queryText, 0));
+      const needsInterpretation = shouldEnrichVideoSearch(queryText, plan, candidates);
       let optionalFailed = false;
       if (needsInterpretation && apiKey.trim() && geminiStatus === "connected") {
-        if (automatic) await new Promise<void>((resolve, reject) => {
-          const done = () => { clearTimeout(timer); controller.signal.removeEventListener("abort", abort); youtubeSearchExpedite.current = null; resolve(); };
+        await new Promise<void>((resolve, reject) => {
+          const done = () => { clearTimeout(timer); controller.signal.removeEventListener("abort", abort); resolve(); };
           const timer = setTimeout(done, 1500);
-          youtubeSearchExpedite.current = done;
-          const abort = () => { clearTimeout(timer); youtubeSearchExpedite.current = null; reject(new DOMException("Search canceled", "AbortError")); };
+          const abort = () => { clearTimeout(timer); reject(new DOMException("Search canceled", "AbortError")); };
           if (controller.signal.aborted) abort(); else controller.signal.addEventListener("abort", abort, { once: true });
         });
         if (controller.signal.aborted) return;
@@ -2266,7 +2264,7 @@ export default function HomePage() {
     } catch (error) {
       if (!controller.signal.aborted) { setYoutubeSearchPhase("error"); setYoutubeError(error instanceof Error ? error.message : "Video search could not complete."); }
     } finally {
-      if (youtubeSearchAbortController.current === controller) { youtubeSearchAbortController.current = null; youtubeSearchActiveKey.current = ""; youtubeSearchExpedite.current = null; setYoutubeSmartSearchLoading(false); }
+      if (youtubeSearchAbortController.current === controller) { youtubeSearchAbortController.current = null; youtubeSearchActiveKey.current = ""; setYoutubeSmartSearchLoading(false); }
     }
   }, [apiKey, geminiStatus, recordGeminiFailure, recordGeminiOutcomes, requestYouTubeWorkerSearch, youtubeIndexes.videoById]);
 
@@ -2275,7 +2273,6 @@ export default function HomePage() {
     youtubeSearchAbortController.current = null;
     setYoutubeSmartSearchLoading(false);
     youtubeSearchMoreAbort.current?.abort();
-    youtubeSearchExpedite.current = null;
     setYoutubeSearchPhase("idle");
   }, []);
 

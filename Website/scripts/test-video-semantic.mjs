@@ -188,3 +188,18 @@ test('loose word overlap and sponsor text cannot substantiate a verification quo
  const reason=engine.videoSearchReason(item,engine.makeLocalVideoPlan('bending starlight'),0,['Lensing galaxies','gravitational lensing shirts']);
  assert.equal(reason.relevance,'broader');assert.deepEqual(reason.support,[]);
 });
+
+test('enrichment measures complete concept coverage rather than result count',()=>{
+ const query='black holes and bending starlight',plan=engine.makeLocalVideoPlan(query);
+ const complete=[{video:videos.find(v=>v.id==='both')}];
+ const partial=Array.from({length:100},()=>({video:videos.find(v=>v.id==='hole')}));
+ assert.equal(engine.shouldEnrichVideoSearch(query,plan,complete),false,'one complete result spends zero requests');
+ assert.equal(engine.shouldEnrichVideoSearch(query,plan,partial),true,'many partial results cannot suppress interpretation');
+ assert.equal(engine.shouldEnrichVideoSearch(query,plan,[]),true);
+ assert.equal(engine.shouldEnrichVideoSearch('uploaded since 2024',engine.makeLocalVideoPlan('uploaded since 2024'),[]),false,'empty strict-filter results cannot be rescued by semantic interpretation');
+ assert.equal(engine.shouldEnrichVideoSearch('blackhole',engine.makeLocalVideoPlan('blackhole'),[]),false);
+ assert.equal(engine.shouldEnrichVideoSearch('show me videos',engine.makeLocalVideoPlan('show me videos'),[]),false);
+ const orQuery='black holes or bending starlight',orPlan=engine.makeLocalVideoPlan(orQuery);
+ assert.equal(engine.shouldEnrichVideoSearch(orQuery,orPlan,partial),false,'one complete OR clause is strong coverage');
+ for(const candidates of [complete,partial,[]]) assert.equal(native.LEARNED_MEDIA_VIDEO_SEARCH.shouldEnrichVideoSearch(query,plan,candidates),engine.shouldEnrichVideoSearch(query,plan,candidates));
+});

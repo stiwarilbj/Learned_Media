@@ -10,17 +10,13 @@ exports.rankSearchResults = rankSearchResults;
 function normalizeSearchText(value) {
     return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’'`]/g, "").replace(/[^a-z0-9\u0080-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim();
 }
-const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with"]);
-function shouldExpandNaturalSearch(query, meaningfulLocalMatches = 0) {
-    if (meaningfulLocalMatches >= 8)
+const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with", "explain", "find", "show", "tell", "please", "me", "learn", "understand", "video", "videos", "topics"]);
+/** Coverage is authoritative: one complete match beats any number of weak recommendations. */
+function shouldExpandNaturalSearch(query, completeCoverage = false) {
+    if (completeCoverage)
         return false;
-    const normalized = normalizeSearchText(query);
-    if (!normalized)
-        return false;
-    const words = normalized.split(" ").filter(Boolean);
-    const contentWords = words.filter((word) => word.length > 1 && !NATURAL_SEARCH_STOP_WORDS.has(word));
-    const questionOrIntent = /^(?:who|what|when|where|why|how|explain|find me|tell me|show me|similar to|related to|ideas like)\b/i.test(normalized);
-    return contentWords.length >= 5 || (questionOrIntent && words.length >= 4 && contentWords.length >= 2);
+    const contentWords = normalizeSearchText(query).split(" ").filter(word => word.length > 1 && !NATURAL_SEARCH_STOP_WORDS.has(word));
+    return contentWords.length >= 2;
 }
 function distance(left, right) {
     if (left === right)
@@ -94,7 +90,7 @@ exports.searchTopicIndex = searchTopicIndex;
 exports.suggestTopics = suggestTopics;
 exports.searchTopicIndexYielding = searchTopicIndexYielding;
 const search_1 = require("./search");
-exports.TOPIC_SEARCH_VERSION = 4;
+exports.TOPIC_SEARCH_VERSION = 5;
 const STOP = new Set("a about an and are as at be by can did do does explain find for from how i in into is it me of on or our please show some that the their them there these this to was were what when where which who why with would tell topics learn learning want know".split(" "));
 const CONCEPTS = [
     { label: "earthquakes", equivalents: ["earthquake", "earthquakes", "quake", "quakes", "tremors", "ground shaking", "shaking ground", "ground shake", "seismic activity", "earth tremor"], related: ["plate tectonics", "geology", "tsunamis", "faults", "seismic waves"] },
@@ -175,7 +171,7 @@ function localTopicPlan(query) {
         groups.push({ label: w, equivalents: [w], related: [] });
     return { groups, alternatives: /\bor\b/i.test(query) };
 }
-function shouldEnrichTopics(query, completeCoverage) { return !completeCoverage && words(query).length >= 2; }
+function shouldEnrichTopics(query, completeCoverage) { return (0, search_1.shouldExpandNaturalSearch)(query, completeCoverage); }
 function geographicContext(value) { const s = (0, search_1.normalizeSearchText)(value); return /\b(tohoku|kanto|sanriku|kobe|tokyo|osaka|kyoto|fukushima|nankai)\b/.test(s) ? "japan japanese" : ""; }
 function createTopicSuggestionIndex(topics) {
     if (fieldTokens.size > 100000)

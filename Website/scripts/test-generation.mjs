@@ -20,7 +20,7 @@ const { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildQuestionProm
 const { SessionCache } = require("../lib/session-cache.ts");
 const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
-const { searchSemanticVideos, mergeVideoSearchPlans, makeLocalVideoPlan } = require("../lib/video-semantic.ts");
+const { searchSemanticVideos, mergeVideoSearchPlans, makeLocalVideoPlan, shouldEnrichVideoSearch } = require("../lib/video-semantic.ts");
 const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
 const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
 const { completeSentenceChunks, selectEvidence, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
@@ -286,8 +286,8 @@ await t.test("session caches are bounded, expire, and avoid repeating weak local
   cache.set("third", 3, 200);
   assert.equal(cache.get("second", 200), undefined, "least-recently-used entry should be evicted at capacity");
   assert.equal(cache.get("first", 1200), undefined, "expired results should not be reused");
-  assert.equal(shouldExpandNaturalSearch("how did early navigation instruments shape trade routes", 8), false, "enough meaningful local topics should suppress Gemini expansion");
-  assert.equal(shouldExpandNaturalSearch("how did early navigation instruments shape trade routes", 0), true, "unresolved natural-language searches may request one expansion");
+  assert.equal(shouldExpandNaturalSearch("how did early navigation instruments shape trade routes", true), false, "complete local concept coverage should suppress Gemini expansion");
+  assert.equal(shouldExpandNaturalSearch("how did early navigation instruments shape trade routes", false), true, "unresolved natural-language searches may request one expansion");
 
   const videos = [
     { id: "direct", channelId: "c1", channelName: "Science", title: "How Black Holes Bend Light", description: "A measured example of gravitational lensing.", tags: ["black holes", "light"], topics: ["Science"], publishedAt: "2024-01-01", durationSeconds: 600, durationLabel: "10:00", approved: true, embedAvailable: true },
@@ -1058,4 +1058,19 @@ test('video verification discards fabricated explanations and unsupported excerp
  const checked=await rankVideoSearchCandidates({apiKey:'test-key',sessionId,query:'black holes and bending starlight',plan,candidates});
  assert.deepEqual(checked.results.map(r=>r.videoId),['full','partial']);assert.equal(checked.results[0].relevance,'strong');assert.equal(checked.results[1].relevance,'broader');
  assert.ok(checked.results.every(r=>!r.support.some(s=>s.includes('Invented')) && !r.explanation.includes('Made up')));
+});
+
+test('complete local coverage makes zero Gemini calls and weak coverage enriches once',async()=>{
+ const state=installNetworkMock(),sessionId=await connectMock(state);
+ const query='black holes and gravitational lensing',plan=makeLocalVideoPlan(query);
+ const metadata={id:'complete',channelId:'approved',channelName:'Science',title:'Black Holes and Gravitational Lensing',description:'',tags:[],topics:[],publishedAt:'2024-01-01',durationSeconds:600,approved:true};
+ const before=state.requests.length;
+ async function enrichIfNeeded(text,candidates){if(shouldEnrichVideoSearch(text,plan,candidates))await interpretVideoSearch({apiKey:'test-key',sessionId,query:text,catalogVersion:'coverage-budget'});}
+ await enrichIfNeeded(query,[{video:metadata}]);
+ assert.equal(state.requests.length,before,'one complete metadata match skips all enrichment calls');
+ const partial=Array.from({length:100},(_,i)=>({video:{...metadata,id:'partial-'+i,title:'Black Holes'}}));
+ await enrichIfNeeded(query,partial);
+ assert.equal(state.requests.length,before+1,'many partial matches permit only one interpretation');
+ await enrichIfNeeded(' BLACK HOLES AND GRAVITATIONAL LENSING ',partial);
+ assert.equal(state.requests.length,before+1,'cached normalized interpretation spends no additional request');
 });

@@ -60,3 +60,11 @@ test('topic explanations identify actual names, aliases and paths while separati
  const partial=engine.searchTopicIndex(custom,'plate tectonics and earthquakes').suggestions.find(s=>s.id==='alias');
  assert.equal(partial.group,'broader');assert.match(partial.explanation,/only part/);
 });
+
+test('one genuine topic match skips enrichment while a hundred fallback topics do not',()=>{
+ const phrase='why does the ground shake',strong=engine.searchTopicIndex(index,phrase);
+ assert.equal(engine.shouldEnrichTopics(phrase,strong.completeCoverage),false);
+ const weakQuery='earthquakes and psychology',weak=engine.searchTopicIndex(index,weakQuery);
+ assert.equal(weak.suggestions.length,100);assert.equal(engine.shouldEnrichTopics(weakQuery,weak.completeCoverage),true);
+ assert.equal(engine.shouldEnrichTopics('show me topics',false),false);
+});
