@@ -11,7 +11,7 @@ exports.semanticCoverage = semanticCoverage;
 exports.compareSemanticCandidates = compareSemanticCandidates;
 exports.searchSemanticVideos = searchSemanticVideos;
 exports.searchSemanticVideosYielding = searchSemanticVideosYielding;
-exports.VIDEO_SEMANTIC_VERSION = 2;
+exports.VIDEO_SEMANTIC_VERSION = 3;
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
     ["gravitational lensing", "bending starlight", "light bending", "bending light", "light bends", "gravity bends light", "bent light"],
@@ -78,28 +78,35 @@ function groupsFor(value) {
 function makeLocalVideoPlan(query, channels = [], selectedChannelId) {
     let core = query;
     const plan = { terms: [], exclude: [], conceptGroups: [], channelId: selectedChannelId, sort: "relevance" };
-    core = core.replace(/\b(?:without|excluding|exclude|not about)\s+(.+?)(?=\s+(?:uploaded|posted|published|under|over|from|by)\b|[,;]|$)/gi, (_, phrase) => { plan.exclude.push(phrase.trim()); return " "; });
+    core = core.replace(/\b(?:without|excluding|exclude|not about)\s+(.+?)(?=\s+(?:uploaded|posted|published|under|over|from|by|without|excluding|exclude|not about)\b|[,;]|$)/gi, (_, phrase) => { plan.exclude.push(phrase.trim()); return " "; });
     // Dates without an upload cue remain content concepts (e.g. Europe after 1800).
     core = core.replace(/\b(?:uploaded|posted|published|released)\s+(after|since|before|in)\s+(\d{4})(?:-(\d{2})-(\d{2}))?/gi, (_, intent, year, month, day) => {
         const date = `${year}-${month || "01"}-${day || "01"}`;
         if (!Number.isFinite(Date.parse(date)))
             return _;
         plan.dateIntent = "upload";
-        if (intent.toLowerCase() === "before")
-            plan.maxDate = `${year}-${month || "01"}-${day || "01"}`;
-        else
-            plan.minDate = intent.toLowerCase() === "after" ? (month ? new Date(Date.parse(date) + 86400000).toISOString().slice(0, 10) : `${Number(year) + 1}-01-01`) : date;
-        if (intent.toLowerCase() === "in")
-            plan.maxDate = month ? `${year}-${month}-${day || "31"}T23:59:59Z` : `${year}-12-31T23:59:59Z`;
+        if (intent.toLowerCase() === "before") {
+            const before = new Date(Date.parse(date) - 1).toISOString();
+            plan.maxDate = plan.maxDate && plan.maxDate < before ? plan.maxDate : before;
+        }
+        else {
+            const after = intent.toLowerCase() === "after" ? (month ? new Date(Date.parse(date) + 86400000).toISOString().slice(0, 10) : `${Number(year) + 1}-01-01`) : date;
+            plan.minDate = plan.minDate && plan.minDate > after ? plan.minDate : after;
+        }
+        if (intent.toLowerCase() === "in") {
+            const end = `${date}T23:59:59.999Z`;
+            const through = month ? end : `${year}-12-31T23:59:59.999Z`;
+            plan.maxDate = plan.maxDate && plan.maxDate < through ? plan.maxDate : through;
+        }
         return " ";
     });
-    core = core.replace(/\b(?:uploaded|posted|published)\s+(?:within|in|during)\s+the\s+(?:last|past)\s+(week|month|year)\b/gi, (_, unit) => { plan.dateIntent = "upload"; plan.minDate = new Date(Date.now() - ({ week: 7, month: 31, year: 366 }[unit.toLowerCase()] || 7) * 86400000).toISOString().slice(0, 10); return " "; });
+    core = core.replace(/\b(?:uploaded|posted|published)\s+(?:within|in|during)\s+the\s+(?:last|past)\s+(week|month|year)\b/gi, (_, unit) => { plan.dateIntent = "upload"; const since = new Date(Date.now() - ({ week: 7, month: 31, year: 366 }[unit.toLowerCase()] || 7) * 86400000).toISOString().slice(0, 10); plan.minDate = plan.minDate && plan.minDate > since ? plan.minDate : since; return " "; });
     core = core.replace(/\b(under|below|shorter than|less than|over|above|longer than|more than)\s+(\d+(?:\.\d+)?)\s*(hours?|hrs?|minutes?|mins?|seconds?|secs?)\b/gi, (_, direction, amount, unit) => {
         const seconds = Number(amount) * (/^(hour|hr)/i.test(unit) ? 3600 : /^(min)/i.test(unit) ? 60 : 1);
         if (/^(under|below|shorter|less)/i.test(direction))
-            plan.maxDurationSeconds = Math.max(0, Math.ceil(seconds) - 1);
+            plan.maxDurationSeconds = Math.min(plan.maxDurationSeconds ?? Infinity, Math.max(0, Math.ceil(seconds) - 1));
         else
-            plan.minDurationSeconds = Math.floor(seconds) + 1;
+            plan.minDurationSeconds = Math.max(plan.minDurationSeconds ?? 0, Math.floor(seconds) + 1);
         return " ";
     });
     const namedChannel = channels.find((channel) => [channel.name, channel.handle || ""].filter(Boolean).some((name) => contains(normalizeVideoQuery(core), normalizeVideoQuery(name))));
@@ -128,21 +135,15 @@ function makeLocalVideoPlan(query, channels = [], selectedChannelId) {
     plan.terms = [meaningful(core).join(" ")].filter(Boolean);
     return plan;
 }
-function mergeVideoSearchPlans(local, interpreted, channels, selectedChannelId) {
-    const named = interpreted.channelId ? channels.find((channel) => channel.id === interpreted.channelId) : interpreted.channel ? channels.find((channel) => [channel.name, channel.handle || ""].some((name) => normalizeVideoQuery(name) === normalizeVideoQuery(interpreted.channel))) : undefined;
-    const requestedChannel = interpreted.channel || interpreted.channelId;
+function mergeVideoSearchPlans(local, interpreted, _channels, selectedChannelId) {
+    // Only locally parsed constraints may admit or reject videos. Model output is ranking data.
     return {
-        ...interpreted,
-        // Inferred topic labels are recall hints, never hidden hard filters.
-        topics: local.topics, topicHints: interpreted.topics,
-        channelId: requestedChannel && !named ? "__unknown_channel__" : selectedChannelId && named && selectedChannelId !== named.id ? "__conflicting_channel__" : selectedChannelId ?? local.channelId ?? named?.id,
-        exclude: [...new Set([...(local.exclude || []), ...(interpreted.exclude || [])])],
-        minDate: local.minDate ?? (interpreted.dateIntent === "upload" ? interpreted.minDate : undefined),
-        maxDate: local.maxDate ?? (interpreted.dateIntent === "upload" ? interpreted.maxDate : undefined),
-        dateIntent: local.dateIntent ?? interpreted.dateIntent,
-        minDurationSeconds: local.minDurationSeconds ?? interpreted.minDurationSeconds,
-        maxDurationSeconds: local.maxDurationSeconds ?? interpreted.maxDurationSeconds,
-        sort: local.sort !== "relevance" ? local.sort : interpreted.sort ?? "relevance",
+        ...local,
+        channelId: selectedChannelId && local.channelId && selectedChannelId !== local.channelId ? "__conflicting_channel__" : selectedChannelId ?? local.channelId,
+        terms: interpreted.terms ?? local.terms,
+        include: interpreted.include ?? local.include,
+        alternatives: interpreted.alternatives,
+        topicHints: interpreted.topics,
         conceptGroups: interpreted.conceptGroups?.length ? interpreted.conceptGroups : [
             ...(interpreted.terms?.length === 1 ? [{ label: "subject", terms: [...interpreted.terms], required: true }] : interpreted.terms?.length ? makeLocalVideoPlan(interpreted.terms.join(" and ")).conceptGroups || [] : local.conceptGroups || []),
             ...(interpreted.include || []).map((term) => ({ label: term, terms: expand(term), required: true }))
@@ -197,7 +198,12 @@ function eligibleSemanticVideo(video, plan, topic = "All", selectedChannelId, ex
         return false;
     if (plan.topics?.length && !(video.topics || []).some((topic) => plan.topics.some((value) => normalizeVideoQuery(value) === normalizeVideoQuery(topic))))
         return false;
-    if (plan.dateIntent !== "event" && (plan.minDate && video.publishedAt < plan.minDate || plan.maxDate && video.publishedAt > plan.maxDate))
+    if (plan.minDate || plan.maxDate) {
+        const uploaded = Date.parse(video.publishedAt);
+        if (!Number.isFinite(uploaded) || plan.minDate && uploaded < Date.parse(plan.minDate) || plan.maxDate && uploaded > Date.parse(plan.maxDate))
+            return false;
+    }
+    if ((plan.minDurationSeconds !== undefined || plan.maxDurationSeconds !== undefined) && !Number.isFinite(video.durationSeconds))
         return false;
     if (plan.minDurationSeconds !== undefined && video.durationSeconds < plan.minDurationSeconds || plan.maxDurationSeconds !== undefined && video.durationSeconds > plan.maxDurationSeconds)
         return false;

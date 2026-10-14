@@ -36,7 +36,7 @@ test('explicit filters remain strict and historical dates remain content',()=>{
  assert.equal(engine.makeLocalVideoPlan('Europe after 1800').conceptGroups.some(g=>g.terms.includes('1800')),true);
  assert.deepEqual(engine.searchSemanticVideos(videos,engine.makeLocalVideoPlan('bending starlight from Other Science',channels,'c1'),'All','c1'),[]);
  const merged=engine.mergeVideoSearchPlans(plan,{terms:['gravitational lensing'],minDurationSeconds:1,channel:'Missing'},channels);
- assert.equal(merged.maxDurationSeconds,659);assert.deepEqual(engine.searchSemanticVideos(videos,merged),[]);
+ assert.equal(merged.maxDurationSeconds,659);assert.equal(merged.channelId,'c1');assert.equal(merged.minDurationSeconds,undefined);assert.deepEqual(ids(engine.searchSemanticVideos(videos,merged)),['lens','description']);
 });
 test('empty, rare, unrelated, stopword and excluded queries do not fill with random videos',()=>{
  for(const query of ['','the and of','quincunx fractal civilizations','bending starlight without gravitational lensing']) assert.deepEqual(engine.searchSemanticVideos(videos,engine.makeLocalVideoPlan(query)),[]);
@@ -92,4 +92,38 @@ test('related plan terms rank complete matches but never satisfy missing concept
  assert.ok(matches.find(x=>x.video.id==='both').score>base.find(x=>x.video.id==='both').score);
  const legacy=engine.mergeVideoSearchPlans(engine.makeLocalVideoPlan('gravitational lensing'),{terms:['gravitational lensing'],alternatives:['black holes']},[]);
  assert.ok(!ids(engine.searchSemanticVideos(videos,legacy)).includes('hole'));
+});
+
+
+test('semantic output cannot add, remove, or override locally owned filters',()=>{
+ const channels=[{id:'c1',name:'Approved Science'},{id:'c2',name:'Other Science'}];
+ const local={...engine.makeLocalVideoPlan('bending starlight from Approved Science uploaded since 2024 under 11 minutes without black holes',channels),topics:['Science'],sort:'oldest'};
+ const injected={channelId:'c2',channel:'Other Science',dateIntent:'event',minDate:'1900-01-01',maxDate:'2099-01-01',minDurationSeconds:0,maxDurationSeconds:99999,exclude:[],topics:['Nature'],sort:'random',conceptGroups:[{terms:['gravitational lensing'],required:true}]};
+ const plan=engine.mergeVideoSearchPlans(local,injected,channels);
+ for(const field of ['channelId','dateIntent','minDate','maxDate','minDurationSeconds','maxDurationSeconds','exclude','topics','sort']) assert.deepEqual(plan[field],local[field],field+' must stay local');
+ const catalog=[...videos,video('old','Gravitational Lensing',{publishedAt:'2020-01-01'}),video('long','Gravitational Lensing',{durationSeconds:1000}),video('wrong-topic','Gravitational Lensing',{topics:['Nature']}),video('tag-short','Gravitational Lensing',{tags:['Shorts']})];
+ assert.deepEqual(ids(engine.searchSemanticVideos(catalog,plan)),['lens','description']);
+ assert.equal(engine.eligibleSemanticVideo(videos[0],plan,'All',undefined,new Set(['lens'])),false);
+ const noFilters=engine.mergeVideoSearchPlans(engine.makeLocalVideoPlan('bending starlight'),{...injected,exclude:['gravitational lensing']},channels);
+ for(const field of ['channelId','minDate','maxDate','minDurationSeconds','maxDurationSeconds']) assert.equal(noFilters[field],undefined,'model cannot invent '+field);
+ assert.deepEqual(noFilters.exclude,[]);assert.ok(engine.searchSemanticVideos(videos,noFilters).length);
+ assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.mergeVideoSearchPlans(local,injected,channels))),JSON.parse(JSON.stringify(plan)));
+ assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(catalog,plan))),engine.searchSemanticVideos(catalog,plan));
+ const unknown=engine.makeLocalVideoPlan('bending starlight channel Unknown',channels);
+ assert.deepEqual(engine.searchSemanticVideos(catalog,engine.mergeVideoSearchPlans(unknown,injected,channels)),[]);
+});
+
+test('local upload and duration boundaries reject missing metadata and remain strict',()=>{
+ const day='2024-05-01';
+ const catalog=[video('start','Gravitational Lensing',{publishedAt:day+'T00:00:00Z'}),video('end','Gravitational Lensing',{publishedAt:day+'T23:59:59.999Z'}),video('before','Gravitational Lensing',{publishedAt:'2024-04-30T23:59:59.999Z'}),video('after','Gravitational Lensing',{publishedAt:'2024-05-02T00:00:00Z'}),video('unknown-date','Gravitational Lensing',{publishedAt:''})];
+ assert.deepEqual(new Set(ids(engine.searchSemanticVideos(catalog,engine.makeLocalVideoPlan('bending starlight uploaded in '+day)))),new Set(['start','end']));
+ assert.deepEqual(ids(engine.searchSemanticVideos(catalog,engine.makeLocalVideoPlan('bending starlight uploaded before '+day))),['before']);
+ assert.deepEqual(ids(engine.searchSemanticVideos(catalog,engine.makeLocalVideoPlan('bending starlight uploaded after '+day))),['after']);
+ const plan=engine.makeLocalVideoPlan('bending starlight over 5 minutes over 8 minutes under 20 minutes under 11 minutes');
+ assert.equal(plan.minDurationSeconds,481);assert.equal(plan.maxDurationSeconds,659);
+ assert.deepEqual(engine.makeLocalVideoPlan('bending starlight without black holes without galaxies').exclude,['black holes','galaxies']);
+ assert.equal(engine.makeLocalVideoPlan('bending starlight uploaded since 2099 uploaded within the last year').minDate,'2099-01-01');
+ assert.deepEqual(engine.searchSemanticVideos([video('unknown','Gravitational Lensing',{durationSeconds:NaN})],plan),[]);
+ const datePlan=engine.makeLocalVideoPlan('bending starlight uploaded since 2024');
+ assert.deepEqual(engine.searchSemanticVideos([video('old','Gravitational Lensing',{publishedAt:'2020-01-01'})],{...datePlan,dateIntent:'event'}),[]);
 });

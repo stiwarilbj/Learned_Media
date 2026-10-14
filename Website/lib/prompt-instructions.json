@@ -23,7 +23,7 @@
   "videoInterpret": [
     "Interpret this natural-language video search for a closed catalog of approved educational YouTube videos.",
     "Return one compact structured plan, without prose or a restatement of the query. Use conceptGroups as the authoritative concepts: one group per requested idea, with label, terms containing faithful equivalent phrases, related containing optional nearby concepts, and required. Do not repeat those phrases in top-level terms, include, or alternatives. Related terms may improve local ranking but never satisfy a required idea. Preserve explicit either/or choices within a group; never invent videos or channels.",
-    "Identify exclusions, requested channel, upload-date intent, duration bounds in seconds, topic labels, and sort. Historical/event dates describe content; use upload-date filters only when explicitly requested. Never invent videos or channels."
+    "Channel, upload dates, duration, exclusions, approval, Shorts rules, and sorting are parsed and enforced locally. Do not return or change these filters. Interpret only the requested content concepts; historical/event dates remain content. Topic labels are optional ranking hints, never filters."
   ],
   "topicInterpret": [
     "Interpret this unresolved learning-topic query.",

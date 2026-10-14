@@ -123,7 +123,7 @@ function installNetworkMock(options = {}) {
       } else if (prompt.includes("Interpret this unresolved learning-topic query")) {
         output = { groups: [{label:"stellar evolution",equivalents:["stellar evolution", "supernova"],related:[]}], alternatives:false };
       } else if (prompt.includes("Interpret this natural-language video search")) {
-        output = { conceptGroups: [{label:"black holes",terms:["black holes", "collapsed stars"],related:["gravitational lensing"],required:true}], exclude: [], topics: ["Science"], sort: "relevance" };
+        output = { conceptGroups: [{label:"black holes",terms:["black holes", "collapsed stars"],related:["gravitational lensing"],required:true}], exclude: ["stars"], topics: ["Science"], sort: "random", channelId: "invented", minDate: "2099-01-01", maxDurationSeconds: 1 };
       } else if (prompt.includes("Check these approved videos against the plan")) {
         output = { matches: [] };
       } else if (prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates")) {
@@ -352,7 +352,8 @@ await t.test("video searches preserve channel, exclusion, date, duration, approv
     maxDurationSeconds: 1200
   };
   assert.deepEqual(searchYouTubeCandidates(videos, plan).map(candidate => candidate.video.id), ["match"]);
-  assert.deepEqual(searchYouTubeCandidates(videos, { ...plan, dateIntent: "event" }).map(candidate => candidate.video.id), ["match", "too-old"], "historical subject dates must not filter upload dates");
+  assert.deepEqual(searchYouTubeCandidates(videos, { ...plan, dateIntent: "event" }).map(candidate => candidate.video.id), ["match"], "event intent must not bypass a hard upload filter");
+  assert.equal(makeLocalVideoPlan("Europe after 1800").minDate, undefined, "historical subject dates must not become upload filters");
 });
 
 await t.test("prompt compaction deduplicates rules and fields while retaining exact data", () => {
@@ -601,6 +602,11 @@ await t.test("successful search interpretations coalesce and invalidate by catal
   assert.deepEqual(videoFirst.plan, videoDuplicate.plan);
   assert.deepEqual(videoFirst.plan.conceptGroups[0].related, ["gravitational lensing"]);
   assert.deepEqual(videoFirst.plan.terms, [], "the plan does not need duplicated top-level concepts");
+  for (const field of ["exclude", "channel", "channelId", "dateIntent", "minDate", "maxDate", "minDurationSeconds", "maxDurationSeconds", "sort"]) {
+    assert.equal(videoFirst.plan[field], undefined, "unsolicited model filters must be discarded: " + field);
+    const request = state.requests.find(request => request.body?.contents?.[0]?.parts?.[0]?.text?.includes("Interpret this natural-language video search"));
+    assert.equal(request.body.generationConfig.responseSchema.properties[field], undefined, "model schema must not expose: " + field);
+  }
   await interpretVideoSearch(videoArgs);
   const videoCalls = () => geminiCalls(state).filter(call => call.prompt.includes("Interpret this natural-language video search"));
   assert.equal(videoCalls().length, 1, "identical video plans should be cached");

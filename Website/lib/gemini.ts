@@ -1022,28 +1022,19 @@ import type { VideoSearchPlan } from "./video-semantic";
 export async function interpretVideoSearch({ apiKey, sessionId = "default-session", query, catalogVersion = "current", signal }: { apiKey: string; sessionId?: string; query: string; catalogVersion?: string | number; signal?: AbortSignal }): Promise<{ plan: VideoSearchPlan; modelOutcomes: GeminiModelOutcome[] }> {
   if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before using smart video search.", undefined, [], undefined, false);
   const prompt = buildSearchInterpretationPrompt("videoInterpret", query);
-  const result = await requestStructured<{ terms?: string[]; include?: string[]; alternatives?: string[]; exclude?: string[]; topics?: string[]; conceptGroups?: VideoSearchPlan["conceptGroups"]; channel?: string; channelId?: string; dateIntent?: VideoSearchPlan["dateIntent"]; minDate?: string; maxDate?: string; minDurationSeconds?: number; maxDurationSeconds?: number; sort?: VideoSearchPlan["sort"] }>(apiKey, sessionId, prompt, {
+  const result = await requestStructured<Pick<VideoSearchPlan, "terms" | "include" | "alternatives" | "topics" | "conceptGroups">>(apiKey, sessionId, prompt, {
     type: "OBJECT",
     properties: {
-      terms: { type: "ARRAY", items: { type: "STRING" } }, include: { type: "ARRAY", items: { type: "STRING" } }, alternatives: { type: "ARRAY", items: { type: "STRING" } }, exclude: { type: "ARRAY", items: { type: "STRING" } }, topics: { type: "ARRAY", items: { type: "STRING" } }, conceptGroups: { type: "ARRAY", maxItems: 8, items: { type: "OBJECT", properties: { label: { type: "STRING" }, terms: { type: "ARRAY", minItems: 1, maxItems: 12, items: { type: "STRING" } }, related: { type: "ARRAY", maxItems: 12, items: { type: "STRING" } }, required: { type: "BOOLEAN" } }, required: ["label", "terms", "related", "required"] } }, channel: { type: "STRING" }, channelId: { type: "STRING" }, dateIntent: { type: "STRING", enum: ["upload", "event", "either"] }, minDate: { type: "STRING" }, maxDate: { type: "STRING" }, minDurationSeconds: { type: "INTEGER" }, maxDurationSeconds: { type: "INTEGER" }, sort: { type: "STRING", enum: ["relevance", "newest", "oldest", "random"] }
+      terms: { type: "ARRAY", items: { type: "STRING" } }, include: { type: "ARRAY", items: { type: "STRING" } }, alternatives: { type: "ARRAY", items: { type: "STRING" } }, topics: { type: "ARRAY", items: { type: "STRING" } }, conceptGroups: { type: "ARRAY", maxItems: 8, items: { type: "OBJECT", properties: { label: { type: "STRING" }, terms: { type: "ARRAY", minItems: 1, maxItems: 12, items: { type: "STRING" } }, related: { type: "ARRAY", maxItems: 12, items: { type: "STRING" } }, required: { type: "BOOLEAN" } }, required: ["label", "terms", "related", "required"] } }
     },
-    required: ["conceptGroups", "exclude", "topics"]
+    required: ["conceptGroups", "topics"]
   }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, { priority: "background", models: PRIMARY_FLASH_LITE_MODELS, maxOutputTokens: 2048, cacheContext: "youtube-catalog:" + catalogVersion });
   const plan: VideoSearchPlan = {
     terms: (result.value.terms ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean).slice(0, 24),
     include: (result.value.include ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean).slice(0, 24),
     alternatives: (result.value.alternatives ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean).slice(0, 32),
-    exclude: (result.value.exclude ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean).slice(0, 24),
     topics: (result.value.topics ?? []).filter((term): term is string => typeof term === "string").map((term) => term.trim()).filter(Boolean).slice(0, 12),
-    conceptGroups: (result.value.conceptGroups ?? []).filter((group) => group && Array.isArray(group.terms)).slice(0, 8).map((group) => ({ ...group, label: typeof group.label === "string" ? group.label.trim().slice(0,100) : undefined, required: group.required !== false, related: (Array.isArray(group.related) ? group.related : []).filter((term): term is string => typeof term === "string").map(term => term.trim().slice(0,100)).filter(Boolean).slice(0,12), terms: group.terms.filter((term): term is string => typeof term === "string").map((term) => term.trim().slice(0,100)).filter(Boolean).slice(0, 12) })).filter((group) => group.terms.length > 0),
-    channel: result.value.channel?.trim() || undefined,
-    channelId: result.value.channelId?.trim() || undefined,
-    dateIntent: result.value.dateIntent,
-    minDate: result.value.minDate?.match(/^\d{4}-\d{2}-\d{2}/)?.[0],
-    maxDate: result.value.maxDate?.match(/^\d{4}-\d{2}-\d{2}/)?.[0],
-    minDurationSeconds: typeof result.value.minDurationSeconds === "number" && Number.isFinite(result.value.minDurationSeconds) ? Math.max(0, result.value.minDurationSeconds) : undefined,
-    maxDurationSeconds: typeof result.value.maxDurationSeconds === "number" && Number.isFinite(result.value.maxDurationSeconds) ? Math.max(0, result.value.maxDurationSeconds) : undefined,
-    sort: result.value.sort
+    conceptGroups: (result.value.conceptGroups ?? []).filter((group) => group && Array.isArray(group.terms)).slice(0, 8).map((group) => ({ ...group, label: typeof group.label === "string" ? group.label.trim().slice(0,100) : undefined, required: group.required !== false, related: (Array.isArray(group.related) ? group.related : []).filter((term): term is string => typeof term === "string").map(term => term.trim().slice(0,100)).filter(Boolean).slice(0,12), terms: group.terms.filter((term): term is string => typeof term === "string").map((term) => term.trim().slice(0,100)).filter(Boolean).slice(0, 12) })).filter((group) => group.terms.length > 0)
   };
   return { plan, modelOutcomes: result.outcomes };
 }
