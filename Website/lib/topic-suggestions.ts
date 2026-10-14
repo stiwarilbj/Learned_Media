@@ -1,6 +1,6 @@
-import { normalizeSearchText, shouldExpandNaturalSearch, searchTextForms, protectedSearchTerms, contextualSearchText } from "./search";
+import { normalizeSearchText, shouldExpandNaturalSearch, searchTextForms, protectedSearchTerms, contextualSearchText, commonNameAliases } from "./search";
 import type { TopicNode } from "./types";
-export const TOPIC_SEARCH_VERSION = 7;
+export const TOPIC_SEARCH_VERSION = 8;
 export type TopicSuggestionGroup = "keyword" | "related" | "broader" | "explore";
 export type TopicSuggestion = {
     id: string;
@@ -146,7 +146,10 @@ export function createTopicSuggestionIndex(topics: TopicWithPath[]): TopicSugges
     if (fieldTokens.size > 100000)
         fieldTokens.clear();
     const pathIds = new Map(topics.map(t => [t.path.join("\0"), t.id]));
-    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => searchTextForms(contextualSearchText(value)).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
+    const entries = topics.map((originalTopic, order) => {
+        const additions = commonNameAliases(originalTopic.label).filter(alias => !originalTopic.aliases?.includes(alias));
+        const topic = additions.length ? { ...originalTopic, aliases: [...new Set([...(originalTopic.aliases ?? []), ...additions])] } : originalTopic;
+        const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => searchTextForms(contextualSearchText(value)).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
     return { entries, byId: new Map(entries.map(e => [e.topic.id, e])) };
 }
 type Ranked = {

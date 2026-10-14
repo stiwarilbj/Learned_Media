@@ -114,3 +114,29 @@ test('short aliases require context in queries and topic metadata on web and Mac
  assert.equal(contextualSearchText('Why does it support life?'),'why does support life');
  assert.equal(contextualSearchText('non-Euclidean AI models'),'non-euclidean artificial intelligence models');
 });
+
+
+test('common author variants find the same topic IDs without adding or mutating catalog entries',()=>{
+ const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ const before=JSON.stringify(topics);
+ for(const search of [engine,scope.LEARNED_MEDIA_TOPIC_SEARCH]) {
+  const ix=search.createTopicSuggestionIndex(topics);
+  assert.equal(ix.entries.length,topics.length);assert.equal(ix.byId.size,new Set(topics.map(t=>t.id)).size);
+  for(const [labelPattern,queries] of [[/Dostoevsky/,['Dostoevsky','Dostoyevsky','Fyodor Dostoyevsky']],[/Tolkien$/,['Tolkien','J. R. R. Tolkien','J.R.R. Tolkien','JRR Tolkien']]]) {
+   const expected=topics.filter(t=>labelPattern.test(t.label)).map(t=>t.id).sort();assert.ok(expected.length);
+   for(const query of queries) {
+    const result=search.searchTopicIndex(ix,query);
+    assert.deepEqual(Array.from(result.matchedIds).filter(id=>expected.includes(id)).sort(),expected,query);
+    assert.ok(result.completeCoverage,query);
+    assert.equal(result.suggestions.length,100);assert.equal(new Set(result.suggestions.map(s=>s.id)).size,100);
+    const author=result.suggestions.find(s=>expected.includes(s.id));assert.ok(author);assert.equal(author.label,ix.byId.get(author.id).topic.label);
+   }
+  }
+  const custom={id:'custom-variant',label:'Fyodor Dostoyevsky',aliases:Array(4).fill('Russian novelist'),path:['Custom','Fyodor Dostoyevsky']};
+  const customIndex=search.createTopicSuggestionIndex([custom]);
+  assert.ok(customIndex.byId.get(custom.id).topic.aliases.includes('Russian novelist'));
+  assert.ok(search.searchTopicIndex(customIndex,'Fyodor Dostoevsky').matchedIds.includes(custom.id));
+ }
+ assert.equal(JSON.stringify(topics),before);
+ const {commonNameAliases}=require('../lib/search.ts');assert.deepEqual(commonNameAliases('Tolkien Studies'),[]);
+});

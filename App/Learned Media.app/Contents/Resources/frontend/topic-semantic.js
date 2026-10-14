@@ -3,6 +3,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeSearchText = normalizeSearchText;
 exports.searchTextForms = searchTextForms;
+exports.commonNameAliases = commonNameAliases;
 exports.contextualSearchText = contextualSearchText;
 exports.protectedSearchTerms = protectedSearchTerms;
 exports.shouldExpandNaturalSearch = shouldExpandNaturalSearch;
@@ -18,6 +19,16 @@ function normalizeSearchText(value) { return foldSearchText(value); }
 /** Retain the compound spelling as well as its spaced search equivalent. */
 function searchTextForms(value) {
     return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
+}
+// Alternate spellings are search metadata, never additional catalog nodes.
+const NAME_VARIANTS = [
+    ["Fyodor Dostoevsky", "Fyodor Dostoyevsky", "Dostoevsky", "Dostoyevsky"],
+    ["J.R.R. Tolkien", "J. R. R. Tolkien", "JRR Tolkien", "Tolkien"]
+];
+const nameKey = (value) => normalizeSearchText(value).replace(/\s/g, "");
+const nameVariants = new Map(NAME_VARIANTS.flatMap(variants => variants.map(name => [nameKey(name), variants])));
+function commonNameAliases(label) {
+    return (nameVariants.get(nameKey(label)) ?? []).filter(name => name !== label);
 }
 const SHORT_ALIASES = {
     us: { expansion: "united states", context: /\b(?:united states|american|presidents?|congress|senate|constitution|elections?|politics|political|history|government|states|federal)\b/ },
@@ -134,7 +145,7 @@ exports.searchTopicIndex = searchTopicIndex;
 exports.suggestTopics = suggestTopics;
 exports.searchTopicIndexYielding = searchTopicIndexYielding;
 const search_1 = require("./search");
-exports.TOPIC_SEARCH_VERSION = 7;
+exports.TOPIC_SEARCH_VERSION = 8;
 const STOP = new Set("a about an and are as at be by can did do does explain find for from how i in into is it me of on or our please show some that the their them there these this to was were what when where which who why with would tell topics learn learning want know".split(" "));
 const CONCEPTS = [
     { label: "information technology", equivalents: ["information technology", "computer technology"], related: ["computer science"] },
@@ -238,7 +249,13 @@ function createTopicSuggestionIndex(topics) {
     if (fieldTokens.size > 100000)
         fieldTokens.clear();
     const pathIds = new Map(topics.map(t => [t.path.join("\0"), t.id]));
-    const entries = topics.map((topic, order) => { const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" ")); const context = geographicContext(fields.join(" ")); return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) }; });
+    const entries = topics.map((originalTopic, order) => {
+        const additions = (0, search_1.commonNameAliases)(originalTopic.label).filter(alias => !originalTopic.aliases?.includes(alias));
+        const topic = additions.length ? { ...originalTopic, aliases: [...new Set([...(originalTopic.aliases ?? []), ...additions])] } : originalTopic;
+        const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" "));
+        const context = geographicContext(fields.join(" "));
+        return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) };
+    });
     return { entries, byId: new Map(entries.map(e => [e.topic.id, e])) };
 }
 function rank(entry, query, plan) {

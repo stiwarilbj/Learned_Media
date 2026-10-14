@@ -11,6 +11,17 @@ export function searchTextForms(value: string) {
   return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
 }
 
+// Alternate spellings are search metadata, never additional catalog nodes.
+const NAME_VARIANTS = [
+  ["Fyodor Dostoevsky", "Fyodor Dostoyevsky", "Dostoevsky", "Dostoyevsky"],
+  ["J.R.R. Tolkien", "J. R. R. Tolkien", "JRR Tolkien", "Tolkien"]
+];
+const nameKey = (value: string) => normalizeSearchText(value).replace(/\s/g, "");
+const nameVariants = new Map(NAME_VARIANTS.flatMap(variants => variants.map(name => [nameKey(name), variants] as const)));
+export function commonNameAliases(label: string): string[] {
+  return (nameVariants.get(nameKey(label)) ?? []).filter(name => name !== label);
+}
+
 const SHORT_ALIASES: Record<string, { expansion: string; context: RegExp }> = {
   us: { expansion: "united states", context: /\b(?:united states|american|presidents?|congress|senate|constitution|elections?|politics|political|history|government|states|federal)\b/ },
   ai: { expansion: "artificial intelligence", context: /\b(?:artificial|intelligence|machine|learning|neural|models?|robots?|robotics|generative|algorithms?|computers?|automation|chatbots?|tools|ethics)\b/ },

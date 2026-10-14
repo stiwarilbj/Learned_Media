@@ -4,6 +4,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeSearchText = normalizeSearchText;
 exports.searchTextForms = searchTextForms;
+exports.commonNameAliases = commonNameAliases;
 exports.contextualSearchText = contextualSearchText;
 exports.protectedSearchTerms = protectedSearchTerms;
 exports.shouldExpandNaturalSearch = shouldExpandNaturalSearch;
@@ -19,6 +20,16 @@ function normalizeSearchText(value) { return foldSearchText(value); }
 /** Retain the compound spelling as well as its spaced search equivalent. */
 function searchTextForms(value) {
     return [...new Set([foldSearchText(value, true), normalizeSearchText(value)])];
+}
+// Alternate spellings are search metadata, never additional catalog nodes.
+const NAME_VARIANTS = [
+    ["Fyodor Dostoevsky", "Fyodor Dostoyevsky", "Dostoevsky", "Dostoyevsky"],
+    ["J.R.R. Tolkien", "J. R. R. Tolkien", "JRR Tolkien", "Tolkien"]
+];
+const nameKey = (value) => normalizeSearchText(value).replace(/\s/g, "");
+const nameVariants = new Map(NAME_VARIANTS.flatMap(variants => variants.map(name => [nameKey(name), variants])));
+function commonNameAliases(label) {
+    return (nameVariants.get(nameKey(label)) ?? []).filter(name => name !== label);
 }
 const SHORT_ALIASES = {
     us: { expansion: "united states", context: /\b(?:united states|american|presidents?|congress|senate|constitution|elections?|politics|political|history|government|states|federal)\b/ },
