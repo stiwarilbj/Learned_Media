@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
+import type { AccountKeys, KeyProvider } from './account-credentials';
 import { canonicalRecord, safeMemory, type CloudRecord } from './cloud-records';
 import type { FactMemory } from './fact-quality';
 import type { Database } from './supabase/database.types';
@@ -55,4 +56,17 @@ export class WorkspaceCloudSync {
       batch.forEach(item => this.memories.set(item.fingerprint || item.id, JSON.stringify(item)));
     }
   }
+}
+
+/** Session SDK refreshes access tokens; RLS authorizes each provider row. */
+export async function loadAccountKeys(userId: string, signal: AbortSignal): Promise<Partial<AccountKeys>> {
+  const { data, error } = await cloudClient().from('account_credentials').select('provider,api_key').eq('user_id', userId).abortSignal(signal);
+  if (error) throw error;
+  const keys: Partial<AccountKeys> = {};
+  for (const row of data || []) if (row.provider === 'gemini' || row.provider === 'youtube') keys[row.provider] = row.api_key;
+  return keys;
+}
+export async function saveAccountKey(userId: string, provider: KeyProvider, value: string, signal: AbortSignal) {
+  const { error } = await cloudClient().from('account_credentials').upsert({user_id: userId, provider, api_key: value}, {onConflict: 'user_id,provider'}).abortSignal(signal);
+  if (error) throw error;
 }

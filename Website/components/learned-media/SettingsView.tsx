@@ -111,7 +111,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             </div>
             <div className="security-note" id="gemini-key-note">
               <Icon name="shield" size={16} />
-              <span>Your key is remembered on this device in encrypted browser storage, separate from workspaces. It is never synced to your account. Use Remove on a shared device</span>
+              <span>Your key is remembered in encrypted browser storage and privately synced when you sign in with Google. Remove also clears it from your account. Sign out on a shared device</span>
             </div>
             {feedback && <p className="settings-feedback" role="status">{feedback}</p>}
 
@@ -141,7 +141,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             </div>
             <label className="field-label" htmlFor="youtube-key">Paste your YouTube API key here</label>
             <div className="key-input-row"><input id="youtube-key" type="password" value={youtubeKey} onChange={(event) => onYoutubeKeyChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onConnectYoutube(); } }} placeholder="Paste your YouTube API key here" autoComplete="new-password" /><div className="key-actions"><button type="button" className="primary-button small" onClick={onConnectYoutube} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}>{youtubeStatus === "connecting" ? "Connecting" : youtubeStatus === "refreshing" ? "Refreshing" : "Connect YouTube"}</button><button type="button" className="ghost-button" onClick={onRefreshYoutube} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}>Refresh videos</button><button type="button" className="ghost-button" onClick={onRemoveYoutubeKey}>Remove key</button></div></div>
-            <div className="security-note"><Icon name="shield" size={16} /><span>Your YouTube key is remembered on this device in encrypted browser storage, separate from workspaces and account sync</span></div>
+            <div className="security-note"><Icon name="shield" size={16} /><span>Your YouTube key is remembered in encrypted browser storage and privately synced when you sign in with Google. Remove key also clears it from your account</span></div>
             <p className="youtube-restriction-note">Videos are randomized with an overall preference for newer uploads. Turn on the stronger setting for channels where you want older videos to appear much less often.</p>
             <details className="youtube-recency-settings">
               <summary><span><strong>Channel recency settings</strong><small>{prioritizedChannelCount} of {APPROVED_YOUTUBE_CHANNELS.length} channels strongly favor recent uploads</small></span><Icon name="chevronRight" size={16} /></summary>
@@ -168,7 +168,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             <div className="settings-card-heading"><div className="settings-icon lilac"><Icon name="user" size={19} /></div><div><h2>Account</h2><p>Google sign-in keeps your mix available across sessions</p></div></div>
             <div className="account-row"><div className="account-avatar">{account ? (String(account.user_metadata?.full_name ?? account.user_metadata?.name ?? account.email ?? "G").slice(0, 1).toUpperCase()) : "L"}</div><div><strong>{account ? String(account.user_metadata?.full_name ?? account.user_metadata?.name ?? account.email ?? "Google account") : "Local workspace"}</strong><span>{account ? (syncStatus === "syncing" ? "Syncing your workspace" : syncStatus === "offline" ? "Offline; local changes are safe" : syncStatus === "error" ? "Sync needs attention" : "Synced to your Google account") : "Not signed in · saved locally"}</span></div><button type="button" className="secondary-button" onClick={account ? onGoogleSignOut : onGoogleSignIn}><Icon name="login" size={15} /> {account ? "Sign out" : "Continue with Google"}</button></div>
             {syncError && <p className="settings-feedback" role="alert">{syncError}</p>}
-            <p className="youtube-restriction-note">Workspace cards, saved state, learning history, questions, explanations, topic settings, and fact memory sync when you sign in. Gemini keys, YouTube keys, OAuth credentials, and the YouTube catalog stay on this device</p>
+            <p className="youtube-restriction-note">Workspace cards, saved state, learning history, questions, explanations, topic settings, and fact memory sync when you sign in. Gemini and YouTube API keys sync privately with the same Google account. OAuth credentials and the YouTube catalog stay on this device</p>
           </section>
 
           <section className="settings-card">

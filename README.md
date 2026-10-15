@@ -34,7 +34,7 @@ The build writes the site to `Website/out/`. Pushes to `main` deploy automatical
 
 ### Keys and privacy
 
-The website keeps API keys in encrypted, device-local browser storage. Keys and the YouTube catalog are not synced to your Google account or committed to GitHub. Workspace data can sync after you sign in with Google.
+The website remembers API keys in encrypted browser storage. When you sign in with Google, Gemini and YouTube keys sync privately to the same account across devices and sessions, separately from workspace data. Signing out clears account keys from the active session; Remove clears that key from the account too. Offline edits remain saved locally and retry on reconnection. The imported YouTube catalog stays on the device. Keys are never committed to GitHub.
 
 On GitHub Pages, requests to Gemini, Wikipedia, and YouTube run directly from your browser.
 

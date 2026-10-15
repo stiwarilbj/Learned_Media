@@ -1556,6 +1556,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let videoCatalog = VideoCatalogStore()
     private let youtubeLimiter = YouTubeRequestLimiter()
     private var geminiKey = ""
+    private var sessionRefresh: Task<CloudSession, Error>?
+    private var sessionEpoch = 0
     private var authSession: ASWebAuthenticationSession?
     private var authRequestID = ""
     private var authVerifier = ""
@@ -1618,6 +1620,55 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         guard let body = message.body as? [String: Any], let id = body["id"] as? String, let action = body["action"] as? String else { return }
         let payload = body["payload"] as? [String: Any] ?? [:]
         switch action {
+        case "credentialRead", "credentialWrite":
+            guard let provider = payload["provider"] as? String, ["gemini", "youtube"].contains(provider) else { respond(id: id, error: "Invalid credential provider."); return }
+            let owner = payload["owner"] as? String
+            if let owner, UUID(uuidString: owner) == nil { respond(id: id, error: "Invalid credential account."); return }
+            let credentialID = owner.map { "account:\($0):\(provider)" } ?? "\(provider)-api-key"
+            do {
+                if action == "credentialWrite" {
+                    let entry = payload["entry"] as? [String: Any]
+                    let data = try entry.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data()
+                    try keychain.save(credentialID, data: data)
+                    respond(id: id, result: true)
+                } else if let data = keychain.read(credentialID) {
+                    if let entry = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { respond(id: id, result: entry) }
+                    else { respond(id: id, result: ["value": String(data: data, encoding: .utf8) ?? "", "pending": owner == nil ? NSNull() : "import"] as [String: Any]) }
+                } else { respond(id: id, result: NSNull()) }
+            } catch { respond(id: id, error: "The API key could not be saved in Keychain.") }
+        case "useKeys":
+            let key = payload["gemini"] as? String ?? ""
+            if key != geminiKey { cancelActiveTasks(); geminiKey = key; Task { await gemini.reset() } }
+            respond(id: id, result: true)
+        case "currentAccount", "accountKeysLoad", "accountKeySave":
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let session = try await cloudSession()
+                    if action == "currentAccount" {
+                        let object = keychain.readSession().flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+                        let user = object["user"] as? [String: Any] ?? [:]
+                        let metadata = user["user_metadata"] as? [String: Any] ?? [:]
+                        respond(id: id, result: ["id": session.userID, "email": user["email"] as? String ?? "", "name": metadata["full_name"] as? String ?? user["email"] as? String ?? "Google learner"])
+                    } else {
+                        guard payload["owner"] as? String == session.userID else { throw NativeError(message: "Account changed. API key sync was canceled.", retryable: false) }
+                        let (url, anonKey) = try cloudConfiguration()
+                        var components = URLComponents(url: url.appendingPathComponent("rest/v1/account_credentials"), resolvingAgainstBaseURL: false)!
+                        if action == "accountKeysLoad" {
+                            components.queryItems = [URLQueryItem(name: "select", value: "provider,api_key"), URLQueryItem(name: "user_id", value: "eq.\(session.userID)")]
+                            let rows = try await cloudRequest(components.url!, method: "GET", anonKey: anonKey, session: session) as? [[String: Any]] ?? []
+                            var keys: [String: String] = [:]
+                            for row in rows { if let provider = row["provider"] as? String, ["gemini", "youtube"].contains(provider) { keys[provider] = row["api_key"] as? String ?? "" } }
+                            respond(id: id, result: keys)
+                        } else {
+                            guard let provider = payload["provider"] as? String, ["gemini", "youtube"].contains(provider), let value = payload["value"] as? String, value.utf8.count <= 4096 else { throw NativeError(message: "Invalid API key settings.", retryable: false) }
+                            components.queryItems = [URLQueryItem(name: "on_conflict", value: "user_id,provider")]
+                            _ = try await cloudRequest(components.url!, method: "POST", anonKey: anonKey, session: session, body: ["user_id": session.userID, "provider": provider, "api_key": value], prefer: "resolution=merge-duplicates,return=minimal")
+                            respond(id: id, result: true)
+                        }
+                    }
+                } catch { respond(id: id, error: "Account sync is unavailable. Reconnect to retry; your keys remain in Keychain.") }
+            }
         case "loadKeys":
             respond(id: id, result: ["gemini": geminiKey, "youtube": keychain.read("youtube-api-key").flatMap { String(data: $0, encoding: .utf8) } ?? ""])
         case "setYouTubeKey":
@@ -1765,6 +1816,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             authSession?.cancel()
             authSession = nil
             cancelActiveTasks()
+            sessionEpoch += 1
+            sessionRefresh?.cancel()
+            sessionRefresh = nil
+            geminiKey = ""
             keychain.deleteSession()
             respond(id: id, result: true)
         case "cloudLoad":
@@ -1806,6 +1861,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private func cloudNow() -> String { ISO8601DateFormatter().string(from: Date()) }
 
     private func cloudSession() async throws -> CloudSession {
+        if let pending = sessionRefresh { return try await pending.value }
+        let epoch = sessionEpoch
+        let task = Task { try await self.refreshCloudSession() }
+        sessionRefresh = task
+        defer { if sessionEpoch == epoch { sessionRefresh = nil } }
+        return try await task.value
+    }
+
+    private func refreshCloudSession() async throws -> CloudSession {
+        try Task.checkCancellation()
+        let epoch = sessionEpoch
         let (supabaseURL, anonKey) = try cloudConfiguration()
         guard let data = keychain.readSession(), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let accessToken = object["access_token"] as? String, let refreshToken = object["refresh_token"] as? String else {
@@ -1827,18 +1893,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let refreshed = try? JSONSerialization.jsonObject(with: refreshedData) as? [String: Any], let token = refreshed["access_token"] as? String else {
             throw NativeError(message: "Your Google session expired. Sign in again to resume cloud sync.", retryable: false)
         }
-        try keychain.saveSession(refreshedData)
+        try Task.checkCancellation()
+        guard epoch == sessionEpoch else { throw CancellationError() }
+        try keychain.saveSession(normalizedSessionData(refreshedData))
         let userID = (refreshed["user"] as? [String: Any])?["id"] as? String ?? (object["user"] as? [String: Any])?["id"] as? String ?? ""
         guard !userID.isEmpty else { throw NativeError(message: "The Google session did not include an account ID.", retryable: false) }
         return CloudSession(accessToken: token, userID: userID)
     }
 
-    private func cloudRequest(_ url: URL, method: String, anonKey: String, session: CloudSession, body: Any? = nil) async throws -> Any {
+    private func cloudRequest(_ url: URL, method: String, anonKey: String, session: CloudSession, body: Any? = nil, prefer: String? = nil) async throws -> Any {
         var request = URLRequest(url: url, timeoutInterval: 45)
         request.httpMethod = method
         request.setValue(anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let prefer { request.setValue(prefer, forHTTPHeaderField: "Prefer") }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -2177,6 +2246,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             Task {
                 do {
                     let session = try await self.exchangeCode(code, verifier: self.authVerifier, supabaseURL: supabaseURL, anonKey: anonKey)
+                    self.sessionEpoch += 1
+                    self.sessionRefresh?.cancel()
+                    self.sessionRefresh = nil
                     try self.keychain.saveSession(session.sessionData)
                     self.respond(id: id, result: ["account": session.account])
                 } catch {
@@ -2219,7 +2291,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             "name": metadata["full_name"] as? String ?? metadata["name"] as? String ?? user["email"] as? String ?? "Google learner",
             "email": user["email"] as? String ?? ""
         ]
-        return (data, account)
+        return (try normalizedSessionData(data), account)
+    }
+
+    private func normalizedSessionData(_ data: Data) throws -> Data {
+        var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        if object["expires_at"] == nil, let duration = object["expires_in"] as? NSNumber {
+            object["expires_at"] = Date().timeIntervalSince1970 + duration.doubleValue
+        }
+        return try JSONSerialization.data(withJSONObject: object)
     }
 
     private func randomString(length: Int) -> String {

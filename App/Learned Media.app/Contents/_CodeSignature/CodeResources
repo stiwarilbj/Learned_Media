@@ -8,9 +8,13 @@
 		<data>
 		z3YnZ5H+EX7i7EUg7i75kPHc+tk=
 		</data>
+		<key>Resources/frontend/account-credentials.js</key>
+		<data>
+		WyoE5sDqvokGIOHkjtFqGI633f0=
+		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		ohoadcA1vylS4bcpMXcnZv8mPeo=
+		4LEGb9buenjZtl7tO0aJy84hh/0=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -38,7 +42,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		JozkMnUEY2enVRw0CoeO8sXJH0g=
+		z5ilhI8lCEBbLTWuu8VQQB5YH10=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
@@ -102,11 +106,18 @@
 			lyr1jZGWekf00mnBTQBKKLWkHJmHUoxbAK8yBQJd+y4=
 			</data>
 		</dict>
+		<key>Resources/frontend/account-credentials.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ms+BV/NSHbFv8au8XG0aJHuLeHY7FyZksNpuGXgXAKQ=
+			</data>
+		</dict>
 		<key>Resources/frontend/app.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			keTQVIFTBZNyx53t8gNrUuR1j5d0hp2AQ4V41ojpEhs=
+			2Y2qcl5itSByOKvMLbf90rdMVbcSoinUN+VPECKSsTA=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -155,7 +166,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			tmJn2iuYmp74C1J0S7m+lLOSOmDtyWR/LeZMK0vpfCQ=
+			Iaovve6aZDJZXmxCyAtDzjUr4Zug5zALWUuJuic94z8=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>

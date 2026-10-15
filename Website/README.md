@@ -20,11 +20,11 @@ To build the GitHub Pages version locally, run `npm run build:github-pages`. It 
 3. Use **Learn more** or ask questions on generated fact cards
 4. Open **Videos**, add a YouTube Data API v3 key in Settings, and import the approved creator library
 
-No demo facts are included. Facts appear only after Gemini successfully generates them. The key stays in browser session memory; the Settings page links directly to [Google AI Studio](https://aistudio.google.com/app/apikey).
+No demo facts are included. Facts appear only after Gemini successfully generates them. Keys are remembered in encrypted browser storage and sync privately with your signed-in Google account; the Settings page links directly to [Google AI Studio](https://aistudio.google.com/app/apikey).
 
-On GitHub Pages, Gemini and Wikipedia requests run directly in your browser. Your key is sent only to Google, held in memory for the session, and is never committed to GitHub.
+On GitHub Pages, Gemini and Wikipedia requests run directly in your browser. API keys are sent to Google for provider requests and to the account-private credential table for sync. They are excluded from workspace snapshots and never committed to GitHub.
 
-The Videos workspace uses the same session-only rule for its YouTube key. Settings includes direct links to create a Google Cloud project, enable YouTube Data API v3, and create a restricted API key. The imported catalog is kept in IndexedDB and only approved creators and individually approved videos are used.
+The Videos workspace uses the same account-scoped storage for its YouTube key. Settings includes direct links to create a Google Cloud project, enable YouTube Data API v3, and create a restricted API key. The imported catalog is kept in IndexedDB and only approved creators and individually approved videos are used.
 
 While connected, overdue creator sources refresh once a day. Use **Refresh videos** for an immediate scan. 3Blue1Brown is limited to the approved Neural Networks and Statistics playlists, including future additions.
 
@@ -65,3 +65,26 @@ Search rankers record matched and missing concept IDs for each result. Ordinary 
 Question-answer prompts locally recognize leading “when,” “why,” and “what’s the difference” questions and add only the applicable date/time-first, cause-first, or distinction-first instruction. Original query text is preserved. Unknown patterns use the general answer prompt, and source limitations remain mandatory. Web and native builders use the same instruction text; this adds no Gemini request.
 
 For explicit multi-part questions, the answer prompt also includes a short local coverage checklist. Each item must be answered or identified as unsupported by the evidence. Splitting ignores quotes and parenthetical text, preserves the original query, and falls back to the general prompt when a reliable short checklist cannot be extracted. No separate interpretation request is made.
+
+## Account credentials and sessions
+
+Google OAuth must be enabled in Supabase with redirect URLs for the website and
+`learnedmedia://auth/callback` for macOS. The browser SDK persists and refreshes
+its own session. Signing out uses the local session scope, so it does not sign
+out other devices. Native refreshes are coalesced and their expiry is persisted.
+
+`supabase/account-credentials.sql` creates separate per-account/per-provider
+credential rows with owner-only read/insert/update policies. Empty values record
+removals. This uses Supabase access controls and infrastructure storage encryption;
+it is not end-to-end encryption. Never put keys in OAuth metadata, exports,
+workspace snapshots, fact memory, or logs. Browser recovery copies use AES-GCM;
+macOS recovery copies use Keychain. Account switching clears active credentials
+before restoring the next account. Existing device keys migrate once, with an
+existing account copy taking precedence over a legacy import. Explicit offline
+edits take precedence and are retried on reconnect/focus.
+
+Run `npm run test:credentials` for the shared web/native sync state machine and
+`node scripts/build-native-credentials.mjs` after changing it. The transactional
+`supabase/test-account-credentials.sql` verifies owner and anonymous isolation
+without retaining its fixture users or keys. Normal runtime sync never requires
+service-role credentials.

@@ -4,7 +4,8 @@ import dynamic from "next/dynamic";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Navigation } from "@/components/learned-media/Navigation";
 import { Icon } from "@/components/learned-media/icons";
-import { readRememberedKey, saveRememberedKey } from "@/lib/remembered-keys";
+import { readCredential, saveCredential } from "@/lib/remembered-keys";
+import { AccountCredentials } from "@/lib/account-credentials";
 import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
@@ -19,7 +20,7 @@ import type { TopicSearchIndex, TopicSearchWorkerReply } from "@/lib/topic-searc
 import { isGitHubPagesRuntime } from "@/lib/runtime";
 import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore as writeRawWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
 import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-preferences";
-import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
+import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys, saveAccountKey, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
@@ -413,6 +414,7 @@ export default function HomePage() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [apiKey, setApiKey] = useState("");
   const [keysHydrated, setKeysHydrated] = useState(false);
+  const [authRestored, setAuthRestored] = useState(false);
   const [geminiStatus, setGeminiStatus] = useState<GeminiStatus>("not-configured");
   const [supabaseConfigured, setSupabaseConfigured] = useState(false);
   const [account, setAccount] = useState<CloudAccount | null>(null);
@@ -517,6 +519,13 @@ export default function HomePage() {
   const youtubeActivityLoadedWorkspaceRef = useRef<string | null>(null);
   const youtubeActivityEditEpoch = useRef(0);
   const apiKeyRef = useRef("");
+  const youtubeKeyRef = useRef("");
+  const credentialManager = useRef<AccountCredentials | null>(null);
+  const credentialOwner = useRef<string | null>(null);
+  const userEditingKey = useRef(false);
+  const restoredGeminiKey = useRef("");
+  const [keySyncStatus, setKeySyncStatus] = useState("local");
+  const [keySyncError, setKeySyncError] = useState("");
   const sessionIdRef = useRef("browser-" + Math.random().toString(36).slice(2));
   const persistedStateRef = useRef<PersistedState | null>(null);
   const youtubeWorkspaceRef = useRef<YouTubeWorkspaceState>(DEFAULT_YOUTUBE_WORKSPACE);
@@ -533,6 +542,8 @@ export default function HomePage() {
   const cloudSaveTimer = useRef<number | null>(null);
   const cloudEpoch = useRef(0);
   const cloudUserId = useRef<string | null>(null);
+  const cloudLoaded = useRef(false);
+  const cloudLoadingUser = useRef<string | null>(null);
   const mainScrollRef = useRef<HTMLDivElement>(null);
   const displayModeRef = useRef(settings.displayMode);
   const recordGeminiOutcomes = useCallback((outcomes: GeminiModelOutcome[], finalStatus?: GeminiStatus) => {
@@ -961,8 +972,7 @@ export default function HomePage() {
         await writeWorkspaceStore(store, { recovery: needsSnapshotMigration }).catch(() => undefined);
       }
       setHydrated(true);
-      const epoch = keyEditEpoch.current;
-      void Promise.all([readRememberedKey("gemini"), readRememberedKey("youtube")]).then(([gemini, youtube]) => { if (!active) return; setKeysHydrated(true); if (keyEditEpoch.current !== epoch) return; apiKeyRef.current = gemini; setApiKey(gemini); setYoutubeKey(youtube); }).catch(() => { if (!active) return; setKeysHydrated(true); setToast("Remembered keys could not be restored. Your workspaces are still available."); });
+
     };
     void restore();
     setSupabaseConfigured(Boolean(CLOUD_URL && CLOUD_PUBLIC_KEY));
@@ -972,20 +982,84 @@ export default function HomePage() {
   useEffect(() => {
     if (!hydrated) return;
     let active = true;
+    const manager = new AccountCredentials({
+      read: (owner, provider) => readCredential(provider, owner),
+      write: (owner, provider, entry) => saveCredential(provider, owner, entry),
+      load: loadAccountKeys, save: saveAccountKey,
+      status: (status, message) => { if (active) { setKeySyncStatus(status); setKeySyncError(message ?? ""); } },
+      changed: (keys) => {
+        if (!active) return;
+        if (apiKeyRef.current !== keys.gemini) {
+          connectionAbortController.current?.abort();
+          generationAbortController.current?.abort();
+          learningAbortController.current?.abort();
+          questionAbortController.current?.abort();
+          youtubeSearchAbortController.current?.abort();
+          globalSearchAbortController.current?.abort();
+          requestGeneration.current += 1;
+          naturalSearchCache.current.clear(); youtubeSearchCache.current.clear(); learningResponseCache.current.clear();
+          apiKeyRef.current = keys.gemini;
+          setApiKey(keys.gemini);
+          setGeminiStatus("not-configured");
+          setModelChecks(ALLOWED_GEMINI_MODELS.map(model => ({ model, status: "unchecked" })));
+          setModelChecking(false); setLoading(false); setLearnLoading(null); setQuestionLoading(null);
+          restoredGeminiKey.current = userEditingKey.current ? "" : keys.gemini;
+        }
+        if (youtubeKeyRef.current !== keys.youtube) {
+          youtubeAbortController.current?.abort();
+          youtubeSearchAbortController.current?.abort();
+          youtubeKeyRef.current = keys.youtube;
+          setYoutubeKey(keys.youtube);
+          setYoutubeStatus("not-configured"); setYoutubeError("");
+        }
+      }
+    });
+    credentialManager.current = manager;
+    credentialOwner.current = null;
+    void manager.switchAccount(null).then(() => { if (active) setKeysHydrated(true); });
+    const refresh = () => { if (document.visibilityState !== "hidden") void manager.refresh(); };
+    window.addEventListener("online", refresh);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      active = false; manager.dispose(); credentialManager.current = null;
+      window.removeEventListener("online", refresh); window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !keysHydrated) return;
+    let active = true;
     const auth = cloudClient().auth;
     const loadAccount = async (session: { user: CloudAccount } | null) => {
+      if (!active) return;
       const user = session?.user;
+      const owner = user?.id ?? null;
+      if (credentialOwner.current !== owner) {
+        credentialOwner.current = owner;
+        setAuthRestored(false);
+        void credentialManager.current?.switchAccount(owner).then(() => { if (active && credentialOwner.current === owner) setAuthRestored(true); });
+      } else {
+        if (!owner) setAuthRestored(true);
+        if (owner) void credentialManager.current?.refresh();
+      }
       if (!user) {
         cloudEpoch.current += 1;
         cloudAbortController.current?.abort();
         cloudSyncRef.current = null;
         cloudUserId.current = null;
+        cloudLoadingUser.current = null;
+        cloudLoaded.current = false;
         setAccount(null);
         setSyncStatus("signed-out");
         setSyncError("");
         return;
       }
-      if (!active || cloudUserId.current === user.id && cloudSyncRef.current) return;
+      if (!active || cloudUserId.current === user.id && cloudSyncRef.current && cloudLoaded.current) return;
+      if (cloudLoadingUser.current === user.id) return;
+      cloudLoadingUser.current = user.id;
+      cloudLoaded.current = false;
       const epoch = ++cloudEpoch.current;
       cloudAbortController.current?.abort();
       const controller = new AbortController();
@@ -1038,18 +1112,39 @@ export default function HomePage() {
         setTheme(mergedStore.theme ?? "light");
         persistedStateRef.current = targetState;
         await writeWorkspaceStore(mergedStore);
+        if (!active || controller.signal.aborted || cloudEpoch.current !== epoch) return;
         setSyncStatus("synced");
+        cloudLoaded.current = true;
         scheduleCloudSave();
       } catch (error) {
         if (!active || controller.signal.aborted || cloudEpoch.current !== epoch) return;
         setSyncStatus(navigator.onLine === false ? "offline" : "error");
         setSyncError(error instanceof Error ? error.message : "Cloud sync could not load your account.");
+      } finally {
+        if (cloudEpoch.current === epoch && cloudLoadingUser.current === user.id) cloudLoadingUser.current = null;
       }
     };
-    void auth.getSession().then(({ data }) => loadAccount(data.session as { user: CloudAccount } | null));
-    const { data: listener } = auth.onAuthStateChange((_event, session) => { void loadAccount(session as { user: CloudAccount } | null); });
-    return () => { active = false; listener.subscription.unsubscribe(); cloudAbortController.current?.abort(); };
-  }, [hydrated, scheduleCloudSave]);
+    let authRevision = 0;
+    const { data: listener } = auth.onAuthStateChange((_event, session) => {
+      const revision = ++authRevision;
+      // Supabase holds its auth lock inside this callback. Defer API work.
+      window.setTimeout(() => { if (active && revision === authRevision) void loadAccount(session); }, 0);
+    });
+    const revision = authRevision;
+    void auth.getSession().then(({ data, error }) => {
+      if (!active || revision !== authRevision) return;
+      if (error) { setSyncStatus("error"); setSyncError("Your Google session could not be restored. Reconnect to retry."); return; }
+      void loadAccount(data.session);
+    });
+    const retry = () => {
+      const revision = authRevision;
+      if (active && document.visibilityState !== "hidden") void auth.getSession().then(({ data, error }) => {
+        if (active && !error && revision === authRevision) void loadAccount(data.session);
+      });
+    };
+    window.addEventListener("online", retry); window.addEventListener("focus", retry);
+    return () => { active = false; listener.subscription.unsubscribe(); cloudAbortController.current?.abort(); window.removeEventListener("online", retry); window.removeEventListener("focus", retry); };
+  }, [hydrated, keysHydrated, scheduleCloudSave]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1449,7 +1544,7 @@ export default function HomePage() {
     cloudSaveTimer.current = null;
     cloudSyncRef.current = null;
     cloudUserId.current = null;
-    void cloudClient().auth.signOut().then(({ error }) => {
+    void cloudClient().auth.signOut({ scope: "local" }).then(({ error }) => {
       if (error) throw error;
       setAccount(null);
       setSyncStatus("signed-out");
@@ -1898,7 +1993,9 @@ export default function HomePage() {
 
   const handleApiKeyChange = useCallback((value: string) => {
     keyEditEpoch.current += 1;
-    void saveRememberedKey("gemini", value).catch(() => setToast("This key could not be remembered on this device."));
+    userEditingKey.current = true;
+    credentialManager.current?.edit("gemini", value);
+    userEditingKey.current = false;
     apiKeyRef.current = value;
     connectionAbortController.current?.abort();
     generationAbortController.current?.abort();
@@ -1992,6 +2089,12 @@ export default function HomePage() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (!keysHydrated || !authRestored || !restoredGeminiKey.current || restoredGeminiKey.current !== apiKey.trim()) return;
+    restoredGeminiKey.current = "";
+    void testConnection();
+  }, [apiKey, keysHydrated, authRestored, testConnection]);
 
   const updateYouTubeWorkspace = useCallback((update: (current: YouTubeWorkspaceState) => YouTubeWorkspaceState, syncCloud = false) => {
     const next = update(youtubeWorkspaceRef.current);
@@ -2090,7 +2193,8 @@ export default function HomePage() {
 
   const handleYouTubeKeyChange = useCallback((value: string) => {
     keyEditEpoch.current += 1;
-    void saveRememberedKey("youtube", value).catch(() => setToast("This key could not be remembered on this device."));
+    credentialManager.current?.edit("youtube", value);
+    youtubeKeyRef.current = value;
     youtubeAbortController.current?.abort();
     youtubeSearchAbortController.current?.abort();
     youtubeSearchCache.current.clear();
@@ -2102,7 +2206,6 @@ export default function HomePage() {
 
   const removeYouTubeKey = useCallback(() => {
     keyEditEpoch.current += 1;
-    void saveRememberedKey("youtube", "").catch(() => setToast("The remembered YouTube key could not be removed."));
     handleYouTubeKeyChange("");
     setToast("Remembered YouTube key removed. Your imported catalog remains local.");
   }, [handleYouTubeKeyChange]);
@@ -2416,7 +2519,7 @@ export default function HomePage() {
     if (view === "explore") return <ExploreView onChoose={chooseExploreTopic} />;
       if (view === "videos") return <VideoWorkspace workspace={youtubeWorkspace} videoById={youtubeIndexes.videoById} channelById={youtubeIndexes.channelById} videosByChannel={youtubeIndexes.videosByChannel} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} searchHasMore={youtubeSearchHasMore} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(youtubeTopicPool(topic), 24, [], current.prioritizeRecentByChannel).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={recordYouTubePlaybackPosition} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} cards={collectionCards} displayMode={settings.displayMode} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus} syncError={syncError} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus === "synced" && keySyncStatus === "syncing" ? "syncing" : syncStatus === "synced" && keySyncStatus === "error" ? "error" : syncStatus} syncError={[syncError, keySyncError].filter(Boolean).join(" ")} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
     return <FeedView cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, DEFAULT_CARD_GENERATION_COUNT)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };

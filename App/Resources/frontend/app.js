@@ -79,6 +79,47 @@
     generationRequestToken: 0,
     activeGenerationSentenceLength: 3
   };
+  let nativeKeyEditing = false;
+  let nativeCredentialOwner = null;
+  let nativeKeySyncError = "";
+  let nativeAccountRestored = false;
+  let nativeCheckedRestoredKey = "";
+  function checkRestoredNativeKey(key) {
+    if (!nativeAccountRestored || !key || state.key !== key || nativeCheckedRestoredKey === key) return;
+    nativeCheckedRestoredKey = key;
+    testKey();
+  }
+  const nativeCredentials = new window.LearnedMediaCredentials.AccountCredentials({
+    read: function (owner, provider) { return bridge("credentialRead", { owner: owner, provider: provider }).then(function (value) { return value || undefined; }); },
+    write: function (owner, provider, entry) { return bridge("credentialWrite", { owner: owner, provider: provider, entry: entry }); },
+    load: function (owner) { return bridge("accountKeysLoad", { owner: owner }); },
+    save: function (owner, provider, value) { return bridge("accountKeySave", { owner: owner, provider: provider, value: value }); },
+    changed: function (keys) {
+      const restored = !nativeKeyEditing && keys.gemini && keys.gemini !== state.key;
+      if (state.key !== keys.gemini) {
+        nativeCheckedRestoredKey = "";
+        state.key = keys.gemini; state.geminiStatus = "not-configured";
+        state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; });
+        clearSessionSearchCaches(); state.connectionToken += 1; state.generationRequestToken += 1;
+      }
+      if (state.youtubeKey !== keys.youtube) { state.youtubeKey = keys.youtube; state.youtubeStatus = "not-configured"; state.connectionToken += 1; }
+      bridge("useKeys", keys).then(function () { if (restored) checkRestoredNativeKey(keys.gemini); }).catch(function () {});
+      if (!nativeKeyEditing) render();
+    },
+    status: function (status, message) {
+      const previousError = nativeKeySyncError;
+      nativeKeySyncError = message || "";
+      if (status === "error" && state.account) { state.syncStatus = "error"; state.syncError = nativeKeySyncError; }
+      else if (status === "synced" && state.cloudSyncReady && previousError && state.syncError === previousError) { state.syncStatus = "synced"; state.syncError = ""; }
+      if (!nativeKeyEditing) render();
+    }
+  });
+  function editNativeCredential(provider, value) {
+    nativeKeyEditing = true;
+    nativeCredentials.edit(provider, value);
+    nativeKeyEditing = false;
+  }
+
   function normalizeSentenceLength(value) {
     const number = Number(value);
     return [1, 2, 3, 4, 6, 8, 10].includes(number) ? number : 3;
@@ -306,10 +347,10 @@
     "Make the feed feel like yours.",
     "Settings stay calm, clear, and close to the experience they shape.",
     "Use Gemini for fresh facts, Learn more, and questions.",
-    "Your key is remembered in this Mac’s Keychain, separate from workspaces, and sent only when Gemini is requested.",
+    "Your key is remembered in this Mac’s Keychain and privately synced when you sign in with Google. Remove also clears it from your account.",
     "Create or copy one in Google AI Studio, then paste it here.",
     "Use your own YouTube Data API key for the approved video library.",
-    "Your YouTube key is remembered in this Mac’s Keychain, separate from workspaces, and never synced to your account.",
+    "Your YouTube key is remembered in this Mac’s Keychain and privately synced when you sign in with Google.",
     "Website keys may be restricted to the GitHub Pages site. The Mac app needs a key that permits native requests. Google will report restriction failures clearly.",
     "Google sign-in keeps your account ready on this Mac.",
     "Google sign-in is wired to the Learned Media Supabase project. Enable Google in its Auth provider settings to use it.",
@@ -661,8 +702,8 @@
       state.syncError = "";
       bridge("cloudSave", { state: { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: state.factMemory, account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" } }).then(function () {
         if (token !== cloudSyncToken) return;
-        state.syncStatus = "synced";
-        state.syncError = "";
+        state.syncStatus = nativeKeySyncError ? "error" : "synced";
+        state.syncError = nativeKeySyncError;
         render();
       }).catch(function (error) {
         if (token !== cloudSyncToken) return;
@@ -696,7 +737,8 @@
       applyWorkspaceSnapshot(active);
       state.workspaces = state.workspaces.map(function (record) { return record.id === active.id ? Object.assign({}, record, { state: currentWorkspaceSnapshot() }) : record; });
       state.cloudSyncReady = true;
-      state.syncStatus = "synced";
+      state.syncStatus = nativeKeySyncError ? "error" : "synced";
+      state.syncError = nativeKeySyncError;
       saveState();
       render();
     } catch (error) {
@@ -1639,13 +1681,13 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: state.key }).catch(function () {}); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", state.key); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); bridge("setGeminiKey", { key: "" }).catch(function () {}); showToast("Remembered key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", ""); showToast("Remembered key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
-    gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain, separate from workspaces, and sent only when Gemini is requested." })));
+    gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain and privately synced when you sign in with Google. Remove also clears it from your account." })));
     if (state.toast) gemini.appendChild(node("p", { className: "settings-feedback", text: state.toast }));
     const checkedPrimaryCount = state.modelChecks.filter(function (model) { return PRIMARY_GEMINI_MODELS.indexOf(model.model) >= 0 && model.status !== "unchecked"; }).length;
     const workingPrimaryCount = new Set(state.modelChecks.filter(function (model) { return PRIMARY_GEMINI_MODELS.indexOf(model.model) >= 0 && model.status === "working"; }).map(function (model) { return model.resolvedModel || model.model; })).size;
@@ -1667,13 +1709,13 @@
     youtube.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("image", 19)), node("div", {}, node("h2", { text: "YouTube Videos" }), node("p", { text: "Use your own YouTube Data API key for the approved video library." })), node("span", { className: "status-dot " + (state.youtubeStatus === "connected" || state.youtubeStatus === "refreshing" ? "connected" : state.youtubeStatus === "error" ? "unavailable" : ""), text: state.youtubeStatus === "connecting" ? "Connecting" : state.youtubeStatus === "refreshing" ? "Refreshing" : state.youtubeStatus === "connected" ? "Connected" : state.youtubeStatus === "error" ? "Needs attention" : "Not configured" })));
     youtube.appendChild(node("label", { className: "field-label", text: "Paste your YouTube API key here" }));
     const youtubeRow = node("div", { className: "key-input-row" });
-    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.youtubeKey = event.target.value; bridge("setYouTubeKey", { key: state.youtubeKey }).catch(function (error) { showToast(error.message); }); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; state.youtubeProgress = { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }; bridge("cancelAll", {}).catch(function () {}); render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
+    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.youtubeKey = event.target.value; editNativeCredential("youtube", state.youtubeKey); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; state.youtubeProgress = { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }; bridge("cancelAll", {}).catch(function () {}); render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
     const youtubeActions = node("div", { className: "key-actions" });
     youtubeActions.appendChild(node("button", { className: "primary-button small", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: youtubeConnect }, state.youtubeStatus === "connecting" ? " Connecting" : state.youtubeStatus === "refreshing" ? " Refreshing" : " Connect YouTube"));
     youtubeActions.appendChild(node("button", { className: "ghost-button", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: function () { youtubeConnect(true); } }, "Refresh videos"));
-    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.keyEditEpoch += 1; state.youtubeKey = ""; bridge("setYouTubeKey", { key: "" }).catch(function (error) { showToast(error.message); }); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; bridge("cancelAll", {}).catch(function () {}); showToast("Remembered YouTube key removed."); } }, "Remove key"));
+    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.keyEditEpoch += 1; state.youtubeKey = ""; editNativeCredential("youtube", ""); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; bridge("cancelAll", {}).catch(function () {}); showToast("Remembered YouTube key removed."); } }, "Remove key"));
     youtubeRow.appendChild(youtubeActions); youtube.appendChild(youtubeRow);
-    youtube.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your YouTube key is remembered in this Mac’s Keychain, separate from workspaces, and never synced to your account." })));
+    youtube.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your YouTube key is remembered in this Mac’s Keychain and privately synced when you sign in with Google." })));
     const guideCopy = node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a YouTube key?" }), node("p", { html: "1. <a href=\"https://console.cloud.google.com/projectcreate\" target=\"_blank\">Create or select a Google Cloud project</a><br>2. <a href=\"https://console.cloud.google.com/apis/library/youtube.googleapis.com\" target=\"_blank\">Enable YouTube Data API v3</a><br>3. Open <a href=\"https://console.cloud.google.com/apis/credentials\" target=\"_blank\">Credentials</a> → Create credentials → API key and restrict it to YouTube Data API v3<br>4. Copy the key into Learned Media and connect" }));
     guideCopy.querySelectorAll("a").forEach(function (link) { link.addEventListener("click", function (event) { event.preventDefault(); bridge("openURL", { url: link.href }).catch(function (error) { showToast(error.message); }); }); });
     youtube.appendChild(node("div", { className: "api-key-guide youtube-guide" }, node("div", { className: "api-key-guide-icon" }, svg("image", 16)), guideCopy));
@@ -1714,7 +1756,7 @@
     danger.appendChild(node("button", { className: "danger-button full", onClick: deleteData }, svg("reset", 15), " Delete learning data"));
     side.appendChild(danger);
     side.appendChild(node("section", { className: "settings-help mobile-use-help" }, svg("smartphone", 17), node("div", {}, node("strong", { text: "Use Learned Media on mobile" }), node("p", { text: "Open the site in Safari or Chrome on your iPhone. In Safari, tap Share → Add to Home Screen to keep it beside your other apps. The layout adapts to narrow screens without horizontal scrolling." }))));
-    side.appendChild(node("section", { className: "settings-help" }, svg("help", 17), node("div", {}, node("strong", { text: "Privacy by default" }), node("p", { text: "Gemini and YouTube credentials stay in this Mac’s Keychain. When you sign in, workspace cards and learning history sync; credentials and the YouTube catalog never leave this Mac." }))));
+    side.appendChild(node("section", { className: "settings-help" }, svg("help", 17), node("div", {}, node("strong", { text: "Privacy by default" }), node("p", { text: "Gemini and YouTube credentials are remembered in this Mac’s Keychain and sync privately with your signed-in account. The imported YouTube catalog stays on this Mac." }))));
     grid.appendChild(side);
     section.appendChild(grid);
     return section;
@@ -1835,9 +1877,15 @@
       } else {
         state.workspaces = [{ id: state.workspaceId, name: state.workspaceName, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: currentWorkspaceSnapshot() }];
       }
-      const epoch = state.keyEditEpoch;
-      const keys = await bridge("loadKeys", {});
-      if (epoch === state.keyEditEpoch) { state.key = keys.gemini || ""; state.youtubeKey = keys.youtube || ""; }
+      await nativeCredentials.switchAccount(null);
+      try { state.account = await bridge("currentAccount", {}); }
+      catch (error) { if (state.account) { state.syncStatus = "error"; state.syncError = error.message; } }
+      if (state.account && state.account.id) {
+        nativeCredentialOwner = state.account.id;
+        await nativeCredentials.switchAccount(state.account.id);
+      }
+      nativeAccountRestored = true;
+      checkRestoredNativeKey(state.key);
       const catalog = await bridge("loadVideoCatalog", {});
       if (catalog && catalog.videos) {
         const activity = youtubeActivity();
@@ -2177,6 +2225,11 @@
       const result = await bridge("signIn", {});
       const previousOwner = state.cloudOwnerId;
       state.account = result.account;
+      nativeAccountRestored = false;
+      nativeCredentialOwner = state.account.id;
+      await nativeCredentials.switchAccount(state.account.id);
+      nativeAccountRestored = true;
+      checkRestoredNativeKey(state.key);
       state.cloudOwnerId = previousOwner && previousOwner !== result.account?.id ? "account-switch" : previousOwner;
       state.cloudSyncReady = false;
       state.syncStatus = "syncing";
@@ -2197,6 +2250,10 @@
       cancelWorkspaceOperations();
       await bridge("signOut", {});
       state.account = null;
+      nativeAccountRestored = false;
+      nativeCredentialOwner = null;
+      await nativeCredentials.switchAccount(null);
+      nativeAccountRestored = true;
       state.cloudSyncReady = false;
       state.syncStatus = "signed-out";
       state.syncError = "";
@@ -2217,5 +2274,11 @@
   }
   window.setInterval(refreshYouTubeIfDue, 60 * 60 * 1000);
   document.addEventListener("visibilitychange", refreshYouTubeIfDue);
+  function refreshAccountKeys() {
+    if (state.account && state.account.id === nativeCredentialOwner && document.visibilityState !== "hidden") void nativeCredentials.refresh();
+  }
+  window.addEventListener("online", refreshAccountKeys);
+  window.addEventListener("focus", refreshAccountKeys);
+  document.addEventListener("visibilitychange", refreshAccountKeys);
   hydrate();
 })();

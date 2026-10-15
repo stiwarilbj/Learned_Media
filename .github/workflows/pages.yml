@@ -31,6 +31,8 @@ jobs:
           cache-dependency-path: Website/package-lock.json
       - name: Install website dependencies
         run: npm ci
+      - name: Verify account credential sync
+        run: npm run test:credentials
       - name: Evaluate fixed prompt failure set
         run: npm run test:prompts
       - name: Configure GitHub Pages

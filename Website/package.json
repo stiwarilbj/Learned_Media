@@ -17,7 +17,9 @@
     "test:topic-semantic": "node scripts/test-topic-semantic.mjs",
     "generate:prompts": "node scripts/build-native-prompts.mjs",
     "test:prompts": "node scripts/build-native-prompts.mjs --check && node scripts/test-prompt-evaluation.mjs && node scripts/evaluate-prompts.mjs",
-    "evaluate:prompts": "node scripts/evaluate-prompts.mjs"
+    "evaluate:prompts": "node scripts/evaluate-prompts.mjs",
+    "generate:credentials": "node scripts/build-native-credentials.mjs",
+    "test:credentials": "node scripts/build-native-credentials.mjs --check && node scripts/test-account-credentials.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.5.2",
