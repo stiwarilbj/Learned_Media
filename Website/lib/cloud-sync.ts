@@ -41,12 +41,26 @@ export class WorkspaceCloudSync {
   async save(store: { ownerId?: string; records: CloudRecord[]; factMemory?: FactMemory[] }, signal: AbortSignal) {
     if (store.ownerId !== this.userId) throw new Error('Account changed. Cloud save was canceled.');
     const api = cloudClient();
-    for (const value of store.records) {
+    // Bound both row count and payload size; a large workspace travels alone.
+    const encoder = new TextEncoder();
+    const pending = store.records.map(value => {
       const record = canonicalRecord(value), serialized = JSON.stringify(record);
-      if (this.sent.get(record.id) === serialized) continue;
-      const { error } = await api.from('workspace_revisions').insert({ revision_id: crypto.randomUUID(), user_id: this.userId, workspace_id: record.id, modified_at: record.updatedAt, record }).abortSignal(signal);
+      const row = { revision_id: crypto.randomUUID(), user_id: this.userId, workspace_id: record.id, modified_at: record.updatedAt, record };
+      return { record, serialized, row };
+    }).filter(item => this.sent.get(item.record.id) !== item.serialized);
+    for (let offset = 0; offset < pending.length;) {
+      const batch: typeof pending = [];
+      let bytes = 2;
+      while (offset < pending.length && batch.length < 20) {
+        const item = pending[offset];
+        const size = encoder.encode(JSON.stringify(item.row)).byteLength + (batch.length ? 1 : 0);
+        if (batch.length && bytes + size > 1024 * 1024) break;
+        batch.push(item); bytes += size; offset += 1;
+      }
+      const { error } = await api.from('workspace_revisions').insert(batch.map(item => item.row)).abortSignal(signal);
       if (error) throw error;
-      this.sent.set(record.id, serialized);
+      // Keep failed/later batches dirty and acknowledge the exact uploaded versions.
+      batch.forEach(item => this.sent.set(item.record.id, item.serialized));
     }
     const changed = (store.factMemory || []).map(safeMemory).filter(item => this.memories.get(item.fingerprint || item.id) !== JSON.stringify(item));
     for (let offset = 0; offset < changed.length; offset += 100) {

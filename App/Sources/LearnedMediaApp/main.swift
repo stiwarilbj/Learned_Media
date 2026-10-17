@@ -1992,10 +1992,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         let session = try await cloudSession()
         let envelope = value as? [String: Any] ?? [:]
         let rawWorkspaces = envelope["workspaces"] as? [[String: Any]] ?? []
+        // Bound uploads by row count and encoded bytes; never split a workspace.
+        var batches: [[[String: Any]]] = []
+        var batch: [[String: Any]] = []
+        var batchBytes = 2
         for raw in rawWorkspaces {
             let record = canonicalCloudRecord(raw)
-            let body: [String: Any] = ["revision_id": UUID().uuidString, "user_id": session.userID, "workspace_id": record["id"] ?? "", "modified_at": record["updatedAt"] ?? cloudNow(), "record": record]
-            _ = try await cloudRequest(supabaseURL.appendingPathComponent("rest/v1/workspace_revisions"), method: "POST", anonKey: anonKey, session: session, body: body)
+            let row: [String: Any] = ["revision_id": UUID().uuidString, "user_id": session.userID, "workspace_id": record["id"] ?? "", "modified_at": record["updatedAt"] ?? cloudNow(), "record": record]
+            let rowBytes = try JSONSerialization.data(withJSONObject: row).count
+            if !batch.isEmpty && (batch.count >= 20 || batchBytes + rowBytes + 1 > 1024 * 1024) {
+                batches.append(batch)
+                batch = []
+                batchBytes = 2
+            }
+            batchBytes += rowBytes + (batch.isEmpty ? 0 : 1)
+            batch.append(row)
+        }
+        if !batch.isEmpty { batches.append(batch) }
+        for rows in batches {
+            _ = try await cloudRequest(supabaseURL.appendingPathComponent("rest/v1/workspace_revisions"), method: "POST", anonKey: anonKey, session: session, body: rows)
         }
         let memories = (envelope["factMemory"] as? [[String: Any]] ?? []).map { cleanedCloudValue($0) }
         for start in stride(from: 0, to: memories.count, by: 100) {
