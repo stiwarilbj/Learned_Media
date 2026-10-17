@@ -1,16 +1,13 @@
+import { createDatabaseConnection } from "./indexed-db";
 import type { Credential, KeyProvider } from "./account-credentials";
 type Provider = KeyProvider;
 const keyId = (provider: Provider, owner: string | null) => owner ? `account:${owner}:${provider}` : provider;
 const DB = "learned-media-private-keys";
 let queue = Promise.resolve();
-function open() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("keys");
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
+const open = createDatabaseConnection(DB, 1, database => {
+  if (!database.objectStoreNames.contains("keys")) database.createObjectStore("keys");
+});
+
 function get<T>(db: IDBDatabase, id: string) {
   return new Promise<T | undefined>((resolve, reject) => {
     const request = db.transaction("keys").objectStore("keys").get(id);
@@ -34,17 +31,15 @@ export function saveCredential(provider: Provider, owner: string | null, entry?:
   const value = entry ? JSON.stringify(entry) : "";
   const work = queue.catch(() => undefined).then(async () => {
     const db = await open();
-    try {
-      if (!value.trim()) { await put(db, id); return; }
-      let key = await get<CryptoKey>(db, "device-key");
-      if (!key) {
-        key = await crypto.subtle.generateKey({name:"AES-GCM", length:256}, false, ["encrypt", "decrypt"]);
-        await put(db, "device-key", key);
-      }
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const ciphertext = await crypto.subtle.encrypt({name:"AES-GCM",iv}, key, new TextEncoder().encode(value));
-      await put(db, id, {iv, ciphertext});
-    } finally { db.close(); }
+    if (!value.trim()) { await put(db, id); return; }
+    let key = await get<CryptoKey>(db, "device-key");
+    if (!key) {
+      key = await crypto.subtle.generateKey({name:"AES-GCM", length:256}, false, ["encrypt", "decrypt"]);
+      await put(db, "device-key", key);
+    }
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({name:"AES-GCM",iv}, key, new TextEncoder().encode(value));
+    await put(db, id, {iv, ciphertext});
   });
   queue = work;
   return work;
@@ -53,17 +48,15 @@ export async function readCredential(provider: Provider, owner: string | null): 
   await queue.catch(() => undefined);
   const id = keyId(provider, owner);
   const db = await open();
+  const key = await get<CryptoKey>(db, "device-key");
+  const saved = await get<{iv: Uint8Array; ciphertext: ArrayBuffer}>(db, id);
+  if (!saved || !key) return undefined;
+  const value = new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:saved.iv},key,saved.ciphertext));
   try {
-    const key = await get<CryptoKey>(db, "device-key");
-    const saved = await get<{iv: Uint8Array; ciphertext: ArrayBuffer}>(db, id);
-    if (!saved || !key) return undefined;
-    const value = new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:saved.iv},key,saved.ciphertext));
-    try {
-      const entry = JSON.parse(value);
-      if (typeof entry.value === "string" && [null, "edit", "import"].includes(entry.pending)) return entry;
-    } catch { /* Legacy entries stored just the key. */ }
-    return { value, pending: owner ? "import" : null };
-  } finally { db.close(); }
+    const entry = JSON.parse(value);
+    if (typeof entry.value === "string" && [null, "edit", "import"].includes(entry.pending)) return entry;
+  } catch { /* Legacy entries stored just the key. */ }
+  return { value, pending: owner ? "import" : null };
 }
 
 export const saveRememberedKey = (provider: Provider, value: string) => saveCredential(provider, null, value ? { value, pending: null } : undefined);

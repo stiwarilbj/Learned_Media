@@ -1,3 +1,4 @@
+import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
 export type YouTubeTopic = "History" | "Politics" | "Geography" | "Science" | "Nature" | "Mathematics" | "Literature" | "Sports" | "Culture" | "Technology";
 
@@ -775,14 +776,9 @@ function youtubeActivityOf(workspace: YouTubeWorkspaceState): YouTubeActivitySta
   };
 }
 
-function openYouTubeDb() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => { const db = request.result; if (!db.objectStoreNames.contains("workspace")) db.createObjectStore("workspace"); };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("YouTube catalog storage could not open."));
-  });
-}
+const openYouTubeDb = createDatabaseConnection(DB_NAME, DB_VERSION, database => {
+  if (!database.objectStoreNames.contains("workspace")) database.createObjectStore("workspace");
+});
 
 export async function loadYouTubeActivity(workspaceId: string, fallback?: Partial<YouTubeActivityState>): Promise<Partial<YouTubeActivityState> | null> {
   if (typeof window === "undefined" || !window.indexedDB) return fallback ?? null;
@@ -793,7 +789,6 @@ export async function loadYouTubeActivity(workspaceId: string, fallback?: Partia
       request.onsuccess = () => resolve((request.result as Partial<YouTubeActivityState> | undefined) ?? null);
       request.onerror = () => reject(request.error);
     });
-    db.close();
     return stored ?? fallback ?? null;
   } catch { return fallback ?? null; }
 }
@@ -814,7 +809,6 @@ export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fall
         request.onerror = () => reject(request.error);
       }
     });
-    db.close();
     const raw = saved.catalog ?? saved.legacy ?? {};
     const savedActivity = saved.activity ?? fallbackActivity ?? saved.legacy as Partial<YouTubeActivityState> | undefined;
     const savedCatalogVersion = typeof raw.catalogVersion === "number" && Number.isInteger(raw.catalogVersion) ? raw.catalogVersion : undefined;
@@ -854,6 +848,5 @@ export async function saveYouTubeWorkspace(workspace: YouTubeWorkspaceState, opt
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error);
     });
-    db.close();
   } catch { /* IndexedDB is best effort; the active session remains usable. */ }
 }

@@ -1,3 +1,4 @@
+import { createDatabaseConnection } from "./indexed-db";
 import type { FactMemory } from "./fact-quality";
 export type WorkspaceSummary = {
   id: string;
@@ -31,16 +32,9 @@ const DB_VERSION = 1;
 const STORE_NAME = "records";
 const STORE_KEY = "workspace-store";
 
-function openDatabase() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME);
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Workspace storage could not open."));
-  });
-}
+const openDatabase = createDatabaseConnection(DB_NAME, DB_VERSION, database => {
+  if (!database.objectStoreNames.contains(STORE_NAME)) database.createObjectStore(STORE_NAME);
+});
 
 export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null): Promise<WorkspaceStore<T> | null> {
   if (typeof window === "undefined") return fallback;
@@ -54,7 +48,6 @@ export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null):
       request.onsuccess = () => resolve((request.result as WorkspaceStore<T> | undefined) ?? null);
       request.onerror = () => reject(request.error);
     });
-    database.close();
     // IndexedDB writes are asynchronous while the localStorage recovery copy is
     // synchronous.  During a reload the older transactional record can win a
     // race with a newer recovery snapshot, which makes cards or the active
@@ -77,16 +70,14 @@ export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null):
 export async function accountWorkspaceBackup<T>(ownerId: string, value?: WorkspaceStore<T>): Promise<WorkspaceStore<T> | null> {
   if (typeof window === "undefined" || !window.indexedDB) return null;
   const database = await openDatabase();
-  try {
-    return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(STORE_NAME, value ? 'readwrite' : 'readonly');
-      const records = transaction.objectStore(STORE_NAME), key = 'account:' + ownerId;
-      if (value) records.put(structuredClone(value), key);
-      const request = records.get(key);
-      transaction.oncomplete = () => resolve(request.result ?? null);
-      transaction.onerror = () => reject(transaction.error);
-    });
-  } finally { database.close(); }
+  return await new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, value ? 'readwrite' : 'readonly');
+    const records = transaction.objectStore(STORE_NAME), key = 'account:' + ownerId;
+    if (value) records.put(structuredClone(value), key);
+    const request = records.get(key);
+    transaction.oncomplete = () => resolve(request.result ?? null);
+    transaction.onerror = () => reject(transaction.error);
+  });
 }
 
 export async function writeWorkspaceStore<T>(store: WorkspaceStore<T>, options: { writeRecovery?: boolean } = {}): Promise<void> {
@@ -109,7 +100,6 @@ export async function writeWorkspaceStore<T>(store: WorkspaceStore<T>, options: 
     transaction.onerror = () => reject(transaction.error ?? new Error("Workspace storage could not be saved."));
     transaction.onabort = () => reject(transaction.error ?? new Error("Workspace storage could not be saved."));
   });
-  database.close();
 }
 
 export function makeWorkspaceId() {
