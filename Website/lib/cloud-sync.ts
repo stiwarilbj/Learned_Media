@@ -24,12 +24,18 @@ export class WorkspaceCloudSync {
   constructor(readonly userId: string) {}
   async load(signal: AbortSignal) {
     const api = cloudClient();
-    const { data, error } = await api.rpc('latest_workspace_revisions').abortSignal(signal) as { data: Array<{ record: CloudRecord }> | null; error: any };
+    const loadMemoryPage = (from: number) => api.from('fact_memory').select('content,known,fingerprint').eq('user_id', this.userId).order('fact_id').range(from, from + 499).abortSignal(signal);
+    // Start both independent reads together, keeping later pages sequential.
+    const [revisionResult, firstMemoryPage] = await Promise.all([
+      api.rpc('latest_workspace_revisions').abortSignal(signal),
+      loadMemoryPage(0),
+    ]);
+    const { data, error } = revisionResult as { data: Array<{ record: CloudRecord }> | null; error: any };
     if (error) throw error;
     const records = (data || []).map((row: any) => canonicalRecord(row.record)) as CloudRecord[];
     const factMemory: FactMemory[] = [];
     for (let from = 0; ; from += 500) {
-      const result = await api.from('fact_memory').select('content,known,fingerprint').eq('user_id', this.userId).order('fact_id').range(from, from + 499).abortSignal(signal) as { data: Array<{ content: Record<string, any>; known: boolean; fingerprint?: string }> | null; error: any };
+      const result = (from === 0 ? firstMemoryPage : await loadMemoryPage(from)) as { data: Array<{ content: Record<string, any>; known: boolean; fingerprint?: string }> | null; error: any };
       if (result.error) throw result.error;
       factMemory.push(...(result.data || []).map(row => ({ ...row.content, fingerprint: row.fingerprint || row.content.fingerprint, known: row.known }) as FactMemory));
       if ((result.data || []).length < 500) break;

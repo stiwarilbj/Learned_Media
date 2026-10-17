@@ -1923,24 +1923,30 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         return try JSONSerialization.jsonObject(with: data)
     }
 
+    private func cloudMemoryPage(_ offset: Int, supabaseURL: URL, anonKey: String, session: CloudSession) async throws -> Any {
+        var components = URLComponents(url: supabaseURL.appendingPathComponent("rest/v1/fact_memory"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "select", value: "content,known,fingerprint"),
+            URLQueryItem(name: "user_id", value: "eq.\(session.userID)"),
+            URLQueryItem(name: "order", value: "fact_id"),
+            URLQueryItem(name: "offset", value: String(offset)),
+            URLQueryItem(name: "limit", value: "500")
+        ]
+        return try await cloudRequest(components.url!, method: "GET", anonKey: anonKey, session: session)
+    }
+
     private func cloudLoad() async throws -> [String: Any] {
         let (supabaseURL, anonKey) = try cloudConfiguration()
         let session = try await cloudSession()
         let revisionsURL = supabaseURL.appendingPathComponent("rest/v1/rpc/latest_workspace_revisions")
-        let revisionResult = try await cloudRequest(revisionsURL, method: "POST", anonKey: anonKey, session: session, body: [:])
+        async let revisions = cloudRequest(revisionsURL, method: "POST", anonKey: anonKey, session: session, body: [:])
+        async let firstPage = cloudMemoryPage(0, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
+        let (revisionResult, firstMemoryPage) = try await (revisions, firstPage)
         let records = (revisionResult as? [[String: Any]] ?? []).compactMap { $0["record"] as? [String: Any] }
         var memories: [[String: Any]] = []
         var offset = 0
         while true {
-            var components = URLComponents(url: supabaseURL.appendingPathComponent("rest/v1/fact_memory"), resolvingAgainstBaseURL: false)!
-            components.queryItems = [
-                URLQueryItem(name: "select", value: "content,known,fingerprint"),
-                URLQueryItem(name: "user_id", value: "eq.\(session.userID)"),
-                URLQueryItem(name: "order", value: "fact_id"),
-                URLQueryItem(name: "offset", value: String(offset)),
-                URLQueryItem(name: "limit", value: "500")
-            ]
-            let result = try await cloudRequest(components.url!, method: "GET", anonKey: anonKey, session: session)
+            let result = offset == 0 ? firstMemoryPage : try await cloudMemoryPage(offset, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
             let rows = result as? [[String: Any]] ?? []
             memories.append(contentsOf: rows.compactMap { row in
                 guard var content = row["content"] as? [String: Any] else { return nil }
