@@ -106,10 +106,16 @@ export class AccountCredentials {
         if (!this.current(epoch)) return;
         const entry = this.entries[provider];
         const editedWhileLoading = revisions[provider] !== this.revisions[provider];
-        if (!editedWhileLoading && entry?.pending !== "edit" && remote[provider] !== undefined) {
-          this.entries[provider] = { value: remote[provider]!, pending: null };
-          this.publish();
-          await this.persist(owner, provider, this.entries[provider]);
+        if (!editedWhileLoading && entry?.pending !== "edit" && remote[provider] !== undefined
+          && (entry?.value !== remote[provider] || entry?.pending !== null)) {
+          const restored: Credential = { value: remote[provider]!, pending: null };
+          // Commit before adopting it so failed storage writes remain retryable.
+          await this.persist(owner, provider, restored);
+          if (!this.current(epoch)) return;
+          if (this.revisions[provider] === revisions[provider]) {
+            this.entries[provider] = restored;
+            this.publish();
+          }
         }
         // Serialize writes and re-check edits after each response; an older save
         // must never mark a newer key (or a removal) as already synchronized.
