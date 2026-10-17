@@ -21,6 +21,7 @@ export class AccountCredentials {
   private controller = new AbortController();
   private timer?: ReturnType<typeof setTimeout>;
   private running?: { epoch: number; promise: Promise<void> };
+  private lastRefreshAt = -Infinity;
   constructor(private io: CredentialIO) {}
   private current(epoch: number) { return epoch === this.epoch && !this.controller.signal.aborted; }
   private publish() { this.io.changed({ gemini: this.entries.gemini?.value ?? "", youtube: this.entries.youtube?.value ?? "" }); }
@@ -35,6 +36,7 @@ export class AccountCredentials {
     this.controller.abort();
     clearTimeout(this.timer);
     const epoch = ++this.epoch;
+    this.lastRefreshAt = -Infinity;
     this.controller = new AbortController();
     this.owner = owner;
     this.entries = {};
@@ -86,12 +88,19 @@ export class AccountCredentials {
     clearTimeout(this.timer);
     if (owner) this.timer = setTimeout(() => void this.refresh(), 500);
   }
-  refresh(): Promise<void> {
+  refresh(options: { automatic?: boolean } = {}): Promise<void> {
     const epoch = this.epoch, owner = this.owner, signal = this.controller.signal;
     if (!owner) return Promise.resolve();
     if (this.running?.epoch === epoch) return this.running.promise;
+    // Focus, visibility, and session notifications often arrive as one burst.
+    // Explicit refreshes and unsynchronized edits must never hit this window.
+    const pending = KEY_PROVIDERS.some(provider => Boolean(this.entries[provider]?.pending));
+    if (options.automatic && !pending && Date.now() - this.lastRefreshAt < 750) return Promise.resolve();
     const work = this.sync(owner, epoch, signal).finally(() => {
-      if (this.running?.epoch === epoch) this.running = undefined;
+      if (this.running?.epoch === epoch) {
+        this.running = undefined;
+        if (this.current(epoch)) this.lastRefreshAt = Date.now();
+      }
     });
     this.running = { epoch, promise: work };
     return work;

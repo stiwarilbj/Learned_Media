@@ -1017,7 +1017,7 @@ export default function HomePage() {
     credentialManager.current = manager;
     credentialOwner.current = null;
     void manager.switchAccount(null).then(() => { if (active) setKeysHydrated(true); });
-    const refresh = () => { if (document.visibilityState !== "hidden") void manager.refresh(); };
+    const refresh = () => { if (document.visibilityState !== "hidden") void manager.refresh({ automatic: true }); };
     window.addEventListener("online", refresh);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
@@ -1042,7 +1042,7 @@ export default function HomePage() {
         void credentialManager.current?.switchAccount(owner).then(() => { if (active && credentialOwner.current === owner) setAuthRestored(true); });
       } else {
         if (!owner) setAuthRestored(true);
-        if (owner) void credentialManager.current?.refresh();
+        if (owner) void credentialManager.current?.refresh({ automatic: true });
       }
       if (!user) {
         cloudEpoch.current += 1;

@@ -14,6 +14,7 @@ class AccountCredentials {
         this.revisions = { gemini: 0, youtube: 0 };
         this.writes = Promise.resolve();
         this.controller = new AbortController();
+        this.lastRefreshAt = -Infinity;
     }
     current(epoch) { return epoch === this.epoch && !this.controller.signal.aborted; }
     publish() { this.io.changed({ gemini: this.entries.gemini?.value ?? "", youtube: this.entries.youtube?.value ?? "" }); }
@@ -28,6 +29,7 @@ class AccountCredentials {
         this.controller.abort();
         clearTimeout(this.timer);
         const epoch = ++this.epoch;
+        this.lastRefreshAt = -Infinity;
         this.controller = new AbortController();
         this.owner = owner;
         this.entries = {};
@@ -90,15 +92,23 @@ class AccountCredentials {
         if (owner)
             this.timer = setTimeout(() => void this.refresh(), 500);
     }
-    refresh() {
+    refresh(options = {}) {
         const epoch = this.epoch, owner = this.owner, signal = this.controller.signal;
         if (!owner)
             return Promise.resolve();
         if (this.running?.epoch === epoch)
             return this.running.promise;
+        // Focus, visibility, and session notifications often arrive as one burst.
+        // Explicit refreshes and unsynchronized edits must never hit this window.
+        const pending = exports.KEY_PROVIDERS.some(provider => Boolean(this.entries[provider]?.pending));
+        if (options.automatic && !pending && Date.now() - this.lastRefreshAt < 750)
+            return Promise.resolve();
         const work = this.sync(owner, epoch, signal).finally(() => {
-            if (this.running?.epoch === epoch)
+            if (this.running?.epoch === epoch) {
                 this.running = undefined;
+                if (this.current(epoch))
+                    this.lastRefreshAt = Date.now();
+            }
         });
         this.running = { epoch, promise: work };
         return work;

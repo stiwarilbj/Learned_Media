@@ -2275,7 +2275,7 @@
   window.setInterval(refreshYouTubeIfDue, 60 * 60 * 1000);
   document.addEventListener("visibilitychange", refreshYouTubeIfDue);
   function refreshAccountKeys() {
-    if (state.account && state.account.id === nativeCredentialOwner && document.visibilityState !== "hidden") void nativeCredentials.refresh();
+    if (state.account && state.account.id === nativeCredentialOwner && document.visibilityState !== "hidden") void nativeCredentials.refresh({ automatic: true });
   }
   window.addEventListener("online", refreshAccountKeys);
   window.addEventListener("focus", refreshAccountKeys);
