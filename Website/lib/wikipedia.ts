@@ -82,15 +82,17 @@ type SummaryResponse = {
 
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
 type WikipediaPage = NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string];
+type WikipediaImageInfo = NonNullable<NonNullable<NonNullable<ImageInfoResponse["query"]>["pages"]>[string]["imageinfo"]>[number];
 type CachedRequest<T> = { promise: Promise<T>; expiresAt: number; value?: T };
 export type WikipediaResolutionCache = {
   pages: Map<string, CachedRequest<WikipediaPage[]>>;
   searches: Map<string, CachedRequest<string[]>>;
   images: Map<string, CachedRequest<ImageAttribution | undefined>>;
+  imageInfo: Map<string, CachedRequest<WikipediaImageInfo | undefined>>;
 };
 
 export function createWikipediaResolutionCache(): WikipediaResolutionCache {
-  return { pages: new Map(), searches: new Map(), images: new Map() };
+  return { pages: new Map(), searches: new Map(), images: new Map(), imageInfo: new Map() };
 }
 
 export const sharedWikipediaResolutionCache = createWikipediaResolutionCache();
@@ -247,15 +249,28 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
   }))).flat();
 }
 
-async function fetchImageInfo(pageimage: string, signal?: AbortSignal, priority = 1) {
-  const payload = await getJson<ImageInfoResponse>(apiUrl({
-    action: "query",
-    titles: `File:${pageimage}`,
-    prop: "imageinfo",
-    iiprop: "url|extmetadata",
-    iiurlwidth: "1400"
-  }), signal, priority);
-  return Object.values(payload?.query?.pages ?? {})[0]?.imageinfo?.[0];
+async function fetchImageInfo(pageimage: string, size: number, cache: WikipediaResolutionCache, signal?: AbortSignal, priority = 1) {
+  // pageimage is Wikipedia's verified file name. File names are case-sensitive;
+  // only the equivalent space/underscore representations share a cache key.
+  const key = JSON.stringify([pageimage.replace(/_/g, " ").trim(), size]);
+  const pending = cachedRequest(cache.imageInfo, key);
+  if (pending) return pending.promise;
+  const request = (async () => {
+    const payload = await getJson<ImageInfoResponse>(apiUrl({
+      action: "query",
+      titles: `File:${pageimage}`,
+      prop: "imageinfo",
+      iiprop: "url|extmetadata",
+      iiurlwidth: String(size)
+    }), signal, priority);
+    return Object.values(payload?.query?.pages ?? {})[0]?.imageinfo?.[0];
+  })();
+  const entry = storeCachedRequest(cache.imageInfo, key, request);
+  // Missing metadata and temporary failures must remain retryable.
+  void request.then((info) => {
+    if (!info && cache.imageInfo.get(key) === entry) cache.imageInfo.delete(key);
+  }, () => {});
+  return request;
 }
 
 async function fetchSummary(title: string, signal?: AbortSignal, priority = 1) {
@@ -289,10 +304,10 @@ async function resolveImage(page: {
   pageimage?: string;
   thumbnail?: { source?: string };
   original?: { source?: string };
-}, signal?: AbortSignal, priority = 1): Promise<ImageAttribution | undefined> {
+}, cache: WikipediaResolutionCache, signal?: AbortSignal, priority = 1): Promise<ImageAttribution | undefined> {
   const fallbackUrl = page.thumbnail?.source ?? page.original?.source;
   if (page.pageimage) {
-    const image = await fetchImageInfo(page.pageimage, signal, priority);
+    const image = await fetchImageInfo(page.pageimage, 1400, cache, signal, priority);
     const metadata = image?.extmetadata;
     const url = image?.thumburl ?? fallbackUrl ?? image?.url;
     if (url) {
@@ -366,7 +381,7 @@ export async function resolveWikipediaSources(queries: string[], limit = 3, sign
       pageimage: page.pageimage,
       thumbnail: page.thumbnail,
       original: page.original
-    }, signal, 1);
+    }, cache, signal, 1);
     return source;
   }));
   return resolved;
@@ -386,7 +401,7 @@ export async function resolveWikipediaImage(source: WikipediaSource, signal?: Ab
       pageimage: page.pageimage,
       thumbnail: page.thumbnail,
       original: page.original
-    }, signal, 1);
+    }, cache, signal, 1);
   })();
   storeCachedRequest(cache.images, key, request);
   return request;

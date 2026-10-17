@@ -176,6 +176,9 @@ private actor WikipediaPageCache {
     private var pages: [String: Entry<WikipediaPageResponse.Query.Page>] = [:]
     private var pageFlights: [String: Task<WikipediaPageResolution?, Never>] = [:]
     private var searches: [String: Entry<[String]>] = [:]
+    private struct ImageKey: Hashable { let fileName: String; let size: Int }
+    private var imageInfo: [ImageKey: Entry<WikipediaImageInfoResponse.Query.Page.ImageInfo>] = [:]
+    private var imageFlights: [ImageKey: Task<WikipediaImageInfoResponse.Query.Page.ImageInfo?, Never>] = [:]
     private let lifetime: TimeInterval = 60 * 60
     private let capacity = 100
 
@@ -215,6 +218,27 @@ private actor WikipediaPageCache {
         pageFlights[key] = nil
         return result.map { remember($0, requestedAs: title) }
     }
+    func imageInfoOrLoad(fileName: String, size: Int, load: @escaping @Sendable () async -> WikipediaImageInfoResponse.Query.Page.ImageInfo?) async -> WikipediaImageInfoResponse.Query.Page.ImageInfo? {
+        // Use the file name supplied by Wikipedia, preserving meaningful case.
+        let key = ImageKey(fileName: fileName.replacingOccurrences(of: "_", with: " ").trimmingCharacters(in: .whitespacesAndNewlines), size: size)
+        if var entry = imageInfo[key], entry.expiresAt > Date() {
+            entry.touchedAt = Date(); imageInfo[key] = entry
+            return entry.value
+        }
+        imageInfo[key] = nil
+        if let pending = imageFlights[key] { return await pending.value }
+        let pending = Task { await load() }
+        imageFlights[key] = pending
+        let result = await pending.value
+        imageFlights[key] = nil
+        if let result {
+            let now = Date()
+            imageInfo = imageInfo.filter { $0.value.expiresAt > now }
+            imageInfo[key] = Entry(value: result, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now)
+            while imageInfo.count > capacity, let oldest = imageInfo.min(by: { $0.value.touchedAt < $1.value.touchedAt })?.key { imageInfo[oldest] = nil }
+        }
+        return result
+    }
     func search(_ query: String) -> [String]? {
         let key = query.lowercased()
         guard var entry = searches[key], entry.expiresAt > Date() else { searches[key] = nil; return nil }
@@ -232,10 +256,10 @@ private actor WikipediaPageCache {
     }
 }
 
-private struct WikipediaImageInfoResponse: Decodable {
-    struct Query: Decodable {
-        struct Page: Decodable {
-            struct ImageInfo: Decodable {
+private struct WikipediaImageInfoResponse: Decodable, Sendable {
+    struct Query: Decodable, Sendable {
+        struct Page: Decodable, Sendable {
+            struct ImageInfo: Decodable, Sendable {
                 let url: String?
                 let thumburl: String?
                 let descriptionurl: String?
@@ -247,7 +271,7 @@ private struct WikipediaImageInfoResponse: Decodable {
     }
     let query: Query?
 }
-private struct MetadataValue: Decodable { let value: String? }
+private struct MetadataValue: Decodable, Sendable { let value: String? }
 
 private actor WikipediaRequestLimiter {
     private struct Waiter {
@@ -517,14 +541,21 @@ private final class WikipediaClient: @unchecked Sendable {
         return await resolveBatch([lookup])[0] ?? []
     }
 
+    private func fetchImageInfo(fileName: String, size: Int) async -> WikipediaImageInfoResponse.Query.Page.ImageInfo? {
+        await pageCache.imageInfoOrLoad(fileName: fileName, size: size) { [weak self] in
+            guard let self,
+                  let url = self.apiURL(["action": "query", "titles": "File:\(fileName)", "prop": "imageinfo", "iiprop": "url|extmetadata", "iiurlwidth": String(size)]),
+                  let payload: WikipediaImageInfoResponse = try? await self.request(url, priority: 1) else { return nil }
+            return payload.query?.pages?.values.first?.imageinfo?.first
+        }
+    }
+
     func image(for source: [String: Any]) async -> [String: Any]? {
         guard let sourceTitle = source["title"] as? String,
               let page = await pageCache.page(sourceTitle),
               let sourceURL = page.fullurl else { return nil }
         if let pageimage = page.pageimage,
-           let infoURL = apiURL(["action": "query", "titles": "File:\(pageimage)", "prop": "imageinfo", "iiprop": "url|extmetadata", "iiurlwidth": "1400"]),
-           let infoPayload: WikipediaImageInfoResponse = try? await request(infoURL, priority: 1),
-           let info = infoPayload.query?.pages?.values.first?.imageinfo?.first {
+           let info = await fetchImageInfo(fileName: pageimage, size: 1400) {
             let credit = info.extmetadata?["Artist"]?.value ?? info.extmetadata?["Credit"]?.value ?? "Wikipedia image"
             return ["url": info.thumburl ?? info.url ?? page.thumbnail?.source ?? "", "alt": sourceTitle, "sourceTitle": sourceTitle, "sourceUrl": sourceURL, "fileUrl": info.url ?? "", "filePageUrl": info.descriptionurl ?? "https://commons.wikimedia.org/wiki/File:\(pageimage)", "credit": credit.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)]
         }
