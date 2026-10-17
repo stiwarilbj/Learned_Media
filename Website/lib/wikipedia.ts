@@ -47,6 +47,8 @@ type SearchResponse = {
 
 type PageResponse = {
   query?: {
+    normalized?: Array<{ from: string; to: string }>;
+    redirects?: Array<{ from: string; to: string }>;
     pages?: Record<string, {
       title?: string;
       fullurl?: string;
@@ -80,7 +82,7 @@ type SummaryResponse = {
 
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
 type WikipediaPage = NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string];
-type CachedRequest<T> = { promise: Promise<T>; expiresAt: number };
+type CachedRequest<T> = { promise: Promise<T>; expiresAt: number; value?: T };
 export type WikipediaResolutionCache = {
   pages: Map<string, CachedRequest<WikipediaPage[]>>;
   searches: Map<string, CachedRequest<string[]>>;
@@ -108,10 +110,12 @@ function cachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string) {
 }
 
 function storeCachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string, promise: Promise<T>) {
-  const entry = { promise, expiresAt: Date.now() + WIKIPEDIA_CACHE_TTL_MS };
+  const entry: CachedRequest<T> = { promise, expiresAt: Date.now() + WIKIPEDIA_CACHE_TTL_MS };
   entries.set(key, entry);
   while (entries.size > MAX_WIKIPEDIA_CACHE_ENTRIES) entries.delete(entries.keys().next().value!);
-  void promise.catch(() => { if (entries.get(key) === entry) entries.delete(key); });
+  void promise.then((value) => { entry.value = value; }, () => {
+    for (const [alias, cached] of entries) if (cached === entry) entries.delete(alias);
+  });
   return entry;
 }
 
@@ -177,6 +181,21 @@ export async function searchWikipedia(query: string, limit = 3, signal?: AbortSi
   return payload?.query?.search?.map((result) => result.title?.trim()).filter(Boolean) as string[] ?? [];
 }
 
+// Only API-confirmed normalization/redirect chains may share an article entry.
+function verifiedWikipediaNames(title: string, query: PageResponse["query"], canonical: string) {
+  const mappings = [...query?.normalized ?? [], ...query?.redirects ?? []];
+  const redirects = new Map(mappings.map(({ from, to }) => [from, to]));
+  return [...new Set([title, canonical, ...mappings.map(({ from }) => from)])].filter((name) => {
+    const visited = new Set<string>();
+    let current = name;
+    while (current !== canonical && redirects.has(current) && !visited.has(current)) {
+      visited.add(current);
+      current = redirects.get(current)!;
+    }
+    return current === canonical;
+  });
+}
+
 async function fetchPages(titles: string[], signal?: AbortSignal, cache?: WikipediaResolutionCache, priority = 0): Promise<WikipediaPage[]> {
   if (!titles.length) return [];
   // TextExtracts only returns full articles one at a time. Reuse in-flight page
@@ -199,7 +218,27 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
         pilicense: "free",
         pithumbsize: "1000"
       }), signal, priority);
-      return Object.values(payload?.query?.pages ?? {}).filter((page) => page.title && page.fullurl);
+      const pages = Object.values(payload?.query?.pages ?? {}).filter((page) => page.title && page.fullurl);
+      if (!cache || pages.length !== 1) return pages;
+      const page = pages[0];
+      const names = verifiedWikipediaNames(title, payload?.query, page.title!);
+      if (!names.includes(title)) return pages;
+      const canonical = cachedRequest(cache.pages, page.title!.toLocaleLowerCase());
+      const original = cache.pages.get(key);
+      // Reuse completed content only: awaiting another pending alias could form a cycle.
+      const existing = canonical?.value?.length === 1 && canonical.value[0].fullurl === page.fullurl ? canonical : undefined;
+      if (!existing && !original) return pages;
+      const entry: CachedRequest<WikipediaPage[]> = existing ?? {
+        promise: Promise.resolve(pages), value: pages, expiresAt: original!.expiresAt
+      };
+      if (entry.expiresAt <= Date.now()) return pages;
+      for (const name of names) {
+        const alias = name.toLocaleLowerCase();
+        cache.pages.delete(alias);
+        cache.pages.set(alias, entry);
+      }
+      while (cache.pages.size > MAX_WIKIPEDIA_CACHE_ENTRIES) cache.pages.delete(cache.pages.keys().next().value!);
+      return entry.value!;
     })();
     if (cache) {
       storeCachedRequest(cache.pages, key, request);

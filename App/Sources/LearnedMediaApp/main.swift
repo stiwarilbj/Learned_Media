@@ -137,9 +137,29 @@ private struct WikipediaPageResponse: Decodable, Sendable {
             let thumbnail: Thumbnail?
             struct Thumbnail: Decodable, Sendable { let source: String? }
         }
+        struct TitleMapping: Decodable, Sendable { let from: String; let to: String }
+        let normalized: [TitleMapping]?
+        let redirects: [TitleMapping]?
         let pages: [String: Page]?
+
+        func verifiedNames(requested: String, canonical: String) -> [String] {
+            let mappings = (normalized ?? []) + (redirects ?? [])
+            var targets: [String: String] = [:]
+            for mapping in mappings { targets[mapping.from] = mapping.to }
+            return Array(Set([requested, canonical] + mappings.map(\.from))).filter { name in
+                var current = name
+                var visited = Set<String>()
+                while current != canonical, let next = targets[current], visited.insert(current).inserted { current = next }
+                return current == canonical
+            }
+        }
     }
     let query: Query?
+}
+
+private struct WikipediaPageResolution: Sendable {
+    let page: WikipediaPageResponse.Query.Page
+    let verifiedNames: [String]
 }
 
 private struct WikipediaLookup {
@@ -154,14 +174,27 @@ private struct WikipediaLookup {
 private actor WikipediaPageCache {
     private struct Entry<Value> { var value: Value; var expiresAt: Date; var touchedAt: Date }
     private var pages: [String: Entry<WikipediaPageResponse.Query.Page>] = [:]
-    private var pageFlights: [String: Task<WikipediaPageResponse.Query.Page?, Never>] = [:]
+    private var pageFlights: [String: Task<WikipediaPageResolution?, Never>] = [:]
     private var searches: [String: Entry<[String]>] = [:]
     private let lifetime: TimeInterval = 60 * 60
     private let capacity = 100
 
-    func insert(_ page: WikipediaPageResponse.Query.Page, requestedAs title: String) {
-        store(page, key: title.lowercased(), in: &pages)
-        if let actualTitle = page.title { store(page, key: actualTitle.lowercased(), in: &pages) }
+    private func remember(_ resolution: WikipediaPageResolution, requestedAs title: String) -> WikipediaPageResponse.Query.Page {
+        let now = Date()
+        pages = pages.filter { $0.value.expiresAt > now }
+        let verified = resolution.verifiedNames.contains(title)
+        let canonical = resolution.page.title?.lowercased() ?? title.lowercased()
+        var entry: Entry<WikipediaPageResponse.Query.Page>
+        if verified, let existing = pages[canonical], existing.value.fullurl == resolution.page.fullurl {
+            entry = existing
+            entry.touchedAt = now
+        } else {
+            entry = Entry(value: resolution.page, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now)
+        }
+        let names = verified ? resolution.verifiedNames : [title]
+        for name in names { pages[name.lowercased()] = entry }
+        while pages.count > capacity, let oldest = pages.min(by: { $0.value.touchedAt < $1.value.touchedAt })?.key { pages[oldest] = nil }
+        return entry.value
     }
     func page(_ title: String) -> WikipediaPageResponse.Query.Page? {
         let key = title.lowercased()
@@ -169,16 +202,18 @@ private actor WikipediaPageCache {
         entry.touchedAt = Date(); pages[key] = entry
         return entry.value
     }
-    func pageOrLoad(_ title: String, load: @escaping @Sendable () async -> WikipediaPageResponse.Query.Page?) async -> WikipediaPageResponse.Query.Page? {
+    func pageOrLoad(_ title: String, load: @escaping @Sendable () async -> WikipediaPageResolution?) async -> WikipediaPageResponse.Query.Page? {
         if let cached = page(title) { return cached }
         let key = title.lowercased()
-        if let pending = pageFlights[key] { return await pending.value }
+        if let pending = pageFlights[key] {
+            guard let result = await pending.value else { return nil }
+            return remember(result, requestedAs: title)
+        }
         let pending = Task { await load() }
         pageFlights[key] = pending
         let result = await pending.value
         pageFlights[key] = nil
-        if let result { insert(result, requestedAs: title) }
-        return result
+        return result.map { remember($0, requestedAs: title) }
     }
     func search(_ query: String) -> [String]? {
         let key = query.lowercased()
@@ -409,7 +444,7 @@ private final class WikipediaClient: @unchecked Sendable {
             guard let self, !Task.isCancelled,
                   let response: WikipediaPageResponse = try? await self.request(url),
                   let page = response.query?.pages?.values.first(where: { $0.fullurl != nil && $0.extract?.isEmpty == false }) else { return nil }
-            return page
+            return WikipediaPageResolution(page: page, verifiedNames: response.query?.verifiedNames(requested: title, canonical: page.title ?? "") ?? [])
         }
     }
 
