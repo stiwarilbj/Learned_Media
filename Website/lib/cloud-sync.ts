@@ -68,12 +68,15 @@ export class WorkspaceCloudSync {
       // Keep failed/later batches dirty and acknowledge the exact uploaded versions.
       batch.forEach(item => this.sent.set(item.record.id, item.serialized));
     }
-    const changed = (store.factMemory || []).map(safeMemory).filter(item => this.memories.get(item.fingerprint || item.id) !== JSON.stringify(item));
+    const changed = (store.factMemory || []).map(value => {
+      const item = safeMemory(value);
+      return { item, key: item.fingerprint || item.id, serialized: JSON.stringify(item) };
+    }).filter(entry => this.memories.get(entry.key) !== entry.serialized);
     for (let offset = 0; offset < changed.length; offset += 100) {
       const batch = changed.slice(offset, offset + 100);
-      const { error } = await api.rpc('remember_facts', { items: batch }).abortSignal(signal);
+      const { error } = await api.rpc('remember_facts', { items: batch.map(entry => entry.item) }).abortSignal(signal);
       if (error) throw error;
-      batch.forEach(item => this.memories.set(item.fingerprint || item.id, JSON.stringify(item)));
+      batch.forEach(entry => this.memories.set(entry.key, entry.serialized));
     }
   }
 }
