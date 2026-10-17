@@ -417,18 +417,28 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item
   return result;
 }
 
+// Keep search, identity checks, pagination, and Shorts metadata in partial responses.
+const YOUTUBE_RESPONSE_FIELDS: Record<string, string> = {
+  channels: "items(id,snippet(title,customUrl,thumbnails),contentDetails(relatedPlaylists(uploads)))",
+  search: "items(id(channelId,videoId),snippet(title,channelTitle,channelId))",
+  playlistItems: "nextPageToken,items(contentDetails(videoId),snippet(title,description))",
+  videos: "items(id,snippet(channelId,channelTitle,title,description,tags,publishedAt,thumbnails),contentDetails(duration),status(privacyStatus,embeddable))",
+};
+
 export class YouTubeClient {
   private readonly limiter = new YouTubeRequestLimiter();
 
   constructor(private readonly apiKey: string, private readonly requestOverride?: (resource: string, params: Record<string, string>, signal?: AbortSignal) => Promise<unknown>) {}
 
   private request<T>(resource: string, params: Record<string, string>, signal?: AbortSignal) {
+    const fields = YOUTUBE_RESPONSE_FIELDS[resource];
+    const requestParams = fields ? { ...params, fields } : params;
     return this.limiter.run(signal, async () => {
       let attempt = 0;
       while (true) {
         try {
-          if (this.requestOverride) return await this.requestOverride(resource, params, signal) as T;
-          return await fetchYouTubeJson<T>(this.apiKey, resource, params, signal);
+          if (this.requestOverride) return await this.requestOverride(resource, requestParams, signal) as T;
+          return await fetchYouTubeJson<T>(this.apiKey, resource, requestParams, signal);
         } catch (error) {
           if (!(error instanceof YouTubeApiError) || !error.retryable || attempt >= 2) throw error;
           await waitBeforeRetry(500 * (2 ** attempt), signal);

@@ -17,7 +17,17 @@
   const THREE_BLUE = "UCYO_jab_esuFRV4b17AJtAw";
   const THREE_BLUE_PLAYLISTS = ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi", "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"];
 
-  function request(resource, params, key) { return window.__learnedMediaNativeRequest("youtubeRequest", { resource: resource, params: params, key: key }); }
+  // Match the website projection; retain all thumbnail dimensions for Shorts checks.
+  const YOUTUBE_RESPONSE_FIELDS = {
+    channels: "items(id,snippet(title,customUrl,thumbnails),contentDetails(relatedPlaylists(uploads)))",
+    search: "items(id(channelId,videoId),snippet(title,channelTitle,channelId))",
+    playlistItems: "nextPageToken,items(contentDetails(videoId),snippet(title,description))",
+    videos: "items(id,snippet(channelId,channelTitle,title,description,tags,publishedAt,thumbnails),contentDetails(duration),status(privacyStatus,embeddable))",
+  };
+  function request(resource, params, key) {
+    const fields = YOUTUBE_RESPONSE_FIELDS[resource];
+    return window.__learnedMediaNativeRequest("youtubeRequest", { resource: resource, params: fields ? Object.assign({}, params, { fields: fields }) : params, key: key });
+  }
   function norm(value) { return String(value || "").toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " "); }
   function duration(value) { const match = String(value || "").match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/); return match ? Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0) : 0; }
   function durationLabel(seconds) { const hours = Math.floor(seconds / 3600); const minutes = Math.floor(seconds % 3600 / 60); const rest = seconds % 60; return hours ? hours + ":" + String(minutes).padStart(2, "0") + ":" + String(rest).padStart(2, "0") : minutes + ":" + String(rest).padStart(2, "0"); }
