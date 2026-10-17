@@ -62,25 +62,41 @@
     if (!item || !item.id || (seed[2] && item.id !== seed[2]) || norm(item.snippet && item.snippet.title) !== norm(seed[0])) throw new Error("YouTube returned a different channel for “" + seed[0] + "”.");
     return { id: item.id, name: item.snippet.title || seed[0], handle: item.snippet.customUrl || seed[1], thumbnailUrl: item.snippet.thumbnails && item.snippet.thumbnails.default && item.snippet.thumbnails.default.url, uploadsPlaylistId: item.contentDetails && item.contentDetails.relatedPlaylists && item.contentDetails.relatedPlaylists.uploads, videoCount: 0, approved: true, sourceKind: seed[3] && seed[3].length ? "playlists" : "uploads", approvedPlaylistIds: seed[3] || [] };
   }
-  async function importPlaylist(channel, playlistId, sourceId, key, onCount) {
+  function createMetadataLoader(key) {
+    // Share raw metadata, never source-specific approval decisions.
+    const pending = new Map();
+    return async function (ids) {
+      const uniqueIds = Array.from(new Set(ids));
+      const missing = uniqueIds.filter(function (id) { return !pending.has(id); });
+      for (let offset = 0; offset < missing.length; offset += 50) {
+        const batch = missing.slice(offset, offset + 50);
+        const response = request("videos", { part: "snippet,contentDetails,status", id: batch.join(",") }, key).then(function (payload) {
+          return new Map((payload.items || []).map(function (item) { return [item.id, item]; }));
+        });
+        batch.forEach(function (id) { pending.set(id, response.then(function (items) { return items.get(id); })); });
+      }
+      return (await Promise.all(uniqueIds.map(function (id) { return pending.get(id); }))).filter(Boolean);
+    };
+  }
+  async function importPlaylist(channel, playlistId, sourceId, key, onCount, metadata) {
     const ids = []; let pageToken = "";
     do {
       const payload = await request("playlistItems", Object.assign({ part: "snippet,contentDetails", playlistId: playlistId, maxResults: "50" }, pageToken ? { pageToken: pageToken } : {}), key);
       (payload.items || []).forEach(function (item) { if (item.contentDetails && item.contentDetails.videoId) ids.push(item.contentDetails.videoId); });
       onCount(ids.length); pageToken = payload.nextPageToken || "";
     } while (pageToken);
-    const batches = await parallel(Array.from({ length: Math.ceil(ids.length / 50) }, function (_, index) { return ids.slice(index * 50, index * 50 + 50); }), 4, function (batch) { return request("videos", { part: "snippet,contentDetails,status", id: batch.join(",") }, key); });
+    const items = await metadata(ids);
     const videos = [];
-    batches.forEach(function (payload) { (payload.items || []).forEach(function (item) {
+    items.forEach(function (item) {
       if (!item.id || item.status && item.status.privacyStatus && item.status.privacyStatus !== "public" || item.snippet && item.snippet.channelId && item.snippet.channelId !== channel.id) return;
       const snippet = item.snippet || {}; const title = String(snippet.title || "").trim(); if (!title || !snippet.publishedAt) return;
       const seconds = duration(item.contentDetails && item.contentDetails.duration);
       videos.push({ id: item.id, channelId: channel.id, channelName: snippet.channelTitle || channel.name, title: title, description: snippet.description || "", tags: snippet.tags || [], publishedAt: snippet.publishedAt, durationSeconds: seconds, durationLabel: durationLabel(seconds), thumbnailUrl: snippet.thumbnails && ((snippet.thumbnails.high || snippet.thumbnails.medium || snippet.thumbnails.default) || {}).url, embedAvailable: !(item.status && item.status.embeddable === false), topics: topics(channel.name, title, snippet.description || "", snippet.tags || []), approved: true, sourceIds: [sourceId], metadataRefreshedAt: new Date().toISOString() });
-    }); });
+    });
     return videos;
   }
-  async function importChannel(channel, key, onCount) { if (!channel.uploadsPlaylistId) throw new Error("The approved channel “" + channel.name + "” has no uploads playlist."); return importPlaylist(channel, channel.uploadsPlaylistId, "channel:" + channel.id, key, onCount); }
-  async function resolveIndividual(seed, channels, key) {
+  async function importChannel(channel, key, onCount, metadata) { if (!channel.uploadsPlaylistId) throw new Error("The approved channel “" + channel.name + "” has no uploads playlist."); return importPlaylist(channel, channel.uploadsPlaylistId, "channel:" + channel.id, key, onCount, metadata); }
+  async function resolveIndividual(seed, channels, key, metadata) {
     let id = seed[2];
     if (!id) {
       const channel = channels.find(function (item) { return norm(item.name) === norm(seed[0]); });
@@ -89,12 +105,13 @@
       id = match && match.id && match.id.videoId;
     }
     if (!id) throw new Error("Could not verify the approved video “" + seed[1] + "”.");
-    const payload = await request("videos", { part: "snippet,contentDetails,status", id: id }, key); const item = payload.items && payload.items[0];
+    const item = (await metadata([id]))[0];
     if (!item || norm(item.snippet && item.snippet.title) !== norm(seed[1]) || norm(item.snippet && item.snippet.channelTitle) !== norm(seed[0])) throw new Error("The approved video “" + seed[1] + "” did not match its title and creator.");
     const snippet = item.snippet; const seconds = duration(item.contentDetails && item.contentDetails.duration);
     return { id: item.id, channelId: snippet.channelId || "special-" + norm(seed[0]).replace(/ /g, "-"), channelName: snippet.channelTitle || seed[0], title: snippet.title, description: snippet.description || "", tags: snippet.tags || [], publishedAt: snippet.publishedAt || new Date().toISOString(), durationSeconds: seconds, durationLabel: durationLabel(seconds), thumbnailUrl: snippet.thumbnails && ((snippet.thumbnails.high || snippet.thumbnails.medium || snippet.thumbnails.default) || {}).url, embedAvailable: !(item.status && item.status.embeddable === false), topics: topics(seed[0], snippet.title, snippet.description || "", snippet.tags || []), approved: true, special: true, sourceIds: [sourceIdFor(seed)], metadataRefreshedAt: new Date().toISOString() };
   }
   async function sync(key, existing, onProgress, force) {
+    const metadata = createMetadataLoader(key);
     const workspace = existing || {}; const oldChannels = workspace.channels || []; const oldVideos = workspace.videos || []; const sourceStates = Object.assign({}, workspace.sourceStates || {}); const errors = []; const now = Date.now(); const day = 24 * 60 * 60 * 1000;
     const progress = { phase: "resolving", completedChannels: 0, totalChannels: CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 };
     onProgress(Object.assign({}, progress));
@@ -115,7 +132,7 @@
       progress.currentSource = job.label; const prior = sourceStates[job.sourceId]; const due = Boolean(force || !prior || !prior.lastSuccessfulSyncAt || now - new Date(prior.lastSuccessfulSyncAt).getTime() >= day);
       if (!due) { progress.completedSources += 1; onProgress(Object.assign({}, progress)); return { job: job, videos: [], scanned: false, ok: true }; }
       try {
-        const videos = job.kind === "uploads" ? await importChannel(job.channel, key, function () {}) : job.kind === "playlist" ? await importPlaylist(job.channel, job.playlistId, job.sourceId, key, function () {}) : [await resolveIndividual(job.seed, verified.map(function (entry) { return entry.channel; }), key)];
+        const videos = job.kind === "uploads" ? await importChannel(job.channel, key, function () {}, metadata) : job.kind === "playlist" ? await importPlaylist(job.channel, job.playlistId, job.sourceId, key, function () {}, metadata) : [await resolveIndividual(job.seed, verified.map(function (entry) { return entry.channel; }), key, metadata)];
         progress.importedVideos += videos.length; progress.completedSources += 1; sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "ready", lastSuccessfulSyncAt: new Date().toISOString(), lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: videos.length }; onProgress(Object.assign({}, progress)); return { job: job, videos: videos, scanned: true, ok: true };
       } catch (error) {
         const message = error.message || "Approved source import failed."; errors.push(message); progress.error = errors.slice(0, 3).join(" · "); progress.completedSources += 1; sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "error", lastSuccessfulSyncAt: prior && prior.lastSuccessfulSyncAt, lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: prior && prior.importedVideoCount, error: message }; onProgress(Object.assign({}, progress)); return { job: job, videos: [], scanned: false, ok: false };

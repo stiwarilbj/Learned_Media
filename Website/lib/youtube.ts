@@ -400,6 +400,7 @@ type ChannelApiResponse = { items?: Array<{ id?: string; snippet?: { title?: str
 type PlaylistApiResponse = { nextPageToken?: string; items?: Array<{ contentDetails?: { videoId?: string }; snippet?: { title?: string; description?: string; publishedAt?: string; channelId?: string } }> };
 type YouTubeThumbnail = { url?: string; width?: number; height?: number };
 type VideoApiResponse = { items?: Array<{ id?: string; snippet?: { title?: string; description?: string; publishedAt?: string; channelId?: string; channelTitle?: string; tags?: string[]; thumbnails?: { high?: YouTubeThumbnail; medium?: YouTubeThumbnail; default?: YouTubeThumbnail; standard?: YouTubeThumbnail; maxres?: YouTubeThumbnail } }; contentDetails?: { duration?: string }; status?: { privacyStatus?: string; embeddable?: boolean } }> };
+type VideoMetadataLoader = (ids: string[]) => Promise<NonNullable<VideoApiResponse["items"]>>;
 type SearchApiResponse = { items?: Array<{ id?: { channelId?: string; videoId?: string }; snippet?: { title?: string; channelTitle?: string; channelId?: string } }> };
 type CatalogJob = { sourceId: string; label: string; kind: "uploads" | "playlist" | "individual"; channel?: YouTubeChannelRecord; playlistId?: string; seed?: ApprovedVideoSeed };
 
@@ -465,7 +466,24 @@ export class YouTubeClient {
     return { id: item.id, name: seed.name, handle: item.snippet?.customUrl ?? seed.handle, thumbnailUrl: item.snippet?.thumbnails?.default?.url, uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads, videoCount: 0, approved: true, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds };
   }
 
-  private async importPlaylist(channel: YouTubeChannelRecord, playlistId: string, sourceId: string, signal?: AbortSignal, onPage?: (count: number) => void) {
+  private createMetadataLoader(signal?: AbortSignal): VideoMetadataLoader {
+    // Share raw metadata within one import, keeping approval decisions source-specific.
+    const pending = new Map<string, Promise<NonNullable<VideoApiResponse["items"]>[number] | undefined>>();
+    return async (ids) => {
+      const uniqueIds = Array.from(new Set(ids));
+      const missing = uniqueIds.filter((id) => !pending.has(id));
+      for (let offset = 0; offset < missing.length; offset += 50) {
+        const batch = missing.slice(offset, offset + 50);
+        const response = this.request<VideoApiResponse>("videos", { part: "snippet,contentDetails,status", id: batch.join(",") }, signal)
+          .then((payload) => new Map((payload.items ?? []).map((item) => [item.id, item])));
+        batch.forEach((id) => pending.set(id, response.then((items) => items.get(id))));
+      }
+      const items = await Promise.all(uniqueIds.map((id) => pending.get(id)!));
+      return items.filter((item): item is NonNullable<typeof item> => Boolean(item));
+    };
+  }
+
+  private async importPlaylist(channel: YouTubeChannelRecord, playlistId: string, sourceId: string, metadata: VideoMetadataLoader, signal?: AbortSignal, onPage?: (count: number) => void) {
     const ids: string[] = [];
     let pageToken = "";
     const seenPageTokens = new Set<string>();
@@ -483,9 +501,9 @@ export class YouTubeClient {
       onPage?.(ids.length);
       pageToken = payload.nextPageToken ?? "";
     } while (pageToken);
-    const videos = await mapWithConcurrency(Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50)), 4, async (batch) => this.request<VideoApiResponse>("videos", { part: "snippet,contentDetails,status", id: batch.join(",") }, signal));
+    const items = await metadata(ids);
     const mapped: YouTubeVideo[] = [];
-    videos.flatMap((payload) => payload.items ?? []).forEach((item) => {
+    items.forEach((item) => {
       if (!item.id || item.status?.privacyStatus && item.status.privacyStatus !== "public" || item.snippet?.channelId !== channel.id) return;
       const snippet = item.snippet;
       const durationSeconds = parseDuration(item.contentDetails?.duration);
@@ -497,12 +515,12 @@ export class YouTubeClient {
     return mapped;
   }
 
-  private async importChannel(channel: YouTubeChannelRecord, signal?: AbortSignal, onPage?: (count: number) => void) {
+  private async importChannel(channel: YouTubeChannelRecord, metadata: VideoMetadataLoader, signal?: AbortSignal, onPage?: (count: number) => void) {
     if (!channel.uploadsPlaylistId) throw new YouTubeApiError(`The approved channel “${channel.name}” has no uploads playlist.`, undefined, "uploads-playlist-missing", false);
-    return this.importPlaylist(channel, channel.uploadsPlaylistId, `channel:${channel.id}`, signal, onPage);
+    return this.importPlaylist(channel, channel.uploadsPlaylistId, `channel:${channel.id}`, metadata, signal, onPage);
   }
 
-  private async resolveSpecial(seed: ApprovedVideoSeed, channels: YouTubeChannelRecord[], signal?: AbortSignal): Promise<YouTubeVideo | null> {
+  private async resolveSpecial(seed: ApprovedVideoSeed, channels: YouTubeChannelRecord[], metadata: VideoMetadataLoader, signal?: AbortSignal): Promise<YouTubeVideo | null> {
     let videoId = seed.videoId;
     if (!videoId) {
       const channel = channels.find((item) => normalized(item.name) === normalized(seed.creator));
@@ -511,8 +529,7 @@ export class YouTubeClient {
       videoId = found?.id?.videoId;
     }
     if (!videoId) throw new YouTubeApiError(`Could not verify the approved video “${seed.title}”.`, undefined, "video-not-found", false);
-    const payload = await this.request<VideoApiResponse>("videos", { part: "snippet,contentDetails,status", id: videoId }, signal);
-    const item = payload.items?.[0];
+    const [item] = await metadata([videoId]);
     if (!item?.id || normalizedApprovedVideoTitle(item.snippet?.title ?? "") !== normalizedApprovedVideoTitle(seed.title) || normalized(item.snippet?.channelTitle ?? "") !== normalized(seed.creator)) throw new YouTubeApiError(`The approved video “${seed.title}” did not match its creator and title.`, undefined, "video-mismatch", false);
     const snippet = item.snippet!;
     const durationSeconds = parseDuration(item.contentDetails?.duration);
@@ -521,6 +538,7 @@ export class YouTubeClient {
   }
 
   async syncApprovedCatalog(existingChannels: YouTubeChannelRecord[] = [], signal?: AbortSignal, onProgress?: (progress: YouTubeImportProgress) => void, options: { existingVideos?: YouTubeVideo[]; sourceStates?: Record<string, YouTubeSourceState>; force?: boolean } = {}) {
+    const metadata = this.createMetadataLoader(signal);
     const existingVideos = options.existingVideos ?? [];
     const sourceStates: Record<string, YouTubeSourceState> = { ...(options.sourceStates ?? {}) };
     const now = Date.now();
@@ -567,10 +585,10 @@ export class YouTubeClient {
       }
       try {
         let videos: YouTubeVideo[];
-        if (job.kind === "uploads") videos = await this.importChannel(job.channel!, signal);
-        else if (job.kind === "playlist") videos = await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, signal);
+        if (job.kind === "uploads") videos = await this.importChannel(job.channel!, metadata, signal);
+        else if (job.kind === "playlist") videos = await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, metadata, signal);
         else {
-          const specialVideo = await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), signal);
+          const specialVideo = await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), metadata, signal);
           videos = specialVideo ? [specialVideo] : [];
         }
         progress.importedVideos += videos.length;
