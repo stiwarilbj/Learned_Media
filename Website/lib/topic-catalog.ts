@@ -9,7 +9,7 @@ import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 import { buildGeologyTopic, buildHumanOriginsTopic, buildOrganismsTopic } from "./history-science-taxonomy-catalog";
 
-export const TOPIC_CATALOG_VERSION = 26;
+export const TOPIC_CATALOG_VERSION = 27;
 
 export type TopicSeed = string | { label: string; children: TopicSeed[]; aliases?: string[] };
 
@@ -102,7 +102,8 @@ const BOOK_EXPANSION: TopicSeed[] = [
     // Requested classics and three well-known Jules Verne novels.
     "Crime and Punishment", "Jane Eyre", "Wuthering Heights", "Agnes Grey",
     "Twenty Thousand Leagues Under the Sea", "Journey to the Center of the Earth", "Around the World in Eighty Days",
-    "Moby-Dick", "The Count of Monte Cristo", "Don Quixote", "Frankenstein", "Dracula", "The Brothers Karamazov", "Great Expectations"
+    "Moby-Dick", "The Count of Monte Cristo", "Don Quixote", "Frankenstein", "Dracula", "The Brothers Karamazov", "Great Expectations",
+    "Sense and Sensibility", "Emma", "Persuasion", "The Tenant of Wildfell Hall", "The Picture of Dorian Gray"
   ])
 ];
 
