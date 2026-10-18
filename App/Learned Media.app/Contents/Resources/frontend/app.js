@@ -8,7 +8,7 @@
     sentenceLength: 3,
     surpriseMe: false
   };
-  const TOPIC_CATALOG_VERSION = 25;
+  const TOPIC_CATALOG_VERSION = 26;
   const REQUIRED_WORKING_MODELS = 2;
   const PRIMARY_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
   const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
