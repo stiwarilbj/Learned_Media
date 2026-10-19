@@ -188,7 +188,10 @@ export function mergeFactMemory(current: FactMemory[], incoming: FactMemory[]) {
   for (const item of [...current, ...incoming]) {
     const fingerprint = item.fingerprint || factFingerprint(item);
     const normalized = { ...item, fingerprint, claimFingerprint: item.claimFingerprint || claimFingerprint(item), sourceUrls: item.sourceUrls || [], evidenceKeys: item.evidenceKeys || [], evidenceSections: item.evidenceSections || [] };
-    const existing = [...map.entries()].find(([, old]) => isRepeatedFact(normalized, old));
+    let existing: [string, FactMemory] | undefined;
+    for (const entry of map) {
+      if (isRepeatedFact(normalized, entry[1])) { existing = entry; break; }
+    }
     const key = existing?.[0] ?? fingerprint ?? item.id;
     const previous = existing?.[1] ?? map.get(key);
     map.set(key, { ...previous, ...normalized, known: Boolean(item.known || previous?.known) });
