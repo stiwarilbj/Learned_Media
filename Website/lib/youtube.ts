@@ -6,6 +6,8 @@ import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./vi
 import { reuseUnchangedVideoRecords } from "./video-metadata";
 import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageIdentity, openImportCheckpoint, type YouTubeImportPageStore } from "./youtube-import-checkpoints";
 import { restoreStoredCatalog, videoRecordRange, type StoredVideo } from "./youtube-catalog-storage";
+import { ConditionalDownloadCache } from "./conditional-download";
+import { requestCacheScope } from "./session-cache";
 export type YouTubeTopic = "History" | "Politics" | "Geography" | "Science" | "Nature" | "Mathematics" | "Literature" | "Sports" | "Culture" | "Technology";
 
 export type ApprovedChannelSeed = {
@@ -312,19 +314,35 @@ function withTimeout(signal: AbortSignal | undefined, timeoutMs = 30_000) {
   return { controller, cleanup: () => { window.clearTimeout(timer); signal?.removeEventListener("abort", abort); } };
 }
 
+const youtubeDownloads = new ConditionalDownloadCache();
+
 async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Record<string, string>, signal?: AbortSignal): Promise<T> {
   const url = new URL(`${YOUTUBE_API_ROOT}/${resource}`);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+  url.searchParams.sort();
+  // The page context also scopes the browser-supplied Origin/Referer headers.
+  const pageContext = typeof window === "undefined" ? "" : window.location.href;
+  const cacheKey = JSON.stringify([requestCacheScope("youtube-http-v1", apiKey), url.toString(), pageContext]);
+  const conditional = youtubeDownloads.prepare(cacheKey, { accept: "application/json", "x-goog-api-key": apiKey });
   const timeout = withTimeout(signal);
   try {
     if (signal?.aborted) throw abortError();
-    const response = await performanceFetch("youtube", url, { headers: { accept: "application/json", "x-goog-api-key": apiKey }, signal: timeout.controller.signal });
+    const response = await performanceFetch("youtube", url, { headers: conditional.headers, cache: "no-store", signal: timeout.controller.signal });
+    if (signal?.aborted) throw abortError();
     const retryAt = serverRetryAt(response.headers.get("retry-after"));
-    const raw = await response.text();
-    recordPerformance("youtube", "response_bytes_read", diagnosticTextBytes(raw));
+    const reused = youtubeDownloads.notModified(cacheKey, response, conditional.previous);
+    if (response.status === 304 && reused === undefined) throw new YouTubeApiError("YouTube returned Not Modified without a validated response.", 304, "missingCachedResponse", true);
+    const raw = reused ?? await response.text();
+    if (signal?.aborted) throw abortError();
+    recordPerformance("youtube", "response_bytes_read", reused === undefined ? diagnosticTextBytes(raw) : 0);
+    if (reused !== undefined) recordPerformance("youtube", "cache_hits");
     let payload: unknown = {};
-    try { payload = JSON.parse(raw); } catch { throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryAt); }
-    if (!response.ok) {
+    try { payload = JSON.parse(raw); } catch { youtubeDownloads.discard(cacheKey); throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryAt); }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      youtubeDownloads.discard(cacheKey);
+      throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryAt);
+    }
+    if (!response.ok && response.status !== 304) {
       const error = (payload as { error?: { message?: string; errors?: Array<{ reason?: string }> } }).error;
       const reason = error?.errors?.[0]?.reason;
       const message = error?.message || `YouTube returned HTTP ${response.status}.`;
@@ -333,6 +351,12 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
       const retryable = !quotaExhausted && (rateLimited || response.status === 408 || response.status === 429 || response.status >= 500);
       throw new YouTubeApiError(quotaExhausted ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable, retryAt);
     }
+    const list = payload as { items?: unknown; nextPageToken?: unknown; etag?: unknown; error?: unknown } | null;
+    if (reused === undefined && response.status === 200 && list && typeof list === "object" && !Array.isArray(list)
+      && list.error === undefined && Array.isArray(list.items) && list.items.every(item => !!item && typeof item === "object" && !Array.isArray(item))
+      && (list.nextPageToken === undefined || typeof list.nextPageToken === "string")) {
+      youtubeDownloads.validated(cacheKey, response.headers, raw, typeof list.etag === "string" ? list.etag : undefined);
+    } else if (reused === undefined) youtubeDownloads.discard(cacheKey);
     return payload as T;
   } catch (error) {
     if (signal?.aborted) throw abortError();
@@ -423,10 +447,10 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, worker: (item
 
 // Keep search, identity checks, pagination, and Shorts metadata in partial responses.
 const YOUTUBE_RESPONSE_FIELDS: Record<string, string> = {
-  channels: "items(id,snippet(title,customUrl,thumbnails),contentDetails(relatedPlaylists(uploads)))",
-  search: "items(id(channelId,videoId),snippet(title,channelTitle,channelId))",
-  playlistItems: "nextPageToken,items(contentDetails(videoId),snippet(title,description))",
-  videos: "items(id,snippet(channelId,channelTitle,title,description,tags,publishedAt,thumbnails),contentDetails(duration),status(privacyStatus,embeddable))",
+  channels: "etag,items(id,snippet(title,customUrl,thumbnails),contentDetails(relatedPlaylists(uploads)))",
+  search: "etag,items(id(channelId,videoId),snippet(title,channelTitle,channelId))",
+  playlistItems: "etag,nextPageToken,items(contentDetails(videoId),snippet(title,description))",
+  videos: "etag,items(id,snippet(channelId,channelTitle,title,description,tags,publishedAt,thumbnails),contentDetails(duration),status(privacyStatus,embeddable))",
 };
 
 export class YouTubeClient {

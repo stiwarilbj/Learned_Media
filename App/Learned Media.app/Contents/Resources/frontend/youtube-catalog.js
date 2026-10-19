@@ -19,10 +19,10 @@
 
   // Match the website projection; retain all thumbnail dimensions for Shorts checks.
   const YOUTUBE_RESPONSE_FIELDS = {
-    channels: "items(id,snippet(title,customUrl,thumbnails),contentDetails(relatedPlaylists(uploads)))",
-    search: "items(id(channelId,videoId),snippet(title,channelTitle,channelId))",
-    playlistItems: "nextPageToken,items(contentDetails(videoId),snippet(title,description))",
-    videos: "items(id,snippet(channelId,channelTitle,title,description,tags,publishedAt,thumbnails),contentDetails(duration),status(privacyStatus,embeddable))",
+    channels: "etag,items(id,snippet(title,customUrl,thumbnails),contentDetails(relatedPlaylists(uploads)))",
+    search: "etag,items(id(channelId,videoId),snippet(title,channelTitle,channelId))",
+    playlistItems: "etag,nextPageToken,items(contentDetails(videoId),snippet(title,description))",
+    videos: "etag,items(id,snippet(channelId,channelTitle,title,description,tags,publishedAt,thumbnails),contentDetails(duration),status(privacyStatus,embeddable))",
   };
   function request(resource, params, key) {
     const fields = YOUTUBE_RESPONSE_FIELDS[resource];

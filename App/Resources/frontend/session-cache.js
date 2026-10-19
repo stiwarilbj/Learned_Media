@@ -116,6 +116,7 @@ class SessionCache {
         while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes)
             this.remove(this.entries.keys().next().value);
     }
+    delete(key) { this.remove(key); }
     clear() { this.entries.clear(); this.bytes = 0; }
     get size() { return this.entries.size; }
     get approximateBytes() { return this.bytes; }

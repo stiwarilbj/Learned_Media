@@ -124,6 +124,7 @@ private struct WikipediaSearchResponse: Decodable {
         struct Result: Decodable { let title: String? }
         let search: [Result]?
     }
+    let error: WikipediaPageResponse.APIError?
     let query: Query?
 }
 
@@ -498,11 +499,12 @@ private final class WikipediaClient: @unchecked Sendable {
     private let session = URLSession(configuration: .ephemeral)
     private let limiter = WikipediaRequestLimiter()
     private let pageCache = WikipediaPageCache()
-    private func request<T: Decodable>(_ url: URL, priority: Int = 0, cacheResponse: Bool = true) async throws -> T {
+    private let downloads = ConditionalDownloadCache()
+    private func request<T: Decodable>(_ url: URL, priority: Int = 0) async throws -> T {
         var request = URLRequest(url: url, timeoutInterval: 20)
-        if !cacheResponse { request.cachePolicy = .reloadIgnoringLocalCacheData }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("LearnedMedia/1.0 (knowledge-feed)", forHTTPHeaderField: "User-Agent")
+        let conditional = await downloads.prepare(request)
         let queuedAt = ProcessInfo.processInfo.systemUptime
         try await limiter.acquire(priority: priority)
         PerformanceDiagnostics.shared.record(.wikipedia, .queueMs, max(0, ProcessInfo.processInfo.systemUptime - queuedAt) * 1_000)
@@ -511,19 +513,43 @@ private final class WikipediaClient: @unchecked Sendable {
         do {
             try Task.checkCancellation()
             PerformanceDiagnostics.shared.record(.wikipedia, .requests)
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await session.data(for: conditional.request)
         } catch {
             await limiter.release()
             throw error
         }
         await limiter.release()
         PerformanceDiagnostics.shared.record(.wikipedia, .responseBytesRead, Double(data.count))
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw NativeError(message: "Wikipedia could not be reached right now.") }
-        return try JSONDecoder().decode(T.self, from: data)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else { throw NativeError(message: "Wikipedia could not be reached right now.") }
+        let reused = await downloads.notModified(conditional, response: http)
+        guard (200..<300).contains(http.statusCode) || reused != nil else { throw NativeError(message: "Wikipedia could not be reached right now.") }
+        let body = reused ?? data
+        let decoded: T
+        do { decoded = try JSONDecoder().decode(T.self, from: body) }
+        catch { await downloads.discard(conditional); throw error }
+        if reused != nil { PerformanceDiagnostics.shared.record(.wikipedia, .cacheHits) }
+        else if http.statusCode == 200, reusableResponse(decoded) {
+            try Task.checkCancellation()
+            await downloads.validated(conditional, response: http, body: body)
+        } else { await downloads.discard(conditional) }
+        return decoded
+    }
+    private func reusableResponse<T>(_ decoded: T) -> Bool {
+        if let response = decoded as? WikipediaPageResponse, response.error == nil,
+           let pages = response.query?.pages, !pages.isEmpty {
+            // A missing-page marker must expire through the separate one-minute cache.
+            return pages.values.allSatisfy { $0.missing == nil && $0.invalid == nil && $0.known == nil && $0.fullurl?.isEmpty == false }
+        }
+        if let response = decoded as? WikipediaSearchResponse { return response.error == nil && response.query?.search != nil }
+        if let response = decoded as? WikipediaImageInfoResponse {
+            return response.query?.pages?.values.contains(where: { $0.imageinfo?.first?.url?.isEmpty == false }) == true
+        }
+        return false
     }
     private func apiURL(_ values: [String: String]) -> URL? {
         var components = URLComponents(string: "https://en.wikipedia.org/w/api.php")
-        components?.queryItems = [URLQueryItem(name: "format", value: "json"), URLQueryItem(name: "origin", value: "*")] + values.map { URLQueryItem(name: $0.key, value: $0.value) }
+        components?.queryItems = ([URLQueryItem(name: "format", value: "json"), URLQueryItem(name: "origin", value: "*")] + values.map { URLQueryItem(name: $0.key, value: $0.value) }).sorted { $0.name < $1.name }
         return components?.url
     }
     private func wikiURL(_ title: String) -> String {
@@ -545,7 +571,7 @@ private final class WikipediaClient: @unchecked Sendable {
         guard !Task.isCancelled, let url = apiURL(["action": "query", "titles": title, "redirects": "1", "prop": "pageimages|info|extracts", "inprop": "url", "explaintext": "1", "exsectionformat": "wiki", "piprop": "thumbnail|name", "pilicense": "free", "pithumbsize": "1200"]) else { return nil }
         return await pageCache.pageOrLoad(title) { [weak self] in
             guard let self, !Task.isCancelled,
-                  let response: WikipediaPageResponse = try? await self.request(url, cacheResponse: false),
+                  let response: WikipediaPageResponse = try? await self.request(url),
                   !Task.isCancelled, response.error == nil else { return nil }
             let pages = Array(response.query?.pages?.values ?? [:].values)
             if let page = pages.first(where: { $0.missing == nil && $0.invalid == nil && $0.known == nil && $0.fullurl != nil && $0.extract?.isEmpty == false }) {
@@ -1725,6 +1751,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let videoCatalog = VideoCatalogStore()
     private let youtubeImportCheckpoints = YouTubeImportCheckpointStore()
     private let youtubeLimiter = YouTubeRequestLimiter()
+    private let youtubeDownloads = ConditionalDownloadCache()
+    private let youtubeSession = URLSession(configuration: .ephemeral)
     private let backgroundRetries = BackgroundRetryGate()
     private var geminiKey = ""
     private var sessionRefresh: Task<CloudSession, Error>?
@@ -2269,11 +2297,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         components.queryItems = params.compactMap { name, value in
             guard let string = value as? String else { return nil }
             return URLQueryItem(name: name, value: string)
-        }
+        }.sorted { $0.name < $1.name }
         guard let url = components.url else { throw NativeError(message: "The YouTube request could not be formed.", retryable: false) }
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        let conditional = await youtubeDownloads.prepare(request, credential: key)
         let retryKey = "youtube/\(resource)"
         let queuedAt = ProcessInfo.processInfo.systemUptime
         let observed = try await backgroundRetries.wait(retryKey)
@@ -2284,7 +2313,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             PerformanceDiagnostics.shared.record(.youtube, .queueMs, max(0, ProcessInfo.processInfo.systemUptime - queuedAt) * 1_000)
             if observed != nil { PerformanceDiagnostics.shared.record(.youtube, .retries) }
             PerformanceDiagnostics.shared.record(.youtube, .requests)
-            (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+            (data, response) = try await youtubeSession.data(for: conditional.request)
             await youtubeLimiter.release()
         } catch is CancellationError {
             await youtubeLimiter.release()
@@ -2296,9 +2325,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             throw NativeError(message: "YouTube could not be reached right now.")
         }
         PerformanceDiagnostics.shared.record(.youtube, .responseBytesRead, Double(data.count))
+        try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw NativeError(message: "YouTube returned no HTTP response.") }
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-        guard (200..<300).contains(http.statusCode) else {
+        let reused = await youtubeDownloads.notModified(conditional, response: http)
+        if http.statusCode == 304, reused == nil { throw NativeError(message: "YouTube returned Not Modified without a validated response.", retryable: true) }
+        let body = reused ?? data
+        let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+        guard (200..<300).contains(http.statusCode) || reused != nil else {
             let errorObject = object["error"] as? [String: Any]
             let message = errorObject?["message"] as? String ?? "YouTube returned HTTP \(http.statusCode)."
             let reason = (errorObject?["errors"] as? [[String: Any]])?.first?["reason"] as? String
@@ -2309,6 +2342,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             else { await backgroundRetries.succeeded(retryKey, observed: observed) }
             throw NativeError(message: message, retryable: retryable)
         }
+        if reused != nil { PerformanceDiagnostics.shared.record(.youtube, .cacheHits) }
+        else if http.statusCode == 200, object["error"] == nil, object["items"] is [[String: Any]], object["nextPageToken"] == nil || object["nextPageToken"] is String {
+            try Task.checkCancellation()
+            await youtubeDownloads.validated(conditional, response: http, body: body, bodyETag: object["etag"] as? String)
+        } else { await youtubeDownloads.discard(conditional) }
         await backgroundRetries.succeeded(retryKey, observed: observed)
         return object
     }
