@@ -732,6 +732,10 @@ export class YouTubeClient {
   }
 }
 
+const discoveryMetadata = new WeakMap<YouTubeVideo, {
+  publishedAt: string; channelName: string; timestamp: number; normalizedChannel: string;
+}>();
+
 export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclude: string[] = [], prioritizeRecentByChannel: Record<string, boolean> = {}) {
   const excluded = new Set(exclude);
   const extraRecentBias = new Set(Object.entries(prioritizeRecentByChannel).filter(([, enabled]) => enabled).map(([name]) => normalized(name)));
@@ -742,9 +746,16 @@ export function selectRandomVideos(videos: YouTubeVideo[], count: number, exclud
   const olderPreferredPool: Array<{ video: YouTubeVideo; ageInYears: number; halfLifeInYears: number }> = [];
   for (const video of videos) {
     if (excluded.has(video.id)) continue;
-    const publishedAt = Date.parse(video.publishedAt);
-    const ageInYears = Number.isFinite(publishedAt) ? Math.max(0, (currentTime - publishedAt) / yearInMs) : 0;
-    const recentBias = extraRecentBias.has(normalized(video.channelName));
+    let metadata = discoveryMetadata.get(video);
+    if (!metadata || metadata.publishedAt !== video.publishedAt || metadata.channelName !== video.channelName) {
+      metadata = {
+        publishedAt: video.publishedAt, channelName: video.channelName,
+        timestamp: Date.parse(video.publishedAt), normalizedChannel: normalized(video.channelName)
+      };
+      discoveryMetadata.set(video, metadata);
+    }
+    const ageInYears = Number.isFinite(metadata.timestamp) ? Math.max(0, (currentTime - metadata.timestamp) / yearInMs) : 0;
+    const recentBias = extraRecentBias.has(metadata.normalizedChannel);
     const candidate = { video, ageInYears, halfLifeInYears: recentBias ? 1.5 : 8 };
     if (recentBias && ageInYears > 5) olderPreferredPool.push(candidate);
     else recentPool.push(candidate);
