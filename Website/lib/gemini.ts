@@ -202,7 +202,7 @@ function errorDetail(payload: unknown) {
   return [error?.message, error?.status, reason].filter(Boolean).join(" · ");
 }
 
-function retryAfterMs(response: Response, payload: unknown) {
+function retryAfterMs(response: Response, serializedPayload: string) {
   const rawHeader = response.headers.get("retry-after");
   const header = Number(rawHeader);
   if (Number.isFinite(header) && header > 0) return header * 1000;
@@ -210,15 +210,14 @@ function retryAfterMs(response: Response, payload: unknown) {
     const date = Date.parse(rawHeader);
     if (Number.isFinite(date) && date > Date.now()) return date - Date.now();
   }
-  const match = JSON.stringify(payload).match(/retryDelay["']?\s*:\s*["'](\d+(?:\.\d+)?)s/i);
+  const match = serializedPayload.match(/retryDelay["']?\s*:\s*["'](\d+(?:\.\d+)?)s/i);
   return match ? Number(match[1]) * 1000 : undefined;
 }
 
-function quotaScope(status: number, payload: unknown): GeminiFailure["quotaScope"] {
+function quotaScope(status: number, serializedPayload: string): GeminiFailure["quotaScope"] {
   if (status !== 429) return undefined;
-  const detail = JSON.stringify(payload);
-  if (/per.?day|daily quota|requests? per day|tokens? per day|project.{0,40}quota|quota.{0,40}project/i.test(detail)) return "project";
-  if (/quota.{0,40}model|model.{0,40}quota|per.?model|model[_ -]specific/i.test(detail)) return "model";
+  if (/per.?day|daily quota|requests? per day|tokens? per day|project.{0,40}quota|quota.{0,40}project/i.test(serializedPayload)) return "project";
+  if (/quota.{0,40}model|model.{0,40}quota|per.?model|model[_ -]specific/i.test(serializedPayload)) return "model";
   return "unknown";
 }
 
@@ -381,7 +380,8 @@ async function requestModelText(apiKey: string, model: string, prompt: string, r
     let payload: unknown = {};
     try { payload = JSON.parse(stripResponseBom(raw)); } catch { /* Keep the HTTP status as the primary signal. */ }
     const detail = errorDetail(payload) || "Gemini returned HTTP " + response.status + ".";
-    throw new GeminiFailure(detail, response.status, [], retryAfterMs(response, payload), isTransient(response.status, detail), quotaScope(response.status, payload));
+    const serializedPayload = JSON.stringify(payload);
+    throw new GeminiFailure(detail, response.status, [], retryAfterMs(response, serializedPayload), isTransient(response.status, detail), quotaScope(response.status, serializedPayload));
   }
   if (streamed) {
     return { text: stripJsonFence(raw), resolvedModel: streamedModel, finishReason: streamedFinishReason };
