@@ -22,7 +22,7 @@ import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWo
 import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-preferences";
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys, saveAccountKey, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
-import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
+import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, importCoordinatedYouTubeCatalog, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
@@ -2117,6 +2117,31 @@ export default function HomePage() {
     if (syncCloud) scheduleCloudSave();
   }, [scheduleCloudSave]);
 
+  useEffect(() => {
+    if (!hydrated || (view !== "videos" && view !== "settings")) return;
+    let active = true;
+    let readEpoch = 0;
+    const unsubscribe = watchCommittedYouTubeCatalog(() => {
+      const epoch = ++readEpoch;
+      if (!youtubeCatalogLoadedRef.current || youtubeAbortController.current) return;
+      const targetWorkspace = workspaceIdRef.current;
+      void loadYouTubeWorkspace(targetWorkspace, undefined, true).then((catalog) => {
+        if (!active || epoch !== readEpoch || youtubeAbortController.current || workspaceIdRef.current !== targetWorkspace) return;
+        updateYouTubeWorkspace((current) => {
+          const available = new Set(catalog.videos.map(video => video.id));
+          const discoverIds = current.discoverIds.filter(id => available.has(id));
+          return { ...current, channels: catalog.channels, videos: catalog.videos, sourceStates: catalog.sourceStates,
+            catalogVersion: catalog.catalogVersion, libraryIncomplete: catalog.libraryIncomplete, lastSyncAt: catalog.lastSyncAt,
+            discoverIds: discoverIds.length ? discoverIds : selectRandomVideos(catalog.videos, 24, [], current.prioritizeRecentByChannel).map(video => video.id) };
+        });
+        youtubeSearchCache.current.clear();
+        setYoutubeStatus(catalog.libraryIncomplete ? "error" : "connected");
+        setYoutubeError("");
+      }).catch(() => { /* Retain the current catalog if storage is temporarily unavailable. */ });
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [hydrated, view, updateYouTubeWorkspace]);
+
   const connectYouTube = useCallback(async (force = false) => {
     const keyAtStart = youtubeKey.trim();
     if (!keyAtStart) {
@@ -2133,25 +2158,27 @@ export default function HomePage() {
     setYoutubeError("");
     setYoutubeProgress({ phase: "resolving", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0, completedSources: 0 });
     try {
-      const client = new YouTubeClient(keyAtStart);
-      const snapshot = youtubeWorkspaceRef.current;
-      const refreshCatalog = force || snapshot.catalogVersion < YOUTUBE_CATALOG_VERSION;
-      const result = await client.syncApprovedCatalog(snapshot.channels, controller.signal, (progress) => { if (!controller.signal.aborted && youtubeKey.trim() === keyAtStart) setYoutubeProgress(progress); }, { existingVideos: snapshot.videos, sourceStates: snapshot.sourceStates, force: refreshCatalog });
-      if (controller.signal.aborted || youtubeKey.trim() !== keyAtStart) return;
-      const nextSyncAt = result.incomplete ? snapshot.lastSyncAt : new Date().toISOString();
-      const catalogSnapshot: YouTubeWorkspaceState = { ...snapshot, channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: result.incomplete ? snapshot.catalogVersion : YOUTUBE_CATALOG_VERSION, libraryIncomplete: result.incomplete, lastSyncAt: nextSyncAt };
-      void saveYouTubeWorkspace(catalogSnapshot, { catalog: true, workspaceId: workspaceIdRef.current });
+      const workspaceAtStart = workspaceIdRef.current;
+      const result = await importCoordinatedYouTubeCatalog(keyAtStart, controller.signal,
+        (progress) => { if (!controller.signal.aborted && youtubeKeyRef.current.trim() === keyAtStart) setYoutubeProgress(progress); },
+        { force, workspaceId: workspaceAtStart });
+      if (controller.signal.aborted || youtubeKeyRef.current.trim() !== keyAtStart || workspaceIdRef.current !== workspaceAtStart) return;
+      const catalog = result.workspace;
       updateYouTubeWorkspace((current) => {
-        const available = new Set(result.videos.map((video) => video.id));
+        const available = new Set(catalog.videos.map((video) => video.id));
         const preservedDiscoverIds = current.discoverIds.filter((id) => available.has(id));
-        return { ...current, channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: result.incomplete ? current.catalogVersion : YOUTUBE_CATALOG_VERSION, libraryIncomplete: result.incomplete, lastSyncAt: result.incomplete ? current.lastSyncAt : new Date().toISOString(), discoverIds: preservedDiscoverIds.length ? preservedDiscoverIds : selectRandomVideos(result.videos, 24, [], current.prioritizeRecentByChannel).map((video) => video.id) };
+        return { ...current, channels: catalog.channels, videos: catalog.videos, sourceStates: catalog.sourceStates,
+          catalogVersion: catalog.catalogVersion, libraryIncomplete: catalog.libraryIncomplete, lastSyncAt: catalog.lastSyncAt,
+          discoverIds: preservedDiscoverIds.length ? preservedDiscoverIds : selectRandomVideos(catalog.videos, 24, [], current.prioritizeRecentByChannel).map((video) => video.id) };
       });
+      setYoutubeProgress((current) => ({ ...current, phase: "complete", completedChannels: catalog.channels.length,
+        importedVideos: catalog.videos.length, currentSource: undefined, error: result.error }));
       youtubeSearchCache.current.clear();
-      setYoutubeStatus(result.incomplete ? "error" : "connected");
-      setYoutubeError(result.progress.error ?? "");
-      setToast(result.incomplete ? "YouTube connected, but some approved channels still need a retry." : "YouTube connected. Your approved video library is ready.");
+      setYoutubeStatus(catalog.libraryIncomplete ? "error" : "connected");
+      setYoutubeError(result.error ?? "");
+      setToast(catalog.libraryIncomplete ? "YouTube connected, but some approved channels still need a retry." : "YouTube connected. Your approved video library is ready.");
     } catch (error) {
-      if (controller.signal.aborted || youtubeKey.trim() !== keyAtStart) return;
+      if (controller.signal.aborted || youtubeKeyRef.current.trim() !== keyAtStart) return;
       const message = error instanceof Error ? error.message : "YouTube could not import the approved library.";
       setYoutubeStatus("error");
       setYoutubeError(message);
@@ -2165,7 +2192,8 @@ export default function HomePage() {
   useEffect(() => {
     if (!hydrated || !youtubeCatalogLoadedRef.current || !youtubeKey.trim() || youtubeStatus !== "not-configured") return;
     if (youtubeWorkspace.catalogVersion < YOUTUBE_CATALOG_VERSION) {
-      void connectYouTube(true);
+      // Recheck the shared catalog before deciding whether an upgrade is needed.
+      void connectYouTube(false);
       return;
     }
     if (youtubeWorkspace.videos.length) {

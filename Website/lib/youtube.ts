@@ -1,3 +1,4 @@
+import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportChanges } from "./youtube-import-lease";
 import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
 export type YouTubeTopic = "History" | "Politics" | "Geography" | "Science" | "Nature" | "Mathematics" | "Literature" | "Sports" | "Culture" | "Technology";
@@ -430,7 +431,7 @@ const YOUTUBE_RESPONSE_FIELDS: Record<string, string> = {
 export class YouTubeClient {
   private readonly limiter = new YouTubeRequestLimiter();
 
-  constructor(private readonly apiKey: string, private readonly requestOverride?: (resource: string, params: Record<string, string>, signal?: AbortSignal) => Promise<unknown>) {}
+  constructor(private readonly apiKey: string, private readonly requestOverride?: (resource: string, params: Record<string, string>, signal?: AbortSignal) => Promise<unknown>, private readonly beforeRequest?: () => Promise<void>) {}
 
   private request<T>(resource: string, params: Record<string, string>, signal?: AbortSignal) {
     const fields = YOUTUBE_RESPONSE_FIELDS[resource];
@@ -439,6 +440,9 @@ export class YouTubeClient {
       let attempt = 0;
       while (true) {
         try {
+          if (signal?.aborted) throw abortError();
+          await this.beforeRequest?.();
+          if (signal?.aborted) throw abortError();
           if (this.requestOverride) return await this.requestOverride(resource, requestParams, signal) as T;
           return await fetchYouTubeJson<T>(this.apiKey, resource, requestParams, signal);
         } catch (error) {
@@ -793,8 +797,11 @@ export async function loadYouTubeActivity(workspaceId: string, fallback?: Partia
   } catch { return fallback ?? null; }
 }
 
-export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fallbackActivity?: Partial<YouTubeActivityState>) {
-  if (typeof window === "undefined" || !window.indexedDB) return { ...DEFAULT_YOUTUBE_WORKSPACE };
+export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fallbackActivity?: Partial<YouTubeActivityState>, strict = false) {
+  if (typeof window === "undefined" || !window.indexedDB) {
+    if (strict) throw new Error("YouTube import coordination requires browser storage. Enable site storage and retry.");
+    return { ...DEFAULT_YOUTUBE_WORKSPACE };
+  }
   try {
     const db = await openYouTubeDb();
     const saved = await new Promise<{ catalog: Record<string, unknown> | null; legacy: Record<string, unknown> | null; activity: Partial<YouTubeActivityState> | null }>((resolve, reject) => {
@@ -830,7 +837,7 @@ export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fall
       workspace.discoverIds = selectRandomVideos(filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic), 24, [], DEFAULT_YOUTUBE_RECENCY_PREFERENCES).map((video) => video.id);
     }
     return workspace;
-  } catch { return { ...DEFAULT_YOUTUBE_WORKSPACE }; }
+  } catch (error) { if (strict) throw error; return { ...DEFAULT_YOUTUBE_WORKSPACE }; }
 }
 
 export async function saveYouTubeWorkspace(workspace: YouTubeWorkspaceState, options: { catalog?: boolean; activity?: boolean; workspaceId?: string } = {}) {
@@ -849,4 +856,57 @@ export async function saveYouTubeWorkspace(workspace: YouTubeWorkspaceState, opt
       transaction.onabort = () => reject(transaction.error);
     });
   } catch { /* IndexedDB is best effort; the active session remains usable. */ }
+}
+
+/** Shared catalog ownership is origin-wide, matching the existing IndexedDB catalog. */
+export async function importCoordinatedYouTubeCatalog(apiKey: string, signal: AbortSignal,
+  onProgress: (progress: YouTubeImportProgress) => void, options: { force: boolean; workspaceId: string }) {
+  if (typeof window === "undefined" || !window.indexedDB) throw new Error("YouTube import coordination requires browser storage. Enable site storage and retry.");
+  const imported = await withYouTubeImportLease(openYouTubeDb, signal, onProgress, async (owner, progress) => {
+    const snapshot = await loadYouTubeWorkspace(options.workspaceId, undefined, true);
+    const fresh = snapshot.catalogVersion >= YOUTUBE_CATALOG_VERSION && !snapshot.libraryIncomplete && snapshot.videos.length
+      && snapshot.lastSyncAt && Date.now() - Date.parse(snapshot.lastSyncAt) < 24 * 60 * 60 * 1000;
+    if (!options.force && fresh) return { workspace: snapshot, error: undefined };
+    const client = new YouTubeClient(apiKey, undefined, owner.assertOwned);
+    const result = await client.syncApprovedCatalog(snapshot.channels, owner.signal, progress, {
+      existingVideos: snapshot.videos, sourceStates: snapshot.sourceStates,
+      force: options.force || snapshot.catalogVersion < YOUTUBE_CATALOG_VERSION
+    });
+    if (owner.signal.aborted) throw abortError();
+    const workspace: YouTubeWorkspaceState = { ...snapshot, channels: result.channels, videos: result.videos, sourceStates: result.sourceStates,
+      catalogVersion: result.incomplete ? snapshot.catalogVersion : YOUTUBE_CATALOG_VERSION, libraryIncomplete: result.incomplete,
+      lastSyncAt: result.incomplete ? snapshot.lastSyncAt : new Date().toISOString() };
+    await owner.commit(youtubeCatalogOf(workspace));
+    return { workspace, error: result.progress.error };
+  });
+  if (signal.aborted) throw abortError();
+  const result = imported ?? { workspace: await loadYouTubeWorkspace(options.workspaceId, undefined, true), error: undefined };
+  return { ...result, error: result.error ?? (result.workspace.libraryIncomplete ? "Some approved video sources need a retry." : undefined) };
+}
+
+export function watchCommittedYouTubeCatalog(listener: () => void) {
+  let lastCommit: string | undefined;
+  let active = true, checking = false, pending = false;
+  const check = async () => {
+    if (!active || document.visibilityState === "hidden") return;
+    if (checking) { pending = true; return; }
+    checking = true;
+    try {
+      const revision = await youtubeCatalogCommitId(openYouTubeDb);
+      if (!active) return;
+      const previous = lastCommit;
+      lastCommit = revision;
+      if (revision && revision !== previous) listener();
+    } catch { /* A future notification or focus event retries. */ }
+    finally {
+      checking = false;
+      if (pending && active) { pending = false; void check(); }
+    }
+  };
+  const unsubscribe = subscribeYouTubeImportChanges(() => void check());
+  const focus = () => void check();
+  window.addEventListener("focus", focus);
+  document.addEventListener("visibilitychange", focus);
+  void check();
+  return () => { active = false; unsubscribe(); window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", focus); };
 }
