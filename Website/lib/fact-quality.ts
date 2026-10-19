@@ -236,10 +236,16 @@ export function selectEvidence(extract: string, focus: string, difficulty: numbe
       passages.push({ text, section, score: coverage * 5, position: index });
     }
   }
-  const ranked = [...passages].sort((a, b) => b.score - a.score || a.position - b.position);
-  const best = ranked[0];
+  let best: typeof passages[number] | undefined;
+  for (const passage of passages) {
+    if (!best || passage.score > best.score || (passage.score === best.score && passage.position < best.position)) best = passage;
+  }
   if (!best) return "";
-  const neighbor = ranked.find(item => item.section === best.section && Math.abs(item.position - best.position) === 1 && item.score >= best.score * 0.5);
+  let neighbor: typeof passages[number] | undefined;
+  for (const passage of passages) {
+    if (passage.section !== best.section || Math.abs(passage.position - best.position) !== 1 || passage.score < best.score * 0.5) continue;
+    if (!neighbor || passage.score > neighbor.score || (passage.score === neighbor.score && passage.position < neighbor.position)) neighbor = passage;
+  }
   return [best, ...(neighbor ? [neighbor] : [])].sort((a,b) => a.position - b.position)
     .map(item => `[Section: ${item.section}]\n${item.text}`).join("\n\n");
 }
