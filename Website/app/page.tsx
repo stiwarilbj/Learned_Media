@@ -14,7 +14,7 @@ import { findTopicById, TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib
 import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
 import { normalizeSearchText, rankSearchResults } from "@/lib/search";
 import { requestCacheKey, requestCacheScope, SessionCache } from "@/lib/session-cache";
-import { createTopicSuggestionIndex, suggestTopics, shouldEnrichTopics, TOPIC_SEARCH_VERSION, type TopicQueryPlan } from "@/lib/topic-suggestions";
+import { createTopicSuggestionIndex, diffTopicSearchRecords, topicSearchRecords, suggestTopics, shouldEnrichTopics, TOPIC_SEARCH_VERSION, type TopicQueryPlan, type TopicSearchRecord } from "@/lib/topic-suggestions";
 import { searchTopicsWithYieldingFallback } from "@/lib/topic-search-fallback";
 import type { TopicSearchIndex, TopicSearchWorkerReply } from "@/lib/topic-search-types";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
@@ -66,7 +66,7 @@ type YouTubeWorkspaceActivity = YouTubeActivityState;
 type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
 type CardSearchWorkerReply = { type: "ready"; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey: string; ids: string[] };
-type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ coverage?: YouTubeSearchCandidate["coverage"]; videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
+type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ coverage?: YouTubeSearchCandidate["coverage"]; videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
 type YouTubeWorkerSearchRequest = { query: string; plan: VideoSearchPlan; topic: YouTubeTopic | "All"; channelId?: string; limit: number; excludedIds?: string[]; expanded?: boolean; viewKey?: string };
 type ConfirmationRequest = {
   title: string;
@@ -473,9 +473,12 @@ export default function HomePage() {
   const [youtubeSearchIndexRevision, setYoutubeSearchIndexRevision] = useState(0);
   const requestGeneration = useRef(0);
   const topicCatalogRevision = useRef(0);
+  const topicCatalogReset = useRef(0);
   const catalogTopicListCache = useRef<{ revision: number; topics: Array<TopicNode & { path: string[] }> } | null>(null);
   const catalogSuggestionIndexCache = useRef<{ revision: number; index: ReturnType<typeof createTopicSuggestionIndex> } | null>(null);
   const topicSearchWorker = useRef<Worker | null>(null);
+  const topicWorkerIndexed = useRef<{ revision: number; rebuildKey: string; records: Map<string, TopicSearchRecord> } | null>(null);
+  const topicWorkerSnapshot = useRef({ revision: 0, rebuildKey: "", records: [] as TopicSearchRecord[] });
   const topicSearchRequestId = useRef(0);
   const topicSearchSignature = useRef("");
   const topicEnrichmentAttempt = useRef("");
@@ -490,6 +493,8 @@ export default function HomePage() {
   const youtubeSearchWorkerReadyWaiters = useRef<Array<() => void>>([]);
   const youtubeSearchWorkerIndexedVideos = useRef<Map<string, YouTubeVideo> | null>(null);
   const youtubeSearchWorkerPendingVideos = useRef<YouTubeVideo[] | null>(null);
+  const youtubeSearchWorkerNeedsRebuild = useRef(false);
+  const youtubeSearchWorkerPolicy = useRef(`${YOUTUBE_CATALOG_VERSION}:${VIDEO_SEMANTIC_VERSION}`);
   const youtubeSearchWorkerRevision = useRef(0);
   const youtubeSearchRequestId = useRef(0);
   const youtubeSearchPending = useRef(new Map<number, { resolve: (reply: YouTubeSearchWorkerReply) => void; reject: (error: unknown) => void; signal: AbortSignal; onAbort: () => void }>());
@@ -706,6 +711,7 @@ export default function HomePage() {
     const targetState = normalizeSavedState(target.state, false, initialTopicCatalog.current ?? undefined);
     target.state = targetState;
     setTopics(targetState.topics);
+    topicCatalogReset.current += 1;
     topicCatalogRevision.current += 1;
     setSettings(targetState.settings);
     const restoredCards = targetState.cards;
@@ -743,6 +749,7 @@ export default function HomePage() {
     setWorkspaceName(record.name);
     setWorkspaceSummaries(workspaceStoreRef.current.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
     setTopics(record.state.topics);
+    topicCatalogReset.current += 1;
     topicCatalogRevision.current += 1;
     setSettings(record.state.settings);
     setCards([]);
@@ -817,6 +824,7 @@ export default function HomePage() {
       setWorkspaceName(replacement.name);
       replacement.state = normalizeSavedState(replacement.state, false, initialTopicCatalog.current ?? undefined);
       setTopics(replacement.state.topics);
+      topicCatalogReset.current += 1;
       topicCatalogRevision.current += 1;
       setSettings({ ...DEFAULT_SETTINGS, ...replacement.state.settings, sentenceLength: normalizeSentenceLength(replacement.state.settings?.sentenceLength) });
       const replacementCards = uniqueCards((replacement.state.cards ?? []).map((card, cardIndex) => normalizeFact(card, cardIndex)).filter((card) => card.title && card.body));
@@ -961,6 +969,7 @@ export default function HomePage() {
       activeRecord.state = restored;
       persistedStateRef.current = restored;
       setTopics(restored.topics);
+      topicCatalogReset.current += 1;
       topicCatalogRevision.current += 1;
       setSettings(restored.settings);
       setCards(restored.cards);
@@ -1106,6 +1115,7 @@ export default function HomePage() {
         setWorkspaceSummaries(records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
         const targetState = target.state;
         setTopics(targetState.topics);
+        topicCatalogReset.current += 1;
         topicCatalogRevision.current += 1;
         setSettings(targetState.settings);
         const targetCards = targetState.cards;
@@ -1243,7 +1253,24 @@ export default function HomePage() {
   const localTopicSuggestions = normalizeSearchText(topicSearchReply.query ?? "") === normalizeSearchText(query) && topicSearchReply.catalogRevision === catalogRevision
     ? topicSearchReply.suggestions ?? []
     : [];
-  const catalogCustomTopics = useMemo(() => topics.filter((topic) => topic.custom), [catalogRevision]);
+  const catalogCustomTopics = useMemo(() => topicSearchRecords(topics.filter((topic) => topic.custom)), [catalogRevision]);
+  const topicRebuildKey = `${TOPIC_CATALOG_VERSION}:${TOPIC_SEARCH_VERSION}:${workspaceId}:${topicCatalogReset.current}`;
+  topicWorkerSnapshot.current = { revision: catalogRevision, rebuildKey: topicRebuildKey, records: catalogCustomTopics };
+  const syncTopicSearchIndex = useCallback((force = false) => {
+    const worker = topicSearchWorker.current;
+    if (!worker) return;
+    const snapshot = topicWorkerSnapshot.current, prior = topicWorkerIndexed.current;
+    if (!force && prior?.revision === snapshot.revision && prior.rebuildKey === snapshot.rebuildKey) return;
+    topicSearchSignature.current = "";
+    setTopicWorkerReadyRevision(-1);
+    if (force || !prior || prior.rebuildKey !== snapshot.rebuildKey) {
+      worker.postMessage({ type: "initialize", customRecords: snapshot.records, catalogRevision: snapshot.revision });
+    } else {
+      const changes = diffTopicSearchRecords(prior.records, snapshot.records);
+      worker.postMessage({ type: "update", baseRevision: prior.revision, catalogRevision: snapshot.revision, ...changes });
+    }
+    topicWorkerIndexed.current = { revision: snapshot.revision, rebuildKey: snapshot.rebuildKey, records: new Map(snapshot.records.map(topic => [topic.id, topic])) };
+  }, []);
   const syncCardSearchIndex = useCallback((nextCards: FactCard[]) => {
     const worker = cardSearchWorker.current;
     if (!worker || !cardSearchWorkerReady.current) return;
@@ -1266,7 +1293,9 @@ export default function HomePage() {
     cardSearchSignature.current = "";
   }, []);
 
-  const syncYouTubeSearchIndex = useCallback((nextVideos: YouTubeVideo[]) => {
+  const syncYouTubeSearchIndex = useCallback((nextVideos: YouTubeVideo[], force = false) => {
+    const policy = `${YOUTUBE_CATALOG_VERSION}:${VIDEO_SEMANTIC_VERSION}`;
+    if (force || youtubeSearchWorkerPolicy.current !== policy) youtubeSearchWorkerNeedsRebuild.current = true;
     const worker = youtubeSearchWorker.current;
     if (!worker || !youtubeSearchWorkerReady.current) {
       youtubeSearchWorkerPendingVideos.current = nextVideos;
@@ -1275,10 +1304,21 @@ export default function HomePage() {
     const indexed = youtubeSearchWorkerIndexedVideos.current;
     if (!indexed) return;
     const { upserts, removeIds, orderIds, changed } = diffVideoSearchMetadata(indexed, nextVideos);
-    if (!changed) return;
+    if (!changed && !youtubeSearchWorkerNeedsRebuild.current) return;
     youtubeSearchWorkerIndexedVideos.current = new Map(nextVideos.map(video => [video.id, video]));
+    const baseRevision = youtubeSearchWorkerRevision.current;
     const revision = ++youtubeSearchWorkerRevision.current;
-    worker.postMessage({ type: "update", revision, upserts, removeIds, orderIds });
+    if (youtubeSearchWorkerNeedsRebuild.current) {
+      youtubeSearchWorkerNeedsRebuild.current = false;
+      youtubeSearchWorkerPolicy.current = policy;
+      youtubeSearchWorkerReady.current = false;
+      for (const pending of youtubeSearchPending.current.values()) {
+        pending.signal.removeEventListener("abort", pending.onAbort);
+        pending.reject(new Error("Video catalog changed during search."));
+      }
+      youtubeSearchPending.current.clear();
+      worker.postMessage({ type: "initialize", revision, videos: nextVideos });
+    } else worker.postMessage({ type: "update", baseRevision, revision, upserts, removeIds, orderIds });
     setYoutubeSearchIndexRevision(revision);
   }, []);
 
@@ -1357,10 +1397,19 @@ export default function HomePage() {
     youtubeSearchWorker.current = worker;
     youtubeSearchWorkerReady.current = false;
     const initialVideos = youtubeWorkspace.videos;
+    youtubeSearchWorkerNeedsRebuild.current = false;
+    youtubeSearchWorkerPolicy.current = `${YOUTUBE_CATALOG_VERSION}:${VIDEO_SEMANTIC_VERSION}`;
     youtubeSearchWorkerIndexedVideos.current = new Map(initialVideos.map((video) => [video.id, video]));
     worker.onmessage = (event: MessageEvent<YouTubeSearchWorkerReply>) => {
       const reply = event.data;
+      if (reply.type === "rebuild") {
+        if (reply.revision !== youtubeSearchWorkerRevision.current) return;
+        youtubeSearchWorkerReady.current = true;
+        syncYouTubeSearchIndex(youtubeWorkspaceRef.current.videos, true);
+        return;
+      }
       if (reply.type === "ready") {
+        if (reply.revision !== youtubeSearchWorkerRevision.current) return;
         youtubeSearchWorkerReady.current = true;
         setYoutubeSearchWorkerReadyState(true);
         const pendingVideos = youtubeSearchWorkerPendingVideos.current;
@@ -1417,12 +1466,12 @@ export default function HomePage() {
     const timer = window.setTimeout(() => {
       if (topicSearchWorker.current) return;
       const terms = normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.terms : [];
-      void searchTopicsWithYieldingFallback(topics, text, normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.plan ?? terms : [], catalogRevision, () => active && topicCatalogRevision.current === catalogRevision && normalizeSearchText(currentQueryRef.current) === normalizeSearchText(text)).then((reply) => {
+      void searchTopicsWithYieldingFallback(topics, text, normalizeSearchText(semanticSearch.query) === normalizeSearchText(text) ? semanticSearch.plan ?? terms : [], catalogRevision, () => active && topicCatalogRevision.current === catalogRevision && normalizeSearchText(currentQueryRef.current) === normalizeSearchText(text), topicRebuildKey).then((reply) => {
         if (reply && active && topicCatalogRevision.current === catalogRevision && normalizeSearchText(currentQueryRef.current) === normalizeSearchText(text)) setTopicSearchReply(reply);
       });
     }, 0);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [catalogRevision, hydrated, query, semanticSearch, topicWorkerReadyRevision, topics]);
+  }, [catalogRevision, hydrated, query, semanticSearch, topicWorkerReadyRevision, topics, topicRebuildKey]);
 
   useEffect(() => {
     if (!hydrated || typeof Worker === "undefined") return;
@@ -1433,24 +1482,33 @@ export default function HomePage() {
       return;
     }
     topicSearchWorker.current = worker;
+    topicWorkerIndexed.current = null;
     topicSearchSignature.current = "";
     worker.onmessage = (event: MessageEvent<TopicSearchWorkerReply>) => {
       const reply = event.data;
       if (reply.catalogRevision !== topicCatalogRevision.current) return;
-      if (reply.type === "ready") setTopicWorkerReadyRevision(reply.catalogRevision);
+      if (reply.type === "rebuild") syncTopicSearchIndex(true);
+      else if (reply.type === "ready") setTopicWorkerReadyRevision(reply.catalogRevision);
       else if (reply.requestId === topicSearchRequestId.current && normalizeSearchText(reply.query ?? "") === normalizeSearchText(currentQueryRef.current)) setTopicSearchReply({ ...reply, query: currentQueryRef.current.trim() });
     };
     worker.onerror = () => {
       worker.terminate();
       if (topicSearchWorker.current === worker) topicSearchWorker.current = null;
-      setTopicWorkerReadyRevision(-1);
+      topicWorkerIndexed.current = null;
+      // A distinct state value also starts the yielding fallback if initialization failed.
+      setTopicWorkerReadyRevision(value => value === -1 ? -2 : -1);
     };
-    worker.postMessage({ type: "initialize", customTopics: catalogCustomTopics, catalogRevision });
+    syncTopicSearchIndex();
     return () => {
       worker.terminate();
       if (topicSearchWorker.current === worker) topicSearchWorker.current = null;
+      topicWorkerIndexed.current = null;
     };
-  }, [catalogCustomTopics, catalogRevision, hydrated]);
+  }, [hydrated, syncTopicSearchIndex]);
+
+  useEffect(() => {
+    syncTopicSearchIndex();
+  }, [catalogRevision, topicRebuildKey, syncTopicSearchIndex]);
 
   useEffect(() => {
     const worker = topicSearchWorker.current;
@@ -1934,6 +1992,7 @@ export default function HomePage() {
     cancelGeneration();
     requestGeneration.current += 1;
     setTopics(createDefaultTopics());
+    topicCatalogReset.current += 1;
     topicCatalogRevision.current += 1;
     setSettings(DEFAULT_SETTINGS);
     setCards([]);
@@ -2166,6 +2225,7 @@ export default function HomePage() {
           catalogVersion: catalog.catalogVersion, libraryIncomplete: catalog.libraryIncomplete, lastSyncAt: catalog.lastSyncAt,
           discoverIds: preservedDiscoverIds.length ? preservedDiscoverIds : selectRandomVideos(catalog.videos, 24, [], current.prioritizeRecentByChannel).map((video) => video.id) };
       });
+      if (force) syncYouTubeSearchIndex(catalog.videos, true);
       setYoutubeProgress((current) => ({ ...current, phase: "complete", completedChannels: catalog.channels.length,
         importedVideos: catalog.videos.length, currentSource: undefined, error: result.error }));
       youtubeSearchCache.current.clear();
@@ -2182,7 +2242,7 @@ export default function HomePage() {
     } finally {
       if (youtubeAbortController.current === controller) youtubeAbortController.current = null;
     }
-  }, [updateYouTubeWorkspace, youtubeKey]);
+  }, [updateYouTubeWorkspace, youtubeKey, syncYouTubeSearchIndex]);
 
   useEffect(() => {
     if (!hydrated || !youtubeCatalogLoadedRef.current || !youtubeKey.trim() || youtubeStatus !== "not-configured") return;

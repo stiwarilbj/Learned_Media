@@ -872,23 +872,27 @@
       await bridge("commitYouTubeImportCatalog", { catalog: Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: 3, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : result.lastSyncAt }), completedSources: result.completedCheckpointSources });
       if (token !== state.connectionToken) return;
       const available = {}; result.videos.forEach(function (video) { available[video.id] = true; }); const preserved = (state.youtube.discoverIds || []).filter(function (id) { return available[id]; });
-      state.youtube = Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: 3, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : (result.lastSyncAt || new Date().toISOString()), discoverIds: preserved.length ? preserved : window.LEARNED_MEDIA_YOUTUBE.shuffle(result.videos, 24, []).map(function (video) { return video.id; }) }); state.youtubeStatus = result.incomplete ? "error" : "connected"; state.youtubeError = result.progress.error || ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; saveState(); render(); showToast(result.incomplete ? "YouTube connected, but some approved sources need a retry." : "YouTube connected. Your approved video library is ready.");
+      state.youtube = Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: 3, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : (result.lastSyncAt || new Date().toISOString()), discoverIds: preserved.length ? preserved : window.LEARNED_MEDIA_YOUTUBE.shuffle(result.videos, 24, []).map(function (video) { return video.id; }) }); state.youtubeStatus = result.incomplete ? "error" : "connected"; state.youtubeError = result.progress.error || ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; if (force) videoSearchIndex(true); saveState(); render(); showToast(result.incomplete ? "YouTube connected, but some approved sources need a retry." : "YouTube connected. Your approved video library is ready.");
     }).catch(function (error) { if (token !== state.connectionToken) return; state.youtubeStatus = "error"; state.youtubeProgress.phase = "error"; state.youtubeError = error.message || "YouTube import failed."; render(); showToast(state.youtubeError); }).finally(function () { youtubeSyncActive = false; });
   }
   const videoSearch = window.LEARNED_MEDIA_VIDEO_SEARCH;
-  let youtubeSemanticWorker = null, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0;
+  let youtubeSemanticWorker = null, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0, youtubeIndexPolicy = "";
   let youtubeById = new Map(), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "";
   let youtubeSearchPlan = null, youtubeSearchHasMore = true, youtubeSearchPaging = false, youtubePagingController = null, youtubeBrowseOrder = "newest", youtubeSearchVisibleCount = 80;
   const youtubeWorkerPending = new Map();
   function localVideoReason(candidate) { return videoSearch.videoSearchReason(candidate.video, youtubeSearchPlan || videoSearch.makeLocalVideoPlan(state.youtube.searchText), candidate.score); }
-  function videoSearchIndex() {
-    if (youtubeIndexedVideos === state.youtube.videos) return;
+  function videoSearchIndex(force) {
+    const policy = JSON.stringify([videoSearch.VIDEO_SEMANTIC_VERSION, state.youtube.catalogVersion]);
+    force = Boolean(force) || policy !== youtubeIndexPolicy;
+    if (!force && youtubeIndexedVideos === state.youtube.videos) return;
     const hadIndex = youtubeIndexedVideos !== null;
     state.youtube.videos = window.LEARNED_MEDIA_VIDEO_METADATA.reuseUnchangedVideoRecords(youtubeIndexedVideos || [], state.youtube.videos);
     const changes = window.LEARNED_MEDIA_VIDEO_METADATA.diffVideoSearchMetadata(youtubeById, state.youtube.videos);
     youtubeIndexedVideos = state.youtube.videos;
     youtubeById = new Map(youtubeIndexedVideos.map(function(video){ return [video.id,video]; }));
-    if (hadIndex && !changes.changed) return;
+    if (hadIndex && !changes.changed && !force) return;
+    const baseRevision = youtubeIndexRevision;
+    youtubeIndexPolicy = policy;
     youtubeIndexRevision++;
     youtubeSmartSearchCache.clear();
     for (const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video catalog changed during search."));
@@ -898,13 +902,13 @@
       try {
         youtubeSemanticWorker = new Worker("youtube-search.worker.js");
         newWorker = true;
-        youtubeSemanticWorker.onmessage = function(event) { const reply=event.data, pending=youtubeWorkerPending.get(reply.requestId); if (!pending) return; youtubeWorkerPending.delete(reply.requestId); if(reply.revision!==youtubeIndexRevision) pending.reject(new Error("Video catalog changed during search.")); else pending.resolve(reply.candidates.flatMap(function(candidate){ const video=youtubeById.get(candidate.videoId); return video ? [Object.assign({},candidate,{video:video})] : []; })); };
+        youtubeSemanticWorker.onmessage = function(event) { const reply=event.data; if (reply.type === "rebuild") { if (reply.revision === youtubeIndexRevision) videoSearchIndex(true); return; } const pending=youtubeWorkerPending.get(reply.requestId); if (!pending) return; youtubeWorkerPending.delete(reply.requestId); if(reply.revision!==youtubeIndexRevision) pending.reject(new Error("Video catalog changed during search.")); else pending.resolve(reply.candidates.flatMap(function(candidate){ const video=youtubeById.get(candidate.videoId); return video ? [Object.assign({},candidate,{video:video})] : []; })); };
         youtubeSemanticWorker.onerror = function() { youtubeSemanticWorkerFailed=true; youtubeSemanticWorker.terminate(); youtubeSemanticWorker=null; for(const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video search worker unavailable.")); youtubeWorkerPending.clear(); };
       } catch(_) { youtubeSemanticWorkerFailed=true; }
     }
-    if(youtubeSemanticWorker) youtubeSemanticWorker.postMessage(newWorker
+    if(youtubeSemanticWorker) youtubeSemanticWorker.postMessage(newWorker || force
       ? {type:"initialize",videos:youtubeIndexedVideos,revision:youtubeIndexRevision}
-      : {type:"update",upserts:changes.upserts,removeIds:changes.removeIds,orderIds:changes.orderIds,revision:youtubeIndexRevision});
+      : {type:"update",baseRevision:baseRevision,upserts:changes.upserts,removeIds:changes.removeIds,orderIds:changes.orderIds,revision:youtubeIndexRevision});
   }
   async function localVideoCandidates(plan, limit, signal, excluded) {
     videoSearchIndex();
@@ -1177,6 +1181,7 @@
     state.workspaceName = record.name || "Local Workspace";
     const catalogVersion = Number(snapshot.catalogVersion || snapshot.topicCatalogVersion || 0);
     state.topics = migrateTopics(snapshot.topics || makeTopics(), catalogVersion < 11, catalogVersion < 11);
+    topicResetEpoch++;
     state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: normalizeSentenceLength(snapshot.settings && snapshot.settings.sentenceLength) });
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
     state.profile = snapshot.profile || snapshot.learningProfile || {};
@@ -1374,38 +1379,66 @@
   }
   const topicSemantic = window.LEARNED_MEDIA_TOPIC_SEARCH;
   const topicResultCache = createSessionCache(100, 30 * 60 * 1000);
-  let topicWorker = null, topicWorkerReady = false, topicIndex = null, topicRevision = "", topicJob = 0, topicActiveKey = "", topicAttempt = "";
+  let topicWorker = null, topicWorkerReady = false, topicIndex = null, topicRevision = 0, topicJob = 0, topicActiveKey = "", topicAttempt = "";
+  let topicCatalogSignature = "", topicRebuildKey = "", topicResetEpoch = 0, topicCustomRecords = new Map(), topicBuiltinIds = [];
   let topicTreeVisible = new Set(), topicTreeAncestors = new Set();
+  function rebuildTopicWorker() {
+      if (!topicWorker) return;
+      topicWorkerReady = false;
+      topicActiveKey = "";
+      const builtins = topicSemantic.topicSearchRecords(state.topics.filter(t => !t.custom));
+      topicBuiltinIds = builtins.map(t => t.id);
+      topicWorker.postMessage({ type: "initialize", topics: builtins.concat(Array.from(topicCustomRecords.values())), customIds: Array.from(topicCustomRecords.keys()), revision: topicRevision });
+  }
   function ensureTopicIndex() {
-      const revision = JSON.stringify([TOPIC_CATALOG_VERSION, state.workspaceId, state.topics.filter(t => t.custom).map(t => [t.id, t.label, t.aliases])]);
-      if (revision === topicRevision)
-          return;
-      topicRevision = revision;
+      const custom = topicSemantic.topicSearchRecords(state.topics.filter(t => t.custom));
+      const rebuildKey = JSON.stringify([TOPIC_CATALOG_VERSION, topicSemantic.TOPIC_SEARCH_VERSION, state.workspaceId, topicResetEpoch]);
+      const signature = JSON.stringify([rebuildKey, custom]);
+      if (signature === topicCatalogSignature) return;
+      const baseRevision = topicRevision, revision = ++topicRevision, full = rebuildKey !== topicRebuildKey;
+      const changes = topicSemantic.diffTopicSearchRecords(topicCustomRecords, custom);
+      topicCatalogSignature = signature;
+      topicRebuildKey = rebuildKey;
+      topicCustomRecords = new Map(custom.map(t => [t.id, t]));
+      topicJob++;
       topicActiveKey = "";
       topicWorkerReady = false;
       topicResultCache.clear();
       topicAttempt = "";
-      const topics = flatTopics();
-      topicIndex = null;
-      if (topicWorker)
-          topicWorker.terminate();
-      try {
-          topicWorker = new Worker("topic-search.worker.js");
-          topicWorker.onmessage = function (event) { const r = event.data; if (r.revision !== topicRevision)
-              return; if (r.type === "ready") {
-              topicWorkerReady = true;
-              topicActiveKey = "";
-              scheduleTopicSearch(state.query || state.topicQuery);
-          }
-          else if (r.id === topicJob) {
-              topicResultCache.set(r.key, r);
-              publishTopicSearch(r.query, r);
-          } };
-          topicWorker.onerror = function () { topicWorker.terminate(); topicWorker = null; topicActiveKey = ""; scheduleTopicSearch(state.query || state.topicQuery); };
-          topicWorker.postMessage({ type: "initialize", topics, revision });
+      if (full) topicIndex = null;
+      else if (topicIndex) topicSemantic.updateTopicSuggestionIndex(topicIndex, changes.upserts, changes.removeIds, changes.orderIds ? topicBuiltinIds.concat(changes.orderIds) : undefined);
+      let newWorker = false;
+      if (!topicWorker) {
+          try {
+              const worker = new Worker("topic-search.worker.js");
+              topicWorker = worker;
+              newWorker = true;
+              worker.onmessage = function (event) {
+                  const r = event.data;
+                  if (worker !== topicWorker || r.revision !== topicRevision) return;
+                  if (r.type === "rebuild") { rebuildTopicWorker(); return; }
+                  if (r.type === "ready") {
+                      topicWorkerReady = true;
+                      topicActiveKey = "";
+                      scheduleTopicSearch(state.query || state.topicQuery);
+                  } else if (r.id === topicJob) {
+                      topicResultCache.set(r.key, r);
+                      publishTopicSearch(r.query, r);
+                  }
+              };
+              worker.onerror = function () {
+                  worker.terminate();
+                  if (worker !== topicWorker) return;
+                  topicWorker = null;
+                  topicWorkerReady = false;
+                  topicActiveKey = "";
+                  scheduleTopicSearch(state.query || state.topicQuery);
+              };
+          } catch (_) { topicWorker = null; }
       }
-      catch (_) {
-          topicWorker = null;
+      if (topicWorker) {
+          if (full || newWorker) rebuildTopicWorker();
+          else topicWorker.postMessage({ type: "update", baseRevision, revision, ...changes });
       }
   }
   function topicCacheKey(query, plan) { return JSON.stringify([topicRevision, topicSemantic.TOPIC_SEARCH_VERSION, normalizeNaturalSearchText(query), plan || []]); }
@@ -1450,8 +1483,11 @@
               topicWorker.postMessage({ type: "search", id, key, query: text, plan, revision: topicRevision });
       }
       else {
-          if (!topicIndex)
-              topicIndex = topicSemantic.createTopicSuggestionIndex(flatTopics());
+          if (!topicIndex) {
+              const builtins = topicSemantic.topicSearchRecords(state.topics.filter(t => !t.custom));
+              topicBuiltinIds = builtins.map(t => t.id);
+              topicIndex = topicSemantic.createTopicSuggestionIndex(builtins.concat(Array.from(topicCustomRecords.values())));
+          }
           topicSemantic.searchTopicIndexYielding(topicIndex, text, plan || [], () => id === topicJob).then(result => { if (result) {
               topicResultCache.set(key, result);
               publishTopicSearch(text, result);
@@ -2015,6 +2051,7 @@
     state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
     state.topics = makeTopics();
+    topicResetEpoch++;
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
     state.cards = [];
     state.profile = {};

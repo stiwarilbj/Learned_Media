@@ -10,7 +10,7 @@ export type TopicSearchIndex = {
 };
 
 export type TopicSearchWorkerReply = {
-  type: "ready" | "results";
+  type: "ready" | "results" | "rebuild";
   requestId?: number;
   query?: string;
   catalogRevision?: number;

@@ -17,11 +17,11 @@ type SearchRequest = {
 };
 type Request =
   | { type: "initialize"; revision: number; videos: YouTubeVideo[] }
-  | { type: "update"; revision: number; upserts: YouTubeVideo[]; removeIds: string[]; orderIds?: string[] }
+  | { type: "update"; baseRevision: number; revision: number; upserts: YouTubeVideo[]; removeIds: string[]; orderIds?: string[] }
   | { type: "cancel"; requestId: number }
   | SearchRequest;
 type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
-type Reply = { type: "ready"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
+type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 const videos = new Map<string, YouTubeVideo>();
@@ -29,6 +29,7 @@ const resultCache = new SessionCache<CandidateReply[]>(80, 30 * 60 * 1000, 4 * 1
 let revision = -1;
 let latestRequestId = 0;
 let activeRequestId = 0;
+let indexEpoch = 0;
 
 function remember(key: string, candidates: CandidateReply[]) {
   resultCache.set(key, candidates);
@@ -46,6 +47,7 @@ async function search(request: SearchRequest) {
   if (request.revision !== revision) return;
   latestRequestId = request.requestId;
   activeRequestId = request.requestId;
+  const epoch = indexEpoch;
   const key = cacheKey(request);
   const cached = resultCache.get(key);
   if (cached) {
@@ -59,7 +61,7 @@ async function search(request: SearchRequest) {
   const fallback: Array<{ candidate: CandidateReply; index: number }> = [];
   const chunkSize = 600;
   for (let start = 0; start < orderedVideos.length; start += chunkSize) {
-    if (request.requestId !== latestRequestId || request.revision !== revision) return;
+    if (request.requestId !== latestRequestId || request.revision !== revision || epoch !== indexEpoch) return;
     const batch = orderedVideos.slice(start, start + chunkSize);
     const matches = searchYouTubeCandidates(batch, request.plan, request.topic, request.channelId, request.limit, request.excludedIds ?? [], Boolean(request.expanded));
     for (const match of matches) {
@@ -68,7 +70,7 @@ async function search(request: SearchRequest) {
     }
     if (start + chunkSize < orderedVideos.length) {
       await yieldToWorker();
-      if (request.requestId !== latestRequestId || request.revision !== revision) return;
+      if (request.requestId !== latestRequestId || request.revision !== revision || epoch !== indexEpoch) return;
     }
   }
   const source = direct.length ? direct : fallback;
@@ -88,6 +90,7 @@ async function search(request: SearchRequest) {
 workerScope.onmessage = (event: MessageEvent<Request>) => {
   const request = event.data;
   if (request.type === "initialize") {
+    indexEpoch++;
     videos.clear();
     for (const video of request.videos) videos.set(video.id, video);
     revision = request.revision;
@@ -96,6 +99,11 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
     resultCache.clear();
     workerScope.postMessage({ type: "ready", revision } satisfies Reply);
   } else if (request.type === "update") {
+    indexEpoch++;
+    if (revision < 0 || request.baseRevision !== revision) {
+      workerScope.postMessage({ type: "rebuild", revision: request.revision } satisfies Reply);
+      return;
+    }
     const staleRequestId = activeRequestId;
     activeRequestId = 0;
     latestRequestId += 1;

@@ -5,11 +5,13 @@ onmessage = async function(event) {
   const request = event.data;
   if (request.type === "initialize") { videos = request.videos; byId = new Map(videos.map(video=>[video.id,video])); revision = request.revision; latest++; return; }
   if (request.type === "update") {
+    latest++;
+    if (revision < 0 || request.baseRevision !== revision) { postMessage({type:"rebuild",revision:request.revision}); return; }
     for (const id of request.removeIds) byId.delete(id);
     for (const video of request.upserts) byId.set(video.id, video);
     videos = request.orderIds ? request.orderIds.flatMap(id => { const video = byId.get(id); return video ? [video] : []; }) : Array.from(byId.values());
     if (request.orderIds) byId = new Map(videos.map(video => [video.id, video]));
-    revision = request.revision; latest++; return;
+    revision = request.revision; return;
   }
   if (request.type === "cancel") { latest++; return; }
   const token = ++latest, currentRevision = revision;

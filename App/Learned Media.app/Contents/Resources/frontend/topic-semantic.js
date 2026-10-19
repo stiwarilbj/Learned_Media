@@ -140,7 +140,10 @@ exports.TOPIC_SEARCH_VERSION = void 0;
 exports.validateTopicPlan = validateTopicPlan;
 exports.localTopicPlan = localTopicPlan;
 exports.shouldEnrichTopics = shouldEnrichTopics;
+exports.topicSearchRecords = topicSearchRecords;
+exports.diffTopicSearchRecords = diffTopicSearchRecords;
 exports.createTopicSuggestionIndex = createTopicSuggestionIndex;
+exports.updateTopicSuggestionIndex = updateTopicSuggestionIndex;
 exports.searchTopicIndex = searchTopicIndex;
 exports.suggestTopics = suggestTopics;
 exports.searchTopicIndexYielding = searchTopicIndexYielding;
@@ -201,6 +204,8 @@ function matches(s, t) {
     let candidates = fieldTokens.get(s);
     if (!candidates) {
         candidates = s.split(" ");
+        if (fieldTokens.size >= 100000)
+            fieldTokens.clear();
         fieldTokens.set(s, candidates);
     }
     return term.tokens.every(w => candidates.includes(w) || w.length >= 5 && candidates.some(v => Math.abs(v.length - w.length) <= 2 && (v.startsWith(w) || w.startsWith(v))));
@@ -245,18 +250,73 @@ function localTopicPlan(query) {
 }
 function shouldEnrichTopics(query, completeCoverage) { return (0, search_1.shouldExpandNaturalSearch)(query, completeCoverage); }
 function geographicContext(value) { const s = (0, search_1.normalizeSearchText)(value); return /\b(tohoku|kanto|sanriku|kobe|tokyo|osaka|kyoto|fukushima|nankai)\b/.test(s) ? "japan japanese" : ""; }
-function createTopicSuggestionIndex(topics) {
-    if (fieldTokens.size > 100000)
-        fieldTokens.clear();
-    const pathIds = new Map(topics.map(t => [t.path.join("\0"), t.id]));
-    const entries = topics.map((originalTopic, order) => {
-        const additions = (0, search_1.commonNameAliases)(originalTopic.label).filter(alias => !originalTopic.aliases?.includes(alias));
-        const topic = additions.length ? { ...originalTopic, aliases: [...new Set([...(originalTopic.aliases ?? []), ...additions])] } : originalTopic;
-        const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" "));
-        const context = geographicContext(fields.join(" "));
-        return { topic, fields, context, order, parent: pathIds.get(topic.path.slice(0, -1).join("\0")) };
+/** Transfer searchable fields only; selection, expansion and weights never invalidate an index. */
+function topicSearchRecords(nodes, parentPath = []) {
+    return nodes.flatMap(node => {
+        const path = [...parentPath, node.label];
+        return [{ id: node.id, label: node.label, aliases: node.aliases, path }, ...topicSearchRecords(node.children ?? [], path)];
     });
-    return { entries, byId: new Map(entries.map(e => [e.topic.id, e])) };
+}
+function diffTopicSearchRecords(indexed, next) {
+    const upserts = [], removeIds = [], ids = new Set();
+    const previousOrder = indexed.keys();
+    let orderChanged = indexed.size !== next.length;
+    for (const topic of next) {
+        ids.add(topic.id);
+        if (previousOrder.next().value !== topic.id)
+            orderChanged = true;
+        const prior = indexed.get(topic.id);
+        if (!prior || prior.label !== topic.label || prior.path.length !== topic.path.length || prior.path.some((value, i) => value !== topic.path[i]) ||
+            (prior.aliases?.length ?? 0) !== (topic.aliases?.length ?? 0) || prior.aliases?.some((value, i) => value !== topic.aliases?.[i]))
+            upserts.push(topic);
+    }
+    for (const id of indexed.keys())
+        if (!ids.has(id))
+            removeIds.push(id);
+    return { upserts, removeIds, orderIds: orderChanged ? next.map(topic => topic.id) : undefined };
+}
+function topicSearchEntry(originalTopic) {
+    const additions = (0, search_1.commonNameAliases)(originalTopic.label).filter(alias => !originalTopic.aliases?.includes(alias));
+    const topic = additions.length ? { ...originalTopic, aliases: [...new Set([...(originalTopic.aliases ?? []), ...additions])] } : originalTopic;
+    const fields = [topic.label, ...topic.aliases || [], topic.path.join(" ")].map(value => (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" "));
+    return { topic, fields, context: geographicContext(fields.join(" ")), order: 0 };
+}
+function orderTopicEntries(index, entries) {
+    const pathIds = new Map(entries.map(entry => [entry.topic.path.join("\0"), entry.topic.id]));
+    entries.forEach((entry, order) => {
+        entry.order = order;
+        entry.parent = pathIds.get(entry.topic.path.slice(0, -1).join("\0"));
+    });
+    index.entries = entries;
+}
+function createTopicSuggestionIndex(topics) {
+    const entries = topics.map(topicSearchEntry);
+    const index = { entries, byId: new Map(entries.map(e => [e.topic.id, e])) };
+    orderTopicEntries(index, entries);
+    return index;
+}
+/** Reuse normalized built-in and unchanged custom entries. Callers cancel old searches first. */
+function updateTopicSuggestionIndex(index, upserts, removeIds, orderIds) {
+    if (!removeIds.length && !orderIds && upserts.every(topic => {
+        const prior = index.byId.get(topic.id)?.topic;
+        return prior && prior.path.length === topic.path.length && prior.path.every((value, i) => value === topic.path[i]);
+    })) {
+        for (const topic of upserts) {
+            const prior = index.byId.get(topic.id);
+            const entry = { ...topicSearchEntry(topic), order: prior.order, parent: prior.parent };
+            index.byId.set(topic.id, entry);
+            index.entries[entry.order] = entry;
+        }
+        return;
+    }
+    for (const id of removeIds)
+        index.byId.delete(id);
+    for (const topic of upserts)
+        index.byId.set(topic.id, topicSearchEntry(topic));
+    const entries = orderIds ? orderIds.flatMap(id => { const entry = index.byId.get(id); return entry ? [entry] : []; }) : [...index.byId.values()];
+    if (orderIds)
+        index.byId = new Map(entries.map(entry => [entry.topic.id, entry]));
+    orderTopicEntries(index, entries);
 }
 function rank(entry, query, plan) {
     const queryWords = words(query), q = (0, search_1.normalizeSearchText)(query);
