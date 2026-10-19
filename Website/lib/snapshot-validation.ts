@@ -1,0 +1,166 @@
+/** Storage validation only; content/citation validation remains in generation. */
+export type SnapshotKind = "state" | "record" | "store" | "native-store" | "journal" | "memory";
+type Operation = "read" | "save" | "import" | "backup";
+type Failure = "json" | "structure" | "version" | "fields" | "topics" | "cards" | "memory" | "activity";
+const diagnostics = new Map<string, number>();
+const object = (value: unknown): value is Record<string, any> => Boolean(value && typeof value === "object" && !Array.isArray(value));
+const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
+const date = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value));
+const number = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+const optional = (value: unknown, check: (value: any) => boolean) => value == null || check(value);
+const sourceValid = (value: unknown) => object(value) && text(value.title) && text(value.url)
+  && optional(value.canonicalUrl, v => typeof v === "string") && optional(value.extract, v => typeof v === "string");
+
+function topicsValid(value: unknown): boolean {
+  if (object(value)) {
+    return value.format === "learned-media-topic-preferences-v1" && strings(value.selected) && strings(value.expanded)
+      && object(value.weights) && Object.values(value.weights).every(number) && Array.isArray(value.custom) && topicsValid(value.custom);
+  }
+  if (!Array.isArray(value)) return false;
+  const pending = [...value], ids = new Set<string>();
+  for (let index = 0; index < pending.length; index++) {
+    const node = pending[index];
+    if (!object(node) || !text(node.id) || ids.has(node.id) || !text(node.label)
+      || !optional(node.selected, v => typeof v === "boolean") || !optional(node.expanded, v => typeof v === "boolean")
+      || !optional(node.weight, number) || !optional(node.aliases, strings)) return false;
+    ids.add(node.id);
+    if (node.children != null) {
+      if (!Array.isArray(node.children)) return false;
+      for (const child of node.children) pending.push(child);
+    }
+  }
+  return true;
+}
+
+function cardsValid(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  const ids = new Set<string>();
+  return value.every(card => {
+    if (!object(card) || !text(card.id) || ids.has(card.id) || !text(card.title) || !text(card.body)
+      || !optional(card.hook, v => typeof v === "string") || !strings(card.topicPath) || !card.topicPath.length
+      || !Array.isArray(card.sources) || !card.sources.length || !card.sources.every(sourceValid)
+      || !["claim", "learnMore", "question", "answer"].every(key => optional(card[key], v => typeof v === "string"))
+      || !["liked", "saved", "known", "moreLike", "lessLike", "surprise", "questionDetailed", "answerDetailed"].every(key => optional(card[key], v => typeof v === "boolean"))
+      || !["sentenceCount", "difficulty", "obscurity"].every(key => optional(card[key], number))
+      // Older cards use display labels such as "Just now" here.
+      || !optional(card.createdAt, v => typeof v === "string")
+      || !optional(card.answerSources, v => Array.isArray(v) && v.every(sourceValid))
+      || !optional(card.questionHistory, v => Array.isArray(v) && v.every(item => object(item) && (item.role === "user" || item.role === "assistant") && typeof item.content === "string"))
+      || !optional(card.evidence, v => Array.isArray(v) && v.every(item => object(item) && number(item.sentence) && number(item.sourceIndex) && typeof item.quote === "string" && optional(item.section, v => typeof v === "string")))
+      || !optional(card.image, v => object(v) && text(v.url) && ["alt", "sourceTitle", "sourceUrl", "fileUrl", "filePageUrl", "credit"].every(key => optional(v[key], v => typeof v === "string")))) return false;
+    ids.add(card.id);
+    return true;
+  });
+}
+
+function memoryValid(value: unknown): boolean {
+  return Array.isArray(value) && value.every(item => object(item) && text(item.id) && text(item.title) && text(item.body)
+    && optional(item.topicPath, strings) && optional(item.sourceUrls, strings) && optional(item.evidence, strings));
+}
+
+function activityValid(value: unknown): boolean {
+  return object(value) && optional(value.savedIds, strings) && optional(value.discoverIds, strings)
+    && ["searchText", "selectedTopic", "activeTab", "selectedChannelId", "selectedVideoId", "channelOrder", "topic", "tab", "order"].every(key => optional(value[key], v => typeof v === "string"))
+    && optional(value.smartIds, strings) && optional(value.smartReasons, v => object(v) && Object.values(v).every(item => typeof item === "string"))
+    && optional(value.prioritizeRecentByChannel, v => object(v) && Object.values(v).every(item => typeof item === "boolean"))
+    && optional(value.history, v => Array.isArray(v) && v.every(item => object(item) && text(item.videoId) && date(item.watchedAt)))
+    && optional(value.playbackPositions, v => object(v) && Object.values(v).every(seconds => number(seconds) && seconds >= 0));
+}
+
+function stateFailure(value: unknown): Failure | undefined {
+  if (!object(value)) return "structure";
+  // Missing versions identify the supported legacy layout, never a future format.
+  if (value.persistenceVersion !== undefined && (!Number.isInteger(value.persistenceVersion) || value.persistenceVersion < 0 || value.persistenceVersion > 3)) return "version";
+  if (!topicsValid(value.topics)) return "topics";
+  if (!cardsValid(value.cards)) return "cards";
+  if (!object(value.settings)) return "fields";
+  const settings = value.settings;
+  if ((value.persistenceVersion >= 2 && (!number(settings.obscurity) || !text(settings.displayMode) || !number(settings.sentenceLength)))
+    || !optional(settings.obscurity, number) || !optional(settings.sentenceLength, number)
+    || !optional(settings.displayMode, v => v === "text" || v === "picture-text")
+    || !optional(settings.surpriseMe, v => typeof v === "boolean")
+    || !optional(value.theme, v => v === "light" || v === "dark")
+    || !optional(value.savedAt, date) || !optional(value.feedStarted, v => typeof v === "boolean") || !optional(value.started, v => typeof v === "boolean")) return "fields";
+  for (const field of ["learningProfile", "profile"]) {
+    if (value[field] != null && (!object(value[field]) || !Object.values(value[field]).every(item => object(item)
+      && ["heard", "unknown", "unknownStreak", "targetDifficulty"].every(key => optional(item[key], number))))) return "fields";
+  }
+  if (value.youtubeActivity != null && !activityValid(value.youtubeActivity)) return "activity";
+}
+
+function recordFailure(value: unknown): Failure | undefined {
+  if (!object(value) || !text(value.id) || !text(value.name) || !date(value.createdAt) || !date(value.updatedAt)) return "fields";
+  return stateFailure(value.state);
+}
+
+function failure(value: unknown, kind: SnapshotKind): Failure | undefined {
+  if (kind === "memory") return memoryValid(value) ? undefined : "memory";
+  if (kind === "state") return stateFailure(value);
+  if (kind === "record") return recordFailure(value);
+  if (!object(value)) return "structure";
+  if (kind === "journal") {
+    if (value.version !== undefined && value.version !== 1) return "version";
+    if (!text(value.activeId) || !date(value.savedAt)) return "fields";
+    return stateFailure({ ...value, cards: [] });
+  }
+  if (kind === "store" && value.version !== 1) return "version";
+  if (kind === "native-store" && value.persistenceVersion !== undefined
+    && (!Number.isInteger(value.persistenceVersion) || value.persistenceVersion < 0 || value.persistenceVersion > 3)) return "version";
+  if (kind === "native-store" && value.workspaces === undefined) return stateFailure(value);
+  const records = kind === "store" ? value.records : value.workspaces;
+  const activeId = kind === "store" ? value.activeId : value.activeWorkspaceId;
+  if (!Array.isArray(records) || !records.length || !text(activeId)) return "fields";
+  const ids = new Set<string>();
+  for (const record of records) {
+    const invalid = recordFailure(record);
+    if (invalid) return invalid;
+    if (ids.has(record.id)) return "fields";
+    ids.add(record.id);
+  }
+  if (!ids.has(activeId) || !optional(value.theme, v => v === "light" || v === "dark")) return "fields";
+  if (value.factMemory != null && !memoryValid(value.factMemory)) return "memory";
+}
+
+function report(kind: SnapshotKind, operation: Operation, issue: Failure) {
+  const key = `${operation}.${kind}.${issue}`;
+  diagnostics.set(key, Math.min(Number.MAX_SAFE_INTEGER, (diagnostics.get(key) ?? 0) + 1));
+}
+
+export const snapshotDiagnostics = Object.freeze({
+  snapshot: () => ({ version: 1, scope: "current-runtime", failures: Object.fromEntries(diagnostics) }),
+  reset: () => diagnostics.clear()
+});
+
+export function validateSnapshot(value: unknown, kind: SnapshotKind, operation: Operation): boolean {
+  const issue = failure(value, kind);
+  if (!issue) return true;
+  report(kind, operation, issue);
+  return false;
+}
+
+export function assertSnapshot(value: unknown, kind: SnapshotKind, operation: Operation) {
+  if (!validateSnapshot(value, kind, operation)) throw new Error("Workspace data failed validation. The last valid recovery copy was kept.");
+}
+
+export function parseSnapshot(serialized: string | null, kind: SnapshotKind, operation: Operation): unknown | null {
+  if (serialized === null) return null;
+  let value: unknown;
+  try { value = JSON.parse(serialized); } catch { report(kind, operation, "json"); return null; }
+  return validateSnapshot(value, kind, operation) ? value : null;
+}
+
+/** Validate the actual serialized representation before touching either copy. */
+export function writeRecoverySnapshot(storage: Pick<Storage, "getItem" | "setItem">, primary: string, backup: string, value: unknown, kind: SnapshotKind) {
+  assertSnapshot(value, kind, "save");
+  let serialized: string;
+  try { serialized = JSON.stringify(value); } catch { report(kind, "save", "json"); throw new Error("Workspace data could not be serialized. The last valid recovery copy was kept."); }
+  if (!parseSnapshot(serialized, kind, "save")) throw new Error("Workspace data failed validation. The last valid recovery copy was kept.");
+  const previous = storage.getItem(primary);
+  if (previous !== null && previous !== serialized && parseSnapshot(previous, kind, "backup")) storage.setItem(backup, previous);
+  storage.setItem(primary, serialized);
+}
+
+if (typeof window !== "undefined") {
+  try { Object.defineProperty(globalThis, "LearnedMediaStorageDiagnostics", { value: snapshotDiagnostics, configurable: true }); } catch { /* Optional local inspection only. */ }
+}

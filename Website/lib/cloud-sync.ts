@@ -6,6 +6,7 @@ import { workspaceRevisionId } from './workspace-revision';
 import { LatestSnapshotQueue } from './latest-snapshot-queue';
 import type { FactMemory } from './fact-quality';
 import type { Database } from './supabase/database.types';
+import { assertSnapshot } from './snapshot-validation';
 // Public client configuration; authorization is enforced by RLS, never by this key.
 export const CLOUD_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ignafizdnpjludnvqkjz.supabase.co';
 export const CLOUD_PUBLIC_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_PyviIi5NadM-SswSlJBuVg_UugoFxEe';
@@ -62,14 +63,19 @@ export class WorkspaceCloudSync {
     ]);
     const { data, error } = revisionResult as { data: Array<{ record: CloudRecord }> | null; error: any };
     if (error) throw error;
-    const records = (data || []).map((row: any) => canonicalRecord(row.record)) as CloudRecord[];
+    const records = (data || []).map((row: any) => {
+      assertSnapshot(row?.record, 'record', 'import');
+      return canonicalRecord(row.record);
+    }) as CloudRecord[];
     const factMemory: FactMemory[] = [];
     let after: string | null = null;
     while (true) {
       const result: Awaited<ReturnType<typeof loadMemoryPage>> = after === null ? firstMemoryPage : await loadMemoryPage(after);
       if (result.error) throw result.error;
       const rows: Pick<Database['public']['Tables']['fact_memory']['Row'], 'fact_id' | 'content' | 'known' | 'fingerprint'>[] = result.data || [];
-      factMemory.push(...rows.map(row => ({ ...row.content, fingerprint: row.fingerprint || row.content.fingerprint, known: row.known }) as FactMemory));
+      const page = rows.map(row => ({ ...row.content, fingerprint: row.fingerprint || row.content?.fingerprint, known: row.known }) as FactMemory);
+      assertSnapshot(page, 'memory', 'import');
+      factMemory.push(...page);
       if (rows.length < 500) break;
       // Use the immutable database key, not content.id or mutable fact fields.
       // The same database ordering and exclusive boundary apply on every page.
@@ -91,6 +97,7 @@ export class WorkspaceCloudSync {
   private async saveSnapshot(store: CloudSnapshot, signal: AbortSignal) {
     if (signal.aborted) throw new Error('Cloud save was canceled.');
     if (store.ownerId !== this.userId) throw new Error('Account changed. Cloud save was canceled.');
+    for (const record of store.records) assertSnapshot(record, 'record', 'save');
     const api = cloudClient();
     // Bound both row count and payload size; a large workspace travels alone.
     const encoder = new TextEncoder();
@@ -127,6 +134,7 @@ export class WorkspaceCloudSync {
     for (const id of this.changedMemoryIds) {
       const value = this.memoryById.get(id);
       if (!value) { this.changedMemoryIds.delete(id); continue; }
+      assertSnapshot([value], 'memory', 'save');
       const item = safeMemory(value);
       const key = item.fingerprint || item.id, serialized = JSON.stringify(item);
       if (this.memories.get(key) === serialized) { this.changedMemoryIds.delete(id); continue; }

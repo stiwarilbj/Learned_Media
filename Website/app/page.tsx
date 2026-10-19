@@ -19,7 +19,8 @@ import { createTopicSuggestionIndex, diffTopicSearchRecords, topicSearchRecords,
 import { searchTopicsWithYieldingFallback } from "@/lib/topic-search-fallback";
 import type { TopicSearchIndex, TopicSearchWorkerReply } from "@/lib/topic-search-types";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
-import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceStore as writeRawWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
+import { accountWorkspaceBackup, makeWorkspaceId, nextLocalWorkspaceName, readWorkspaceStore, writeWorkspaceRecovery, writeWorkspaceStore as writeRawWorkspaceStore, type WorkspaceRecord, type WorkspaceStore, type WorkspaceSummary } from "@/lib/workspaces";
+import { parseSnapshot, validateSnapshot, writeRecoverySnapshot } from "@/lib/snapshot-validation";
 import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-preferences";
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys, saveAccountKey, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
@@ -140,18 +141,21 @@ const localWorkspaceWrites = new LatestSnapshotQueue<{
 });
 
 function writeWorkspaceStore(store: AppWorkspaceStore, options: { recovery?: boolean } = {}) {
+  if (!validateSnapshot(store, "store", "save")) return Promise.reject(new Error("Workspace data failed validation. The last valid recovery copy was kept."));
   const recovery = options.recovery ?? true;
   const localSnapshot = compactWorkspaceStoreForLocalStorage(store);
+  if (!validateSnapshot(localSnapshot, "store", "save")) return Promise.reject(new Error("Workspace data failed validation. The last valid recovery copy was kept."));
   newestLocalSnapshot = localSnapshot;
   if (recovery) {
     // Page closure cannot wait for the active IndexedDB write to finish.
-    try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(localSnapshot)); } catch { /* Keep the journal and try IndexedDB. */ }
+    try { writeWorkspaceRecovery(localSnapshot); } catch { /* Keep the journal and try IndexedDB. */ }
   }
   const revision = ++localWorkspaceWriteRevision;
   const activeRecord = localSnapshot.records.find((record) => record.id === localSnapshot.activeId);
   let journal: string | null = null;
   if (activeRecord) {
     journal = JSON.stringify({
+      version: 1,
       revision,
       writeId: crypto.randomUUID(),
       cloud: cloudStoreRevisions.get(store),
@@ -169,7 +173,7 @@ function writeWorkspaceStore(store: AppWorkspaceStore, options: { recovery?: boo
 
 function restorePendingWorkspaceJournal(store: AppWorkspaceStore, catalogTopics?: TopicNode[]): AppWorkspaceStore {
   try {
-    const journal = JSON.parse(window.localStorage.getItem(PENDING_WORKSPACE_JOURNAL_KEY) || "null") as {
+    const journal = parseSnapshot(window.localStorage.getItem(PENDING_WORKSPACE_JOURNAL_KEY), "journal", "read") as {
       revision?: number; activeId?: string; savedAt?: string; topics?: unknown; settings?: FeedSettings; feedStarted?: boolean; theme?: "light" | "dark";
     } | null;
     if (!journal?.activeId) return store;
@@ -182,7 +186,7 @@ function restorePendingWorkspaceJournal(store: AppWorkspaceStore, catalogTopics?
       return store;
     }
     const recoveredTopics = restoreTopicPreferences(journal.topics, false, catalogTopics);
-    record.state = {
+    const recoveredState = {
       ...record.state,
       ...(recoveredTopics ? { topics: recoveredTopics } : {}),
       ...(journal.settings ? { settings: { ...record.state.settings, ...journal.settings } } : {}),
@@ -190,6 +194,8 @@ function restorePendingWorkspaceJournal(store: AppWorkspaceStore, catalogTopics?
       ...(journal.theme ? { theme: journal.theme } : {}),
       savedAt: journal.savedAt
     };
+    if (!validateSnapshot(recoveredState, "state", "read")) return store;
+    record.state = recoveredState;
     record.updatedAt = journal.savedAt ?? record.updatedAt;
     store.activeId = record.id;
     if (journal.theme) store.theme = journal.theme;
@@ -203,7 +209,8 @@ function readWorkspaceState() {
   for (const key of [STORAGE_KEY, STORAGE_BACKUP_KEY, LEGACY_STORAGE_KEY]) {
     try {
       const value = window.localStorage.getItem(key);
-      if (value) return JSON.parse(value) as Partial<PersistedState>;
+      const parsed = parseSnapshot(value, "state", "read");
+      if (parsed) return parsed as Partial<PersistedState>;
     } catch {
       // Try the next local snapshot instead of losing the workspace.
     }
@@ -212,11 +219,9 @@ function readWorkspaceState() {
 }
 
 function writeWorkspaceState(state: PersistedState) {
-  const snapshot = JSON.stringify({ ...compactStateForLocalStorage(state), savedAt: new Date().toISOString() });
   try {
-    const previous = window.localStorage.getItem(STORAGE_KEY);
-    if (previous) window.localStorage.setItem(STORAGE_BACKUP_KEY, previous);
-    window.localStorage.setItem(STORAGE_KEY, snapshot);
+    const snapshot = { ...compactStateForLocalStorage(state), savedAt: new Date().toISOString() };
+    writeRecoverySnapshot(window.localStorage, STORAGE_KEY, STORAGE_BACKUP_KEY, snapshot, "state");
   } catch {
     // Local persistence is best effort; a browser quota error must not interrupt reading.
   }

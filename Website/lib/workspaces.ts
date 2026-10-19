@@ -1,5 +1,6 @@
 import { createDatabaseConnection } from "./indexed-db";
 import type { FactMemory } from "./fact-quality";
+import { assertSnapshot, parseSnapshot, validateSnapshot, writeRecoverySnapshot } from "./snapshot-validation";
 export type WorkspaceSummary = {
   id: string;
   name: string;
@@ -39,14 +40,21 @@ const openDatabase = createDatabaseConnection(DB_NAME, DB_VERSION, database => {
 export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null): Promise<WorkspaceStore<T> | null> {
   if (typeof window === "undefined") return fallback;
   let recovery: WorkspaceStore<T> | null = null;
-  try { recovery = JSON.parse(window.localStorage.getItem("learned-media-all-workspaces") || "null"); } catch { /* Try the transactional copy. */ }
+  try {
+    recovery = (parseSnapshot(window.localStorage.getItem("learned-media-all-workspaces"), "store", "read")
+      ?? parseSnapshot(window.localStorage.getItem("learned-media-all-workspaces-backup"), "store", "read")) as WorkspaceStore<T> | null;
+  } catch { /* Try the transactional copy. */ }
   if (!window.indexedDB) return recovery ?? fallback;
   try {
     const database = await openDatabase();
     const stored = await new Promise<WorkspaceStore<T> | null>((resolve, reject) => {
-      const request = database.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(STORE_KEY);
-      request.onsuccess = () => resolve((request.result as WorkspaceStore<T> | undefined) ?? null);
-      request.onerror = () => reject(request.error);
+      const transaction = database.transaction(STORE_NAME, "readonly");
+      const records = transaction.objectStore(STORE_NAME), request = records.get(STORE_KEY), backup = records.get("workspace-store-backup");
+      transaction.oncomplete = () => {
+        const valid = [request.result, backup.result].find(value => value != null && validateSnapshot(value, "store", "read"));
+        resolve(valid ?? null);
+      };
+      transaction.onerror = transaction.onabort = () => reject(transaction.error);
     });
     // IndexedDB writes are asynchronous while the localStorage recovery copy is
     // synchronous.  During a reload the older transactional record can win a
@@ -68,6 +76,7 @@ export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null):
 }
 
 export async function accountWorkspaceBackup<T>(ownerId: string, value?: WorkspaceStore<T>): Promise<WorkspaceStore<T> | null> {
+  if (value) assertSnapshot(value, "store", "backup");
   if (typeof window === "undefined" || !window.indexedDB) return null;
   const database = await openDatabase();
   return await new Promise((resolve, reject) => {
@@ -75,8 +84,8 @@ export async function accountWorkspaceBackup<T>(ownerId: string, value?: Workspa
     const records = transaction.objectStore(STORE_NAME), key = 'account:' + ownerId;
     if (value) records.put(structuredClone(value), key);
     const request = records.get(key);
-    transaction.oncomplete = () => resolve(request.result ?? null);
-    transaction.onerror = () => reject(transaction.error);
+    transaction.oncomplete = () => resolve(request.result && validateSnapshot(request.result, "store", "read") ? request.result : null);
+    transaction.onerror = transaction.onabort = () => reject(transaction.error);
   });
 }
 
@@ -84,10 +93,11 @@ export async function writeWorkspaceStore<T>(store: WorkspaceStore<T>, options: 
   if (typeof window === "undefined") return;
   const { writeRecovery = true } = options;
   const snapshot = structuredClone(store);
+  assertSnapshot(snapshot, "store", "save");
   // The synchronous recovery record includes every workspace, not just the active one.
   let recoverySaved = false;
   if (writeRecovery) {
-    try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(snapshot)); recoverySaved = true; } catch { /* IndexedDB is authoritative when the recovery copy is too large. */ }
+    try { writeWorkspaceRecovery(snapshot); recoverySaved = true; } catch { /* IndexedDB is authoritative when the recovery copy is too large. */ }
   }
   if (!window.indexedDB) { if (!recoverySaved) throw new Error("Local storage is unavailable."); return; }
   const database = await openDatabase();
@@ -95,11 +105,18 @@ export async function writeWorkspaceStore<T>(store: WorkspaceStore<T>, options: 
     const transaction = database.transaction(STORE_NAME, "readwrite");
     const records = transaction.objectStore(STORE_NAME);
     const previous = records.get(STORE_KEY);
-    previous.onsuccess = () => { if (previous.result) records.put(previous.result, "workspace-store-backup"); records.put(snapshot, STORE_KEY); };
+    previous.onsuccess = () => {
+      if (previous.result && validateSnapshot(previous.result, "store", "backup")) records.put(previous.result, "workspace-store-backup");
+      records.put(snapshot, STORE_KEY);
+    };
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error ?? new Error("Workspace storage could not be saved."));
     transaction.onabort = () => reject(transaction.error ?? new Error("Workspace storage could not be saved."));
   });
+}
+
+export function writeWorkspaceRecovery<T>(snapshot: WorkspaceStore<T>) {
+  writeRecoverySnapshot(window.localStorage, "learned-media-all-workspaces", "learned-media-all-workspaces-backup", snapshot, "store");
 }
 
 export function makeWorkspaceId() {

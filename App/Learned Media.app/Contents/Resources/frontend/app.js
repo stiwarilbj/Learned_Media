@@ -658,8 +658,9 @@
     record.updatedAt = snapshot.savedAt;
     record.state = snapshot;
     const envelope = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: snapshot.savedAt, activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: state.factMemory, account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" };
+    if (!window.LEARNED_MEDIA_STORAGE.validateSnapshot(envelope, "native-store", "save")) { state.toast = "Workspace data failed validation. The last valid recovery copy was kept."; return; }
     queuedWorkspaceState = envelope;
-    try { window.localStorage.setItem(LOCAL_WORKSPACE_KEY, JSON.stringify(envelope)); } catch (_) {}
+    try { window.LEARNED_MEDIA_STORAGE.writeRecoverySnapshot(window.localStorage, LOCAL_WORKSPACE_KEY, LOCAL_WORKSPACE_KEY + "-backup", envelope, "native-store"); } catch (_) {}
     flushWorkspaceSave();
     scheduleCloudSave();
   }
@@ -768,6 +769,7 @@
     try {
       const remote = await bridge("cloudLoad", {});
       if (token !== cloudSyncToken || !state.account) return;
+      (remote.records || []).forEach(function (record) { window.LEARNED_MEDIA_STORAGE.assertSnapshot(record, "record", "import"); });
       (remote.factMemory || []).forEach(function (raw) { const item = normalizeMemory(raw); sentFactMemories.set(item.fingerprint || item.id, JSON.stringify(item)); });
       const compatible = !state.cloudOwnerId || state.cloudOwnerId === state.account.id;
       const localWorkspaces = compatible ? state.workspaces : [];
@@ -1932,12 +1934,14 @@
   async function hydrate() {
     try {
       const nativeSaved = await bridge("loadState", {});
-      let localSaved = null;
-      try { localSaved = window.localStorage.getItem(LOCAL_WORKSPACE_KEY); } catch (_) {}
-      const candidates = [nativeSaved, localSaved].map(function (saved) {
-        if (!saved) return null;
-        try { return typeof saved === "string" ? JSON.parse(saved) : saved; } catch (_) { return null; }
-      }).filter(Boolean);
+      let localSaved = null, localBackup = null;
+      try {
+        localSaved = window.LEARNED_MEDIA_STORAGE.parseSnapshot(window.localStorage.getItem(LOCAL_WORKSPACE_KEY), "native-store", "read");
+        localBackup = window.LEARNED_MEDIA_STORAGE.parseSnapshot(window.localStorage.getItem(LOCAL_WORKSPACE_KEY + "-backup"), "native-store", "read");
+      } catch (_) {}
+      const candidates = [nativeSaved, localSaved, localBackup].filter(function (saved) {
+        return saved && window.LEARNED_MEDIA_STORAGE.validateSnapshot(saved, "native-store", "read");
+      });
       candidates.sort(function (left, right) { return String(right.savedAt || "").localeCompare(String(left.savedAt || "")); });
       const parsed = candidates[0];
       if (parsed) {

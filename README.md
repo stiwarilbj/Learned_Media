@@ -34,6 +34,8 @@ The build writes the site to `Website/out/`. Pushes to `main` deploy automatical
 
 Large video catalog imports and restoration yield between short processing batches and check cancellation, keeping input and workspace changes responsive. Import pages and their continuation tokens still save atomically.
 
+Workspace saves and imports validate supported formats and required fields before replacing recovery copies. Invalid data keeps the last valid copy; bounded local diagnostics record only failure codes and counts (`LearnedMediaStorageDiagnostics` in the browser, `storageValidation` in Mac diagnostics).
+
 ### Keys and privacy
 
 The website remembers API keys in encrypted browser storage. When you sign in with Google, Gemini and YouTube keys sync privately to the same account across devices and sessions, separately from workspace data. Signing out clears account keys from the active session; Remove clears that key from the account too. Offline edits remain saved locally and retry on reconnection. The imported YouTube catalog stays on the device. Keys are never committed to GitHub.

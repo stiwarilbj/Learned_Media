@@ -472,9 +472,11 @@ private final class LocalWorkspaceStore {
     }
 
     private func readObject(at url: URL) -> Any? {
-        guard let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
-        return object
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let object = try? JSONSerialization.jsonObject(with: data) else {
+            SnapshotValidation.recordInvalidJSON(kind: .nativeStore, operation: .read); return nil
+        }
+        return SnapshotValidation.validate(object, kind: .nativeStore, operation: .read) ? object : nil
     }
 
     func load() -> Any {
@@ -483,13 +485,19 @@ private final class LocalWorkspaceStore {
     }
 
     func save(_ value: Any?) throws {
-        guard let value, !(value is NSNull) else { return }
-        guard JSONSerialization.isValidJSONObject(value) else { throw NativeError(message: "The local workspace contained unsupported data.", retryable: false) }
+        guard let value, SnapshotValidation.validate(value, kind: .nativeStore, operation: .save) else {
+            if value == nil { _ = SnapshotValidation.validate(nil, kind: .nativeStore, operation: .save) }
+            throw NativeError(message: "Workspace data failed validation. The last valid recovery copy was kept.", retryable: false)
+        }
+        guard JSONSerialization.isValidJSONObject(value) else {
+            SnapshotValidation.recordInvalidJSON(kind: .nativeStore, operation: .save)
+            throw NativeError(message: "The local workspace contained unsupported data.", retryable: false)
+        }
         let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
         let locations = try urls()
-        if fileManager.fileExists(atPath: locations.primary.path) {
-            try? fileManager.removeItem(at: locations.backup)
-            try? fileManager.copyItem(at: locations.primary, to: locations.backup)
+        if let previous = readObject(at: locations.primary) {
+            let backup = try JSONSerialization.data(withJSONObject: previous, options: [.prettyPrinted, .sortedKeys])
+            try backup.write(to: locations.backup, options: [.atomic])
         }
         try data.write(to: locations.primary, options: [.atomic])
     }
@@ -1870,8 +1878,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 } catch { respond(id: id, error: "Account sync is unavailable. Reconnect to retry; your keys remain in Keychain.") }
             }
         case "performanceDiagnostics":
-            if payload["reset"] as? Bool == true { PerformanceDiagnostics.shared.reset() }
-            respond(id: id, result: PerformanceDiagnostics.shared.snapshot())
+            if payload["reset"] as? Bool == true { PerformanceDiagnostics.shared.reset(); SnapshotValidation.reset() }
+            var diagnostics = PerformanceDiagnostics.shared.snapshot()
+            diagnostics["storageValidation"] = SnapshotValidation.snapshot()
+            respond(id: id, result: diagnostics)
         case "loadKeys":
             respond(id: id, result: ["gemini": geminiKey, "youtube": keychain.read("youtube-api-key").flatMap { String(data: $0, encoding: .utf8) } ?? ""])
         case "setYouTubeKey":
@@ -1887,7 +1897,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             }
         case "saveState":
             do { try saveState(payload["state"]); respond(id: id, result: true) }
-            catch { respond(id: id, error: "Learning data could not be saved.") }
+            catch { respond(id: id, error: "Learning data could not be saved. The last valid recovery copy was kept.") }
         case "hasYouTubeImportPages", "loadYouTubeImportPages", "saveYouTubeImportPage", "clearYouTubeImportPages":
             Task { [weak self] in
                 guard let self else { return }
@@ -2195,24 +2205,39 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         async let revisions = cloudRequest(revisionsURL, method: "POST", anonKey: anonKey, session: session, body: [:])
         async let firstPage = cloudMemoryPage(after: nil, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
         let (revisionResult, firstMemoryPage) = try await (revisions, firstPage)
-        let records = (revisionResult as? [[String: Any]] ?? []).compactMap { $0["record"] as? [String: Any] }
+        var records: [[String: Any]] = []
+        for row in revisionResult as? [Any] ?? [NSNull()] {
+            let record = (row as? [String: Any])?["record"]
+            guard SnapshotValidation.validate(record, kind: .record, operation: .import), let record = record as? [String: Any] else {
+                throw NativeError(message: "Cloud workspace data failed validation. Local recovery copies were kept.", retryable: false)
+            }
+            records.append(record)
+        }
         var memories: [[String: Any]] = []
         var after: String? = nil
         while true {
             let result = after == nil ? firstMemoryPage : try await cloudMemoryPage(after: after, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
-            let rows = result as? [[String: Any]] ?? []
-            memories.append(contentsOf: rows.compactMap { row in
-                guard var content = row["content"] as? [String: Any] else { return nil }
+            guard let rows = result as? [[String: Any]] else {
+                _ = SnapshotValidation.validate(nil, kind: .memory, operation: .import)
+                throw NativeError(message: "Cloud fact data failed validation. Local recovery copies were kept.", retryable: false)
+            }
+            for row in rows {
+                guard SnapshotValidation.validate([row["content"] ?? NSNull()], kind: .memory, operation: .import), var content = row["content"] as? [String: Any] else {
+                    throw NativeError(message: "Cloud fact data failed validation. Local recovery copies were kept.", retryable: false)
+                }
                 if let fingerprint = row["fingerprint"] as? String { content["fingerprint"] = fingerprint }
                 if let known = row["known"] as? Bool { content["known"] = known }
-                return content
-            })
+                memories.append(content)
+            }
             if rows.count < 500 { break }
             // Match the database's exclusive ordering; content.id can change on merge.
             guard let next = rows.last?["fact_id"] as? String, next != after else {
                 throw NativeError(message: "Cloud fact history returned an invalid cursor.")
             }
             after = next
+        }
+        guard SnapshotValidation.validate(memories, kind: .memory, operation: .import) else {
+            throw NativeError(message: "Cloud fact data failed validation. Local recovery copies were kept.", retryable: false)
         }
         return ["records": records, "factMemory": memories]
     }
@@ -2269,12 +2294,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             throw NativeError(message: "Account changed. Cloud save was canceled.", retryable: false)
         }
         try Task.checkCancellation()
+        guard SnapshotValidation.validate(envelope, kind: .nativeStore, operation: .save) else {
+            throw NativeError(message: "Workspace data failed validation. Cloud copies were kept.", retryable: false)
+        }
         let rawWorkspaces = envelope["workspaces"] as? [[String: Any]] ?? []
         // Bound uploads by row count and encoded bytes; never split a workspace.
         var batches: [[[String: Any]]] = []
         var batch: [[String: Any]] = []
         var batchBytes = 2
         for raw in rawWorkspaces {
+            guard SnapshotValidation.validate(raw, kind: .record, operation: .save) else {
+                throw NativeError(message: "Workspace data failed validation. Cloud copies were kept.", retryable: false)
+            }
             let record = canonicalCloudRecord(raw)
             let row: [String: Any] = ["revision_id": try workspaceRevisionID(userID: session.userID, record: record), "user_id": session.userID, "workspace_id": record["id"] ?? "", "modified_at": record["updatedAt"] ?? cloudNow(), "record": record]
             let rowBytes = try JSONSerialization.data(withJSONObject: row).count
