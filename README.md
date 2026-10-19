@@ -50,6 +50,7 @@ Videos are limited to approved creators and individually approved videos. The wo
 - Refreshes reuse unchanged video records and search entries; changed metadata and source permissions still update normally
 - Imports save each validated page and continuation token together, so interruptions resume from the last committed page on the website and Mac app
 - Catalog refreshes write added or changed videos in batches of at most 100, publish their references atomically, and retire removed records; playback activity is saved separately
+- Playback saves compare whole seconds and skip unchanged positions. Pause, seek completion, video changes, and page exit flush changed progress immediately; saving progress does not reload the web player.
 - 3Blue1Brown videos from the approved Neural Networks and Statistics playlists, including future additions
 
 ## macOS app

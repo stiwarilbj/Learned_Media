@@ -1056,23 +1056,17 @@
     const related = (state.youtube.videos || []).filter(function (item) { return item.id !== video.id && (item.topics || []).some(function (topic) { return (video.topics || []).indexOf(topic) >= 0; }); }).slice(0, 6);
     if (related.length) playerColumn.appendChild(node("section", { className: "video-related" }, node("div", { className: "section-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Up next to explore" }), node("h2", { text: "More like this" }))), youtubeList(related)));
     if (frame) {
-      let lastSaved = 0;
-      const onMessage = function (event) {
-        if (!String(event.origin).includes("youtube.com")) return;
-        try {
-          const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-          const seconds = data && data.event === "infoDelivery" && data.info && Number(data.info.currentTime);
-          if (Number.isFinite(seconds) && seconds >= 0) {
-            state.youtube.playbackPositions[video.id] = seconds;
-            if (Date.now() - lastSaved > 15000) { lastSaved = Date.now(); saveState(); }
-          }
-        } catch (_) {}
-      };
-      const requestPosition = function () { if (frame.contentWindow) frame.contentWindow.postMessage(JSON.stringify({ event: "command", func: "getCurrentTime", args: [] }), "https://www.youtube.com"); };
-      window.addEventListener("message", onMessage);
-      const timer = window.setInterval(requestPosition, 5000);
-      stopYoutubePlayback = function () { window.removeEventListener("message", onMessage); window.clearInterval(timer); stopYoutubePlayback = null; };
-      requestPosition();
+      const ownerWorkspaceId = state.workspaceId;
+      const playback = window.LEARNED_MEDIA_PLAYBACK.watchYouTubePlayback(frame, {
+        initialSeconds: Number(state.youtube.playbackPositions[video.id] || 0),
+        saveIntervalMs: 15000,
+        onSave: function (second) {
+          if (state.workspaceId !== ownerWorkspaceId || Math.floor(state.youtube.playbackPositions[video.id] || 0) === second) return;
+          state.youtube.playbackPositions[video.id] = second;
+          saveState();
+        }
+      });
+      stopYoutubePlayback = function () { playback.stop(); stopYoutubePlayback = null; };
     }
     return section;
   }

@@ -906,21 +906,34 @@ export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fall
   } catch (error) { if (strict) throw error; return { ...DEFAULT_YOUTUBE_WORKSPACE }; }
 }
 
+const pendingActivitySaves = new Map<string, { signature: string; write: Promise<void> }>();
+
 export async function saveYouTubeWorkspace(workspace: YouTubeWorkspaceState, options: { activity?: boolean; workspaceId?: string } = {}) {
   if (typeof window === "undefined" || !window.indexedDB) return;
   const { activity = false, workspaceId = "local-workspace" } = options;
   if (!activity) return;
-  try {
-    const db = await openYouTubeDb();
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction("workspace", "readwrite");
-      const store = transaction.objectStore("workspace");
-      if (activity) store.put(youtubeActivityOf(workspace), `${YOUTUBE_ACTIVITY_KEY_PREFIX}${workspaceId}`);
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
-  } catch { /* IndexedDB is best effort; the active session remains usable. */ }
+  const snapshot = youtubeActivityOf(workspace);
+  const signature = JSON.stringify(snapshot);
+  const pending = pendingActivitySaves.get(workspaceId);
+  // Pause, visibilitychange and pagehide can flush the same position together.
+  if (pending?.signature === signature) return pending.write;
+  const write = (async () => {
+    // Preserve activity order when another snapshot is already being written.
+    await pending?.write;
+    try {
+      const db = await openYouTubeDb();
+      await new Promise<void>((resolve, reject) => {
+        const transaction = db.transaction("workspace", "readwrite");
+        transaction.objectStore("workspace").put(snapshot, `${YOUTUBE_ACTIVITY_KEY_PREFIX}${workspaceId}`);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+    } catch { /* IndexedDB is best effort; the active session remains usable. */ }
+  })();
+  pendingActivitySaves.set(workspaceId, { signature, write });
+  await write;
+  if (pendingActivitySaves.get(workspaceId)?.write === write) pendingActivitySaves.delete(workspaceId);
 }
 
 /** Shared catalog ownership is origin-wide, matching the existing IndexedDB catalog. */

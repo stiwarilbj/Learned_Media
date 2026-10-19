@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		Qg+JA68hZLlsKLbgktMy7SsA9eQ=
+		jYuIlF+4M7crIttva0DXB1hUgl4=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -42,7 +42,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		BtWIH9+p3de8/V4ghcWAaQ23gp0=
+		TIZiE7gH5zAXiJn9KgJlOYfpkfY=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -116,6 +116,10 @@
 		<data>
 		rUbUKMJUEDr4ffh7sJU3q6rkS7E=
 		</data>
+		<key>Resources/frontend/youtube-playback.js</key>
+		<data>
+		RrEqVn+D6mVDzoLRyzjAC8L1cGc=
+		</data>
 		<key>Resources/frontend/youtube-search.worker.js</key>
 		<data>
 		0URKVpOc4H+njwdhn2ZYyxAwpNs=
@@ -141,7 +145,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			OzgGgKWB0Y1in8OY4B22UIG938RtOqjXUQVsVW4fmg8=
+			Rdv49m/fVuPiVHGQvg7gBkV0CMsd4/fmoyyaMxpttU0=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -190,7 +194,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			G4QO289Br3ZMxOIIHxRCsD87wnfljQBVbDKqqk5lcCw=
+			fWgCtM2FjsIwY8ZfzVBu/IUIJxTUOKkECtygWvCg9Vo=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -317,6 +321,13 @@
 			<key>hash2</key>
 			<data>
 			vAA4XNC/DxQvPdaTWdr8s0ZMUK69e4pz/ncNzN34Hz8=
+			</data>
+		</dict>
+		<key>Resources/frontend/youtube-playback.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			t+pR1FEo8CBhFrOibDOhoII0sBj+5ESKXqWokqIja0c=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-search.worker.js</key>

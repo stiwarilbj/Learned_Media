@@ -1,13 +1,16 @@
 "use client";
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import type { MutableRefObject } from "react";
 import type { YouTubeChannelRecord, YouTubeImportProgress, YouTubeTopic, YouTubeVideo, YouTubeWorkspaceState } from "@/lib/youtube";
 import { YOUTUBE_TOPICS, filterYouTubeVideos, relatedYouTubeVideos, selectRandomVideos } from "@/lib/youtube";
 import type { RankedVideoSearchResult } from "@/lib/gemini";
+import { watchYouTubePlayback } from "@/lib/youtube-playback";
 import { Icon } from "./icons";
 import { VirtualizedRows } from "./VirtualizedRows";
 
 type VideoWorkspaceProps = {
+  workspaceId: string;
   workspace: YouTubeWorkspaceState;
   videoById: ReadonlyMap<string, YouTubeVideo>;
   channelById: ReadonlyMap<string, YouTubeChannelRecord>;
@@ -33,7 +36,8 @@ type VideoWorkspaceProps = {
   onOpenChannel: (id: string) => void;
   onBack: () => void;
   onSaveVideo: (id: string) => void;
-  onPlaybackPosition: (id: string, seconds: number) => void;
+  onPlaybackPosition: (id: string, seconds: number, workspaceId: string) => void;
+  playbackFlushRef: MutableRefObject<(() => void) | null>;
   onChannelOrder: (order: YouTubeWorkspaceState["channelOrder"]) => void;
   onPauseImport: () => void;
   onResumeImport: () => void;
@@ -48,6 +52,37 @@ function formatDate(value: string) {
 
 function videoUrl(id: string) { return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`; }
 const videoRowKey = (video: YouTubeVideo) => video.id;
+
+function YouTubePlayer({ video, workspaceId, initialSeconds, onPlaybackPosition, playbackFlushRef, onEnded }: {
+  video: YouTubeVideo;
+  workspaceId: string;
+  initialSeconds: number;
+  onPlaybackPosition: VideoWorkspaceProps["onPlaybackPosition"];
+  playbackFlushRef: VideoWorkspaceProps["playbackFlushRef"];
+  onEnded: () => void;
+}) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const callbacks = useRef({ onPlaybackPosition, onEnded });
+  callbacks.current = { onPlaybackPosition, onEnded };
+  // Resume once when opening this video. Saving progress must not reload its iframe.
+  const [resumeSecond] = useState(() => Number.isFinite(initialSeconds) ? Math.max(0, Math.floor(initialSeconds)) : 0);
+  const src = `https://www.youtube.com/embed/${encodeURIComponent(video.id)}?enablejsapi=1&origin=https%3A%2F%2Fstiwarilbj.github.io&rel=0&playsinline=1${resumeSecond ? `&start=${resumeSecond}` : ""}`;
+  useEffect(() => {
+    if (!iframeRef.current) return;
+    const playback = watchYouTubePlayback(iframeRef.current, {
+      initialSeconds: resumeSecond,
+      saveIntervalMs: 30_000,
+      onSave: (seconds) => callbacks.current.onPlaybackPosition(video.id, seconds, workspaceId),
+      onEnded: () => callbacks.current.onEnded()
+    });
+    playbackFlushRef.current = playback.flush;
+    return () => {
+      playback.stop();
+      if (playbackFlushRef.current === playback.flush) playbackFlushRef.current = null;
+    };
+  }, [playbackFlushRef, resumeSecond, video.id, workspaceId]);
+  return <iframe ref={iframeRef} title={video.title} src={src} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" />;
+}
 
 const VideoCard = memo(function VideoCard({ video, saved, reason, onOpenVideo, onSaveVideo }: { video: YouTubeVideo; saved: boolean; reason?: RankedVideoSearchResult; onOpenVideo: (id: string) => void; onSaveVideo: (id: string) => void }) {
   return <article className="video-card">
@@ -81,9 +116,8 @@ function VideoTabs({ activeTab, savedCount, onTabChange }: { activeTab: YouTubeW
   return <div className="video-tabs" role="tablist" aria-label="Video views">{([["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]] as const).map(([tab, label]) => <button type="button" role="tab" aria-selected={activeTab === tab} className={activeTab === tab ? "active" : ""} key={tab} onClick={() => onTabChange(tab)}>{label}{tab === "saved" && savedCount ? <small>{savedCount}</small> : null}</button>)}</div>;
 }
 
-export function VideoWorkspace({ workspace, videoById, channelById, videosByChannel, youtubeStatus, progress, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, searchHasMore, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
+export function VideoWorkspace({ workspaceId, workspace, videoById, channelById, videosByChannel, youtubeStatus, progress, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, searchHasMore, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, playbackFlushRef, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
   const [ended, setEnded] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   const showMoreRef = useRef<HTMLDivElement>(null);
   const savedIds = useMemo(() => new Set(workspace.savedIds), [workspace.savedIds]);
   const deferredSearchText = useDeferredValue(workspace.searchText);
@@ -106,20 +140,7 @@ export function VideoWorkspace({ workspace, videoById, channelById, videosByChan
 
   useEffect(() => {
     setEnded(false);
-    if (!activeVideo) return;
-    const onMessage = (event: MessageEvent) => {
-      if (!String(event.origin).includes("youtube.com")) return;
-      try {
-        const data = typeof event.data === "string" ? JSON.parse(event.data) as { event?: string; info?: number | { currentTime?: number } } : event.data as { event?: string; info?: number | { currentTime?: number } };
-        if (data?.event === "onStateChange" && data.info === 0) setEnded(true);
-        if (data?.event === "infoDelivery" && typeof data.info === "object" && typeof data.info.currentTime === "number") onPlaybackPosition(activeVideo.id, data.info.currentTime);
-      } catch { /* YouTube also emits non-JSON messages. */ }
-    };
-    const requestPosition = () => iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func: "getCurrentTime", args: [] }), "https://www.youtube.com");
-    window.addEventListener("message", onMessage);
-    const timer = window.setInterval(requestPosition, 5000);
-    return () => { window.removeEventListener("message", onMessage); window.clearInterval(timer); };
-  }, [activeVideo?.id, onPlaybackPosition]);
+  }, [activeVideo?.id, workspaceId]);
 
   useEffect(() => {
     if (workspace.activeTab !== "discover" || workspace.selectedVideoId || workspace.selectedChannelId || workspace.searchText.trim() || smartSearchRan || !workspace.videos.length) return;
@@ -141,7 +162,7 @@ export function VideoWorkspace({ workspace, videoById, channelById, videosByChan
     <button type="button" className="text-button video-back-button" onClick={onBack}><Icon name="chevronRight" size={15} /> Back to videos</button>
     <div className="video-player-layout">
       <div className="video-player-column">
-        <div className="video-player-shell">{activeVideo.embedAvailable ? <iframe ref={iframeRef} title={activeVideo.title} src={`https://www.youtube.com/embed/${encodeURIComponent(activeVideo.id)}?enablejsapi=1&origin=https%3A%2F%2Fstiwarilbj.github.io&rel=0&playsinline=1${workspace.playbackPositions[activeVideo.id] ? `&start=${Math.max(0, Math.floor(workspace.playbackPositions[activeVideo.id]))}` : ""}`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" /> : <div className="video-unavailable"><Icon name="external" size={24} /><strong>Watch this one on YouTube</strong><a href={videoUrl(activeVideo.id)} target="_blank" rel="noreferrer">Open video</a></div>}</div>
+        <div className="video-player-shell">{activeVideo.embedAvailable ? <YouTubePlayer key={`${workspaceId}:${activeVideo.id}`} video={activeVideo} workspaceId={workspaceId} initialSeconds={workspace.playbackPositions[activeVideo.id] ?? 0} onPlaybackPosition={onPlaybackPosition} playbackFlushRef={playbackFlushRef} onEnded={() => setEnded(true)} /> : <div className="video-unavailable"><Icon name="external" size={24} /><strong>Watch this one on YouTube</strong><a href={videoUrl(activeVideo.id)} target="_blank" rel="noreferrer">Open video</a></div>}</div>
         <div className="video-player-heading"><div><span className="eyebrow">Now watching</span><h1>{activeVideo.title}</h1><p>{activeVideo.channelName} · {formatDate(activeVideo.publishedAt)} · {activeVideo.durationLabel}</p></div><button type="button" className={`secondary-button ${workspace.savedIds.includes(activeVideo.id) ? "selected" : ""}`} onClick={() => onSaveVideo(activeVideo.id)}><Icon name="bookmark" size={15} /> {workspace.savedIds.includes(activeVideo.id) ? "Saved" : "Save video"}</button></div>
         <div className="video-player-links"><a className="ghost-button" href={videoUrl(activeVideo.id)} target="_blank" rel="noreferrer">Watch on YouTube <Icon name="external" size={13} /></a><span>{activeVideo.topics.join(" · ")}</span></div>
         {ended && related.length > 0 && <section className="video-related"><div className="section-heading"><div><span className="eyebrow">Up next to explore</span><h2>More like this</h2></div></div><VideoList videos={related} savedIds={savedIds} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /></section>}
