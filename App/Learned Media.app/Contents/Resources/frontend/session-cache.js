@@ -76,6 +76,7 @@ class SessionCache {
     maxBytes;
     entries = new Map();
     bytes = 0;
+    nextExpiryAt = Infinity;
     constructor(maxEntries = 100, ttlMs = 30 * 60 * 1000, maxBytes = 4 * 1024 * 1024) {
         this.maxEntries = maxEntries;
         this.ttlMs = ttlMs;
@@ -86,6 +87,8 @@ class SessionCache {
         if (entry)
             this.bytes -= entry.bytes;
         this.entries.delete(key);
+        if (!this.entries.size)
+            this.nextExpiryAt = Infinity;
     }
     get(key, now = Date.now()) {
         const entry = this.entries.get(key);
@@ -105,19 +108,28 @@ class SessionCache {
     }
     set(key, value, now = Date.now()) {
         this.remove(key);
-        for (const [id, entry] of this.entries)
-            if (entry.expiresAt <= now)
-                this.remove(id);
+        // Deletions may leave an earlier deadline: at worst, one extra sweep.
+        if (now >= this.nextExpiryAt) {
+            this.nextExpiryAt = Infinity;
+            for (const [id, entry] of this.entries) {
+                if (entry.expiresAt <= now)
+                    this.remove(id);
+                else
+                    this.nextExpiryAt = Math.min(this.nextExpiryAt, entry.expiresAt);
+            }
+        }
         const bytes = 96 + key.length * 2 + approximateCacheBytes(value, this.maxBytes);
         if (bytes > this.maxBytes || this.maxEntries <= 0 || this.ttlMs <= 0)
             return;
-        this.entries.set(key, { value, expiresAt: now + this.ttlMs, bytes });
+        const expiresAt = now + this.ttlMs;
+        this.entries.set(key, { value, expiresAt, bytes });
+        this.nextExpiryAt = Math.min(this.nextExpiryAt, expiresAt);
         this.bytes += bytes;
         while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes)
             this.remove(this.entries.keys().next().value);
     }
     delete(key) { this.remove(key); }
-    clear() { this.entries.clear(); this.bytes = 0; }
+    clear() { this.entries.clear(); this.bytes = 0; this.nextExpiryAt = Infinity; }
     get size() { return this.entries.size; }
     get approximateBytes() { return this.bytes; }
 }

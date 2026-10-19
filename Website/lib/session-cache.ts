@@ -31,6 +31,7 @@ export type SessionCacheEntry<T> = { value: T; expiresAt: number; bytes: number 
 export class SessionCache<T> {
   private readonly entries = new Map<string, SessionCacheEntry<T>>();
   private bytes = 0;
+  private nextExpiryAt = Infinity;
 
   constructor(private readonly maxEntries = 100, private readonly ttlMs = 30 * 60 * 1000, private readonly maxBytes = 4 * 1024 * 1024) {}
 
@@ -38,6 +39,7 @@ export class SessionCache<T> {
     const entry = this.entries.get(key);
     if (entry) this.bytes -= entry.bytes;
     this.entries.delete(key);
+    if (!this.entries.size) this.nextExpiryAt = Infinity;
   }
 
   get(key: string, now = Date.now()): T | undefined {
@@ -56,16 +58,25 @@ export class SessionCache<T> {
 
   set(key: string, value: T, now = Date.now()) {
     this.remove(key);
-    for (const [id, entry] of this.entries) if (entry.expiresAt <= now) this.remove(id);
+    // Deletions may leave an earlier deadline: at worst, one extra sweep.
+    if (now >= this.nextExpiryAt) {
+      this.nextExpiryAt = Infinity;
+      for (const [id, entry] of this.entries) {
+        if (entry.expiresAt <= now) this.remove(id);
+        else this.nextExpiryAt = Math.min(this.nextExpiryAt, entry.expiresAt);
+      }
+    }
     const bytes = 96 + key.length * 2 + approximateCacheBytes(value, this.maxBytes);
     if (bytes > this.maxBytes || this.maxEntries <= 0 || this.ttlMs <= 0) return;
-    this.entries.set(key, { value, expiresAt: now + this.ttlMs, bytes });
+    const expiresAt = now + this.ttlMs;
+    this.entries.set(key, { value, expiresAt, bytes });
+    this.nextExpiryAt = Math.min(this.nextExpiryAt, expiresAt);
     this.bytes += bytes;
     while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) this.remove(this.entries.keys().next().value!);
   }
 
   delete(key: string) { this.remove(key); }
-  clear() { this.entries.clear(); this.bytes = 0; }
+  clear() { this.entries.clear(); this.bytes = 0; this.nextExpiryAt = Infinity; }
   get size() { return this.entries.size; }
   get approximateBytes() { return this.bytes; }
 }
