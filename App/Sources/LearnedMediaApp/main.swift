@@ -127,10 +127,27 @@ private struct WikipediaSearchResponse: Decodable {
     let query: Query?
 }
 
+private struct WikipediaPresenceFlag: Decodable, Sendable {
+    let isSet: Bool
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Bool.self) { isSet = value }
+        else {
+            guard try container.decode(String.self).isEmpty else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid Wikipedia presence flag.")
+            }
+            isSet = true
+        }
+    }
+}
+
 private struct WikipediaPageResponse: Decodable, Sendable {
     struct Query: Decodable, Sendable {
         struct Page: Decodable, Sendable {
             let title: String?
+            let missing: WikipediaPresenceFlag?
+            let invalid: WikipediaPresenceFlag?
+            let known: WikipediaPresenceFlag?
             let fullurl: String?
             let extract: String?
             let pageimage: String?
@@ -154,12 +171,19 @@ private struct WikipediaPageResponse: Decodable, Sendable {
             }
         }
     }
+    struct APIError: Decodable, Sendable { let code: String? }
+    let error: APIError?
     let query: Query?
 }
 
 private struct WikipediaPageResolution: Sendable {
     let page: WikipediaPageResponse.Query.Page
     let verifiedNames: [String]
+}
+
+private enum WikipediaPageLookupResult: Sendable {
+    case found(WikipediaPageResolution)
+    case missing
 }
 
 private struct WikipediaLookup {
@@ -218,13 +242,15 @@ private actor SharedWikipediaWork<Key: Hashable, Value> {
 private actor WikipediaPageCache {
     private struct Entry<Value> { var value: Value; var expiresAt: Date; var touchedAt: Date; var bytes: Int }
     private var pages: [String: Entry<WikipediaPageResponse.Query.Page>] = [:]
-    private let pageFlights = SharedWikipediaWork<String, WikipediaPageResolution?>()
+    private var missingPages: [String: Entry<Bool>] = [:]
+    private let pageFlights = SharedWikipediaWork<String, WikipediaPageLookupResult?>()
     private var searches: [String: Entry<[String]>] = [:]
     private struct ImageKey: Hashable { let fileName: String; let size: Int }
     private var imageInfo: [ImageKey: Entry<WikipediaImageInfoResponse.Query.Page.ImageInfo>] = [:]
     private let imageFlights = SharedWikipediaWork<ImageKey, WikipediaImageInfoResponse.Query.Page.ImageInfo?>()
     private let searchFlights = SharedWikipediaWork<String, [String]?>()
     private let lifetime: TimeInterval = 60 * 60
+    private let missingLifetime: TimeInterval = 60
     private let capacity = 100
 
     private func remember(_ resolution: WikipediaPageResolution, requestedAs title: String) -> WikipediaPageResponse.Query.Page {
@@ -240,7 +266,10 @@ private actor WikipediaPageCache {
             entry = Entry(value: resolution.page, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now, bytes: CacheMemory.estimatedBytes(resolution.page))
         }
         let names = verified ? resolution.verifiedNames : [title]
-        for name in names { pages[name.lowercased()] = entry }
+        for name in names {
+            pages[name.lowercased()] = entry
+            missingPages[name.lowercased()] = nil
+        }
         trim(&pages, budget: 4 * 1024 * 1024)
         return entry.value
     }
@@ -251,12 +280,28 @@ private actor WikipediaPageCache {
         entry.touchedAt = Date(); pages[key] = entry
         return entry.value
     }
-    func pageOrLoad(_ title: String, load: @escaping @Sendable () async -> WikipediaPageResolution?) async -> WikipediaPageResponse.Query.Page? {
-        if let cached = page(title) { return cached }
+    func pageOrLoad(_ title: String, load: @escaping @Sendable () async -> WikipediaPageLookupResult?) async -> WikipediaPageResponse.Query.Page? {
+        guard !Task.isCancelled else { return nil }
         let key = title.lowercased()
+        if var missing = missingPages[key], missing.expiresAt > Date() {
+            missing.touchedAt = Date(); missingPages[key] = missing
+            PerformanceDiagnostics.shared.record(.wikipedia, .cacheHits)
+            return nil
+        }
+        missingPages[key] = nil
+        if let cached = page(title) { return cached }
         guard !Task.isCancelled,
               let result = try? await pageFlights.value(key, load: load), !Task.isCancelled else { return nil }
-        return remember(result, requestedAs: title)
+        switch result {
+        case .found(let resolution): return remember(resolution, requestedAs: title)
+        case .missing:
+            // A concurrently verified redirect may already have supplied this page.
+            if let existing = pages[key], existing.expiresAt > Date() { return existing.value }
+            let now = Date()
+            missingPages[key] = Entry(value: true, expiresAt: now.addingTimeInterval(missingLifetime), touchedAt: now, bytes: 1)
+            trim(&missingPages, budget: 64 * 1024)
+            return nil
+        }
     }
     func imageInfoOrLoad(fileName: String, size: Int, load: @escaping @Sendable () async -> WikipediaImageInfoResponse.Query.Page.ImageInfo?) async -> WikipediaImageInfoResponse.Query.Page.ImageInfo? {
         // Use the file name supplied by Wikipedia, preserving meaningful case.
@@ -453,8 +498,9 @@ private final class WikipediaClient: @unchecked Sendable {
     private let session = URLSession(configuration: .ephemeral)
     private let limiter = WikipediaRequestLimiter()
     private let pageCache = WikipediaPageCache()
-    private func request<T: Decodable>(_ url: URL, priority: Int = 0) async throws -> T {
+    private func request<T: Decodable>(_ url: URL, priority: Int = 0, cacheResponse: Bool = true) async throws -> T {
         var request = URLRequest(url: url, timeoutInterval: 20)
+        if !cacheResponse { request.cachePolicy = .reloadIgnoringLocalCacheData }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("LearnedMedia/1.0 (knowledge-feed)", forHTTPHeaderField: "User-Agent")
         let queuedAt = ProcessInfo.processInfo.systemUptime
@@ -499,9 +545,19 @@ private final class WikipediaClient: @unchecked Sendable {
         guard !Task.isCancelled, let url = apiURL(["action": "query", "titles": title, "redirects": "1", "prop": "pageimages|info|extracts", "inprop": "url", "explaintext": "1", "exsectionformat": "wiki", "piprop": "thumbnail|name", "pilicense": "free", "pithumbsize": "1200"]) else { return nil }
         return await pageCache.pageOrLoad(title) { [weak self] in
             guard let self, !Task.isCancelled,
-                  let response: WikipediaPageResponse = try? await self.request(url),
-                  let page = response.query?.pages?.values.first(where: { $0.fullurl != nil && $0.extract?.isEmpty == false }) else { return nil }
-            return WikipediaPageResolution(page: page, verifiedNames: response.query?.verifiedNames(requested: title, canonical: page.title ?? "") ?? [])
+                  let response: WikipediaPageResponse = try? await self.request(url, cacheResponse: false),
+                  !Task.isCancelled, response.error == nil else { return nil }
+            let pages = Array(response.query?.pages?.values ?? [:].values)
+            if let page = pages.first(where: { $0.missing == nil && $0.invalid == nil && $0.known == nil && $0.fullurl != nil && $0.extract?.isEmpty == false }) {
+                return .found(WikipediaPageResolution(page: page, verifiedNames: response.query?.verifiedNames(requested: title, canonical: page.title ?? "") ?? []))
+            }
+            // Only an explicit, title-verified missing marker earns a brief cache entry.
+            if pages.count == 1, let page = pages.first, page.missing?.isSet == true,
+               page.invalid == nil, page.known == nil, let canonical = page.title,
+               response.query?.verifiedNames(requested: title, canonical: canonical).contains(title) == true {
+                return .missing
+            }
+            return nil
         }
     }
 

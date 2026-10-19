@@ -48,11 +48,15 @@ type SearchResponse = {
 };
 
 type PageResponse = {
+  error?: unknown;
   query?: {
     normalized?: Array<{ from: string; to: string }>;
     redirects?: Array<{ from: string; to: string }>;
     pages?: Record<string, {
       title?: string;
+      missing?: "" | boolean;
+      invalid?: "" | boolean;
+      known?: "" | boolean;
       fullurl?: string;
       extract?: string;
       pageimage?: string;
@@ -109,6 +113,7 @@ export function createWikipediaResolutionCache(): WikipediaResolutionCache {
 
 export const sharedWikipediaResolutionCache = createWikipediaResolutionCache();
 const WIKIPEDIA_CACHE_TTL_MS = 60 * 60 * 1000;
+const WIKIPEDIA_MISSING_PAGE_TTL_MS = 60_000;
 const MAX_WIKIPEDIA_CACHE_ENTRIES = 100;
 
 function trimCache<T>(entries: Map<string, CachedRequest<T>>) {
@@ -152,7 +157,8 @@ function removeCachedRequest<T>(entries: Map<string, CachedRequest<T>>, entry: C
 
 /** Each caller owns its wait; only the final departing caller owns download cancellation. */
 function sharedCachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string, signal: AbortSignal | undefined,
-  operation: (signal: AbortSignal) => Promise<T>, reusable: (value: T) => boolean = () => true): Promise<T> {
+  operation: (signal: AbortSignal) => Promise<T>, reusable: (value: T) => boolean = () => true,
+  lifetime: (value: T) => number = () => WIKIPEDIA_CACHE_TTL_MS): Promise<T> {
   if (signal?.aborted) return Promise.reject(cancellationError());
   let entry = cachedRequest(entries, key);
   recordPerformance("wikipedia", entry ? (entry.flight && !entry.flight.settled ? "coalesced" : "cache_hits") : "cache_misses");
@@ -169,7 +175,7 @@ function sharedCachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: str
     void request.then((value) => {
       flight.settled = true;
       if (flight.controller.signal.aborted || !reusable(value)) removeCachedRequest(entries, created);
-      else { created.value = value; trimCache(entries); }
+      else { created.value = value; created.expiresAt = Date.now() + lifetime(value); trimCache(entries); }
     }, () => {
       flight.settled = true;
       removeCachedRequest(entries, created);
@@ -226,7 +232,7 @@ function apiUrl(params: Record<string, string>) {
   return url.toString();
 }
 
-async function getJson<T>(url: string, signal?: AbortSignal, priority = 0): Promise<T | null> {
+async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cacheResponse = true): Promise<T | null> {
   const queuedAt = performance.now();
   await acquireWikipediaSlot(signal, priority);
   recordPerformance("wikipedia", "queue_ms", Math.max(0, performance.now() - queuedAt));
@@ -238,7 +244,7 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0): Prom
     if (signal?.aborted) throw new DOMException("Wikipedia request canceled.", "AbortError");
     const response = await performanceFetch("wikipedia", url, {
       headers: { accept: "application/json", "user-agent": "LearnedMedia/0.2 (knowledge-feed)" },
-      next: { revalidate: 3600 },
+      ...(cacheResponse ? { next: { revalidate: 3600 } } : { cache: "no-store" as const }),
       signal: controller.signal
     });
     if (!response.ok) return null;
@@ -292,6 +298,7 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
   const uniqueTitles = Array.from(new Set(titles.map((title) => title.trim()).filter(Boolean)));
   return (await Promise.all(uniqueTitles.map((title) => {
     const key = title.toLocaleLowerCase();
+    let confirmedMissing = false;
     const load = async (requestSignal: AbortSignal | undefined) => {
       const payload = await getJson<PageResponse>(apiUrl({
         action: "query",
@@ -304,8 +311,17 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
         piprop: "thumbnail|name|original",
         pilicense: "free",
         pithumbsize: "1000"
-      }), requestSignal, priority);
-      const pages = Object.values(payload?.query?.pages ?? {}).filter((page) => page.title && page.fullurl);
+      }), requestSignal, priority, false);
+      // Cache only the API's explicit missing marker for the verified requested
+      // title. Empty, invalid, inaccessible, or failed responses remain retryable.
+      if (!payload || payload.error !== undefined) return [];
+      const returnedPages = Object.values(payload.query?.pages ?? {});
+      const missing = returnedPages.length === 1 ? returnedPages[0] : undefined;
+      confirmedMissing = !!missing?.title && (missing.missing === "" || missing.missing === true)
+        && missing.invalid === undefined && missing.known === undefined
+        && verifiedWikipediaNames(title, payload.query, missing.title).includes(title);
+      const pages = returnedPages.filter((page) => page?.title && page.fullurl
+        && page.missing === undefined && page.invalid === undefined && page.known === undefined);
       if (!cache || pages.length !== 1) return pages;
       const page = pages[0];
       const names = verifiedWikipediaNames(title, payload?.query, page.title!);
@@ -327,7 +343,9 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
       trimCache(cache.pages);
       return entry.value!;
     };
-    return cache ? sharedCachedRequest(cache.pages, key, signal, load) : load(signal);
+    return cache ? sharedCachedRequest(cache.pages, key, signal, load,
+      (pages) => pages.length > 0 || confirmedMissing,
+      (pages) => pages.length ? WIKIPEDIA_CACHE_TTL_MS : WIKIPEDIA_MISSING_PAGE_TTL_MS) : load(signal);
   }))).flat();
 }
 
@@ -468,7 +486,7 @@ export async function resolveWikipediaImage(source: WikipediaSource, signal?: Ab
       thumbnail: page.thumbnail,
       original: page.original
     }, cache, requestSignal, 1);
-  });
+  }, (image) => !!image);
 }
 
 export async function resolveWikipediaTitle(title: string) {
