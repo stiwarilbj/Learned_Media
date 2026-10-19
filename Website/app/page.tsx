@@ -6,6 +6,7 @@ import { Navigation } from "@/components/learned-media/Navigation";
 import { Icon } from "@/components/learned-media/icons";
 import { readCredential, saveCredential } from "@/lib/remembered-keys";
 import { AccountCredentials } from "@/lib/account-credentials";
+import { LatestSnapshotQueue } from "@/lib/latest-snapshot-queue";
 import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
@@ -97,50 +98,73 @@ function compactWorkspaceStoreForLocalStorage(store: AppWorkspaceStore): Workspa
     ...store,
     records: store.records.map((record) => {
       const cached = compactRecordCache.get(record);
-      if (cached) return cached;
-      const compact = { ...record, state: compactStateForLocalStorage(record.state) as unknown as PersistedState };
+      const state = compactStateForLocalStorage(record.state) as unknown as PersistedState;
+      if (cached?.state === state && cached.name === record.name && cached.updatedAt === record.updatedAt) return cached;
+      const compact = { ...record, state };
       compactRecordCache.set(record, compact);
       return compact;
     })
   };
 }
 
-let localWorkspaceWriteQueue: Promise<void> = Promise.resolve();
 let localWorkspaceWriteRevision = 0;
+let newestLocalSnapshot: AppWorkspaceStore | undefined;
+type CloudJournalRevision = { ownerId: string; revision: number };
+let cloudJournalRevision = 0;
+let locallyAcknowledgedJournal: string | null = null;
+const cloudStoreRevisions = new WeakMap<AppWorkspaceStore, CloudJournalRevision>();
+const acknowledgedCloudRevisions = new Map<string, number>();
+
+function clearAcknowledgedWorkspaceJournal(journal: string | null) {
+  try {
+    if (!journal || journal !== locallyAcknowledgedJournal || window.localStorage.getItem(PENDING_WORKSPACE_JOURNAL_KEY) !== journal) return;
+    const cloud = (JSON.parse(journal) as { cloud?: CloudJournalRevision }).cloud;
+    if (cloud && (acknowledgedCloudRevisions.get(cloud.ownerId) ?? 0) < cloud.revision) return;
+    window.localStorage.removeItem(PENDING_WORKSPACE_JOURNAL_KEY);
+    locallyAcknowledgedJournal = null;
+  } catch { /* Keep the recovery journal if its acknowledgment cannot be verified. */ }
+}
+
+const localWorkspaceWrites = new LatestSnapshotQueue<{
+  localSnapshot: AppWorkspaceStore; journal: string | null;
+}>(async ({ localSnapshot, journal }) => {
+  try {
+    await writeRawWorkspaceStore(localSnapshot, { writeRecovery: false });
+  } catch {
+    // A delayed failure must not replace a newer pagehide recovery copy.
+    await writeRawWorkspaceStore(newestLocalSnapshot ?? localSnapshot, { writeRecovery: true });
+  }
+  locallyAcknowledgedJournal = journal;
+  // Older writes cannot erase a newer journal, even with equal timestamps.
+  clearAcknowledgedWorkspaceJournal(journal);
+});
 
 function writeWorkspaceStore(store: AppWorkspaceStore, options: { recovery?: boolean } = {}) {
   const recovery = options.recovery ?? true;
   const localSnapshot = compactWorkspaceStoreForLocalStorage(store);
+  newestLocalSnapshot = localSnapshot;
+  if (recovery) {
+    // Page closure cannot wait for the active IndexedDB write to finish.
+    try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(localSnapshot)); } catch { /* Keep the journal and try IndexedDB. */ }
+  }
   const revision = ++localWorkspaceWriteRevision;
   const activeRecord = localSnapshot.records.find((record) => record.id === localSnapshot.activeId);
-  if (!recovery && activeRecord) {
-    const journal = {
+  let journal: string | null = null;
+  if (activeRecord) {
+    journal = JSON.stringify({
       revision,
+      writeId: crypto.randomUUID(),
+      cloud: cloudStoreRevisions.get(store),
       activeId: activeRecord.id,
       savedAt: activeRecord.state.savedAt ?? activeRecord.updatedAt,
       topics: activeRecord.state.topics,
       settings: activeRecord.state.settings,
       feedStarted: activeRecord.state.feedStarted,
       theme: activeRecord.state.theme
-    };
-    try { window.localStorage.setItem(PENDING_WORKSPACE_JOURNAL_KEY, JSON.stringify(journal)); } catch { /* IndexedDB remains the normal persistence path. */ }
+    });
+    try { window.localStorage.setItem(PENDING_WORKSPACE_JOURNAL_KEY, journal); } catch { /* IndexedDB remains the normal persistence path. */ }
   }
-  const next = localWorkspaceWriteQueue.then(async () => {
-    try {
-      await writeRawWorkspaceStore(localSnapshot, { writeRecovery: recovery });
-    } catch (error) {
-      if (recovery) throw error;
-      await writeRawWorkspaceStore(localSnapshot, { writeRecovery: true });
-    }
-    try {
-      const pending = JSON.parse(window.localStorage.getItem(PENDING_WORKSPACE_JOURNAL_KEY) || "null") as { revision?: number; activeId?: string; savedAt?: string } | null;
-      const committedAt = Date.parse(activeRecord?.state.savedAt ?? activeRecord?.updatedAt ?? "") || 0;
-      const pendingAt = Date.parse(pending?.savedAt ?? "") || 0;
-      if (pending?.activeId === activeRecord?.id && pendingAt <= committedAt) window.localStorage.removeItem(PENDING_WORKSPACE_JOURNAL_KEY);
-    } catch { /* A malformed journal is harmless after the transactional write. */ }
-  });
-  localWorkspaceWriteQueue = next.catch(() => undefined);
-  return next;
+  return localWorkspaceWrites.enqueue({ localSnapshot, journal });
 }
 
 function restorePendingWorkspaceJournal(store: AppWorkspaceStore, catalogTopics?: TopicNode[]): AppWorkspaceStore {
@@ -153,7 +177,8 @@ function restorePendingWorkspaceJournal(store: AppWorkspaceStore, catalogTopics?
     if (!record) return store;
     const previousTime = Math.max(Date.parse(record.updatedAt || "") || 0, Date.parse(record.state.savedAt || "") || 0);
     if ((Date.parse(journal.savedAt || "") || 0) < previousTime) {
-      window.localStorage.removeItem(PENDING_WORKSPACE_JOURNAL_KEY);
+      // The stored snapshot is newer, but an upload may still be unacknowledged.
+      // The next save replaces this journal and clears it after acknowledgment.
       return store;
     }
     const recoveredTopics = restoreTopicPreferences(journal.topics, false, catalogTopics);
@@ -625,13 +650,10 @@ export default function HomePage() {
     youtubeAbortController.current?.abort();
     youtubeSearchAbortController.current?.abort();
     globalSearchAbortController.current?.abort();
-    cloudAbortController.current?.abort();
     imageHydrationControllers.current.forEach(controller => controller.abort());
     imageHydrationControllers.current.clear();
     imageHydrationEpoch.current += 1;
     imageHydrationQueue.current = [];
-    if (cloudSaveTimer.current !== null) window.clearTimeout(cloudSaveTimer.current);
-    cloudSaveTimer.current = null;
     requestGeneration.current += 1;
     workspaceEpochRef.current += 1;
     setLoading(false);
@@ -641,27 +663,40 @@ export default function HomePage() {
   }, []);
 
   const scheduleCloudSave = useCallback(() => {
-    if (!hydrated || !cloudSyncRef.current || !workspaceStoreRef.current || !cloudUserId.current) return;
+    const currentStore = workspaceStoreRef.current;
+    const currentUser = cloudUserId.current;
+    if (!hydrated || !cloudSyncRef.current || !currentStore || !currentUser || !cloudLoaded.current || currentStore.ownerId !== currentUser) return;
+    cloudStoreRevisions.set(currentStore, { ownerId: currentUser, revision: ++cloudJournalRevision });
     if (cloudSaveTimer.current !== null) window.clearTimeout(cloudSaveTimer.current);
-    cloudSaveTimer.current = window.setTimeout(() => {
+    const enqueueSave = () => {
       cloudSaveTimer.current = null;
       const sync = cloudSyncRef.current;
       const store = workspaceStoreRef.current;
       const userId = cloudUserId.current;
       if (!sync || !store || !userId || store.ownerId !== userId) return;
       const epoch = cloudEpoch.current;
-      const controller = new AbortController();
-      cloudAbortController.current?.abort();
-      cloudAbortController.current = controller;
+      // This controller belongs to the account, not the current edit/workspace.
+      const controller = cloudAbortController.current;
+      if (!controller || controller.signal.aborted || !cloudLoaded.current) return;
+      const receipt = cloudStoreRevisions.get(store);
       setSyncStatus("syncing");
       void sync.save(store, controller.signal).then(() => {
-        if (cloudEpoch.current === epoch && cloudUserId.current === userId) { setSyncStatus("synced"); setSyncError(""); }
+        if (cloudEpoch.current !== epoch || cloudUserId.current !== userId) return;
+        if (receipt) {
+          acknowledgedCloudRevisions.set(userId, Math.max(acknowledgedCloudRevisions.get(userId) ?? 0, receipt.revision));
+          clearAcknowledgedWorkspaceJournal(locallyAcknowledgedJournal);
+        }
+        if (!sync.hasPendingUploads) { setSyncStatus("synced"); setSyncError(""); }
       }).catch((error) => {
         if (controller.signal.aborted || cloudEpoch.current !== epoch) return;
         setSyncStatus(navigator.onLine === false ? "offline" : "error");
         setSyncError(error instanceof Error ? error.message : "Cloud sync could not save this workspace.");
       });
-    }, 650);
+    };
+    // An active upload already provides batching time. Replace its pending
+    // snapshot immediately so the next send cannot use a superseded revision.
+    if (cloudSyncRef.current.isUploading) enqueueSave();
+    else cloudSaveTimer.current = window.setTimeout(enqueueSave, 650);
   }, [hydrated]);
 
   const makeCurrentSnapshot = useCallback((): PersistedState => ({
@@ -1153,7 +1188,10 @@ export default function HomePage() {
     const retry = () => {
       const revision = authRevision;
       if (active && document.visibilityState !== "hidden") void auth.getSession().then(({ data, error }) => {
-        if (active && !error && revision === authRevision) void loadAccount(data.session);
+        if (active && !error && revision === authRevision) {
+          void loadAccount(data.session);
+          if (cloudLoaded.current && cloudSyncRef.current?.hasPendingUploads) scheduleCloudSave();
+        }
       });
     };
     window.addEventListener("online", retry); window.addEventListener("focus", retry);
@@ -1199,12 +1237,12 @@ export default function HomePage() {
       }
       store.activeId = workspaceIdRef.current;
       store.theme = theme;
+      scheduleCloudSave();
       void saveYouTubeWorkspace(youtubeWorkspaceRef.current, { activity: true, workspaceId: workspaceIdRef.current });
       writeWorkspaceState(snapshot);
       // writeWorkspaceStore writes localStorage before opening IndexedDB, so
       // the recovery copy survives a pagehide even when the transaction cannot
       // finish before the browser closes the document.
-      try { window.localStorage.setItem("learned-media-all-workspaces", JSON.stringify(compactWorkspaceStoreForLocalStorage(store))); } catch { /* Recovery is best effort. */ }
       void writeWorkspaceStore(store).catch(() => undefined);
     };
     const handleVisibilityChange = () => {
@@ -1218,7 +1256,7 @@ export default function HomePage() {
       window.removeEventListener("beforeunload", flushWorkspace);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [hydrated, theme]);
+  }, [hydrated, scheduleCloudSave, theme]);
 
   useEffect(() => {
     const element = mainScrollRef.current;

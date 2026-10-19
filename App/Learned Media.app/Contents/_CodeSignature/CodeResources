@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		h7rrxWSTSIy+7zF3I0d3hj/ALP8=
+		Qg+JA68hZLlsKLbgktMy7SsA9eQ=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -42,7 +42,11 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		+spwXctj7E4YN2fh2ERDw1QFD/I=
+		BtWIH9+p3de8/V4ghcWAaQ23gp0=
+		</data>
+		<key>Resources/frontend/latest-snapshot-queue.js</key>
+		<data>
+		PFEdY7iM6abgs7S8i5Y9foES/mY=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
@@ -137,7 +141,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			IOgFwXGaDXObkGKvy1Zq0NdoF7WZyrVtdvq1bv1mh4o=
+			OzgGgKWB0Y1in8OY4B22UIG938RtOqjXUQVsVW4fmg8=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -186,7 +190,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Trj6Hfg3yzAjVt1qQbikmQMgSprxdm8RyZfuw8FtutA=
+			G4QO289Br3ZMxOIIHxRCsD87wnfljQBVbDKqqk5lcCw=
+			</data>
+		</dict>
+		<key>Resources/frontend/latest-snapshot-queue.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			D2s4yUv7hQTCzs9oea0zS6vP172v/WdnCncYuzQm/Jg=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>

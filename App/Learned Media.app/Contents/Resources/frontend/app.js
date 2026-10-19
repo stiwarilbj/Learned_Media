@@ -181,9 +181,9 @@
   let focusedQuestionSelection = null;
   let saveInFlight = false;
   let cloudSaveTimer = null;
-  let cloudSaveInFlight = false;
-  let cloudSaveQueued = false;
   let cloudSyncToken = 0;
+  let cloudSaveRevision = 0;
+  let cloudUploads = createCloudUploadQueue();
   let trackedFactMemory = null;
   let factMemoryById = new Map();
   let changedFactMemoryIds = new Set();
@@ -697,54 +697,68 @@
     const now = new Date().toISOString();
     return { id: "local-workspace", name: "Local Workspace", createdAt: now, updatedAt: now, state: { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: now, topics: makeTopics(), settings: Object.assign({}, DEFAULT_SETTINGS), cards: [], profile: {}, started: false, youtubeActivity: youtubeActivity({ savedIds: [], history: [], playbackPositions: {}, searchText: "", smartIds: null, smartReasons: {}, smartRan: false, topic: "All", tab: "discover", selectedChannelId: null, selectedVideoId: null, discoverIds: [], order: "newest" }) } };
   }
+  function createCloudUploadQueue() {
+    return new window.LEARNED_MEDIA_SNAPSHOTS.LatestSnapshotQueue(async function (snapshot) {
+      if (snapshot.token !== cloudSyncToken || !state.account || state.account.id !== snapshot.ownerId) throw new Error("Account changed. Cloud save was canceled.");
+      if (!snapshot.payload) {
+        // Materialize only when this snapshot is sent. Superseded waiting saves
+        // never serialize the catalog or scan fact memory.
+        if (trackedFactMemory !== state.factMemory) {
+          factMemoryById = new Map(state.factMemory.map(function (item) { return [item.id, item]; }));
+          changedFactMemoryIds = new Set(factMemoryById.keys());
+          trackedFactMemory = state.factMemory;
+        }
+        const changedMemories = [];
+        changedFactMemoryIds.forEach(function (id) {
+          const value = factMemoryById.get(id);
+          if (!value) { changedFactMemoryIds.delete(id); return; }
+          const item = normalizeMemory(value), key = item.fingerprint || item.id, serialized = JSON.stringify(item);
+          if (sentFactMemories.get(key) === serialized) { changedFactMemoryIds.delete(id); return; }
+          changedMemories.push({ id: id, value: value, item: item, key: key, serialized: serialized });
+        });
+        snapshot.payload = JSON.stringify({ persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: changedMemories.map(function (entry) { return entry.item; }), account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" });
+        snapshot.changedMemories = changedMemories;
+      }
+      // Retain the exact payload for idempotent retries; edits cannot mutate it.
+      await bridge("cloudSave", { state: JSON.parse(snapshot.payload) });
+      if (snapshot.token !== cloudSyncToken || state.account?.id !== snapshot.ownerId) return;
+      snapshot.changedMemories.forEach(function (entry) {
+        sentFactMemories.set(entry.key, entry.serialized);
+        if (factMemoryById.get(entry.id) === entry.value) changedFactMemoryIds.delete(entry.id);
+      });
+    });
+  }
   function scheduleCloudSave() {
     if (!state.account || !state.cloudSyncReady) return;
-    if (cloudSaveInFlight) { cloudSaveQueued = true; return; }
     if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
-    cloudSaveTimer = window.setTimeout(function () {
+    const enqueueSave = function () {
       cloudSaveTimer = null;
-      if (cloudSaveInFlight || !state.account || !state.cloudSyncReady) return;
+      if (!state.account || !state.cloudSyncReady || state.cloudOwnerId !== state.account.id) return;
       const token = cloudSyncToken;
-      cloudSaveInFlight = true;
+      const ownerId = state.account.id;
+      const uploads = cloudUploads;
+      const revision = ++cloudSaveRevision;
       state.syncStatus = "syncing";
       state.syncError = "";
-      // Unknown history replacements take a full comparison, never a dirty-only save.
-      if (trackedFactMemory !== state.factMemory) {
-        factMemoryById = new Map(state.factMemory.map(function (item) { return [item.id, item]; }));
-        changedFactMemoryIds = new Set(factMemoryById.keys());
-        trackedFactMemory = state.factMemory;
-      }
-      const changedMemories = [];
-      changedFactMemoryIds.forEach(function (id) {
-        const value = factMemoryById.get(id);
-        if (!value) { changedFactMemoryIds.delete(id); return; }
-        const item = normalizeMemory(value), key = item.fingerprint || item.id, serialized = JSON.stringify(item);
-        if (sentFactMemories.get(key) === serialized) { changedFactMemoryIds.delete(id); return; }
-        changedMemories.push({ id: id, value: value, item: item, key: key, serialized: serialized });
-      });
-      bridge("cloudSave", { state: { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: changedMemories.map(function (entry) { return entry.item; }), account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" } }).then(function () {
-        if (token !== cloudSyncToken) return;
-        changedMemories.forEach(function (entry) {
-          sentFactMemories.set(entry.key, entry.serialized);
-          if (factMemoryById.get(entry.id) === entry.value) changedFactMemoryIds.delete(entry.id);
-        });
+      uploads.enqueue({ token: token, ownerId: ownerId }).then(function () {
+        if (token !== cloudSyncToken || revision !== cloudSaveRevision || state.account?.id !== ownerId || uploads.hasUnacknowledged) return;
         state.syncStatus = nativeKeySyncError ? "error" : "synced";
         state.syncError = nativeKeySyncError;
         render();
       }).catch(function (error) {
-        if (token !== cloudSyncToken) return;
+        if (token !== cloudSyncToken || revision !== cloudSaveRevision || state.account?.id !== ownerId) return;
         state.syncStatus = navigator.onLine === false ? "offline" : "error";
         state.syncError = error.message || "Cloud sync could not save this Mac.";
         render();
-      }).then(function () {
-        cloudSaveInFlight = false;
-        if (cloudSaveQueued) { cloudSaveQueued = false; scheduleCloudSave(); }
       });
-    }, 700);
+    };
+    if (cloudUploads.isWriting) enqueueSave();
+    else cloudSaveTimer = window.setTimeout(enqueueSave, 700);
   }
   async function syncCloudAccount() {
     if (!state.account || !state.account.id) return;
     const token = ++cloudSyncToken;
+    cloudUploads = createCloudUploadQueue();
     state.cloudSyncReady = false;
     trackedFactMemory = null;
     sentFactMemories.clear();
@@ -1168,9 +1182,6 @@
     state.loading = false;
     state.loadingCard = null;
     state.youtubeSmartLoading = false;
-    cloudSyncToken += 1;
-    cloudSaveQueued = false;
-    if (cloudSaveTimer) { window.clearTimeout(cloudSaveTimer); cloudSaveTimer = null; }
     if (stopYoutubePlayback) stopYoutubePlayback();
     cancelImageHydrations();
     bridge("cancelAll", {}).catch(function () {});
@@ -2328,6 +2339,9 @@
   async function signOut() {
     try {
       cancelWorkspaceOperations();
+      cloudSyncToken += 1;
+      cloudUploads = createCloudUploadQueue();
+      if (cloudSaveTimer) { window.clearTimeout(cloudSaveTimer); cloudSaveTimer = null; }
       await bridge("signOut", {});
       state.account = null;
       nativeAccountRestored = false;
@@ -2356,6 +2370,7 @@
   document.addEventListener("visibilitychange", refreshYouTubeIfDue);
   function refreshAccountKeys() {
     if (state.account && state.account.id === nativeCredentialOwner && document.visibilityState !== "hidden") void nativeCredentials.refresh({ automatic: true });
+    if (cloudUploads.hasUnacknowledged && document.visibilityState !== "hidden") scheduleCloudSave();
   }
   window.addEventListener("online", refreshAccountKeys);
   window.addEventListener("focus", refreshAccountKeys);

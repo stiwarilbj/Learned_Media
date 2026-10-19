@@ -1763,6 +1763,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private var authState = ""
     private var config: [String: Any] = [:]
     private var activeTasks: [String: Task<Void, Never>] = [:]
+    private var cloudSyncTasks = Set<String>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let configURL = Bundle.main.url(forResource: "Config", withExtension: "plist"),
@@ -1837,7 +1838,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             } catch { respond(id: id, error: "The API key could not be saved in Keychain.") }
         case "useKeys":
             let key = payload["gemini"] as? String ?? ""
-            if key != geminiKey { cancelActiveTasks(); geminiKey = key; Task { await gemini.reset() } }
+            if key != geminiKey { cancelActiveTasks(preserveCloudSync: true); geminiKey = key; Task { await gemini.reset() } }
             respond(id: id, result: true)
         case "currentAccount", "accountKeysLoad", "accountKeySave":
             Task { [weak self] in
@@ -1915,7 +1916,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         case "exportFacts":
             exportFacts(id: id, format: payload["format"] as? String ?? "txt", workspaceName: payload["workspaceName"] as? String ?? "Local Workspace", facts: payload["facts"] as? [[String: Any]] ?? [])
         case "setGeminiKey":
-            cancelActiveTasks()
+            cancelActiveTasks(preserveCloudSync: true)
             geminiKey = payload["key"] as? String ?? ""
             Task { await gemini.reset() }
             do { try keychain.save("gemini-api-key", data: Data(geminiKey.utf8)); respond(id: id, result: true) }
@@ -2029,11 +2030,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             if let taskID = payload["taskId"] as? String {
                 activeTasks[taskID]?.cancel()
                 activeTasks[taskID] = nil
+                cloudSyncTasks.remove(taskID)
                 respond(id: taskID, error: "Request canceled.")
             }
             respond(id: id, result: true)
         case "cancelAll":
-            cancelActiveTasks()
+            // Workspace/key/search changes do not cancel account-level cloud sync.
+            cancelActiveTasks(preserveCloudSync: true)
             respond(id: id, result: true)
         case "openURL":
             if let raw = payload["url"] as? String, let url = URL(string: raw), allowedExternal(url) { NSWorkspace.shared.open(url) }
@@ -2051,20 +2054,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             keychain.deleteSession()
             respond(id: id, result: true)
         case "cloudLoad":
+            cloudSyncTasks.insert(id)
             let task = Task { [weak self] in
                 guard let self else { return }
                 do { respond(id: id, result: try await cloudLoad()) }
                 catch { respond(id: id, error: userMessage(error)) }
                 activeTasks[id] = nil
+                cloudSyncTasks.remove(id)
             }
             activeTasks[id] = task
         case "cloudSave":
             let cloudState = payload["state"]
+            cloudSyncTasks.insert(id)
             let task = Task { [weak self] in
                 guard let self else { return }
                 do { respond(id: id, result: try await cloudSave(cloudState)) }
                 catch { respond(id: id, error: userMessage(error)) }
                 activeTasks[id] = nil
+                cloudSyncTasks.remove(id)
             }
             activeTasks[id] = task
         default:
@@ -2258,6 +2265,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         let (supabaseURL, anonKey) = try cloudConfiguration()
         let session = try await cloudSession()
         let envelope = value as? [String: Any] ?? [:]
+        guard envelope["cloudOwnerId"] as? String == session.userID else {
+            throw NativeError(message: "Account changed. Cloud save was canceled.", retryable: false)
+        }
+        try Task.checkCancellation()
         let rawWorkspaces = envelope["workspaces"] as? [[String: Any]] ?? []
         // Bound uploads by row count and encoded bytes; never split a workspace.
         var batches: [[[String: Any]]] = []
@@ -2499,10 +2510,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         }
     }
 
-    private func cancelActiveTasks() {
-        let tasks = activeTasks
-        activeTasks.removeAll()
+    private func cancelActiveTasks(preserveCloudSync: Bool = false) {
+        let tasks = activeTasks.filter { !preserveCloudSync || !cloudSyncTasks.contains($0.key) }
         tasks.forEach { taskID, task in
+            activeTasks[taskID] = nil
+            cloudSyncTasks.remove(taskID)
             task.cancel()
             respond(id: taskID, error: "Request canceled.")
         }

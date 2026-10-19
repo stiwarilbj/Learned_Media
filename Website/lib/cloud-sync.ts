@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient, type User } from '@supabase/supabase
 import type { AccountKeys, KeyProvider } from './account-credentials';
 import { canonicalRecord, safeMemory, type CloudRecord } from './cloud-records';
 import { workspaceRevisionId } from './workspace-revision';
+import { LatestSnapshotQueue } from './latest-snapshot-queue';
 import type { FactMemory } from './fact-quality';
 import type { Database } from './supabase/database.types';
 // Public client configuration; authorization is enforced by RLS, never by this key.
@@ -20,13 +21,19 @@ export async function googleSignIn() {
   if (error) throw error;
 }
 export type CloudAccount = Pick<User, 'id' | 'email' | 'user_metadata'>;
+type CloudSnapshot = { ownerId?: string; records: CloudRecord[]; factMemory?: FactMemory[] };
 export class WorkspaceCloudSync {
   private sent = new Map<string, string>();
   private memories = new Map<string, string>();
   private trackedMemory: FactMemory[] | undefined;
   private memoryById = new Map<string, FactMemory>();
   private changedMemoryIds = new Set<string>();
+  private uploads = new LatestSnapshotQueue<{ store: CloudSnapshot; signal: AbortSignal }>(
+    ({ store, signal }) => this.saveSnapshot(store, signal)
+  );
   constructor(readonly userId: string) {}
+  get hasPendingUploads() { return this.uploads.hasUnacknowledged; }
+  get isUploading() { return this.uploads.isWriting; }
   markFactMemoriesChanged(previous: FactMemory[], next: FactMemory[], ids: Set<string>) {
     // An unknown replacement (import/recovery) must take the full comparison path.
     if (this.trackedMemory !== previous) return;
@@ -74,7 +81,15 @@ export class WorkspaceCloudSync {
     for (const memory of factMemory) this.memories.set(memory.fingerprint || memory.id, JSON.stringify(safeMemory(memory)));
     return { records, factMemory };
   }
-  async save(store: { ownerId?: string; records: CloudRecord[]; factMemory?: FactMemory[] }, signal: AbortSignal) {
+  save(store: CloudSnapshot, signal: AbortSignal) {
+    if (store.ownerId !== this.userId || signal.aborted) return Promise.reject(new Error('Account changed. Cloud save was canceled.'));
+    // Store records are replaced/updated in place by the app. Capture their current
+    // state references now; canonicalization only runs for snapshots actually sent.
+    const snapshot = { ...store, records: store.records.map(record => ({ ...record, state: { ...record.state } })) };
+    return this.uploads.enqueue({ store: snapshot, signal });
+  }
+  private async saveSnapshot(store: CloudSnapshot, signal: AbortSignal) {
+    if (signal.aborted) throw new Error('Cloud save was canceled.');
     if (store.ownerId !== this.userId) throw new Error('Account changed. Cloud save was canceled.');
     const api = cloudClient();
     // Bound both row count and payload size; a large workspace travels alone.

@@ -38,6 +38,8 @@ The website remembers API keys in encrypted browser storage. When you sign in wi
 
 On GitHub Pages, requests to Gemini, Wikipedia, and YouTube run directly from your browser.
 
+Workspace saves keep one active write and only the latest waiting snapshot. New edits and workspace switches preserve active uploads; failed uploads retain their exact revision for retry. Recovery journals wait for local persistence and, when signed in, the corresponding cloud acknowledgment. Older writes cannot clear newer recovery entries.
+
 ## Videos
 
 Videos are limited to approved creators and individually approved videos. The workspace includes:
