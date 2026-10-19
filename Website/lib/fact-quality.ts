@@ -1,5 +1,5 @@
 import { unsupportedCausality } from "./causal-validation";
-import { unsupportedQuantities } from "./quantity-validation";
+import { createQuantityValidator } from "./quantity-validation";
 import promptInstructions from "./prompt-instructions.json";
 import { SessionCache } from "./session-cache";
 import type { FactCard, WikipediaSource } from "./types";
@@ -311,6 +311,7 @@ export function validateDraft(draft: GroundedDraft, sources: WikipediaSource[], 
   if (!Array.isArray(draft.evidence) || draft.evidence.length > 12 || draft.evidence.some(item => !item || !Number.isInteger(item.sentence) || item.sentence < 0 || item.sentence >= sentenceCount)) throw new Error("The fact is missing verifiable evidence.");
   const evidenceBySentence: GroundedDraft["evidence"][] = Array.from({ length: sentenceCount }, () => []);
   draft.evidence.forEach(item => evidenceBySentence[item.sentence].push(item));
+  const unsupportedQuantities = createQuantityValidator();
   const sections = new Set<string>();
   const normalizedExtracts = new Map<number, string>();
   function normalizedExtract(sourceIndex: number) {

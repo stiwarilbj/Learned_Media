@@ -70,8 +70,23 @@ function equivalent(claim: Quantity, source: Quantity) {
   return Math.abs(rounded-claim.value) <= epsilon;
 }
 
+/** Reuse exact quotation parsing within one draft, never its evidence assignments. */
+export function createQuantityValidator() {
+  const parsedPassages = new Map<string, Quantity[]>();
+  return (claim: string, passages: string[]): string[] => {
+    const sources = passages.flatMap(passage => {
+      let parsed = parsedPassages.get(passage);
+      if (parsed === undefined) {
+        parsed = quantities(passage);
+        parsedPassages.set(passage, parsed);
+      }
+      return parsed;
+    });
+    return [...new Set(quantities(claim).filter(quantity => !sources.some(source => equivalent(quantity,source))).map(quantity => quantity.text))];
+  };
+}
+
 /** Report unsupported quantities using only the passages assigned to this claim/sentence. */
 export function unsupportedQuantities(claim: string, passages: string[]): string[] {
-  const sources = passages.flatMap(quantities);
-  return [...new Set(quantities(claim).filter(quantity => !sources.some(source => equivalent(quantity,source))).map(quantity => quantity.text))];
+  return createQuantityValidator()(claim, passages);
 }
