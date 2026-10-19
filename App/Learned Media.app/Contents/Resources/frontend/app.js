@@ -882,19 +882,28 @@
   function localVideoReason(candidate) { return videoSearch.videoSearchReason(candidate.video, youtubeSearchPlan || videoSearch.makeLocalVideoPlan(state.youtube.searchText), candidate.score); }
   function videoSearchIndex() {
     if (youtubeIndexedVideos === state.youtube.videos) return;
-    youtubeIndexedVideos = state.youtube.videos; youtubeIndexRevision++;
+    const hadIndex = youtubeIndexedVideos !== null;
+    state.youtube.videos = window.LEARNED_MEDIA_VIDEO_METADATA.reuseUnchangedVideoRecords(youtubeIndexedVideos || [], state.youtube.videos);
+    const changes = window.LEARNED_MEDIA_VIDEO_METADATA.diffVideoSearchMetadata(youtubeById, state.youtube.videos);
+    youtubeIndexedVideos = state.youtube.videos;
     youtubeById = new Map(youtubeIndexedVideos.map(function(video){ return [video.id,video]; }));
+    if (hadIndex && !changes.changed) return;
+    youtubeIndexRevision++;
     youtubeSmartSearchCache.clear();
     for (const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video catalog changed during search."));
     youtubeWorkerPending.clear();
+    let newWorker = false;
     if (!youtubeSemanticWorker && !youtubeSemanticWorkerFailed && typeof Worker !== "undefined") {
       try {
         youtubeSemanticWorker = new Worker("youtube-search.worker.js");
+        newWorker = true;
         youtubeSemanticWorker.onmessage = function(event) { const reply=event.data, pending=youtubeWorkerPending.get(reply.requestId); if (!pending) return; youtubeWorkerPending.delete(reply.requestId); if(reply.revision!==youtubeIndexRevision) pending.reject(new Error("Video catalog changed during search.")); else pending.resolve(reply.candidates.flatMap(function(candidate){ const video=youtubeById.get(candidate.videoId); return video ? [Object.assign({},candidate,{video:video})] : []; })); };
         youtubeSemanticWorker.onerror = function() { youtubeSemanticWorkerFailed=true; youtubeSemanticWorker.terminate(); youtubeSemanticWorker=null; for(const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video search worker unavailable.")); youtubeWorkerPending.clear(); };
       } catch(_) { youtubeSemanticWorkerFailed=true; }
     }
-    if(youtubeSemanticWorker) youtubeSemanticWorker.postMessage({type:"initialize",videos:youtubeIndexedVideos,revision:youtubeIndexRevision});
+    if(youtubeSemanticWorker) youtubeSemanticWorker.postMessage(newWorker
+      ? {type:"initialize",videos:youtubeIndexedVideos,revision:youtubeIndexRevision}
+      : {type:"update",upserts:changes.upserts,removeIds:changes.removeIds,orderIds:changes.orderIds,revision:youtubeIndexRevision});
   }
   async function localVideoCandidates(plan, limit, signal, excluded) {
     videoSearchIndex();

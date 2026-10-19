@@ -24,6 +24,7 @@ import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, importCoordinatedYouTubeCatalog, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
+import { diffVideoSearchMetadata, reuseUnchangedVideoRecords } from "@/lib/video-metadata";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -1273,19 +1274,11 @@ export default function HomePage() {
     }
     const indexed = youtubeSearchWorkerIndexedVideos.current;
     if (!indexed) return;
-    const currentIds = new Set<string>();
-    const upserts: YouTubeVideo[] = [];
-    for (const video of nextVideos) {
-      currentIds.add(video.id);
-      if (indexed.get(video.id) !== video) upserts.push(video);
-    }
-    const removeIds: string[] = [];
-    for (const id of indexed.keys()) if (!currentIds.has(id)) removeIds.push(id);
-    if (!upserts.length && !removeIds.length) return;
-    for (const id of removeIds) indexed.delete(id);
-    for (const video of upserts) indexed.set(video.id, video);
+    const { upserts, removeIds, orderIds, changed } = diffVideoSearchMetadata(indexed, nextVideos);
+    if (!changed) return;
+    youtubeSearchWorkerIndexedVideos.current = new Map(nextVideos.map(video => [video.id, video]));
     const revision = ++youtubeSearchWorkerRevision.current;
-    worker.postMessage({ type: "update", revision, upserts, removeIds });
+    worker.postMessage({ type: "update", revision, upserts, removeIds, orderIds });
     setYoutubeSearchIndexRevision(revision);
   }, []);
 
@@ -2100,8 +2093,10 @@ export default function HomePage() {
   }, [apiKey, keysHydrated, authRestored, testConnection]);
 
   const updateYouTubeWorkspace = useCallback((update: (current: YouTubeWorkspaceState) => YouTubeWorkspaceState, syncCloud = false) => {
-    const next = update(youtubeWorkspaceRef.current);
+    let next = update(youtubeWorkspaceRef.current);
     if (next === youtubeWorkspaceRef.current) return;
+    const videos = reuseUnchangedVideoRecords(youtubeWorkspaceRef.current.videos, next.videos);
+    if (videos !== next.videos) next = { ...next, videos };
     youtubeActivityEditEpoch.current += 1;
     youtubeWorkspaceRef.current = next;
     setYoutubeWorkspace(next);

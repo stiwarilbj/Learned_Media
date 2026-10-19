@@ -138,12 +138,13 @@
         const message = error.message || "Approved source import failed."; errors.push(message); progress.error = errors.slice(0, 3).join(" · "); progress.completedSources += 1; sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "error", lastSuccessfulSyncAt: prior && prior.lastSuccessfulSyncAt, lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: prior && prior.importedVideoCount, error: message }; onProgress(Object.assign({}, progress)); return { job: job, videos: [], scanned: false, ok: false };
       }
     });
-    const merged = {}; oldVideos.forEach(function (video) { merged[video.id] = Object.assign({}, video); });
+    const merged = {}; oldVideos.forEach(function (video) { merged[video.id] = video; });
     imported.filter(function (result) { return result.scanned && result.ok; }).forEach(function (result) {
-      Object.keys(merged).forEach(function (id) { const video = merged[id]; if (!video.sourceIds || video.sourceIds.indexOf(result.job.sourceId) < 0) return; video.sourceIds = video.sourceIds.filter(function (sourceId) { return sourceId !== result.job.sourceId; }); if (!video.sourceIds.length) delete merged[id]; });
+      const importedIds = new Set(result.videos.map(function (video) { return video.id; }));
+      Object.keys(merged).forEach(function (id) { const video = merged[id]; if (importedIds.has(id) || !video.sourceIds || video.sourceIds.indexOf(result.job.sourceId) < 0) return; const sourceIds = video.sourceIds.filter(function (sourceId) { return sourceId !== result.job.sourceId; }); if (sourceIds.length) merged[id] = Object.assign({}, video, { sourceIds: sourceIds }); else delete merged[id]; });
       result.videos.forEach(function (video) { const previous = merged[video.id]; merged[video.id] = Object.assign({}, previous, video, { sourceIds: Array.from(new Set((previous && previous.sourceIds || []).concat([result.job.sourceId]))) }); });
     });
-    const videos = Object.keys(merged).map(function (id) { return merged[id]; }).filter(isAllowed); const channels = verified.map(function (entry) { return Object.assign({}, entry.channel, { videoCount: videos.filter(function (video) { return video.channelId === entry.channel.id; }).length, lastImportedAt: new Date().toISOString() }); });
+    const videos = window.LEARNED_MEDIA_VIDEO_METADATA.reuseUnchangedVideoRecords(oldVideos, Object.keys(merged).map(function (id) { return merged[id]; }).filter(isAllowed)); const channels = verified.map(function (entry) { return Object.assign({}, entry.channel, { videoCount: videos.filter(function (video) { return video.channelId === entry.channel.id; }).length, lastImportedAt: new Date().toISOString() }); });
     const complete = errors.length === 0 && verified.length === CHANNELS.length; progress.phase = "complete"; progress.currentSource = undefined; progress.error = complete ? undefined : (progress.error || "Some approved video sources need a retry."); onProgress(Object.assign({}, progress));
     return { channels: channels, videos: videos, sourceStates: sourceStates, incomplete: !complete, progress: progress, lastSyncAt: new Date().toISOString() };
   }

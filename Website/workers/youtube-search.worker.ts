@@ -17,7 +17,7 @@ type SearchRequest = {
 };
 type Request =
   | { type: "initialize"; revision: number; videos: YouTubeVideo[] }
-  | { type: "update"; revision: number; upserts: YouTubeVideo[]; removeIds: string[] }
+  | { type: "update"; revision: number; upserts: YouTubeVideo[]; removeIds: string[]; orderIds?: string[] }
   | { type: "cancel"; requestId: number }
   | SearchRequest;
 type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
@@ -101,6 +101,11 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
     latestRequestId += 1;
     for (const id of request.removeIds) videos.delete(id);
     for (const video of request.upserts) videos.set(video.id, video);
+    if (request.orderIds) {
+      const ordered = request.orderIds.flatMap(id => { const video = videos.get(id); return video ? [video] : []; });
+      videos.clear();
+      for (const video of ordered) videos.set(video.id, video);
+    }
     revision = request.revision;
     resultCache.clear();
     if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision } satisfies Reply);

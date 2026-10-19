@@ -45,6 +45,7 @@ Videos are limited to approved creators and individually approved videos. The wo
 - Search, channel and topic filters, saved videos, history, and playback
 - Gemini-powered search that ranks approved videos by meaning and explains each match
 - Daily refreshes for overdue creator sources, plus an immediate **Refresh videos** action
+- Refreshes reuse unchanged video records and search entries; changed metadata and source permissions still update normally
 - 3Blue1Brown videos from the approved Neural Networks and Statistics playlists, including future additions
 
 ## macOS app

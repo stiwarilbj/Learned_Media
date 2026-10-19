@@ -3,6 +3,7 @@ import { backgroundRetryDelay, serverRetryAt, waitForBackgroundRetry } from "./b
 import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportChanges } from "./youtube-import-lease";
 import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
+import { reuseUnchangedVideoRecords } from "./video-metadata";
 export type YouTubeTopic = "History" | "Politics" | "Geography" | "Science" | "Nature" | "Mathematics" | "Literature" | "Sports" | "Culture" | "Technology";
 
 export type ApprovedChannelSeed = {
@@ -610,10 +611,11 @@ export class YouTubeClient {
         return { job, videos: [] as YouTubeVideo[], scanned: false, ok: false };
       }
     });
-    const merged = new Map(existingVideos.map((video) => [video.id, { ...video }]));
+    const merged = new Map(existingVideos.map((video) => [video.id, video]));
     imported.filter((result) => result.scanned && result.ok).forEach((result) => {
+      const importedIds = new Set(result.videos.map(video => video.id));
       merged.forEach((video, id) => {
-        if (video.sourceIds?.includes(result.job.sourceId)) {
+        if (!importedIds.has(id) && video.sourceIds?.includes(result.job.sourceId)) {
           const sourceIds = video.sourceIds.filter((sourceId) => sourceId !== result.job.sourceId);
           if (sourceIds.length) merged.set(id, { ...video, sourceIds }); else merged.delete(id);
         }
@@ -636,10 +638,10 @@ export class YouTubeClient {
     }
     const playlistSourceIds = new Set(APPROVED_YOUTUBE_CHANNELS.flatMap((seed) => seed.playlistIds ?? []).map((id) => `playlist:${id}`));
     const threeBlue = APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown");
-    const unique = Array.from(merged.values()).filter((video) => {
+    const unique = reuseUnchangedVideoRecords(existingVideos, Array.from(merged.values()).filter((video) => {
       if (threeBlue && (normalized(video.channelName) === normalized(threeBlue.name) || video.channelId === threeBlue.channelId)) return video.special === true || video.sourceIds?.some((sourceId) => playlistSourceIds.has(sourceId));
       return video.approved;
-    });
+    }));
     const channelsWithCounts = verified.map(({ channel }) => ({ ...channel, videoCount: unique.filter((video) => video.channelId === channel.id).length, lastImportedAt: new Date().toISOString() }));
     const complete = errors.length === 0 && verified.length === APPROVED_YOUTUBE_CHANNELS.length;
     progress.phase = "complete";
