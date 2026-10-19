@@ -1,3 +1,4 @@
+import { performanceFetch, recordPerformance } from "./performance-diagnostics";
 import { approximateCacheBytes } from "./session-cache";
 import type { ImageAttribution, WikipediaSource } from "./types";
 
@@ -154,6 +155,7 @@ function sharedCachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: str
   operation: (signal: AbortSignal) => Promise<T>, reusable: (value: T) => boolean = () => true): Promise<T> {
   if (signal?.aborted) return Promise.reject(cancellationError());
   let entry = cachedRequest(entries, key);
+  recordPerformance("wikipedia", entry ? (entry.flight && !entry.flight.settled ? "coalesced" : "cache_hits") : "cache_misses");
   if (!entry) {
     const flight = { controller: new AbortController(), callers: new Set<symbol>(), settled: false };
     const request = Promise.resolve().then(() => {
@@ -225,14 +227,16 @@ function apiUrl(params: Record<string, string>) {
 }
 
 async function getJson<T>(url: string, signal?: AbortSignal, priority = 0): Promise<T | null> {
+  const queuedAt = performance.now();
   await acquireWikipediaSlot(signal, priority);
+  recordPerformance("wikipedia", "queue_ms", Math.max(0, performance.now() - queuedAt));
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort();
   const timeout = setTimeout(() => controller.abort(), WIKIPEDIA_REQUEST_TIMEOUT_MS);
   signal?.addEventListener("abort", abortFromCaller, { once: true });
   try {
     if (signal?.aborted) throw new DOMException("Wikipedia request canceled.", "AbortError");
-    const response = await fetch(url, {
+    const response = await performanceFetch("wikipedia", url, {
       headers: { accept: "application/json", "user-agent": "LearnedMedia/0.2 (knowledge-feed)" },
       next: { revalidate: 3600 },
       signal: controller.signal

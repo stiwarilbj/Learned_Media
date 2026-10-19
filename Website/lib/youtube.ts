@@ -1,3 +1,4 @@
+import { performanceFetch, recordPerformance, diagnosticTextBytes } from "./performance-diagnostics";
 import { backgroundRetryDelay, serverRetryAt, waitForBackgroundRetry } from "./background-retry";
 import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportChanges } from "./youtube-import-lease";
 import { createDatabaseConnection } from "./indexed-db";
@@ -289,7 +290,9 @@ class YouTubeRequestLimiter {
   }
 
   async run<T>(signal: AbortSignal | undefined, work: () => Promise<T>) {
+    const queuedAt = performance.now();
     await this.acquire(signal);
+    recordPerformance("youtube", "queue_ms", Math.max(0, performance.now() - queuedAt));
     try {
       return await work();
     } finally {
@@ -312,9 +315,10 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
   const timeout = withTimeout(signal);
   try {
     if (signal?.aborted) throw abortError();
-    const response = await fetch(url, { headers: { accept: "application/json", "x-goog-api-key": apiKey }, signal: timeout.controller.signal });
+    const response = await performanceFetch("youtube", url, { headers: { accept: "application/json", "x-goog-api-key": apiKey }, signal: timeout.controller.signal });
     const retryAt = serverRetryAt(response.headers.get("retry-after"));
     const raw = await response.text();
+    recordPerformance("youtube", "response_bytes_read", diagnosticTextBytes(raw));
     let payload: unknown = {};
     try { payload = JSON.parse(raw); } catch { throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryAt); }
     if (!response.ok) {
@@ -437,6 +441,7 @@ export class YouTubeClient {
           if (signal?.aborted) throw abortError();
           await this.beforeRequest?.();
           if (signal?.aborted) throw abortError();
+          if (attempt > 0) recordPerformance("youtube", "retries");
           if (this.requestOverride) return await this.requestOverride(resource, requestParams, signal) as T;
           return await fetchYouTubeJson<T>(this.apiKey, resource, requestParams, signal);
         } catch (error) {

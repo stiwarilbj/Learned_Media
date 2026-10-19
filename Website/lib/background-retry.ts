@@ -1,3 +1,4 @@
+import { performanceFetch, recordPerformance } from "./performance-diagnostics";
 // Background transports only. Gemini has its own retry policy.
 export function serverRetryAt(value: string | null, now = Date.now()): number | undefined {
   if (!value?.trim()) return undefined;
@@ -36,12 +37,15 @@ export const backgroundCloudFetch: typeof fetch = async (input, init) => {
   const now = Date.now();
   for (const [id, state] of cloudFailures) if (now - state.recordedAt > 30 * 60_000 && state.retryAt <= now) cloudFailures.delete(id);
   let previous = cloudFailures.get(key);
+  const retry = Boolean(previous);
+  const queuedAt = performance.now();
   while (previous) {
     await waitForBackgroundRetry(Math.max(0, previous.retryAt - Date.now()) + Math.random() * 250, signal);
     if (cloudFailures.get(key) === previous) break;
     previous = cloudFailures.get(key);
   }
   signal?.throwIfAborted();
+  if (retry) { recordPerformance("cloud", "retries"); recordPerformance("cloud", "queue_ms", Math.max(0, performance.now() - queuedAt)); }
   const failed = (header: string | null) => {
     const recordedAt = Date.now();
     const retryAt = Math.max(recordedAt, serverRetryAt(header, recordedAt) ?? 0, cloudFailures.get(key)?.retryAt ?? 0);
@@ -54,7 +58,7 @@ export const backgroundCloudFetch: typeof fetch = async (input, init) => {
     cloudFailures.set(key, { retryAt, recordedAt });
   };
   try {
-    const response = await fetch(input, init);
+    const response = await performanceFetch("cloud", input, init);
     if ([408, 409, 429].includes(response.status) || response.status >= 500) failed(response.headers.get('retry-after'));
     else if (cloudFailures.get(key) === previous) cloudFailures.delete(key);
     return response;

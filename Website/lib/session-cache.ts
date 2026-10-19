@@ -1,3 +1,4 @@
+import { recordPerformance } from "./performance-diagnostics";
 /** Conservative retained-size estimate; no JSON copy, and shared/cyclic objects count once. */
 export function approximateCacheBytes(value: unknown, limit = Infinity): number {
   let bytes = 0;
@@ -41,13 +42,15 @@ export class SessionCache<T> {
 
   get(key: string, now = Date.now()): T | undefined {
     const entry = this.entries.get(key);
-    if (!entry) return undefined;
+    if (!entry) { recordPerformance("cache", "cache_misses"); return undefined; }
     if (entry.expiresAt <= now) {
       this.remove(key);
+      recordPerformance("cache", "cache_misses");
       return undefined;
     }
     this.entries.delete(key);
     this.entries.set(key, entry);
+    recordPerformance("cache", "cache_hits");
     return entry.value;
   }
 

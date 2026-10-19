@@ -28,6 +28,14 @@ The Videos workspace uses the same account-scoped storage for its YouTube key. S
 
 While connected, overdue creator sources refresh once a day. Use **Refresh videos** for an immediate scan. 3Blue1Brown is limited to the approved Neural Networks and Statistics playlists, including future additions.
 
+### Private performance diagnostics
+
+Diagnostics keep numeric totals, sample counts, and maxima in memory, with at most 45 fixed service/metric buckets and saturating counters. Nothing is persisted, synced, logged, or uploaded. Reloading the website or restarting the Mac app clears them. They contain no keys, account/workspace IDs, URLs, queries, prompts, source text, or error messages. Server rendering does not collect these counters.
+
+In browser developer tools, use `LearnedMediaDiagnostics.snapshot()` and `.reset()`. Each worker and Mac frontend has its own runtime counters. In the Mac web inspector, `await __learnedMediaNativeRequest("performanceDiagnostics", {})` reads native transport/cache counters; pass `{reset: true}` to clear them. Reading counters sends no network requests.
+
+`requests` counts attempted transport calls, including failures; `retries` counts subsequent model attempts or eligible background retries. `cache_hits`, `cache_misses`, and `coalesced` distinguish completed reuse from shared pending work. `queue_ms` measures admitted work using a monotonic clock. `request_bytes` counts existing JSON bodies; `response_bytes_read` counts bodies already consumed by Gemini/YouTube (and native transports). Native streamed sizes reconstruct line separators and are approximate. `response_bytes_reported` uses Content-Length where exposed, which may reflect compression and is not added to read sizes. Missing headers produce no sample. Requests are never cloned or replayed for measurement; Wikipedia/cloud responses on the website use reported sizes to avoid extra reads or serialization. Cache probes are aggregates, not counts of unique user operations, and diagnostics cover the instrumented transports rather than every browser resource.
+
 ### Shared website and Mac data
 
 Run `npm run generate:native` after changing shared sources. It runs every `scripts/build-native-*.mjs` generator, including writer data, topic/video search runtimes, credentials, caching, prompt instructions, units, and evidence policies. Commit the generated JavaScript and Swift files; rebuild the Mac app when its resources change.

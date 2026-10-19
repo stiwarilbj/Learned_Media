@@ -1,3 +1,4 @@
+import { performanceFetch, recordPerformance, diagnosticTextBytes } from "./performance-diagnostics";
 import { ValidationDiagnostics, type ValidationDiagnostic } from "./validation-diagnostics";
 import { nextOutputCapacity, truncatedOutputFloor, MAX_OUTPUT_CAPACITY } from "./output-capacity";
 import { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildSearchInterpretationPrompt } from "./prompts";
@@ -68,6 +69,7 @@ type ModelPool = {
 
 type QueuedRequest = {
   priority: number;
+  queuedAt: number;
   order: number;
   signal?: AbortSignal;
   operation: () => Promise<unknown>;
@@ -252,6 +254,7 @@ function pumpRequestQueue(pool: ModelPool) {
         task.reject(abortError());
         continue;
       }
+      recordPerformance("gemini", "queue_ms", Math.max(0, performance.now() - task.queuedAt));
       try { task.resolve(await task.operation()); }
       catch (error) { task.reject(error); }
     }
@@ -265,6 +268,7 @@ async function withRequestQueue<T>(pool: ModelPool, signal: AbortSignal | undefi
   return new Promise<T>((resolve, reject) => {
     const task: QueuedRequest = {
       priority,
+      queuedAt: performance.now(),
       order: pool.queueOrder++,
       signal,
       operation,
@@ -313,21 +317,25 @@ async function readEventStream(response: Response, onTextChunk?: (text: string) 
     if (!clean) { flush(); return; }
     if (clean.startsWith("data:")) eventData.push(clean.slice(5).replace(/^ /, ""));
   };
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let newline = buffer.indexOf("\n");
-    while (newline >= 0) {
-      consumeLine(buffer.slice(0, newline));
-      buffer = buffer.slice(newline + 1);
-      newline = buffer.indexOf("\n");
+  let receivedBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      receivedBytes += value.byteLength;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        consumeLine(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf("\n");
+      }
     }
-  }
-  buffer += decoder.decode();
-  if (buffer) consumeLine(buffer);
-  flush();
-  return { text, resolvedModel, finishReason };
+    buffer += decoder.decode();
+    if (buffer) consumeLine(buffer);
+    flush();
+    return { text, resolvedModel, finishReason };
+  } finally { recordPerformance("gemini", "response_bytes_read", receivedBytes); }
 }
 
 async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, timeoutMs: number, externalSignal?: AbortSignal, onTextChunk?: (text: string) => void) {
@@ -341,12 +349,13 @@ async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, ti
   externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
   try {
     if (externalSignal?.aborted) throw abortError();
-    const response = await fetch(input, { ...init, signal: controller.signal });
+    const response = await performanceFetch("gemini", input, { ...init, signal: controller.signal });
     if (onTextChunk && response.ok && response.body) {
       const streamed = await readEventStream(response, onTextChunk);
       return { response, raw: streamed.text, resolvedModel: streamed.resolvedModel, finishReason: streamed.finishReason, streamed: true };
     }
     const raw = await response.text();
+    recordPerformance("gemini", "response_bytes_read", diagnosticTextBytes(raw));
     return { response, raw, resolvedModel: undefined, finishReason: undefined, streamed: false };
   } catch (error) {
     if (externalSignal?.aborted) throw abortError();
@@ -486,6 +495,7 @@ async function requestStructured<T>(apiKey: string, sessionId: string, prompt: s
   if (cached) return cached as { value: T; model: string; resolvedModel?: string; outcomes: GeminiModelOutcome[] };
   let flight = pool.structuredFlights.get(cacheKey);
   if (flight?.controller.signal.aborted) { pool.structuredFlights.delete(cacheKey); flight = undefined; }
+  if (flight) recordPerformance("gemini", "coalesced");
   if (!flight) {
     const controller = new AbortController();
     const created: StructuredFlight = {
@@ -565,6 +575,7 @@ async function runStructuredRequest<T>(pool: ModelPool, apiKey: string, prompt: 
       }
       const model = reserveModel(pool, target);
       if (!model) continue;
+      if (outcomes.length) recordPerformance("gemini", "retries");
       const started = Date.now();
       const maxOutputTokens = outputCapacity;
       let finishReason: string | undefined;

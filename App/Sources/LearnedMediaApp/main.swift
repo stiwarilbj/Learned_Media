@@ -246,7 +246,8 @@ private actor WikipediaPageCache {
     }
     func page(_ title: String) -> WikipediaPageResponse.Query.Page? {
         let key = title.lowercased()
-        guard var entry = pages[key], entry.expiresAt > Date() else { pages[key] = nil; return nil }
+        guard var entry = pages[key], entry.expiresAt > Date() else { pages[key] = nil; PerformanceDiagnostics.shared.record(.wikipedia, .cacheMisses); return nil }
+        PerformanceDiagnostics.shared.record(.wikipedia, .cacheHits)
         entry.touchedAt = Date(); pages[key] = entry
         return entry.value
     }
@@ -277,7 +278,8 @@ private actor WikipediaPageCache {
     }
     func search(_ query: String) -> [String]? {
         let key = query.lowercased()
-        guard var entry = searches[key], entry.expiresAt > Date() else { searches[key] = nil; return nil }
+        guard var entry = searches[key], entry.expiresAt > Date() else { searches[key] = nil; PerformanceDiagnostics.shared.record(.wikipedia, .cacheMisses); return nil }
+        PerformanceDiagnostics.shared.record(.wikipedia, .cacheHits)
         entry.touchedAt = Date(); searches[key] = entry
         return entry.value
     }
@@ -487,17 +489,21 @@ private final class WikipediaClient: @unchecked Sendable {
         var request = URLRequest(url: url, timeoutInterval: 20)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("LearnedMedia/1.0 (knowledge-feed)", forHTTPHeaderField: "User-Agent")
+        let queuedAt = ProcessInfo.processInfo.systemUptime
         try await limiter.acquire(priority: priority)
+        PerformanceDiagnostics.shared.record(.wikipedia, .queueMs, max(0, ProcessInfo.processInfo.systemUptime - queuedAt) * 1_000)
         let data: Data
         let response: URLResponse
         do {
             try Task.checkCancellation()
+            PerformanceDiagnostics.shared.record(.wikipedia, .requests)
             (data, response) = try await session.data(for: request)
         } catch {
             await limiter.release()
             throw error
         }
         await limiter.release()
+        PerformanceDiagnostics.shared.record(.wikipedia, .responseBytesRead, Double(data.count))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw NativeError(message: "Wikipedia could not be reached right now.") }
         return try JSONDecoder().decode(T.self, from: data)
     }
@@ -644,6 +650,8 @@ private actor ModelScheduler {
     private var nextWaiterOrder = 0
 
     func acquireRequest(priority: Int = 0) async {
+        let queuedAt = ProcessInfo.processInfo.systemUptime
+        defer { PerformanceDiagnostics.shared.record(.gemini, .queueMs, max(0, ProcessInfo.processInfo.systemUptime - queuedAt) * 1_000) }
         if !requestLocked {
             requestLocked = true
             return
@@ -952,6 +960,10 @@ private final class GeminiClient {
         request.setValue(streaming ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
         request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["contents": [["role": "user", "parts": [["text": prompt]]]], "generationConfig": ["temperature": 0.92, "maxOutputTokens": max(128, min(maxOutputTokens, 65_536)), "responseMimeType": "application/json", "responseSchema": schema]])
+        PerformanceDiagnostics.shared.record(.gemini, .requestBytes, Double(request.httpBody?.count ?? 0))
+        PerformanceDiagnostics.shared.record(.gemini, .requests)
+        var receivedBytes = 0
+        defer { PerformanceDiagnostics.shared.record(.gemini, .responseBytesRead, Double(receivedBytes)) }
         let (data, response): (Data, URLResponse)
         do {
             if streaming {
@@ -984,6 +996,7 @@ private final class GeminiClient {
                     for try await line in bytes.lines {
                         raw.append(contentsOf: line.utf8)
                         raw.append(10)
+                        receivedBytes = raw.count
                         if line.isEmpty { try consumeEvent() }
                         else if line.hasPrefix("data:") { eventLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)) }
                     }
@@ -991,11 +1004,12 @@ private final class GeminiClient {
                     let cleaned = StructuredResponse.stripResponseBom(streamedText).replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
                     return (cleaned, streamedModel, streamedFinishReason)
                 }
-                for try await line in bytes.lines { raw.append(contentsOf: line.utf8); raw.append(10) }
+                for try await line in bytes.lines { raw.append(contentsOf: line.utf8); raw.append(10); receivedBytes = raw.count }
                 data = raw
             } else {
                 let result = try await session.data(for: request)
                 data = result.0
+                receivedBytes = data.count
                 response = result.1
             }
         } catch is CancellationError {
@@ -1078,6 +1092,7 @@ private final class GeminiClient {
                     }
                 }
                 guard await scheduler.reserve(model) else { continue }
+                if !outcomes.isEmpty { PerformanceDiagnostics.shared.record(.gemini, .retries) }
                 let started = Date()
                 let attemptCapacity = outputCapacity
                 var finishReason: String?
@@ -1800,6 +1815,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                     }
                 } catch { respond(id: id, error: "Account sync is unavailable. Reconnect to retry; your keys remain in Keychain.") }
             }
+        case "performanceDiagnostics":
+            if payload["reset"] as? Bool == true { PerformanceDiagnostics.shared.reset() }
+            respond(id: id, result: PerformanceDiagnostics.shared.snapshot())
         case "loadKeys":
             respond(id: id, result: ["gemini": geminiKey, "youtube": keychain.read("youtube-api-key").flatMap { String(data: $0, encoding: .utf8) } ?? ""])
         case "setYouTubeKey":
@@ -2044,14 +2062,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
         let retryKey = "\(method) \(url.host ?? "")\(url.path)"
+        let queuedAt = ProcessInfo.processInfo.systemUptime
         let observed = try await backgroundRetries.wait(retryKey)
+        PerformanceDiagnostics.shared.record(.cloud, .queueMs, max(0, ProcessInfo.processInfo.systemUptime - queuedAt) * 1_000)
+        if observed != nil { PerformanceDiagnostics.shared.record(.cloud, .retries) }
         let (data, response): (Data, URLResponse)
         do {
+            PerformanceDiagnostics.shared.record(.cloud, .requests)
+            PerformanceDiagnostics.shared.record(.cloud, .requestBytes, Double(request.httpBody?.count ?? 0))
             (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
         } catch {
             if !Task.isCancelled, let error = error as? URLError, error.code != .cancelled { await backgroundRetries.failed(retryKey) }
             throw error
         }
+        PerformanceDiagnostics.shared.record(.cloud, .responseBytesRead, Double(data.count))
         guard let http = response as? HTTPURLResponse else { throw NativeError(message: "Supabase returned no HTTP response.") }
         guard (200..<300).contains(http.statusCode) else {
             let errorObject = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -2200,11 +2224,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
         let retryKey = "youtube/\(resource)"
+        let queuedAt = ProcessInfo.processInfo.systemUptime
         let observed = try await backgroundRetries.wait(retryKey)
         await youtubeLimiter.acquire()
         let (data, response): (Data, URLResponse)
         do {
             try Task.checkCancellation()
+            PerformanceDiagnostics.shared.record(.youtube, .queueMs, max(0, ProcessInfo.processInfo.systemUptime - queuedAt) * 1_000)
+            if observed != nil { PerformanceDiagnostics.shared.record(.youtube, .retries) }
+            PerformanceDiagnostics.shared.record(.youtube, .requests)
             (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
             await youtubeLimiter.release()
         } catch is CancellationError {
@@ -2216,6 +2244,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             if error is URLError { await backgroundRetries.failed(retryKey) }
             throw NativeError(message: "YouTube could not be reached right now.")
         }
+        PerformanceDiagnostics.shared.record(.youtube, .responseBytesRead, Double(data.count))
         guard let http = response as? HTTPURLResponse else { throw NativeError(message: "YouTube returned no HTTP response.") }
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(http.statusCode) else {

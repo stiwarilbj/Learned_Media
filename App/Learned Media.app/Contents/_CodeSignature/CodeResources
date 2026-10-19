@@ -42,7 +42,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		cMP/++B/+kF9inE6zw3jvWIu4BQ=
+		m+fAZh5EYuKUCnJp5YnjjIR8yzg=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
@@ -51,6 +51,10 @@
 		<key>Resources/frontend/natural-disaster-catalog.js</key>
 		<data>
 		SbokDuYxq7enRuHuzHzKvCH9eic=
+		</data>
+		<key>Resources/frontend/performance-diagnostics.js</key>
+		<data>
+		Zvhpy/1iuHIsqzE9mK+4o3CDi3o=
 		</data>
 		<key>Resources/frontend/political-history.js</key>
 		<data>
@@ -62,7 +66,7 @@
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
-		kf3NgYRnWMoMiGt9CYtpvbaXRZc=
+		hGf54xbpTBhfv1EZCMX6CsaQwiA=
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
@@ -174,7 +178,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			slmlE8P1DD94M8s4MXM3Bu6cj0X5H1pq2gdAsQ7s6/I=
+			0atkwiK0C+VzaGaiHbmnNseF0LzvA6aAZ2Tcl4hE71U=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>
@@ -189,6 +193,13 @@
 			<key>hash2</key>
 			<data>
 			1SgiX2rgMERv3A7MW0F5yqFL8JLMk2IG3bz/3kb8mH0=
+			</data>
+		</dict>
+		<key>Resources/frontend/performance-diagnostics.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			aaCU5GzK37DB69i15Qb5B3ghbDpOnZr+oNiMctbggfY=
 			</data>
 		</dict>
 		<key>Resources/frontend/political-history.js</key>
@@ -209,7 +220,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			uCY5WHL2iDR6NGeipaNqGdwvTLgHTHdWMxSqlswH8QI=
+			PtuU8m9XsrilGwk9KBdsnlH9U4lVnUKuNNINV3wf1Z4=
 			</data>
 		</dict>
 		<key>Resources/frontend/styles.css</key>

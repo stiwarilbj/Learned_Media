@@ -59,9 +59,11 @@ public actor RequestWorkCache<Value> {
         try Task.checkCancellation()
         if let entry = entries[key], entry.expiresAt > Date() {
             order.removeAll { $0 == key }; order.append(key)
+            PerformanceDiagnostics.shared.record(.cache, .cacheHits)
             return entry.value
         }
         remove(key)
+        PerformanceDiagnostics.shared.record(.cache, flights[key] == nil ? .cacheMisses : .coalesced)
         let subscriber = UUID()
         var flight = flights[key] ?? Flight(id: UUID(), task: Task { try await operation() }, subscribers: [])
         flight.subscribers.insert(subscriber); flights[key] = flight
