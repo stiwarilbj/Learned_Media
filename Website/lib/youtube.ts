@@ -1,3 +1,4 @@
+import { backgroundRetryDelay, serverRetryAt, waitForBackgroundRetry } from "./background-retry";
 import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportChanges } from "./youtube-import-lease";
 import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
@@ -225,13 +226,15 @@ export class YouTubeApiError extends Error {
   status?: number;
   reason?: string;
   retryable: boolean;
+  retryAt?: number;
 
-  constructor(message: string, status?: number, reason?: string, retryable = false) {
+  constructor(message: string, status?: number, reason?: string, retryable = false, retryAt?: number) {
     super(message);
     this.name = "YouTubeApiError";
     this.status = status;
     this.reason = reason;
     this.retryable = retryable;
+    this.retryAt = retryAt;
   }
 }
 
@@ -303,16 +306,6 @@ function withTimeout(signal: AbortSignal | undefined, timeoutMs = 30_000) {
   return { controller, cleanup: () => { window.clearTimeout(timer); signal?.removeEventListener("abort", abort); } };
 }
 
-function waitBeforeRetry(ms: number, signal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) { reject(abortError()); return; }
-    const finish = () => { signal?.removeEventListener("abort", abort); resolve(); };
-    const timer = window.setTimeout(finish, ms);
-    const abort = () => { window.clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(abortError()); };
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-}
-
 async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Record<string, string>, signal?: AbortSignal): Promise<T> {
   const url = new URL(`${YOUTUBE_API_ROOT}/${resource}`);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
@@ -320,9 +313,10 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
   try {
     if (signal?.aborted) throw abortError();
     const response = await fetch(url, { headers: { accept: "application/json", "x-goog-api-key": apiKey }, signal: timeout.controller.signal });
+    const retryAt = serverRetryAt(response.headers.get("retry-after"));
     const raw = await response.text();
     let payload: unknown = {};
-    try { payload = JSON.parse(raw); } catch { throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true); }
+    try { payload = JSON.parse(raw); } catch { throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryAt); }
     if (!response.ok) {
       const error = (payload as { error?: { message?: string; errors?: Array<{ reason?: string }> } }).error;
       const reason = error?.errors?.[0]?.reason;
@@ -330,7 +324,7 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
       const quotaExhausted = reason === "quotaExceeded" || reason === "dailyLimitExceeded";
       const rateLimited = reason === "rateLimitExceeded" || reason === "userRateLimitExceeded";
       const retryable = !quotaExhausted && (rateLimited || response.status === 408 || response.status === 429 || response.status >= 500);
-      throw new YouTubeApiError(quotaExhausted ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable);
+      throw new YouTubeApiError(quotaExhausted ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable, retryAt);
     }
     return payload as T;
   } catch (error) {
@@ -447,7 +441,7 @@ export class YouTubeClient {
           return await fetchYouTubeJson<T>(this.apiKey, resource, requestParams, signal);
         } catch (error) {
           if (!(error instanceof YouTubeApiError) || !error.retryable || attempt >= 2) throw error;
-          await waitBeforeRetry(500 * (2 ** attempt), signal);
+          await waitForBackgroundRetry(backgroundRetryDelay(500 * (2 ** attempt), error.retryAt), signal);
           attempt += 1;
         }
       }

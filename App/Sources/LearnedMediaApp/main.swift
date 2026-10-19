@@ -1685,6 +1685,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let workspace = LocalWorkspaceStore()
     private let videoCatalog = VideoCatalogStore()
     private let youtubeLimiter = YouTubeRequestLimiter()
+    private let backgroundRetries = BackgroundRetryGate()
     private var geminiKey = ""
     private var sessionRefresh: Task<CloudSession, Error>?
     private var sessionEpoch = 0
@@ -2042,13 +2043,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+        let retryKey = "\(method) \(url.host ?? "")\(url.path)"
+        let observed = try await backgroundRetries.wait(retryKey)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+        } catch {
+            if !Task.isCancelled, let error = error as? URLError, error.code != .cancelled { await backgroundRetries.failed(retryKey) }
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else { throw NativeError(message: "Supabase returned no HTTP response.") }
         guard (200..<300).contains(http.statusCode) else {
             let errorObject = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let message = errorObject?["message"] as? String ?? errorObject?["error_description"] as? String ?? "Cloud sync returned HTTP \(http.statusCode)."
-            throw NativeError(message: message, retryable: [408, 409, 429].contains(http.statusCode) || http.statusCode >= 500)
+            let retryable = [408, 409, 429].contains(http.statusCode) || http.statusCode >= 500
+            if retryable { await backgroundRetries.failed(retryKey, retryAfter: http.value(forHTTPHeaderField: "Retry-After")) }
+            else { await backgroundRetries.succeeded(retryKey, observed: observed) }
+            throw NativeError(message: message, retryable: retryable)
         }
+        await backgroundRetries.succeeded(retryKey, observed: observed)
         if data.isEmpty { return NSNull() }
         return try JSONSerialization.jsonObject(with: data)
     }
@@ -2186,9 +2199,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        let retryKey = "youtube/\(resource)"
+        let observed = try await backgroundRetries.wait(retryKey)
         await youtubeLimiter.acquire()
         let (data, response): (Data, URLResponse)
         do {
+            try Task.checkCancellation()
             (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
             await youtubeLimiter.release()
         } catch is CancellationError {
@@ -2196,6 +2212,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             throw NativeError(message: "YouTube request canceled.", retryable: false)
         } catch {
             await youtubeLimiter.release()
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled { throw CancellationError() }
+            if error is URLError { await backgroundRetries.failed(retryKey) }
             throw NativeError(message: "YouTube could not be reached right now.")
         }
         guard let http = response as? HTTPURLResponse else { throw NativeError(message: "YouTube returned no HTTP response.") }
@@ -2204,9 +2222,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let errorObject = object["error"] as? [String: Any]
             let message = errorObject?["message"] as? String ?? "YouTube returned HTTP \(http.statusCode)."
             let reason = (errorObject?["errors"] as? [[String: Any]])?.first?["reason"] as? String
-            if reason == "quotaExceeded" { throw NativeError(message: "YouTube API quota is exhausted. Resume after the quota resets.", retryable: false) }
-            throw NativeError(message: message, retryable: [408, 429].contains(http.statusCode) || http.statusCode >= 500)
+            if reason == "quotaExceeded" || reason == "dailyLimitExceeded" { throw NativeError(message: "YouTube API quota is exhausted. Resume after the quota resets.", retryable: false) }
+            let retryable = [408, 429].contains(http.statusCode) || http.statusCode >= 500 || reason == "rateLimitExceeded" || reason == "userRateLimitExceeded"
+            if retryable { await backgroundRetries.failed(retryKey, retryAfter: http.value(forHTTPHeaderField: "Retry-After")) }
+            else { await backgroundRetries.succeeded(retryKey, observed: observed) }
+            throw NativeError(message: message, retryable: retryable)
         }
+        await backgroundRetries.succeeded(retryKey, observed: observed)
         return object
     }
 

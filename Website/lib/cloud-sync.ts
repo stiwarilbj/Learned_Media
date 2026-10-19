@@ -1,3 +1,4 @@
+import { backgroundCloudFetch } from './background-retry';
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { AccountKeys, KeyProvider } from './account-credentials';
 import { canonicalRecord, safeMemory, type CloudRecord } from './cloud-records';
@@ -9,7 +10,7 @@ export const CLOUD_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ignafi
 export const CLOUD_PUBLIC_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_PyviIi5NadM-SswSlJBuVg_UugoFxEe';
 let client: SupabaseClient<Database> | undefined;
 export function cloudClient() {
-  return client ??= createClient<Database>(CLOUD_URL, CLOUD_PUBLIC_KEY, { auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+  return client ??= createClient<Database>(CLOUD_URL, CLOUD_PUBLIC_KEY, { global: { fetch: backgroundCloudFetch }, auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
 }
 export async function googleSignIn() {
   const response = await fetch(CLOUD_URL + '/auth/v1/settings', { headers: { apikey: CLOUD_PUBLIC_KEY } });
