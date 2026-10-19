@@ -19,7 +19,9 @@
     "test:prompts": "node scripts/build-native-prompts.mjs --check && node scripts/test-prompt-evaluation.mjs && node scripts/evaluate-prompts.mjs",
     "evaluate:prompts": "node scripts/evaluate-prompts.mjs",
     "generate:credentials": "node scripts/build-native-credentials.mjs",
-    "test:credentials": "node scripts/build-native-credentials.mjs --check && node scripts/test-account-credentials.mjs"
+    "test:credentials": "node scripts/build-native-credentials.mjs --check && node scripts/test-account-credentials.mjs",
+    "generate:native": "node scripts/build-native-shared.mjs",
+    "check:native-data": "node scripts/build-native-shared.mjs --check"
   },
   "dependencies": {
     "@supabase/ssr": "0.5.2",
