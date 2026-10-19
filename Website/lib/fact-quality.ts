@@ -309,9 +309,11 @@ export function validateDraft(draft: GroundedDraft, sources: WikipediaSource[], 
   if (normalizedText(draft.title) === normalizedText(draft.hook)) throw new Error("The black heading must be more specific than the blue hook.");
   if (!Array.isArray(draft.sentences) || draft.sentences.length !== sentenceCount || draft.sentences.some(sentence => typeof sentence !== "string" || sentence.trim().length < 35 || sentence.trim().split(/\s+/).length < 8 || sentence.length > 600 || !/[.!?][”"']?$/.test(sentence.trim()))) throw new Error(`Each fact must contain exactly ${sentenceCount} complete sentence${sentenceCount === 1 ? "" : "s"}.`);
   if (!Array.isArray(draft.evidence) || draft.evidence.length > 12 || draft.evidence.some(item => !item || !Number.isInteger(item.sentence) || item.sentence < 0 || item.sentence >= sentenceCount)) throw new Error("The fact is missing verifiable evidence.");
+  const evidenceBySentence: GroundedDraft["evidence"][] = Array.from({ length: sentenceCount }, () => []);
+  draft.evidence.forEach(item => evidenceBySentence[item.sentence].push(item));
   const sections = new Set<string>();
   for (let sentence = 0; sentence < sentenceCount; sentence++) {
-    const quotes = draft.evidence.filter(item => item.sentence === sentence);
+    const quotes = evidenceBySentence[sentence];
     if (!quotes.length || quotes.some(item => !Number.isInteger(item.sourceIndex) || !sources[item.sourceIndex] || typeof item.quote !== "string" || item.quote.trim().length < 30 || !normalizedText(sources[item.sourceIndex].extract ?? "").includes(normalizedText(item.quote)) || (difficulty > 0 && !item.section?.trim()) || (difficulty > 0 && !evidenceSection(sources[item.sourceIndex].extract ?? "", item.quote, item.section?.trim() ?? "")))) throw new Error("A sentence does not have a matching quotation in its specific Wikipedia passage.");
     const unsupported = unsupportedQuantities(draft.sentences[sentence], quotes.map(item => item.quote));
     if (unsupported.length) throw new Error(`A sentence contains unsupported numbers or units: ${unsupported.join(", ")}.`);
