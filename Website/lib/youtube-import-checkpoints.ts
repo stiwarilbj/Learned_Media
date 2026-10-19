@@ -1,4 +1,5 @@
 import type { YouTubeVideo } from "./youtube";
+import { checkBackgroundCancellation, forEachBackground, type BackgroundCancellation } from "./background-work";
 
 // Bump when persisted video approval/mapping rules change. No credentials are stored.
 export const YOUTUBE_IMPORT_CHECKPOINT_VERSION = 1;
@@ -37,25 +38,26 @@ function validVideo(video: YouTubeVideo, sourceId: string) {
 }
 
 /** A page's validated records and cursor form one durable envelope. */
-export async function openImportCheckpoint(store: YouTubeImportPageStore | undefined, sourceId: string, identity: string, committedAt?: string) {
+export async function openImportCheckpoint(store: YouTubeImportPageStore | undefined, sourceId: string, identity: string, committedAt?: string, cancellation?: BackgroundCancellation) {
+  checkBackgroundCancellation(cancellation);
   const pages = store ? await store.load(sourceId) : [];
   let nextPageToken: string | null = "";
   const tokens = new Set<string>();
   const videos = new Map<string, YouTubeVideo>();
   let valid = true;
-  for (let index = 0; index < pages.length; index++) {
-    const page = pages[index];
+  await forEachBackground(pages, (page, index) => {
     if (!page || page.version !== YOUTUBE_IMPORT_CHECKPOINT_VERSION || page.sourceId !== sourceId || page.identity !== identity
       || page.index !== index || index > 99_999_999 || nextPageToken === null || page.requestToken !== nextPageToken || tokens.has(page.requestToken)
       || !Number.isFinite(Date.parse(page.savedAt)) || (committedAt && Date.parse(page.savedAt) <= Date.parse(committedAt))
       || !(page.nextPageToken === null || typeof page.nextPageToken === "string" && page.nextPageToken.length > 0 && page.nextPageToken.length <= 4096)
-      || !Array.isArray(page.videos) || page.videos.length > 50 || !page.videos.every(video => validVideo(video, sourceId))) { valid = false; break; }
+      || !Array.isArray(page.videos) || page.videos.length > 50 || !page.videos.every(video => validVideo(video, sourceId))) { valid = false; return false; }
     tokens.add(page.requestToken);
-    if (page.nextPageToken !== null && tokens.has(page.nextPageToken)) { valid = false; break; }
+    if (page.nextPageToken !== null && tokens.has(page.nextPageToken)) { valid = false; return false; }
     page.videos.forEach(video => videos.set(video.id, video));
     nextPageToken = page.nextPageToken;
-  }
+  }, cancellation);
   if (!valid) {
+    checkBackgroundCancellation(cancellation);
     await store?.clear(sourceId);
     pages.length = 0; tokens.clear(); videos.clear(); nextPageToken = "";
   }
@@ -63,6 +65,7 @@ export async function openImportCheckpoint(store: YouTubeImportPageStore | undef
     get nextPageToken() { return nextPageToken; },
     get videos() { return [...videos.values()]; },
     async append(records: YouTubeVideo[], next: string | null) {
+      checkBackgroundCancellation(cancellation);
       if (!(next === null || typeof next === "string" && next.length > 0 && next.length <= 4096)) throw new Error("YouTube returned an invalid continuation token. The checkpoint was not advanced.");
       if (nextPageToken === null || tokens.has(nextPageToken) || next !== null && (next === nextPageToken || tokens.has(next))) throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
       if (records.length > 50 || !records.every(video => validVideo(video, sourceId))) throw new Error("YouTube returned invalid import metadata. The checkpoint was not advanced.");

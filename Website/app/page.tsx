@@ -25,7 +25,7 @@ import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, importCoordinatedYouTubeCatalog, hasPendingYouTubeImport, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
-import { diffVideoSearchMetadata, reuseUnchangedVideoRecords } from "@/lib/video-metadata";
+import { diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVideoRecordsYielding } from "@/lib/video-metadata";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -936,11 +936,12 @@ export default function HomePage() {
     if (!hydrated || (view !== "videos" && view !== "settings") || youtubeCatalogLoadedRef.current && youtubeActivityLoadedWorkspaceRef.current === workspaceId) return;
     const editEpoch = youtubeActivityEditEpoch.current;
     let active = true;
+    const controller = new AbortController();
     const activeRecord = workspaceStoreRef.current?.records.find((record) => record.id === workspaceId);
     const fallback = activeRecord?.state.youtubeActivity;
     const restore = youtubeCatalogLoadedRef.current
       ? loadYouTubeActivity(workspaceId, fallback).then((activity) => applyYouTubeActivity(youtubeWorkspaceRef.current, activity ?? undefined))
-      : loadYouTubeWorkspace(workspaceId, fallback);
+      : loadYouTubeWorkspace(workspaceId, fallback, false, controller.signal);
     void restore.then((restored) => {
       if (!active || workspaceIdRef.current !== workspaceId) return;
       if (editEpoch !== youtubeActivityEditEpoch.current) restored = applyYouTubeActivity(restored, youtubeActivityOf(youtubeWorkspaceRef.current));
@@ -949,8 +950,8 @@ export default function HomePage() {
       youtubeActivityLoadedWorkspaceRef.current = workspaceId;
       setYoutubeWorkspace(restored);
       if (restored.videos.length) setYoutubeStatus("connected");
-    });
-    return () => { active = false; };
+    }).catch(() => { /* Canceled restoration keeps the current workspace intact. */ });
+    return () => { active = false; controller.abort(); };
   }, [hydrated, view, workspaceId]);
 
   useEffect(() => {
@@ -2229,11 +2230,16 @@ export default function HomePage() {
     if (!hydrated || (view !== "videos" && view !== "settings")) return;
     let active = true;
     let readEpoch = 0;
+    let readController: AbortController | undefined;
     const unsubscribe = watchCommittedYouTubeCatalog(() => {
       const epoch = ++readEpoch;
       if (!youtubeCatalogLoadedRef.current || youtubeAbortController.current) return;
+      readController?.abort();
+      const controller = new AbortController();
+      readController = controller;
       const targetWorkspace = workspaceIdRef.current;
-      void loadYouTubeWorkspace(targetWorkspace, undefined, true).then((catalog) => {
+      void loadYouTubeWorkspace(targetWorkspace, undefined, true, controller.signal).then(async (catalog) => {
+        catalog.videos = await reuseUnchangedVideoRecordsYielding(youtubeWorkspaceRef.current.videos, catalog.videos, controller.signal);
         if (!active || epoch !== readEpoch || youtubeAbortController.current || workspaceIdRef.current !== targetWorkspace) return;
         updateYouTubeWorkspace((current) => {
           const available = new Set(catalog.videos.map(video => video.id));
@@ -2247,8 +2253,8 @@ export default function HomePage() {
         setYoutubeError("");
       }).catch(() => { /* Retain the current catalog if storage is temporarily unavailable. */ });
     });
-    return () => { active = false; unsubscribe(); };
-  }, [hydrated, view, updateYouTubeWorkspace]);
+    return () => { active = false; readController?.abort(); unsubscribe(); };
+  }, [hydrated, view, workspaceId, updateYouTubeWorkspace]);
 
   const connectYouTube = useCallback(async (force = false) => {
     const keyAtStart = youtubeKey.trim();
@@ -2272,6 +2278,8 @@ export default function HomePage() {
         { force, workspaceId: workspaceAtStart });
       if (controller.signal.aborted || youtubeKeyRef.current.trim() !== keyAtStart || workspaceIdRef.current !== workspaceAtStart) return;
       const catalog = result.workspace;
+      catalog.videos = await reuseUnchangedVideoRecordsYielding(youtubeWorkspaceRef.current.videos, catalog.videos, controller.signal);
+      if (controller.signal.aborted || youtubeKeyRef.current.trim() !== keyAtStart || workspaceIdRef.current !== workspaceAtStart) return;
       updateYouTubeWorkspace((current) => {
         const available = new Set(catalog.videos.map((video) => video.id));
         const preservedDiscoverIds = current.discoverIds.filter((id) => available.has(id));

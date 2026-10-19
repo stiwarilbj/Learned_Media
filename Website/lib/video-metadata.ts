@@ -1,3 +1,5 @@
+import { checkBackgroundCancellation, forEachBackground, type BackgroundCancellation } from "./background-work";
+
 /** Shared by catalog imports and search workers. Video records are immutable. */
 export type SearchableVideoMetadata = {
   id: string;
@@ -44,24 +46,40 @@ export function sameVideoSearchMetadata(previous: SearchableVideoMetadata | unde
   });
 }
 
+function reusableVideo<T extends SearchableVideoMetadata>(stored: T | undefined, video: T): T {
+  if (stored === video) return stored;
+  if (!stored || !sameVideoSearchMetadata(stored, video)) return video;
+  // Source scan times live in sourceStates. A scan timestamp alone does not
+  // change a video. Check every other field, including display-only metadata
+  // and future fields, before retaining the stored record.
+  const keys = new Set([...Object.keys(stored), ...Object.keys(video)]);
+  for (const key of keys) {
+    if (key === "metadataRefreshedAt" || searchArrays.some(field => field === key)) continue;
+    if ((stored as Record<string, unknown>)[key] !== (video as Record<string, unknown>)[key]) return video;
+  }
+  return stored;
+}
+
 export function reuseUnchangedVideoRecords<T extends SearchableVideoMetadata>(previous: T[], next: T[]): T[] {
   if (previous === next || !previous.length) return next;
   const byId = new Map(previous.map(video => [video.id, video]));
-  const records = next.map(video => {
-    const stored = byId.get(video.id);
-    if (stored === video) return stored;
-    if (!stored || !sameVideoSearchMetadata(stored, video)) return video;
-    // Source scan times live in sourceStates. A scan timestamp alone does not
-    // change a video. Check every other field, including display-only metadata
-    // and future fields, before retaining the stored record.
-    const keys = new Set([...Object.keys(stored), ...Object.keys(video)]);
-    for (const key of keys) {
-      if (key === "metadataRefreshedAt" || searchArrays.some(field => field === key)) continue;
-      if ((stored as Record<string, unknown>)[key] !== (video as Record<string, unknown>)[key]) return video;
-    }
-    return stored;
-  });
+  const records = next.map(video => reusableVideo(byId.get(video.id), video));
   return previous.length === records.length && records.every((video, index) => video === previous[index]) ? previous : records;
+}
+
+/** Imports/restoration use bounded slices; synchronous UI callers keep their API. */
+export async function reuseUnchangedVideoRecordsYielding<T extends SearchableVideoMetadata>(previous: T[], next: T[], cancellation?: BackgroundCancellation): Promise<T[]> {
+  checkBackgroundCancellation(cancellation);
+  if (previous === next || !previous.length) return next;
+  const byId = new Map<string, T>(), records: T[] = [];
+  let unchanged = previous.length === next.length;
+  await forEachBackground(previous, video => { byId.set(video.id, video); }, cancellation);
+  await forEachBackground(next, (video, index) => {
+    const record = reusableVideo(byId.get(video.id), video);
+    records.push(record);
+    if (record !== previous[index]) unchanged = false;
+  }, cancellation);
+  return unchanged ? previous : records;
 }
 
 /** Keep unchanged worker objects (and their normalized search entries) intact. */

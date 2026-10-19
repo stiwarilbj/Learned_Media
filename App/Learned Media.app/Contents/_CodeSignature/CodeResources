@@ -16,6 +16,10 @@
 		<data>
 		jYuIlF+4M7crIttva0DXB1hUgl4=
 		</data>
+		<key>Resources/frontend/background-work.js</key>
+		<data>
+		0EDGsHB/SEa1TbSwRVRaUzpUFA0=
+		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
 		KxkEoFjmTKbgundr68TkBSXV6Zk=
@@ -42,7 +46,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		TIZiE7gH5zAXiJn9KgJlOYfpkfY=
+		oPPKhom9P/VbmuMuSYO8wgMmx5U=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -94,7 +98,7 @@
 		</data>
 		<key>Resources/frontend/video-metadata.js</key>
 		<data>
-		dxuvve+7CuQcN6dEO1GHiwZtdFg=
+		PsIIWkjePI8Jd2wZc5qxDMkpWAs=
 		</data>
 		<key>Resources/frontend/video-semantic.js</key>
 		<data>
@@ -110,11 +114,11 @@
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
-		/9Q5MTXEZWAqHbRaMe7ydcvUDMw=
+		b4eB0I85fbAOe1EDtldZIQ/ffRc=
 		</data>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<data>
-		rUbUKMJUEDr4ffh7sJU3q6rkS7E=
+		T9JjXw5HHu4Ik2rtVMWihlF7xvw=
 		</data>
 		<key>Resources/frontend/youtube-playback.js</key>
 		<data>
@@ -146,6 +150,13 @@
 			<key>hash2</key>
 			<data>
 			Rdv49m/fVuPiVHGQvg7gBkV0CMsd4/fmoyyaMxpttU0=
+			</data>
+		</dict>
+		<key>Resources/frontend/background-work.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ufRHq09utZFQhdVlBy2GHDhN68adXtU9epZaKViyvAI=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -194,7 +205,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			fWgCtM2FjsIwY8ZfzVBu/IUIJxTUOKkECtygWvCg9Vo=
+			uGNegAMTQhlJdpUH8GEn8HwPL3VuOj+Fq/gG+CqHnAU=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -285,7 +296,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			q1V/Y802NbU1cjeSiPiMXkVXZn4tMWgwxWkfHvyCdlk=
+			9BDBvxMP1iBA3zviHSOZwfas5sd9hoAVUQsljlRWLyc=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-semantic.js</key>
@@ -313,14 +324,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			vtO61iAr6a8j+ojQ+u3/7dgDSGLBPiMs3y5yF23KOpA=
+			K8hUuybETeRMfjzfJTJMPx47gNF61YRH73CgN6STP9Y=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			vAA4XNC/DxQvPdaTWdr8s0ZMUK69e4pz/ncNzN34Hz8=
+			j0PSuEsUHNqH/BfurlcBTWGkluYo/HaEs0CLhXVSj9c=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-playback.js</key>

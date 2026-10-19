@@ -2,6 +2,7 @@
 import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageKey, importPagePrefix, type YouTubeImportPage, type YouTubeImportPageStore } from "./youtube-import-checkpoints";
 import { planCatalogCommit, VIDEO_WRITE_BATCH_SIZE, videoRecordRange, type YouTubeCatalog } from "./youtube-catalog-storage";
 import type { YouTubeVideo } from "./youtube";
+import { forEachBackground, yieldBackground } from "./background-work";
 const LEASE_KEY = "youtube-import-lease-v1";
 const COMMIT_KEY = "youtube-import-commit-v1";
 const NOTICE_KEY = "learned-media-youtube-import-notice-v1";
@@ -135,10 +136,11 @@ export async function withYouTubeImportLease<P, T>(openDatabase: OpenDatabase, s
       },
       commit: async (catalog, completedSources = [], previousVideos = []) => {
         const stored = (await check(false, store => store.get("catalog"))).result;
-        const plan = planCatalogCommit(catalog, previousVideos, stored);
+        const plan = await planCatalogCommit(catalog, previousVideos, stored, controller.signal);
         for (let start = 0; start < plan.upserts.length; start += VIDEO_WRITE_BATCH_SIZE) {
           const batch = plan.upserts.slice(start, start + VIDEO_WRITE_BATCH_SIZE);
           await check(false, store => { for (const record of batch) store.put(record, record.key); });
+          await yieldBackground(controller.signal);
         }
         await check(false, store => {
           store.put(plan.manifest, "catalog");
@@ -150,10 +152,12 @@ export async function withYouTubeImportLease<P, T>(openDatabase: OpenDatabase, s
         // unreferenced records, in bounded transactions after publication.
         try {
           const keys = (await check(false, store => store.getAllKeys(videoRecordRange()))).result;
-          const removed = keys.filter(key => !plan.retainedKeys.has(String(key)));
+          const removed: IDBValidKey[] = [];
+          await forEachBackground(keys, key => { if (!plan.retainedKeys.has(String(key))) removed.push(key); }, controller.signal);
           for (let start = 0; start < removed.length; start += VIDEO_WRITE_BATCH_SIZE) {
             const batch = removed.slice(start, start + VIDEO_WRITE_BATCH_SIZE);
             await check(false, store => { for (const key of batch) store.delete(key); });
+            await yieldBackground(controller.signal);
           }
         } catch { /* The next owner can reclaim orphaned records; the catalog is already durable. */ }
       }
