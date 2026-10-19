@@ -449,38 +449,6 @@ private final class LocalWorkspaceStore {
     }
 }
 
-private final class VideoCatalogStore {
-    private let fileManager = FileManager.default
-
-    private func urls() throws -> (primary: URL, backup: URL) {
-        let base = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let folder = base.appendingPathComponent("Learned Media", isDirectory: true)
-        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-        let primary = folder.appendingPathComponent("youtube-catalog.json")
-        return (primary, primary.appendingPathExtension("backup"))
-    }
-
-    func load() -> Any {
-        guard let locations = try? urls() else { return NSNull() }
-        for url in [locations.primary, locations.backup] {
-            guard let data = try? Data(contentsOf: url), let object = try? JSONSerialization.jsonObject(with: data) else { continue }
-            return object
-        }
-        return NSNull()
-    }
-
-    func save(_ value: Any?) throws {
-        guard let value, !(value is NSNull), JSONSerialization.isValidJSONObject(value) else { return }
-        let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
-        let locations = try urls()
-        if fileManager.fileExists(atPath: locations.primary.path) {
-            try? fileManager.removeItem(at: locations.backup)
-            try? fileManager.copyItem(at: locations.primary, to: locations.backup)
-        }
-        try data.write(to: locations.primary, options: [.atomic])
-    }
-}
-
 private final class WikipediaClient: @unchecked Sendable {
     private let session = URLSession(configuration: .ephemeral)
     private let limiter = WikipediaRequestLimiter()
@@ -1699,6 +1667,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let keychain = KeychainStore()
     private let workspace = LocalWorkspaceStore()
     private let videoCatalog = VideoCatalogStore()
+    private let youtubeImportCheckpoints = YouTubeImportCheckpointStore()
     private let youtubeLimiter = YouTubeRequestLimiter()
     private let backgroundRetries = BackgroundRetryGate()
     private var geminiKey = ""
@@ -1826,13 +1795,39 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         case "loadState":
             respond(id: id, result: loadState())
         case "loadVideoCatalog":
-            respond(id: id, result: videoCatalog.load())
+            Task { [weak self] in
+                guard let self else { return }
+                do { respond(id: id, result: try await videoCatalog.load()) }
+                catch { respond(id: id, error: "The YouTube catalog could not be restored. Your import checkpoints were retained.") }
+            }
         case "saveState":
             do { try saveState(payload["state"]); respond(id: id, result: true) }
             catch { respond(id: id, error: "Learning data could not be saved.") }
-        case "saveVideoCatalog":
-            do { try videoCatalog.save(payload["catalog"]); respond(id: id, result: true) }
-            catch { respond(id: id, error: "The YouTube catalog could not be saved.") }
+        case "hasYouTubeImportPages", "loadYouTubeImportPages", "saveYouTubeImportPage", "clearYouTubeImportPages":
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let sourceID = payload["sourceId"] as? String ?? ""
+                    if action == "hasYouTubeImportPages" { respond(id: id, result: try await youtubeImportCheckpoints.has(payload["sourceId"] as? String)) }
+                    else if action == "loadYouTubeImportPages" { respond(id: id, result: try await youtubeImportCheckpoints.load(sourceID)) }
+                    else if action == "clearYouTubeImportPages" { try await youtubeImportCheckpoints.clear(sourceID); respond(id: id, result: true) }
+                    else {
+                        guard let page = payload["page"] as? [String: Any] else { throw NativeError(message: "Invalid YouTube import page.", retryable: false) }
+                        try await youtubeImportCheckpoints.save(page); respond(id: id, result: true)
+                    }
+                } catch { respond(id: id, error: "The YouTube import checkpoint could not be saved or restored. Retry to resume safely.") }
+            }
+        case "commitYouTubeImportCatalog":
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    guard let catalog = payload["catalog"] as? [String: Any] else { throw NativeError(message: "Invalid YouTube catalog.", retryable: false) }
+                    try await videoCatalog.save(catalog)
+                    // Catalog replacement is durable before any staged pages retire.
+                    for sourceID in payload["completedSources"] as? [String] ?? [] { try? await youtubeImportCheckpoints.clear(sourceID) }
+                    respond(id: id, result: true)
+                } catch { respond(id: id, error: "The YouTube catalog could not be saved. Its import checkpoints were retained.") }
+            }
         case "exportFacts":
             exportFacts(id: id, format: payload["format"] as? String ?? "txt", workspaceName: payload["workspaceName"] as? String ?? "Local Workspace", facts: payload["facts"] as? [[String: Any]] ?? [])
         case "setGeminiKey":
@@ -2252,6 +2247,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let message = errorObject?["message"] as? String ?? "YouTube returned HTTP \(http.statusCode)."
             let reason = (errorObject?["errors"] as? [[String: Any]])?.first?["reason"] as? String
             if reason == "quotaExceeded" || reason == "dailyLimitExceeded" { throw NativeError(message: "YouTube API quota is exhausted. Resume after the quota resets.", retryable: false) }
+            if reason == "invalidPageToken" { throw NativeError(message: "YouTube returned an invalid page token. Retry to restart this source.", retryable: false) }
             let retryable = [408, 429].contains(http.statusCode) || http.statusCode >= 500 || reason == "rateLimitExceeded" || reason == "userRateLimitExceeded"
             if retryable { await backgroundRetries.failed(retryKey, retryAfter: http.value(forHTTPHeaderField: "Retry-After")) }
             else { await backgroundRetries.succeeded(retryKey, observed: observed) }

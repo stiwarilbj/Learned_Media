@@ -660,7 +660,6 @@
     const envelope = { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: snapshot.savedAt, activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: state.factMemory, account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" };
     queuedWorkspaceState = envelope;
     try { window.localStorage.setItem(LOCAL_WORKSPACE_KEY, JSON.stringify(envelope)); } catch (_) {}
-    bridge("saveVideoCatalog", { catalog: state.youtube }).catch(function () {});
     flushWorkspaceSave();
     scheduleCloudSave();
   }
@@ -858,7 +857,7 @@
     const progress = state.youtubeProgress || {};
     const sourceCount = progress.completedSources !== undefined ? (progress.completedSources || 0) + "/" + (progress.totalSources || 0) + " sources" : (progress.completedChannels || 0) + "/" + (progress.totalChannels || 58) + " channels";
     const notice = node("div", { className: "video-import-notice", role: "status" }, node("div", {}, node("strong", { text: progress.phase === "paused" ? "Import paused" : state.youtubeStatus === "refreshing" ? "Refreshing your approved library" : "Building your approved library" }), node("span", { text: sourceCount + " · " + (progress.importedVideos || 0).toLocaleString() + " videos imported" + (state.youtubeError ? " · " + state.youtubeError : "") })));
-    notice.appendChild(node("button", { className: "ghost-button", onClick: progress.phase === "paused" ? function () { youtubeConnect(false); } : progress.phase === "complete" || progress.phase === "error" ? function () { youtubeConnect(true); } : function () { state.youtubeStatus = "paused"; state.youtubeProgress.phase = "paused"; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); render(); } }, progress.phase === "paused" ? "Resume" : progress.phase === "complete" || progress.phase === "error" ? "Retry" : "Pause"));
+    notice.appendChild(node("button", { className: "ghost-button", onClick: progress.phase === "paused" ? function () { youtubeConnect(false); } : progress.phase === "complete" || progress.phase === "error" ? function () { youtubeConnect(true); } : function () { state.youtubeStatus = "paused"; state.youtubeProgress.phase = "paused"; state.connectionToken += 1; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); render(); } }, progress.phase === "paused" ? "Resume" : progress.phase === "complete" || progress.phase === "error" ? "Retry" : "Pause"));
     return notice;
   }
   function youtubeConnect(force) {
@@ -868,7 +867,9 @@
     youtubeSyncActive = true;
     const token = ++state.connectionToken;
     state.youtubeStatus = state.youtube.videos.length ? "refreshing" : "connecting"; state.youtubeError = ""; state.youtubeProgress = { phase: "resolving", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }; render();
-    window.LEARNED_MEDIA_YOUTUBE.sync(key, state.youtube, function (progress) { if (token !== state.connectionToken) return; state.youtubeProgress = progress; render(); }, Boolean(force)).then(function (result) {
+    window.LEARNED_MEDIA_YOUTUBE.sync(key, state.youtube, function (progress) { if (token !== state.connectionToken) return; state.youtubeProgress = progress; render(); }, Boolean(force), function () { return token === state.connectionToken; }).then(async function (result) {
+      if (token !== state.connectionToken) return;
+      await bridge("commitYouTubeImportCatalog", { catalog: Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: 3, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : result.lastSyncAt }), completedSources: result.completedCheckpointSources });
       if (token !== state.connectionToken) return;
       const available = {}; result.videos.forEach(function (video) { available[video.id] = true; }); const preserved = (state.youtube.discoverIds || []).filter(function (id) { return available[id]; });
       state.youtube = Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: 3, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : (result.lastSyncAt || new Date().toISOString()), discoverIds: preserved.length ? preserved : window.LEARNED_MEDIA_YOUTUBE.shuffle(result.videos, 24, []).map(function (video) { return video.id; }) }); state.youtubeStatus = result.incomplete ? "error" : "connected"; state.youtubeError = result.progress.error || ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; saveState(); render(); showToast(result.incomplete ? "YouTube connected, but some approved sources need a retry." : "YouTube connected. Your approved video library is ready.");
@@ -1936,7 +1937,10 @@
           saveState();
         }
       }
-      if (state.youtubeKey.trim() && state.youtube.videos.length) state.youtubeStatus = "connected";
+      if (state.youtubeKey.trim() && state.youtube.videos.length) {
+        state.youtubeStatus = "connected";
+        if (await bridge("hasYouTubeImportPages", {})) youtubeConnect(false);
+      }
       else if (state.youtubeKey.trim()) youtubeConnect(false);
       if (state.account && state.account.id) await syncCloudAccount();
     } catch (error) {

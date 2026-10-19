@@ -4,6 +4,8 @@ import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportC
 import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
 import { reuseUnchangedVideoRecords } from "./video-metadata";
+import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageIdentity, openImportCheckpoint, type YouTubeImportPageStore } from "./youtube-import-checkpoints";
+import { restoreStoredCatalog, videoRecordRange, type StoredVideo } from "./youtube-catalog-storage";
 export type YouTubeTopic = "History" | "Politics" | "Geography" | "Science" | "Nature" | "Mathematics" | "Literature" | "Sports" | "Culture" | "Technology";
 
 export type ApprovedChannelSeed = {
@@ -480,7 +482,10 @@ export class YouTubeClient {
       for (let offset = 0; offset < missing.length; offset += 50) {
         const batch = missing.slice(offset, offset + 50);
         const response = this.request<VideoApiResponse>("videos", { part: "snippet,contentDetails,status", id: batch.join(",") }, signal)
-          .then((payload) => new Map((payload.items ?? []).map((item) => [item.id, item])));
+          .then((payload) => {
+            if (!payload || !Array.isArray(payload.items)) throw new YouTubeApiError("YouTube returned invalid video metadata. The checkpoint was not advanced.", undefined, "malformed-metadata", false);
+            return new Map(payload.items.map((item) => [item.id, item]));
+          });
         batch.forEach((id) => pending.set(id, response.then((items) => items.get(id))));
       }
       const items = await Promise.all(uniqueIds.map((id) => pending.get(id)!));
@@ -488,25 +493,41 @@ export class YouTubeClient {
     };
   }
 
-  private async importPlaylist(channel: YouTubeChannelRecord, playlistId: string, sourceId: string, metadata: VideoMetadataLoader, signal?: AbortSignal, onPage?: (count: number) => void) {
-    const ids: string[] = [];
-    let pageToken = "";
-    const seenPageTokens = new Set<string>();
-    do {
-      if (pageToken) {
-        if (seenPageTokens.has(pageToken)) throw new YouTubeApiError(`YouTube repeated a page while importing ${channel.name}.`, undefined, "repeated-page", false);
-        seenPageTokens.add(pageToken);
+  private async importPlaylist(channel: YouTubeChannelRecord, playlistId: string, sourceId: string, metadata: VideoMetadataLoader, signal?: AbortSignal,
+    onPage?: (count: number) => void, pages?: YouTubeImportPageStore, committedAt?: string) {
+    const identity = importPageIdentity(YOUTUBE_CATALOG_VERSION, channel.id, playlistId);
+    let checkpoint = await openImportCheckpoint(pages, sourceId, identity, committedAt);
+    let restarted = false;
+    while (checkpoint.nextPageToken !== null) {
+      if (signal?.aborted) throw abortError();
+      const pageToken = checkpoint.nextPageToken;
+      let payload: PlaylistApiResponse;
+      try {
+        payload = await this.request<PlaylistApiResponse>("playlistItems", { part: "snippet,contentDetails", playlistId, maxResults: "50", ...(pageToken ? { pageToken } : {}) }, signal);
+      } catch (error) {
+        if (pageToken && !restarted && error instanceof YouTubeApiError && error.reason === "invalidPageToken") {
+          await pages?.clear(sourceId);
+          checkpoint = await openImportCheckpoint(pages, sourceId, identity, committedAt); restarted = true;
+          continue;
+        }
+        throw error;
       }
-      const payload = await this.request<PlaylistApiResponse>("playlistItems", { part: "snippet,contentDetails", playlistId, maxResults: "50", ...(pageToken ? { pageToken } : {}) }, signal);
+      if (!payload || !Array.isArray(payload.items) || payload.nextPageToken !== undefined && typeof payload.nextPageToken !== "string") throw new YouTubeApiError("YouTube returned an invalid import page. Its checkpoint was not advanced.", undefined, "malformed-page", false);
+      const ids: string[] = [];
       for (const item of payload.items ?? []) {
         const videoId = item.contentDetails?.videoId;
         if (!videoId || hasExplicitShortMarker(item.snippet?.title ?? "", item.snippet?.description ?? "", [])) continue;
         ids.push(videoId);
       }
-      onPage?.(ids.length);
-      pageToken = payload.nextPageToken ?? "";
-    } while (pageToken);
-    const items = await metadata(ids);
+      const items = await metadata(ids);
+      if (signal?.aborted) throw abortError();
+      await checkpoint.append(this.mapPlaylistPage(items, channel, sourceId), payload.nextPageToken || null);
+      if (onPage) onPage(checkpoint.videos.length);
+    }
+    return checkpoint.videos;
+  }
+
+  private mapPlaylistPage(items: Awaited<ReturnType<VideoMetadataLoader>>, channel: YouTubeChannelRecord, sourceId: string) {
     const mapped: YouTubeVideo[] = [];
     items.forEach((item) => {
       if (!item.id || item.status?.privacyStatus && item.status.privacyStatus !== "public" || item.snippet?.channelId !== channel.id) return;
@@ -520,9 +541,10 @@ export class YouTubeClient {
     return mapped;
   }
 
-  private async importChannel(channel: YouTubeChannelRecord, metadata: VideoMetadataLoader, signal?: AbortSignal, onPage?: (count: number) => void) {
+  private async importChannel(channel: YouTubeChannelRecord, metadata: VideoMetadataLoader, signal?: AbortSignal, onPage?: (count: number) => void,
+    pages?: YouTubeImportPageStore, committedAt?: string) {
     if (!channel.uploadsPlaylistId) throw new YouTubeApiError(`The approved channel “${channel.name}” has no uploads playlist.`, undefined, "uploads-playlist-missing", false);
-    return this.importPlaylist(channel, channel.uploadsPlaylistId, `channel:${channel.id}`, metadata, signal, onPage);
+    return this.importPlaylist(channel, channel.uploadsPlaylistId, `channel:${channel.id}`, metadata, signal, onPage, pages, committedAt);
   }
 
   private async resolveSpecial(seed: ApprovedVideoSeed, channels: YouTubeChannelRecord[], metadata: VideoMetadataLoader, signal?: AbortSignal): Promise<YouTubeVideo | null> {
@@ -542,7 +564,7 @@ export class YouTubeClient {
     return { id: item.id, channelId: snippet.channelId ?? `special-${normalized(seed.creator).replace(/ /g, "-")}`, channelName: snippet.channelTitle ?? seed.creator, title: snippet.title!, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt ?? new Date().toISOString(), durationSeconds, durationLabel: formatDuration(durationSeconds), ...(snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url ? { thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url } : {}), embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(seed.creator, snippet.title!, snippet.description ?? "", snippet.tags ?? []), approved: true, special: true, sourceIds: [`individual:${item.id}`], metadataRefreshedAt: new Date().toISOString() } as YouTubeVideo;
   }
 
-  async syncApprovedCatalog(existingChannels: YouTubeChannelRecord[] = [], signal?: AbortSignal, onProgress?: (progress: YouTubeImportProgress) => void, options: { existingVideos?: YouTubeVideo[]; sourceStates?: Record<string, YouTubeSourceState>; force?: boolean } = {}) {
+  async syncApprovedCatalog(existingChannels: YouTubeChannelRecord[] = [], signal?: AbortSignal, onProgress?: (progress: YouTubeImportProgress) => void, options: { existingVideos?: YouTubeVideo[]; sourceStates?: Record<string, YouTubeSourceState>; force?: boolean; pages?: YouTubeImportPageStore } = {}) {
     const metadata = this.createMetadataLoader(signal);
     const existingVideos = options.existingVideos ?? [];
     const sourceStates: Record<string, YouTubeSourceState> = { ...(options.sourceStates ?? {}) };
@@ -582,7 +604,7 @@ export class YouTubeClient {
     const imported = await mapWithConcurrency(jobs, 4, async (job) => {
       progress.currentSource = job.label;
       const prior = sourceStates[job.sourceId];
-      const due = Boolean(options.force || prior?.status === "error" || !prior?.lastSuccessfulSyncAt || now - new Date(prior.lastSuccessfulSyncAt).getTime() >= day);
+      const due = Boolean(options.force || prior?.status === "error" || !prior?.lastSuccessfulSyncAt || now - new Date(prior.lastSuccessfulSyncAt).getTime() >= day || await options.pages?.has(job.sourceId));
       if (!due) {
         progress.completedSources = (progress.completedSources ?? 0) + 1;
         onProgress?.({ ...progress });
@@ -590,11 +612,16 @@ export class YouTubeClient {
       }
       try {
         let videos: YouTubeVideo[];
-        if (job.kind === "uploads") videos = await this.importChannel(job.channel!, metadata, signal);
-        else if (job.kind === "playlist") videos = await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, metadata, signal);
+        if (job.kind === "uploads") videos = await this.importChannel(job.channel!, metadata, signal, undefined, options.pages, prior?.lastSuccessfulSyncAt);
+        else if (job.kind === "playlist") videos = await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, metadata, signal, undefined, options.pages, prior?.lastSuccessfulSyncAt);
         else {
-          const specialVideo = await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), metadata, signal);
-          videos = specialVideo ? [specialVideo] : [];
+          const checkpoint = await openImportCheckpoint(options.pages, job.sourceId, importPageIdentity(YOUTUBE_CATALOG_VERSION, job.seed!.creator, job.seed!.videoId ?? job.seed!.title), prior?.lastSuccessfulSyncAt);
+          if (checkpoint.nextPageToken !== null) {
+            const specialVideo = await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), metadata, signal);
+            if (signal?.aborted) throw abortError();
+            await checkpoint.append(specialVideo ? [{ ...specialVideo, sourceIds: [job.sourceId] }] : [], null);
+          }
+          videos = checkpoint.videos;
         }
         progress.importedVideos += videos.length;
         progress.completedSources = (progress.completedSources ?? 0) + 1;
@@ -648,7 +675,8 @@ export class YouTubeClient {
     progress.currentSource = undefined;
     progress.error = complete ? undefined : (progress.error ?? "Some approved video sources need a retry.");
     onProgress?.({ ...progress });
-    return { channels: channelsWithCounts, videos: unique, sourceStates, incomplete: !complete, progress };
+    return { channels: channelsWithCounts, videos: unique, sourceStates, incomplete: !complete, progress,
+      completedCheckpointSources: imported.filter(result => result.scanned && result.ok).map(result => result.job.sourceId) };
   }
 }
 
@@ -785,6 +813,17 @@ const openYouTubeDb = createDatabaseConnection(DB_NAME, DB_VERSION, database => 
   if (!database.objectStoreNames.contains("workspace")) database.createObjectStore("workspace");
 });
 
+export async function hasPendingYouTubeImport() {
+  if (typeof window === "undefined" || !window.indexedDB) return false;
+  const db = await openYouTubeDb();
+  return new Promise<boolean>((resolve, reject) => {
+    const request = db.transaction("workspace", "readonly").objectStore("workspace")
+      .count(IDBKeyRange.bound(YOUTUBE_IMPORT_PAGE_PREFIX, `${YOUTUBE_IMPORT_PAGE_PREFIX}\uffff`));
+    request.onsuccess = () => resolve(request.result > 0);
+    request.onerror = () => reject(request.error);
+  });
+}
+
 export async function loadYouTubeActivity(workspaceId: string, fallback?: Partial<YouTubeActivityState>): Promise<Partial<YouTubeActivityState> | null> {
   if (typeof window === "undefined" || !window.indexedDB) return fallback ?? null;
   try {
@@ -806,16 +845,18 @@ export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fall
   try {
     const db = await openYouTubeDb();
     const saved = await new Promise<{ catalog: Record<string, unknown> | null; legacy: Record<string, unknown> | null; activity: Partial<YouTubeActivityState> | null }>((resolve, reject) => {
-      const store = db.transaction("workspace", "readonly").objectStore("workspace");
+      const transaction = db.transaction("workspace", "readonly");
+      const store = transaction.objectStore("workspace");
       const catalogRequest = store.get("catalog");
       const legacyRequest = store.get("state");
       const activityRequest = store.get(`${YOUTUBE_ACTIVITY_KEY_PREFIX}${workspaceId}`);
-      let remaining = 3;
-      const complete = () => { remaining -= 1; if (!remaining) resolve({ catalog: catalogRequest.result ?? null, legacy: legacyRequest.result ?? null, activity: activityRequest.result ?? null }); };
-      for (const request of [catalogRequest, legacyRequest, activityRequest]) {
-        request.onsuccess = complete;
-        request.onerror = () => reject(request.error);
-      }
+      let records: IDBRequest<StoredVideo[]> | undefined;
+      catalogRequest.onsuccess = () => { if (catalogRequest.result?.storageVersion !== undefined) records = store.getAll(videoRecordRange()); };
+      transaction.oncomplete = () => {
+        try { resolve({ catalog: restoreStoredCatalog(catalogRequest.result ?? null, records?.result ?? []), legacy: legacyRequest.result ?? null, activity: activityRequest.result ?? null }); }
+        catch (error) { reject(error); }
+      };
+      transaction.onerror = transaction.onabort = () => reject(transaction.error);
     });
     const raw = saved.catalog ?? saved.legacy ?? {};
     const savedActivity = saved.activity ?? fallbackActivity ?? saved.legacy as Partial<YouTubeActivityState> | undefined;
@@ -833,7 +874,7 @@ export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fall
     workspace.playbackPositions = Object.fromEntries(Object.entries(workspace.playbackPositions ?? {}).filter(([id]) => availableVideoIds.has(id)));
     workspace.discoverIds = (workspace.discoverIds ?? []).filter((id) => availableVideoIds.has(id));
     if (workspace.selectedVideoId && !availableVideoIds.has(workspace.selectedVideoId)) workspace.selectedVideoId = undefined;
-    if (!saved.catalog && saved.legacy && workspace.videos.length) void saveYouTubeWorkspace(workspace, { catalog: true, activity: true, workspaceId });
+    if (!saved.catalog && saved.legacy && workspace.videos.length) void saveYouTubeWorkspace(workspace, { activity: true, workspaceId });
     if (!raw.prioritizeRecentByChannel && !saved.catalog && workspace.videos.length) {
       workspace.discoverIds = selectRandomVideos(filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic), 24, [], DEFAULT_YOUTUBE_RECENCY_PREFERENCES).map((video) => video.id);
     }
@@ -841,16 +882,15 @@ export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fall
   } catch (error) { if (strict) throw error; return { ...DEFAULT_YOUTUBE_WORKSPACE }; }
 }
 
-export async function saveYouTubeWorkspace(workspace: YouTubeWorkspaceState, options: { catalog?: boolean; activity?: boolean; workspaceId?: string } = {}) {
+export async function saveYouTubeWorkspace(workspace: YouTubeWorkspaceState, options: { activity?: boolean; workspaceId?: string } = {}) {
   if (typeof window === "undefined" || !window.indexedDB) return;
-  const { catalog = false, activity = false, workspaceId = "local-workspace" } = options;
-  if (!catalog && !activity) return;
+  const { activity = false, workspaceId = "local-workspace" } = options;
+  if (!activity) return;
   try {
     const db = await openYouTubeDb();
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction("workspace", "readwrite");
       const store = transaction.objectStore("workspace");
-      if (catalog) store.put(youtubeCatalogOf(workspace), "catalog");
       if (activity) store.put(youtubeActivityOf(workspace), `${YOUTUBE_ACTIVITY_KEY_PREFIX}${workspaceId}`);
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
@@ -867,17 +907,17 @@ export async function importCoordinatedYouTubeCatalog(apiKey: string, signal: Ab
     const snapshot = await loadYouTubeWorkspace(options.workspaceId, undefined, true);
     const fresh = snapshot.catalogVersion >= YOUTUBE_CATALOG_VERSION && !snapshot.libraryIncomplete && snapshot.videos.length
       && snapshot.lastSyncAt && Date.now() - Date.parse(snapshot.lastSyncAt) < 24 * 60 * 60 * 1000;
-    if (!options.force && fresh) return { workspace: snapshot, error: undefined };
+    if (!options.force && fresh && !await owner.pages.has()) return { workspace: snapshot, error: undefined };
     const client = new YouTubeClient(apiKey, undefined, owner.assertOwned);
     const result = await client.syncApprovedCatalog(snapshot.channels, owner.signal, progress, {
       existingVideos: snapshot.videos, sourceStates: snapshot.sourceStates,
-      force: options.force || snapshot.catalogVersion < YOUTUBE_CATALOG_VERSION
+      force: options.force || snapshot.catalogVersion < YOUTUBE_CATALOG_VERSION, pages: owner.pages
     });
     if (owner.signal.aborted) throw abortError();
     const workspace: YouTubeWorkspaceState = { ...snapshot, channels: result.channels, videos: result.videos, sourceStates: result.sourceStates,
       catalogVersion: result.incomplete ? snapshot.catalogVersion : YOUTUBE_CATALOG_VERSION, libraryIncomplete: result.incomplete,
       lastSyncAt: result.incomplete ? snapshot.lastSyncAt : new Date().toISOString() };
-    await owner.commit(youtubeCatalogOf(workspace));
+    await owner.commit(youtubeCatalogOf(workspace), result.completedCheckpointSources, snapshot.videos);
     return { workspace, error: result.progress.error };
   });
   if (signal.aborted) throw abortError();

@@ -1,4 +1,7 @@
 // The catalog and lease share a store so ownership checks and commits are atomic.
+import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageKey, importPagePrefix, type YouTubeImportPage, type YouTubeImportPageStore } from "./youtube-import-checkpoints";
+import { planCatalogCommit, VIDEO_WRITE_BATCH_SIZE, videoRecordRange, type YouTubeCatalog } from "./youtube-catalog-storage";
+import type { YouTubeVideo } from "./youtube";
 const LEASE_KEY = "youtube-import-lease-v1";
 const COMMIT_KEY = "youtube-import-commit-v1";
 const NOTICE_KEY = "learned-media-youtube-import-notice-v1";
@@ -8,7 +11,12 @@ const POLL_MS = 2_000;
 type Lease<P> = { owner: string; expiresAt: number; progress?: P };
 type Commit = { id: string };
 type OpenDatabase = () => Promise<IDBDatabase>;
-export type ImportOwnership = { signal: AbortSignal; assertOwned: () => Promise<void>; commit: (catalog: unknown) => Promise<void> };
+export type ImportOwnership = { signal: AbortSignal; assertOwned: () => Promise<void>; pages: YouTubeImportPageStore; commit: (catalog: YouTubeCatalog, completedSources?: string[], previousVideos?: YouTubeVideo[]) => Promise<void> };
+
+function pageRange(sourceId?: string) {
+  const prefix = sourceId === undefined ? YOUTUBE_IMPORT_PAGE_PREFIX : importPagePrefix(sourceId);
+  return IDBKeyRange.bound(prefix, `${prefix}\uffff`);
+}
 
 function canceled() { return new DOMException("YouTube import canceled.", "AbortError"); }
 function lostOwnership() { return new Error("Another tab took over the YouTube import. Its saved results will be loaded automatically."); }
@@ -100,17 +108,14 @@ export async function withYouTubeImportLease<P, T>(openDatabase: OpenDatabase, s
   signal.addEventListener("abort", abort, { once: true });
   window.addEventListener("pagehide", pagehide);
   if (signal.aborted) abort();
-  const check = async (renew: boolean, catalog?: { value: unknown }) => {
+  const check = async <T = void>(renew: boolean, update?: (store: IDBObjectStore) => T): Promise<T> => {
     if (controller.signal.aborted) throw failure ?? canceled();
     const db = await openDatabase();
-    await transaction(db, (store, lease) => {
+    return transaction(db, (store, lease) => {
       if (controller.signal.aborted) throw failure ?? canceled();
       if (lease?.owner !== owner || lease.expiresAt <= Date.now()) throw lostOwnership();
       if (renew) store.put({ owner, expiresAt: Date.now() + LEASE_MS, progress }, LEASE_KEY);
-      if (catalog) {
-        store.put(catalog.value, "catalog");
-        store.put({ id: crypto.randomUUID() }, COMMIT_KEY);
-      }
+      return update?.(store) as T;
     });
   };
   const renew = () => {
@@ -122,7 +127,36 @@ export async function withYouTubeImportLease<P, T>(openDatabase: OpenDatabase, s
     return await run({
       signal: controller.signal,
       assertOwned: () => check(false).catch(error => { failure = error; controller.abort(); throw error; }),
-      commit: async catalog => { await check(false, { value: catalog }); notify(); }
+      pages: {
+        has: async sourceId => (await check(false, store => store.count(pageRange(sourceId)))).result > 0,
+        load: async sourceId => (await check(false, store => store.getAll(pageRange(sourceId)))).result as YouTubeImportPage[],
+        save: async page => { await check(false, store => { store.put(page, importPageKey(page)); }); },
+        clear: async sourceId => { await check(false, store => { store.delete(pageRange(sourceId)); }); }
+      },
+      commit: async (catalog, completedSources = [], previousVideos = []) => {
+        const stored = (await check(false, store => store.get("catalog"))).result;
+        const plan = planCatalogCommit(catalog, previousVideos, stored);
+        for (let start = 0; start < plan.upserts.length; start += VIDEO_WRITE_BATCH_SIZE) {
+          const batch = plan.upserts.slice(start, start + VIDEO_WRITE_BATCH_SIZE);
+          await check(false, store => { for (const record of batch) store.put(record, record.key); });
+        }
+        await check(false, store => {
+          store.put(plan.manifest, "catalog");
+          store.put({ id: crypto.randomUUID() }, COMMIT_KEY);
+          for (const sourceId of completedSources) store.delete(pageRange(sourceId));
+        });
+        notify();
+        // A crash while staging leaves the previous manifest usable. Retire only
+        // unreferenced records, in bounded transactions after publication.
+        try {
+          const keys = (await check(false, store => store.getAllKeys(videoRecordRange()))).result;
+          const removed = keys.filter(key => !plan.retainedKeys.has(String(key)));
+          for (let start = 0; start < removed.length; start += VIDEO_WRITE_BATCH_SIZE) {
+            const batch = removed.slice(start, start + VIDEO_WRITE_BATCH_SIZE);
+            await check(false, store => { for (const key of batch) store.delete(key); });
+          }
+        } catch { /* The next owner can reclaim orphaned records; the catalog is already durable. */ }
+      }
     }, value => { progress = value; onProgress(value); });
   } catch (error) {
     throw failure ?? error;
