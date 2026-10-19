@@ -63,9 +63,10 @@ async function search(request: SearchRequest) {
   for (let start = 0; start < orderedVideos.length; start += chunkSize) {
     if (request.requestId !== latestRequestId || request.revision !== revision || epoch !== indexEpoch) return;
     const batch = orderedVideos.slice(start, start + chunkSize);
+    const positions = new Map(batch.map((video, index) => [video.id, start + index]));
     const matches = searchYouTubeCandidates(batch, request.plan, request.topic, request.channelId, request.limit, request.excludedIds ?? [], Boolean(request.expanded));
     for (const match of matches) {
-      const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: start + batch.findIndex((video) => video.id === match.video.id) };
+      const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: positions.get(match.video.id)! };
       (match.matchedFields.includes("semantic-fallback") ? fallback : direct).push(entry);
     }
     if (start + chunkSize < orderedVideos.length) {
