@@ -137,22 +137,51 @@ export function normalizedText(text: string) {
   return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 const stop = new Set("a an the of in on at to for from by with and or but is was were are be been this that it its as his her their had has have who which they he she into through about also one two three".split(" "));
-function tokens(text: string) { return new Set(normalizedText(text).split(" ").filter(word => word.length > 2 && !stop.has(word))); }
+function normalizedTokens(text: string) { return new Set(text.split(" ").filter(word => word.length > 2 && !stop.has(word))); }
+function tokens(text: string) { return normalizedTokens(normalizedText(text)); }
 function overlap(a: Set<string>, b: Set<string>) { return [...a].filter(token => b.has(token)).length / Math.max(1, Math.min(a.size, b.size)); }
+type PreparedFactMemory = {
+  title: string; body: string; claim: string;
+  quotes: Set<string>; sections: Set<string>; titleTokens: Set<string>; bodyTokens: Set<string>;
+};
+const preparedFactMemories = new WeakMap<FactMemory, {
+  title: string; body: string; claim?: string; evidence: string[]; evidenceSections: string[];
+  prepared: PreparedFactMemory;
+}>();
+function prepareFactMemory(memory: FactMemory): PreparedFactMemory {
+  const cached = preparedFactMemories.get(memory);
+  const evidence = memory.evidence ?? [];
+  const evidenceSections = memory.evidenceSections ?? [];
+  if (cached && cached.title === memory.title && cached.body === memory.body && cached.claim === memory.claim &&
+      cached.evidence.length === evidence.length && cached.evidence.every((quote, index) => quote === evidence[index]) &&
+      cached.evidenceSections.length === evidenceSections.length && cached.evidenceSections.every((section, index) => section === evidenceSections[index])) return cached.prepared;
+  const title = normalizedText(memory.title);
+  const body = normalizedText(memory.body);
+  const prepared = {
+    title, body, claim: normalizedText(memory.claim ?? ""),
+    quotes: new Set(evidence.map(normalizedText)), sections: new Set(evidenceSections.map(normalizedText)),
+    titleTokens: normalizedTokens(title), bodyTokens: normalizedTokens(body)
+  };
+  // Copy source arrays so in-place edits also invalidate the cached preparation.
+  preparedFactMemories.set(memory, { title: memory.title, body: memory.body, claim: memory.claim, evidence: [...evidence], evidenceSections: [...evidenceSections], prepared });
+  return prepared;
+}
 export function nearestMemories(fact: Pick<FactMemory, "title" | "body" | "topicPath">, memories: FactMemory[], limit = 40) {
   const words = tokens(fact.title + " " + fact.body);
   return memories.map(memory => ({ memory, score: overlap(words, tokens(memory.title + " " + memory.body)) + (memory.topicPath.at(-1) === fact.topicPath.at(-1) ? .2 : 0) }))
     .filter(item => item.score > .12).sort((a, b) => b.score - a.score).slice(0, limit).map(item => item.memory);
 }
 export function isRepeatedFact(fact: FactMemory, memory: FactMemory) {
-  if (fact.id === memory.id || normalizedText(fact.title) === normalizedText(memory.title) || normalizedText(fact.body) === normalizedText(memory.body)) return true;
+  if (fact.id === memory.id) return true;
+  const preparedFact = prepareFactMemory(fact), preparedMemory = prepareFactMemory(memory);
+  if (preparedFact.title === preparedMemory.title || preparedFact.body === preparedMemory.body) return true;
   if (fact.fingerprint && memory.fingerprint && fact.fingerprint === memory.fingerprint) return true;
   if (fact.claimFingerprint && memory.claimFingerprint && fact.claimFingerprint === memory.claimFingerprint) return true;
-  if (fact.claim && memory.claim && normalizedText(fact.claim) === normalizedText(memory.claim)) return true;
+  if (fact.claim && memory.claim && preparedFact.claim === preparedMemory.claim) return true;
   if (fact.evidenceKeys?.some(key => memory.evidenceKeys?.includes(key))) return true;
-  if (fact.evidence?.some(quote => memory.evidence?.some(old => normalizedText(quote) === normalizedText(old)))) return true;
-  const sharedSection = fact.evidenceSections?.some(section => memory.evidenceSections?.some(old => normalizedText(section) === normalizedText(old))) ?? false;
-  return overlap(tokens(fact.body), tokens(memory.body)) >= (sharedSection ? .62 : .78) && (overlap(tokens(fact.title), tokens(memory.title)) >= .5 || fact.sourceUrls.some(url => memory.sourceUrls.includes(url)));
+  if ([...preparedFact.quotes].some(quote => preparedMemory.quotes.has(quote))) return true;
+  const sharedSection = [...preparedFact.sections].some(section => preparedMemory.sections.has(section));
+  return overlap(preparedFact.bodyTokens, preparedMemory.bodyTokens) >= (sharedSection ? .62 : .78) && (overlap(preparedFact.titleTokens, preparedMemory.titleTokens) >= .5 || fact.sourceUrls.some(url => memory.sourceUrls.includes(url)));
 }
 export function mergeFactMemory(current: FactMemory[], incoming: FactMemory[]) {
   const map = new Map<string, FactMemory>();
