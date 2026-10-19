@@ -194,7 +194,10 @@ function writeRecoverySnapshot(storage, primary, backup, value, kind) {
     if (!parseSnapshot(serialized, kind, "save"))
         throw new Error("Workspace data failed validation. The last valid recovery copy was kept.");
     const previous = storage.getItem(primary);
-    if (previous !== null && previous !== serialized && parseSnapshot(previous, kind, "backup"))
+    // Identical saves still pass validation, but need no storage writes.
+    if (previous === serialized)
+        return;
+    if (previous !== null && parseSnapshot(previous, kind, "backup"))
         storage.setItem(backup, previous);
     storage.setItem(primary, serialized);
 }

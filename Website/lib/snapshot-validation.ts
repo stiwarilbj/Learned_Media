@@ -157,7 +157,9 @@ export function writeRecoverySnapshot(storage: Pick<Storage, "getItem" | "setIte
   try { serialized = JSON.stringify(value); } catch { report(kind, "save", "json"); throw new Error("Workspace data could not be serialized. The last valid recovery copy was kept."); }
   if (!parseSnapshot(serialized, kind, "save")) throw new Error("Workspace data failed validation. The last valid recovery copy was kept.");
   const previous = storage.getItem(primary);
-  if (previous !== null && previous !== serialized && parseSnapshot(previous, kind, "backup")) storage.setItem(backup, previous);
+  // Identical saves still pass validation, but need no storage writes.
+  if (previous === serialized) return;
+  if (previous !== null && parseSnapshot(previous, kind, "backup")) storage.setItem(backup, previous);
   storage.setItem(primary, serialized);
 }
 
