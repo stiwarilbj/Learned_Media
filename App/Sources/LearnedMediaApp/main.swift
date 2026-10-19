@@ -1989,15 +1989,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         return try JSONSerialization.jsonObject(with: data)
     }
 
-    private func cloudMemoryPage(_ offset: Int, supabaseURL: URL, anonKey: String, session: CloudSession) async throws -> Any {
+    private func cloudMemoryPage(after: String?, supabaseURL: URL, anonKey: String, session: CloudSession) async throws -> Any {
         var components = URLComponents(url: supabaseURL.appendingPathComponent("rest/v1/fact_memory"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
-            URLQueryItem(name: "select", value: "content,known,fingerprint"),
+            URLQueryItem(name: "select", value: "fact_id,content,known,fingerprint"),
             URLQueryItem(name: "user_id", value: "eq.\(session.userID)"),
-            URLQueryItem(name: "order", value: "fact_id"),
-            URLQueryItem(name: "offset", value: String(offset)),
+            URLQueryItem(name: "order", value: "fact_id.asc"),
             URLQueryItem(name: "limit", value: "500")
         ]
+        if let after { components.queryItems?.append(URLQueryItem(name: "fact_id", value: "gt.\(after)")) }
         return try await cloudRequest(components.url!, method: "GET", anonKey: anonKey, session: session)
     }
 
@@ -2006,13 +2006,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         let session = try await cloudSession()
         let revisionsURL = supabaseURL.appendingPathComponent("rest/v1/rpc/latest_workspace_revisions")
         async let revisions = cloudRequest(revisionsURL, method: "POST", anonKey: anonKey, session: session, body: [:])
-        async let firstPage = cloudMemoryPage(0, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
+        async let firstPage = cloudMemoryPage(after: nil, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
         let (revisionResult, firstMemoryPage) = try await (revisions, firstPage)
         let records = (revisionResult as? [[String: Any]] ?? []).compactMap { $0["record"] as? [String: Any] }
         var memories: [[String: Any]] = []
-        var offset = 0
+        var after: String? = nil
         while true {
-            let result = offset == 0 ? firstMemoryPage : try await cloudMemoryPage(offset, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
+            let result = after == nil ? firstMemoryPage : try await cloudMemoryPage(after: after, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
             let rows = result as? [[String: Any]] ?? []
             memories.append(contentsOf: rows.compactMap { row in
                 guard var content = row["content"] as? [String: Any] else { return nil }
@@ -2021,7 +2021,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 return content
             })
             if rows.count < 500 { break }
-            offset += rows.count
+            // Match the database's exclusive ordering; content.id can change on merge.
+            guard let next = rows.last?["fact_id"] as? String, next != after else {
+                throw NativeError(message: "Cloud fact history returned an invalid cursor.")
+            }
+            after = next
         }
         return ["records": records, "factMemory": memories]
     }

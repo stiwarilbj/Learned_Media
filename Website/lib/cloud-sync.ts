@@ -25,21 +25,32 @@ export class WorkspaceCloudSync {
   constructor(readonly userId: string) {}
   async load(signal: AbortSignal) {
     const api = cloudClient();
-    const loadMemoryPage = (from: number) => api.from('fact_memory').select('content,known,fingerprint').eq('user_id', this.userId).order('fact_id').range(from, from + 499).abortSignal(signal);
+    const loadMemoryPage = (after: string | null) => {
+      let query = api.from('fact_memory').select('fact_id,content,known,fingerprint').eq('user_id', this.userId);
+      if (after !== null) query = query.gt('fact_id', after);
+      return query.order('fact_id', { ascending: true }).limit(500).abortSignal(signal);
+    };
     // Start both independent reads together, keeping later pages sequential.
     const [revisionResult, firstMemoryPage] = await Promise.all([
       api.rpc('latest_workspace_revisions').abortSignal(signal),
-      loadMemoryPage(0),
+      loadMemoryPage(null),
     ]);
     const { data, error } = revisionResult as { data: Array<{ record: CloudRecord }> | null; error: any };
     if (error) throw error;
     const records = (data || []).map((row: any) => canonicalRecord(row.record)) as CloudRecord[];
     const factMemory: FactMemory[] = [];
-    for (let from = 0; ; from += 500) {
-      const result = (from === 0 ? firstMemoryPage : await loadMemoryPage(from)) as { data: Array<{ content: Record<string, any>; known: boolean; fingerprint?: string }> | null; error: any };
+    let after: string | null = null;
+    while (true) {
+      const result: Awaited<ReturnType<typeof loadMemoryPage>> = after === null ? firstMemoryPage : await loadMemoryPage(after);
       if (result.error) throw result.error;
-      factMemory.push(...(result.data || []).map(row => ({ ...row.content, fingerprint: row.fingerprint || row.content.fingerprint, known: row.known }) as FactMemory));
-      if ((result.data || []).length < 500) break;
+      const rows: Pick<Database['public']['Tables']['fact_memory']['Row'], 'fact_id' | 'content' | 'known' | 'fingerprint'>[] = result.data || [];
+      factMemory.push(...rows.map(row => ({ ...row.content, fingerprint: row.fingerprint || row.content.fingerprint, known: row.known }) as FactMemory));
+      if (rows.length < 500) break;
+      // Use the immutable database key, not content.id or mutable fact fields.
+      // The same database ordering and exclusive boundary apply on every page.
+      const next = rows[rows.length - 1].fact_id;
+      if (typeof next !== 'string' || next === after) throw new Error('Cloud fact history returned an invalid cursor.');
+      after = next;
     }
     for (const record of records) this.sent.set(record.id, JSON.stringify(record));
     for (const memory of factMemory) this.memories.set(memory.fingerprint || memory.id, JSON.stringify(safeMemory(memory)));
