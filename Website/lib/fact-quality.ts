@@ -139,7 +139,13 @@ export function normalizedText(text: string) {
 const stop = new Set("a an the of in on at to for from by with and or but is was were are be been this that it its as his her their had has have who which they he she into through about also one two three".split(" "));
 function normalizedTokens(text: string) { return new Set(text.split(" ").filter(word => word.length > 2 && !stop.has(word))); }
 function tokens(text: string) { return normalizedTokens(normalizedText(text)); }
-function overlap(a: Set<string>, b: Set<string>) { return [...a].filter(token => b.has(token)).length / Math.max(1, Math.min(a.size, b.size)); }
+function overlap(a: Set<string>, b: Set<string>) {
+  const smaller = a.size <= b.size ? a : b;
+  const larger = smaller === a ? b : a;
+  let shared = 0;
+  for (const token of smaller) if (larger.has(token)) shared++;
+  return shared / Math.max(1, Math.min(a.size, b.size));
+}
 type PreparedFactMemory = {
   title: string; body: string; claim: string;
   quotes: Set<string>; sections: Set<string>; titleTokens: Set<string>; bodyTokens: Set<string>;
