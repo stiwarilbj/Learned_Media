@@ -118,22 +118,27 @@ const MAX_WIKIPEDIA_CACHE_ENTRIES = 100;
 
 function trimCache<T>(entries: Map<string, CachedRequest<T>>) {
   const budget = cacheBudgets.get(entries) ?? 4 * 1024 * 1024;
+  let retainedBytes = 0;
+  const references = new Map<CachedRequest<T>, number>();
   for (const [key, entry] of entries) {
     if (entry.expiresAt <= Date.now()) { entries.delete(key); continue; }
     if (entry.bytes === undefined && entry.value !== undefined) entry.bytes = approximateCacheBytes(entry.value, budget);
-    if ((entry.bytes ?? 0) > budget) entries.delete(key);
+    if ((entry.bytes ?? 0) > budget) { entries.delete(key); continue; }
+    const count = references.get(entry) ?? 0;
+    retainedBytes += 96 + key.length * 2;
+    if (count === 0) retainedBytes += entry.bytes ?? 128;
+    references.set(entry, count + 1);
   }
-  function retainedBytes() {
-    let total = 0;
-    const seen = new Set<CachedRequest<T>>();
-    for (const [key, entry] of entries) {
-      total += 96 + key.length * 2;
-      if (!seen.has(entry)) { total += entry.bytes ?? 128; seen.add(entry); }
-    }
-    return total;
-  }
-  while (entries.size && (entries.size > MAX_WIKIPEDIA_CACHE_ENTRIES || retainedBytes() > budget)) {
-    entries.delete(entries.keys().next().value!);
+  while (entries.size && (entries.size > MAX_WIKIPEDIA_CACHE_ENTRIES || retainedBytes > budget)) {
+    const [key, entry] = entries.entries().next().value!;
+    entries.delete(key);
+    retainedBytes -= 96 + key.length * 2;
+    const count = references.get(entry)!;
+    // Redirect aliases share payload bytes until their last cache key is evicted.
+    if (count === 1) {
+      retainedBytes -= entry.bytes ?? 128;
+      references.delete(entry);
+    } else references.set(entry, count - 1);
   }
 }
 
