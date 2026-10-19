@@ -230,6 +230,7 @@ function preparedPassages(extract: string): readonly PreparedParagraph[] {
 export function selectEvidence(extract: string, focus: string, difficulty: number) {
   const words = tokens(focus);
   const passages: Array<{ text: string; section: string; score: number; position: number }> = [];
+  const seenPassages = new Map<string, Set<string>>();
   let position = 0;
   for (const paragraph of preparedPassages(extract)) {
     const { section } = paragraph;
@@ -238,7 +239,11 @@ export function selectEvidence(extract: string, focus: string, difficulty: numbe
       const index = position++;
       if (!eligible) continue;
       const coverage = overlap(words, terms);
-      if (!coverage || passages.some(item => item.section === section && item.text === text)) continue;
+      if (!coverage) continue;
+      let seenInSection = seenPassages.get(section);
+      if (seenInSection?.has(text)) continue;
+      if (!seenInSection) { seenInSection = new Set(); seenPassages.set(section, seenInSection); }
+      seenInSection.add(text);
       passages.push({ text, section, score: coverage * 5, position: index });
     }
   }
