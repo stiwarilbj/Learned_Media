@@ -22,7 +22,24 @@ export type CloudAccount = Pick<User, 'id' | 'email' | 'user_metadata'>;
 export class WorkspaceCloudSync {
   private sent = new Map<string, string>();
   private memories = new Map<string, string>();
+  private trackedMemory: FactMemory[] | undefined;
+  private memoryById = new Map<string, FactMemory>();
+  private changedMemoryIds = new Set<string>();
   constructor(readonly userId: string) {}
+  markFactMemoriesChanged(previous: FactMemory[], next: FactMemory[], ids: Set<string>) {
+    // An unknown replacement (import/recovery) must take the full comparison path.
+    if (this.trackedMemory !== previous) return;
+    const retained = new Set(next.map(item => item.id));
+    for (const id of this.memoryById.keys()) if (!retained.has(id)) {
+      this.memoryById.delete(id);
+      this.changedMemoryIds.delete(id);
+    }
+    for (const item of next) if (ids.has(item.id)) {
+      this.memoryById.set(item.id, item);
+      this.changedMemoryIds.add(item.id);
+    }
+    this.trackedMemory = next;
+  }
   async load(signal: AbortSignal) {
     const api = cloudClient();
     const loadMemoryPage = (after: string | null) => {
@@ -83,15 +100,31 @@ export class WorkspaceCloudSync {
       // Keep failed/later batches dirty and acknowledge the exact uploaded versions.
       batch.forEach(item => this.sent.set(item.record.id, item.serialized));
     }
-    const changed = (store.factMemory || []).map(value => {
+    const history = store.factMemory;
+    if (this.trackedMemory !== history || !this.trackedMemory) {
+      // Full comparison on first save, account restore, imports and recovery.
+      this.memoryById = new Map((history || []).map(item => [item.id, item]));
+      this.changedMemoryIds = new Set(this.memoryById.keys());
+      this.trackedMemory = history;
+    }
+    const changed = [];
+    for (const id of this.changedMemoryIds) {
+      const value = this.memoryById.get(id);
+      if (!value) { this.changedMemoryIds.delete(id); continue; }
       const item = safeMemory(value);
-      return { item, key: item.fingerprint || item.id, serialized: JSON.stringify(item) };
-    }).filter(entry => this.memories.get(entry.key) !== entry.serialized);
+      const key = item.fingerprint || item.id, serialized = JSON.stringify(item);
+      if (this.memories.get(key) === serialized) { this.changedMemoryIds.delete(id); continue; }
+      changed.push({ id, value, item, key, serialized });
+    }
     for (let offset = 0; offset < changed.length; offset += 100) {
       const batch = changed.slice(offset, offset + 100);
       const { error } = await api.rpc('remember_facts', { items: batch.map(entry => entry.item) }).abortSignal(signal);
       if (error) throw error;
-      batch.forEach(entry => this.memories.set(entry.key, entry.serialized));
+      batch.forEach(entry => {
+        this.memories.set(entry.key, entry.serialized);
+        // A new edit arriving during the request remains dirty.
+        if (this.memoryById.get(entry.id) === entry.value) this.changedMemoryIds.delete(entry.id);
+      });
     }
   }
 }

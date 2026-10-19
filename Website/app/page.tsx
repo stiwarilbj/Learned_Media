@@ -557,7 +557,10 @@ export default function HomePage() {
   }, [recordGeminiOutcomes]);
   // This history is used only on this device. It is never supplied to Gemini.
   const archiveFacts = useCallback((incoming: FactCard[]) => {
-    factMemoryRef.current = mergeFactMemory(factMemoryRef.current, incoming.map(rememberFact));
+    const previous = factMemoryRef.current;
+    const next = mergeFactMemory(previous, incoming.map(rememberFact));
+    cloudSyncRef.current?.markFactMemoriesChanged(previous, next, new Set(incoming.map(card => card.id)));
+    factMemoryRef.current = next;
     if (workspaceStoreRef.current) workspaceStoreRef.current.factMemory = factMemoryRef.current;
   }, []);
   const acceptFact = useCallback((card: FactCard) => {

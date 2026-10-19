@@ -184,6 +184,11 @@
   let cloudSaveInFlight = false;
   let cloudSaveQueued = false;
   let cloudSyncToken = 0;
+  let trackedFactMemory = null;
+  let factMemoryById = new Map();
+  let changedFactMemoryIds = new Set();
+  const sentFactMemories = new Map();
+  const archivedFactCards = new WeakMap();
   let queuedWorkspaceState = null;
   let stopYoutubePlayback = null;
   let setupCustomizeOpen = false;
@@ -614,10 +619,27 @@
     return normalizeMemory({ id: card.id, title: card.title, hook: card.hook, body: card.body, claim: card.claim, topicPath: card.topicPath || [], sources: card.sources || [], evidence: card.evidence || [], known: Boolean(card.known || card.feedback === "heard") });
   }
   function archiveFacts(cards) {
+    // Ordinary settings/activity saves need not re-archive unchanged cards.
+    const changedCards = cards.filter(function (card) {
+      const fields = [card.id, card.title, card.hook, card.body, card.claim, card.topicPath, card.sources, card.evidence, Boolean(card.known || card.feedback === "heard")];
+      const previous = archivedFactCards.get(card);
+      if (previous && fields.every(function (value, index) { return value === previous[index]; })) return false;
+      archivedFactCards.set(card, fields);
+      return true;
+    });
+    if (!changedCards.length) return;
+    const previousHistory = state.factMemory;
     const map = new Map();
-    state.factMemory.forEach(function (item) { const normalized = normalizeMemory(item); const key = normalized.fingerprint || normalized.id; map.set(key, normalized); });
-    cards.forEach(function (card) { const item = memoryOf(card); const key = item.fingerprint || item.id; const previous = map.get(key); item.known = item.known || Boolean(previous && previous.known); map.set(key, Object.assign({}, previous || {}, item)); });
+    state.factMemory.forEach(function (item) { map.set(item.fingerprint || item.id, item); });
+    const changedIds = new Set();
+    changedCards.forEach(function (card) { const item = memoryOf(card); const key = item.fingerprint || item.id; const previous = map.get(key); item.known = item.known || Boolean(previous && previous.known); const merged = Object.assign({}, previous || {}, item); map.set(key, merged); changedIds.add(merged.id); });
     state.factMemory = Array.from(map.values());
+    if (trackedFactMemory === previousHistory) {
+      const retained = new Set(state.factMemory.map(function (item) { return item.id; }));
+      factMemoryById.forEach(function (_, id) { if (!retained.has(id)) { factMemoryById.delete(id); changedFactMemoryIds.delete(id); } });
+      state.factMemory.forEach(function (item) { if (changedIds.has(item.id)) { factMemoryById.set(item.id, item); changedFactMemoryIds.add(item.id); } });
+      trackedFactMemory = state.factMemory;
+    }
   }
   function repeatedFact(card) {
     function normalized(text) { return String(text || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
@@ -700,8 +722,26 @@
       cloudSaveInFlight = true;
       state.syncStatus = "syncing";
       state.syncError = "";
-      bridge("cloudSave", { state: { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: state.factMemory, account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" } }).then(function () {
+      // Unknown history replacements take a full comparison, never a dirty-only save.
+      if (trackedFactMemory !== state.factMemory) {
+        factMemoryById = new Map(state.factMemory.map(function (item) { return [item.id, item]; }));
+        changedFactMemoryIds = new Set(factMemoryById.keys());
+        trackedFactMemory = state.factMemory;
+      }
+      const changedMemories = [];
+      changedFactMemoryIds.forEach(function (id) {
+        const value = factMemoryById.get(id);
+        if (!value) { changedFactMemoryIds.delete(id); return; }
+        const item = normalizeMemory(value), key = item.fingerprint || item.id, serialized = JSON.stringify(item);
+        if (sentFactMemories.get(key) === serialized) { changedFactMemoryIds.delete(id); return; }
+        changedMemories.push({ id: id, value: value, item: item, key: key, serialized: serialized });
+      });
+      bridge("cloudSave", { state: { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), activeWorkspaceId: state.workspaceId, workspaces: state.workspaces, factMemory: changedMemories.map(function (entry) { return entry.item; }), account: state.account, cloudOwnerId: state.cloudOwnerId, theme: document.body.classList.contains("theme-dark") ? "dark" : "light" } }).then(function () {
         if (token !== cloudSyncToken) return;
+        changedMemories.forEach(function (entry) {
+          sentFactMemories.set(entry.key, entry.serialized);
+          if (factMemoryById.get(entry.id) === entry.value) changedFactMemoryIds.delete(entry.id);
+        });
         state.syncStatus = nativeKeySyncError ? "error" : "synced";
         state.syncError = nativeKeySyncError;
         render();
@@ -720,12 +760,15 @@
     if (!state.account || !state.account.id) return;
     const token = ++cloudSyncToken;
     state.cloudSyncReady = false;
+    trackedFactMemory = null;
+    sentFactMemories.clear();
     state.syncStatus = "syncing";
     state.syncError = "";
     render();
     try {
       const remote = await bridge("cloudLoad", {});
       if (token !== cloudSyncToken || !state.account) return;
+      (remote.factMemory || []).forEach(function (raw) { const item = normalizeMemory(raw); sentFactMemories.set(item.fingerprint || item.id, JSON.stringify(item)); });
       const compatible = !state.cloudOwnerId || state.cloudOwnerId === state.account.id;
       const localWorkspaces = compatible ? state.workspaces : [];
       const localMemory = compatible ? state.factMemory : [];
