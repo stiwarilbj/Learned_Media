@@ -2059,6 +2059,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         return ["id": raw["id"] ?? "", "name": raw["name"] ?? "Local Workspace", "createdAt": raw["createdAt"] ?? cloudNow(), "updatedAt": raw["updatedAt"] ?? cloudNow(), "state": state]
     }
 
+    private func workspaceRevisionID(userID: String, record: [String: Any]) throws -> String {
+        // Account and complete snapshot determine identity, including after app restart.
+        let input = try JSONSerialization.data(withJSONObject: ["workspace-revision-v1", userID.lowercased(), record], options: [.sortedKeys, .withoutEscapingSlashes])
+        var bytes = Array(SHA256.hash(data: input).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x80
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        let segments = [0..<8, 8..<12, 12..<16, 16..<20, 20..<32]
+        return segments.map { range in String(hex.dropFirst(range.lowerBound).prefix(range.count)) }.joined(separator: "-")
+    }
+
     private func cloudSave(_ value: Any?) async throws -> [String: Any] {
         let (supabaseURL, anonKey) = try cloudConfiguration()
         let session = try await cloudSession()
@@ -2070,7 +2081,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         var batchBytes = 2
         for raw in rawWorkspaces {
             let record = canonicalCloudRecord(raw)
-            let row: [String: Any] = ["revision_id": UUID().uuidString, "user_id": session.userID, "workspace_id": record["id"] ?? "", "modified_at": record["updatedAt"] ?? cloudNow(), "record": record]
+            let row: [String: Any] = ["revision_id": try workspaceRevisionID(userID: session.userID, record: record), "user_id": session.userID, "workspace_id": record["id"] ?? "", "modified_at": record["updatedAt"] ?? cloudNow(), "record": record]
             let rowBytes = try JSONSerialization.data(withJSONObject: row).count
             if !batch.isEmpty && (batch.count >= 20 || batchBytes + rowBytes + 1 > 1024 * 1024) {
                 batches.append(batch)
@@ -2081,8 +2092,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             batch.append(row)
         }
         if !batch.isEmpty { batches.append(batch) }
+        var revisionsURL = URLComponents(url: supabaseURL.appendingPathComponent("rest/v1/workspace_revisions"), resolvingAgainstBaseURL: false)!
+        revisionsURL.queryItems = [URLQueryItem(name: "on_conflict", value: "revision_id")]
         for rows in batches {
-            _ = try await cloudRequest(supabaseURL.appendingPathComponent("rest/v1/workspace_revisions"), method: "POST", anonKey: anonKey, session: session, body: rows)
+            _ = try await cloudRequest(revisionsURL.url!, method: "POST", anonKey: anonKey, session: session, body: rows, prefer: "resolution=ignore-duplicates,return=minimal")
         }
         let memories = (envelope["factMemory"] as? [[String: Any]] ?? []).map { cleanedCloudValue($0) }
         for start in stride(from: 0, to: memories.count, by: 100) {

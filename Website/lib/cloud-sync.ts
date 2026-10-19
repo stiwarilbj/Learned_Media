@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { AccountKeys, KeyProvider } from './account-credentials';
 import { canonicalRecord, safeMemory, type CloudRecord } from './cloud-records';
+import { workspaceRevisionId } from './workspace-revision';
 import type { FactMemory } from './fact-quality';
 import type { Database } from './supabase/database.types';
 // Public client configuration; authorization is enforced by RLS, never by this key.
@@ -49,11 +50,14 @@ export class WorkspaceCloudSync {
     const api = cloudClient();
     // Bound both row count and payload size; a large workspace travels alone.
     const encoder = new TextEncoder();
-    const pending = store.records.map(value => {
+    const changedRecords = store.records.map(value => {
       const record = canonicalRecord(value), serialized = JSON.stringify(record);
-      const row = { revision_id: crypto.randomUUID(), user_id: this.userId, workspace_id: record.id, modified_at: record.updatedAt, record };
-      return { record, serialized, row };
+      return { record, serialized };
     }).filter(item => this.sent.get(item.record.id) !== item.serialized);
+    const pending = await Promise.all(changedRecords.map(async ({ record, serialized }) => {
+      const row = { revision_id: await workspaceRevisionId(this.userId, record), user_id: this.userId, workspace_id: record.id, modified_at: record.updatedAt, record };
+      return { record, serialized, row };
+    }));
     for (let offset = 0; offset < pending.length;) {
       const batch: typeof pending = [];
       let bytes = 2;
@@ -63,7 +67,7 @@ export class WorkspaceCloudSync {
         if (batch.length && bytes + size > 1024 * 1024) break;
         batch.push(item); bytes += size; offset += 1;
       }
-      const { error } = await api.from('workspace_revisions').insert(batch.map(item => item.row)).abortSignal(signal);
+      const { error } = await api.from('workspace_revisions').upsert(batch.map(item => item.row), { onConflict: 'revision_id', ignoreDuplicates: true }).abortSignal(signal);
       if (error) throw error;
       // Keep failed/later batches dirty and acknowledge the exact uploaded versions.
       batch.forEach(item => this.sent.set(item.record.id, item.serialized));
