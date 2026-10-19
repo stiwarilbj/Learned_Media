@@ -1,3 +1,4 @@
+import { approximateCacheBytes } from "./session-cache";
 import type { ImageAttribution, WikipediaSource } from "./types";
 
 const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
@@ -83,7 +84,7 @@ type SummaryResponse = {
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
 type WikipediaPage = NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string];
 type WikipediaImageInfo = NonNullable<NonNullable<NonNullable<ImageInfoResponse["query"]>["pages"]>[string]["imageinfo"]>[number];
-type CachedRequest<T> = { promise: Promise<T>; expiresAt: number; value?: T };
+type CachedRequest<T> = { promise: Promise<T>; expiresAt: number; value?: T; bytes?: number };
 export type WikipediaResolutionCache = {
   pages: Map<string, CachedRequest<WikipediaPage[]>>;
   searches: Map<string, CachedRequest<string[]>>;
@@ -91,13 +92,41 @@ export type WikipediaResolutionCache = {
   imageInfo: Map<string, CachedRequest<WikipediaImageInfo | undefined>>;
 };
 
+const cacheBudgets = new WeakMap<object, number>();
+
 export function createWikipediaResolutionCache(): WikipediaResolutionCache {
-  return { pages: new Map(), searches: new Map(), images: new Map(), imageInfo: new Map() };
+  const cache: WikipediaResolutionCache = { pages: new Map(), searches: new Map(), images: new Map(), imageInfo: new Map() };
+  cacheBudgets.set(cache.pages, 4 * 1024 * 1024);
+  cacheBudgets.set(cache.searches, 256 * 1024);
+  cacheBudgets.set(cache.images, 512 * 1024);
+  cacheBudgets.set(cache.imageInfo, 512 * 1024);
+  return cache;
 }
 
 export const sharedWikipediaResolutionCache = createWikipediaResolutionCache();
 const WIKIPEDIA_CACHE_TTL_MS = 60 * 60 * 1000;
 const MAX_WIKIPEDIA_CACHE_ENTRIES = 100;
+
+function trimCache<T>(entries: Map<string, CachedRequest<T>>) {
+  const budget = cacheBudgets.get(entries) ?? 4 * 1024 * 1024;
+  for (const [key, entry] of entries) {
+    if (entry.expiresAt <= Date.now()) { entries.delete(key); continue; }
+    if (entry.bytes === undefined && entry.value !== undefined) entry.bytes = approximateCacheBytes(entry.value, budget);
+    if ((entry.bytes ?? 0) > budget) entries.delete(key);
+  }
+  function retainedBytes() {
+    let total = 0;
+    const seen = new Set<CachedRequest<T>>();
+    for (const [key, entry] of entries) {
+      total += 96 + key.length * 2;
+      if (!seen.has(entry)) { total += entry.bytes ?? 128; seen.add(entry); }
+    }
+    return total;
+  }
+  while (entries.size && (entries.size > MAX_WIKIPEDIA_CACHE_ENTRIES || retainedBytes() > budget)) {
+    entries.delete(entries.keys().next().value!);
+  }
+}
 
 function cachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string) {
   const entry = entries.get(key);
@@ -114,8 +143,8 @@ function cachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string) {
 function storeCachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string, promise: Promise<T>) {
   const entry: CachedRequest<T> = { promise, expiresAt: Date.now() + WIKIPEDIA_CACHE_TTL_MS };
   entries.set(key, entry);
-  while (entries.size > MAX_WIKIPEDIA_CACHE_ENTRIES) entries.delete(entries.keys().next().value!);
-  void promise.then((value) => { entry.value = value; }, () => {
+  trimCache(entries);
+  void promise.then((value) => { entry.value = value; trimCache(entries); }, () => {
     for (const [alias, cached] of entries) if (cached === entry) entries.delete(alias);
   });
   return entry;
@@ -239,7 +268,7 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
         cache.pages.delete(alias);
         cache.pages.set(alias, entry);
       }
-      while (cache.pages.size > MAX_WIKIPEDIA_CACHE_ENTRIES) cache.pages.delete(cache.pages.keys().next().value!);
+      trimCache(cache.pages);
       return entry.value!;
     })();
     if (cache) {

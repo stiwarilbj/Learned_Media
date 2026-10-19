@@ -172,7 +172,7 @@ private struct WikipediaLookup {
 }
 
 private actor WikipediaPageCache {
-    private struct Entry<Value> { var value: Value; var expiresAt: Date; var touchedAt: Date }
+    private struct Entry<Value> { var value: Value; var expiresAt: Date; var touchedAt: Date; var bytes: Int }
     private var pages: [String: Entry<WikipediaPageResponse.Query.Page>] = [:]
     private var pageFlights: [String: Task<WikipediaPageResolution?, Never>] = [:]
     private var searches: [String: Entry<[String]>] = [:]
@@ -192,11 +192,11 @@ private actor WikipediaPageCache {
             entry = existing
             entry.touchedAt = now
         } else {
-            entry = Entry(value: resolution.page, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now)
+            entry = Entry(value: resolution.page, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now, bytes: CacheMemory.estimatedBytes(resolution.page))
         }
         let names = verified ? resolution.verifiedNames : [title]
         for name in names { pages[name.lowercased()] = entry }
-        while pages.count > capacity, let oldest = pages.min(by: { $0.value.touchedAt < $1.value.touchedAt })?.key { pages[oldest] = nil }
+        trim(&pages, budget: 4 * 1024 * 1024)
         return entry.value
     }
     func page(_ title: String) -> WikipediaPageResponse.Query.Page? {
@@ -234,8 +234,8 @@ private actor WikipediaPageCache {
         if let result {
             let now = Date()
             imageInfo = imageInfo.filter { $0.value.expiresAt > now }
-            imageInfo[key] = Entry(value: result, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now)
-            while imageInfo.count > capacity, let oldest = imageInfo.min(by: { $0.value.touchedAt < $1.value.touchedAt })?.key { imageInfo[oldest] = nil }
+            imageInfo[key] = Entry(value: result, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now, bytes: CacheMemory.estimatedBytes(result, limit: 512 * 1024))
+            trim(&imageInfo, budget: 512 * 1024)
         }
         return result
     }
@@ -251,11 +251,20 @@ private actor WikipediaPageCache {
     private func store<Value>(_ value: Value, key: String, in entries: inout [String: Entry<Value>]) {
         let now = Date()
         entries = entries.filter { $0.value.expiresAt > now }
-        entries[key] = Entry(value: value, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now)
-        while entries.count > capacity, let oldest = entries.min(by: { $0.value.touchedAt < $1.value.touchedAt })?.key { entries[oldest] = nil }
+        entries[key] = Entry(value: value, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now, bytes: CacheMemory.estimatedBytes(value, limit: 256 * 1024))
+        trim(&entries, budget: 256 * 1024)
+    }
+    private func trim<Key: Hashable, Value>(_ entries: inout [Key: Entry<Value>], budget: Int) {
+        entries = entries.filter { $0.value.expiresAt > Date() }
+        func retainedBytes() -> Int {
+            entries.reduce(0) { $0 + $1.value.bytes + 96 + CacheMemory.estimatedBytes($1.key, limit: budget) }
+        }
+        while entries.count > capacity || retainedBytes() > budget {
+            guard let oldest = entries.min(by: { $0.value.touchedAt < $1.value.touchedAt })?.key else { break }
+            entries[oldest] = nil
+        }
     }
 }
-
 private struct WikipediaImageInfoResponse: Decodable, Sendable {
     struct Query: Decodable, Sendable {
         struct Page: Decodable, Sendable {
@@ -803,13 +812,14 @@ private struct GeminiGroundingPlan {
 }
 
 private actor ValidatedCardEvidenceCache {
-    private struct Entry { let source: [String: Any]; let expiresAt: Date }
+    private struct Entry { let source: [String: Any]; let expiresAt: Date; let bytes: Int }
     private var entries: [String: [Entry]] = [:]
     private var order: [String] = []
     private func key(_ slot: GeminiGenerationSlot) -> String { "\(slot.level)|" + slot.path.joined(separator: "\u{0}") }
     func sources(_ slot: GeminiGenerationSlot) -> [[String: Any]] {
         let k = key(slot), fresh = (entries[k] ?? []).filter { $0.expiresAt > Date() }
         entries[k] = fresh
+        order.removeAll { $0 == k }; if !fresh.isEmpty { order.append(k) }
         return fresh.map(\.source)
     }
     func record(_ slot: GeminiGenerationSlot) {
@@ -819,11 +829,19 @@ private actor ValidatedCardEvidenceCache {
             let url = source["canonicalUrl"] as? String ?? source["url"] as? String ?? ""
             let extract = source["extract"] as? String ?? ""
             if !fresh.contains(where: { ($0.source["canonicalUrl"] as? String ?? $0.source["url"] as? String ?? "") == url && $0.source["extract"] as? String == extract }) {
-                fresh.append(Entry(source: source, expiresAt: Date().addingTimeInterval(3600)))
+                fresh.append(Entry(source: source, expiresAt: Date().addingTimeInterval(3600), bytes: CacheMemory.estimatedBytes(source)))
             }
         }
         entries[k] = Array(fresh.suffix(48)); order.removeAll { $0 == k }; order.append(k)
-        while order.count > 100 { entries[order.removeFirst()] = nil }
+        for stale in Array(entries.keys) {
+            entries[stale] = entries[stale]?.filter { $0.expiresAt > Date() }
+            if entries[stale]?.isEmpty == true { entries[stale] = nil; order.removeAll { $0 == stale } }
+        }
+        func retainedBytes() -> Int { entries.reduce(0) { $0 + 96 + $1.key.utf16.count * 2 + $1.value.reduce(0) { $0 + $1.bytes + 32 } } }
+        while order.count > 100 || retainedBytes() > 4 * 1024 * 1024 {
+            guard !order.isEmpty else { break }
+            entries[order.removeFirst()] = nil
+        }
     }
 }
 

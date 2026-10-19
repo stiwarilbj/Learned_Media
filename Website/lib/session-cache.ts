@@ -1,16 +1,49 @@
-export type SessionCacheEntry<T> = { value: T; expiresAt: number };
+/** Conservative retained-size estimate; no JSON copy, and shared/cyclic objects count once. */
+export function approximateCacheBytes(value: unknown, limit = Infinity): number {
+  let bytes = 0;
+  const seen = new WeakSet<object>();
+  function visit(item: unknown, depth: number) {
+    if (bytes > limit) return;
+    if (typeof item === 'string') { bytes += 16 + item.length * 2; return; }
+    if (!item || typeof item !== 'object') { bytes += 8; return; }
+    if (seen.has(item)) return;
+    seen.add(item);
+    if (depth > 64) { bytes = limit + 1; return; }
+    bytes += 32;
+    if (ArrayBuffer.isView(item)) { bytes += item.byteLength; return; }
+    if (item instanceof ArrayBuffer) { bytes += item.byteLength; return; }
+    if (item instanceof Map) {
+      for (const [key, entry] of item) { bytes += 32; visit(key, depth + 1); visit(entry, depth + 1); if (bytes > limit) break; }
+    } else if (item instanceof Set || Array.isArray(item)) {
+      for (const entry of item) { bytes += 8; visit(entry, depth + 1); if (bytes > limit) break; }
+    } else {
+      for (const key of Object.keys(item)) { bytes += 16 + key.length * 2; visit((item as Record<string, unknown>)[key], depth + 1); if (bytes > limit) break; }
+    }
+  }
+  visit(value, 0);
+  return bytes;
+}
+
+export type SessionCacheEntry<T> = { value: T; expiresAt: number; bytes: number };
 
 /** Small bounded cache for results that are safe to reuse within one session. */
 export class SessionCache<T> {
   private readonly entries = new Map<string, SessionCacheEntry<T>>();
+  private bytes = 0;
 
-  constructor(private readonly maxEntries = 100, private readonly ttlMs = 30 * 60 * 1000) {}
+  constructor(private readonly maxEntries = 100, private readonly ttlMs = 30 * 60 * 1000, private readonly maxBytes = 4 * 1024 * 1024) {}
+
+  private remove(key: string) {
+    const entry = this.entries.get(key);
+    if (entry) this.bytes -= entry.bytes;
+    this.entries.delete(key);
+  }
 
   get(key: string, now = Date.now()): T | undefined {
     const entry = this.entries.get(key);
     if (!entry) return undefined;
     if (entry.expiresAt <= now) {
-      this.entries.delete(key);
+      this.remove(key);
       return undefined;
     }
     this.entries.delete(key);
@@ -19,13 +52,18 @@ export class SessionCache<T> {
   }
 
   set(key: string, value: T, now = Date.now()) {
-    this.entries.delete(key);
-    this.entries.set(key, { value, expiresAt: now + this.ttlMs });
-    while (this.entries.size > this.maxEntries) this.entries.delete(this.entries.keys().next().value!);
+    this.remove(key);
+    for (const [id, entry] of this.entries) if (entry.expiresAt <= now) this.remove(id);
+    const bytes = 96 + key.length * 2 + approximateCacheBytes(value, this.maxBytes);
+    if (bytes > this.maxBytes || this.maxEntries <= 0 || this.ttlMs <= 0) return;
+    this.entries.set(key, { value, expiresAt: now + this.ttlMs, bytes });
+    this.bytes += bytes;
+    while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) this.remove(this.entries.keys().next().value!);
   }
 
-  clear() { this.entries.clear(); }
+  clear() { this.entries.clear(); this.bytes = 0; }
   get size() { return this.entries.size; }
+  get approximateBytes() { return this.bytes; }
 }
 
 /** Cache scopes are one-way hashes so API keys never become cache keys. */

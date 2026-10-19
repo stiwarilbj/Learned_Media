@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { SessionCache } from "@/lib/session-cache";
 import { normalizeSearchText, searchScoreNormalized } from "@/lib/search";
 
 type SearchDocument = { id: string; text: string };
@@ -11,7 +12,7 @@ type Reply = { type: "ready"; revision: number } | { type: "results"; requestId:
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 const documents = new Map<string, string>();
-const resultCache = new Map<string, string[]>();
+const resultCache = new SessionCache<string[]>(100, 30 * 60 * 1000, 4 * 1024 * 1024);
 let revision = -1;
 let latestRequestId = 0;
 
@@ -20,9 +21,7 @@ function addDocuments(items: SearchDocument[]) {
 }
 
 function cacheResult(key: string, value: string[]) {
-  resultCache.delete(key);
   resultCache.set(key, value);
-  if (resultCache.size > 100) resultCache.delete(resultCache.keys().next().value!);
 }
 
 function yieldToWorker() {

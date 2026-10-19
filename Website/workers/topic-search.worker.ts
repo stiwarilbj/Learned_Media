@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { SessionCache } from "@/lib/session-cache";
 import { createDefaultTopics } from "@/lib/demo-data";
 import { flattenTopics } from "@/lib/topic-catalog";
 import { normalizeSearchText } from "@/lib/search";
@@ -22,7 +23,7 @@ type Request = {
 };
 const scope = self as DedicatedWorkerGlobalScope;
 let revision = -1, latest = 0, index: ReturnType<typeof createTopicSuggestionIndex> | null = null;
-const cache = new Map<string, TopicSearchWorkerReply>();
+const cache = new SessionCache<TopicSearchWorkerReply>(100, 30 * 60 * 1000, 4 * 1024 * 1024);
 scope.onmessage = (event: MessageEvent<Request>) => { const r = event.data; if (r.type === "initialize") {
     revision = r.catalogRevision;
     latest = 0;
@@ -41,5 +42,4 @@ async function search(r: Extract<Request, {
     scope.postMessage({ ...cached, query: r.query, requestId: r.requestId });
     return;
 } const result = await searchTopicIndexYielding(index, r.query, r.plan || r.semanticTerms, () => latest === r.requestId && revision === r.catalogRevision); if (!result)
-    return; const reply: TopicSearchWorkerReply = { type: "results", query: r.query, requestId: r.requestId, catalogRevision: revision, ...result }; cache.set(key, reply); if (cache.size > 100)
-    cache.delete(cache.keys().next().value!); scope.postMessage(reply); }
+    return; const reply: TopicSearchWorkerReply = { type: "results", query: r.query, requestId: r.requestId, catalogRevision: revision, ...result }; cache.set(key, reply); scope.postMessage(reply); }

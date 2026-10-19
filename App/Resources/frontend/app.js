@@ -372,20 +372,7 @@
     return value;
   }
   function createSessionCache(maxEntries, ttlMs) {
-    const entries = new Map();
-    return {
-      get: function (key) {
-        const entry = entries.get(key);
-        if (!entry) return undefined;
-        if (entry.expiresAt <= Date.now()) { entries.delete(key); return undefined; }
-        entries.delete(key); entries.set(key, entry); return entry.value;
-      },
-      set: function (key, value) {
-        entries.delete(key); entries.set(key, { value: value, expiresAt: Date.now() + ttlMs });
-        while (entries.size > maxEntries) entries.delete(entries.keys().next().value);
-      },
-      clear: function () { entries.clear(); }
-    };
+    return new window.LEARNED_MEDIA_CACHE.SessionCache(maxEntries, ttlMs);
   }
   function scopedCacheKey(secret, parts) {
     const text = String(secret || "") + "\u0000" + JSON.stringify(parts);

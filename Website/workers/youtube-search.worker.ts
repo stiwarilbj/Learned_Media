@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { SessionCache } from "@/lib/session-cache";
 import { searchYouTubeCandidates, type YouTubeSearchPlanLike, type YouTubeTopic, type YouTubeVideo } from "@/lib/youtube";
 
 type SearchRequest = {
@@ -24,15 +25,13 @@ type Reply = { type: "ready"; revision: number } | { type: "stale"; requestId: n
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 const videos = new Map<string, YouTubeVideo>();
-const resultCache = new Map<string, CandidateReply[]>();
+const resultCache = new SessionCache<CandidateReply[]>(80, 30 * 60 * 1000, 4 * 1024 * 1024);
 let revision = -1;
 let latestRequestId = 0;
 let activeRequestId = 0;
 
 function remember(key: string, candidates: CandidateReply[]) {
-  resultCache.delete(key);
   resultCache.set(key, candidates);
-  if (resultCache.size > 80) resultCache.delete(resultCache.keys().next().value!);
 }
 
 function cacheKey(request: SearchRequest) {

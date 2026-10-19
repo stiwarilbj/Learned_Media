@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		Jhj7dpVIHSOZRdvWtJ2UOk/LorA=
+		x6oj00u8YvhxS/BS8aHodGZwLA4=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -42,7 +42,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		AhQxm3niLq6j/M0h3lGvlDFpUNg=
+		cMP/++B/+kF9inE6zw3jvWIu4BQ=
 		</data>
 		<key>Resources/frontend/movie-catalog.js</key>
 		<data>
@@ -59,6 +59,10 @@
 		<key>Resources/frontend/public-health-catalog.js</key>
 		<data>
 		ySB25SCJh069uTgY0aOb4dgSq2g=
+		</data>
+		<key>Resources/frontend/session-cache.js</key>
+		<data>
+		kf3NgYRnWMoMiGt9CYtpvbaXRZc=
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
@@ -121,7 +125,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Mohpl5qRbQJEOK4Xm7DK2F9f2AfD7/Fc5VLRQLeSv8s=
+			T4fvfyCNbsr/g95K7jIO/QLgXzX5Iouevw4y8UlOy1I=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -170,7 +174,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			sM/ySyCF/ni+2ISkeyFYWDnBFRtr6tadSVEhXGFuH+U=
+			slmlE8P1DD94M8s4MXM3Bu6cj0X5H1pq2gdAsQ7s6/I=
 			</data>
 		</dict>
 		<key>Resources/frontend/movie-catalog.js</key>
@@ -199,6 +203,13 @@
 			<key>hash2</key>
 			<data>
 			+lltZLhBYbLQdSFnk59RTrodN3mTk4qzUpAPznPzpzI=
+			</data>
+		</dict>
+		<key>Resources/frontend/session-cache.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			uCY5WHL2iDR6NGeipaNqGdwvTLgHTHdWMxSqlswH8QI=
 			</data>
 		</dict>
 		<key>Resources/frontend/styles.css</key>

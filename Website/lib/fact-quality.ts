@@ -24,7 +24,7 @@ export function hasExactSentenceCount(text: string, expected: SentenceLength | n
 
 // Bump when sentence, section, tokenization or passage-eligibility rules change.
 const PASSAGE_VALIDATION_POLICY_VERSION = "wikipedia-passages-v1";
-const sentenceCache = new SessionCache<readonly string[]>(128, 60 * 60 * 1000);
+const sentenceCache = new SessionCache<readonly string[]>(128, 60 * 60 * 1000, 2 * 1024 * 1024);
 function completeSentences(text: string): readonly string[] {
   const key = `${PASSAGE_VALIDATION_POLICY_VERSION}\u0000${text}`;
   const cached = sentenceCache.get(key);
@@ -168,7 +168,7 @@ export function mergeFactMemory(current: FactMemory[], incoming: FactMemory[]) {
 }
 
 type PreparedParagraph = { section: string; skipped: boolean; chunks: Array<{ text: string; terms: Set<string>; eligible: boolean }> };
-const passageCache = new SessionCache<readonly PreparedParagraph[]>(24, 60 * 60 * 1000);
+const passageCache = new SessionCache<readonly PreparedParagraph[]>(24, 60 * 60 * 1000, 4 * 1024 * 1024);
 function preparedPassages(extract: string): readonly PreparedParagraph[] {
   // Exact content is part of the key: titles/redirects cannot reuse stale passages.
   const key = `${PASSAGE_VALIDATION_POLICY_VERSION}\u0000${extract}`;

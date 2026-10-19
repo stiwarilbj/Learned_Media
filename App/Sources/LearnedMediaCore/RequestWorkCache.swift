@@ -38,14 +38,22 @@ public enum RequestIdentity {
 /// Shared work is registered before entering the provider queue. Each caller owns its cancellation.
 public actor RequestWorkCache<Value> {
     private struct Flight { let id: UUID; let task: Task<Value, Error>; var subscribers: Set<UUID> }
-    private struct Entry { let value: Value; let expiresAt: Date }
+    private struct Entry { let value: Value; let expiresAt: Date; let bytes: Int }
     private var flights: [String: Flight] = [:]
     private var entries: [String: Entry] = [:]
     private var order: [String] = []
     private let limit: Int
     private let lifetime: TimeInterval
+    private let maxBytes: Int
+    private var bytes = 0
 
-    public init(limit: Int = 100, lifetime: TimeInterval = 1800) { self.limit = max(1, limit); self.lifetime = lifetime }
+    public init(limit: Int = 100, lifetime: TimeInterval = 1800, maxBytes: Int = 4 * 1024 * 1024) {
+        self.limit = max(1, limit); self.lifetime = lifetime; self.maxBytes = max(0, maxBytes)
+    }
+    private func remove(_ key: String) {
+        if let entry = entries.removeValue(forKey: key) { bytes -= entry.bytes }
+        order.removeAll { $0 == key }
+    }
 
     public func value(key: String, reusable: @escaping (Value) -> Bool = { _ in true }, operation: @escaping () async throws -> Value) async throws -> Value {
         try Task.checkCancellation()
@@ -53,7 +61,7 @@ public actor RequestWorkCache<Value> {
             order.removeAll { $0 == key }; order.append(key)
             return entry.value
         }
-        entries[key] = nil
+        remove(key)
         let subscriber = UUID()
         var flight = flights[key] ?? Flight(id: UUID(), task: Task { try await operation() }, subscribers: [])
         flight.subscribers.insert(subscriber); flights[key] = flight
@@ -65,9 +73,15 @@ public actor RequestWorkCache<Value> {
                 if flights[key]?.id == flightID {
                     flights[key] = nil
                     if reusable(result) {
-                        entries[key] = Entry(value: result, expiresAt: Date().addingTimeInterval(lifetime))
-                        order.removeAll { $0 == key }; order.append(key)
-                        while order.count > limit { entries[order.removeFirst()] = nil }
+                        let now = Date()
+                        for expired in entries.keys.filter({ entries[$0]!.expiresAt <= now }) { remove(expired) }
+                        remove(key)
+                        let cost = 96 + key.utf16.count * 2 + CacheMemory.estimatedBytes(result, limit: maxBytes)
+                        if cost <= maxBytes && lifetime > 0 {
+                            entries[key] = Entry(value: result, expiresAt: now.addingTimeInterval(lifetime), bytes: cost)
+                            bytes += cost; order.append(key)
+                            while (order.count > limit || bytes > maxBytes), let oldest = order.first { remove(oldest) }
+                        }
                     }
                 }
                 return result
@@ -90,6 +104,6 @@ public actor RequestWorkCache<Value> {
 
     public func clear() {
         flights.values.forEach { $0.task.cancel() }
-        flights.removeAll(); entries.removeAll(); order.removeAll()
+        flights.removeAll(); entries.removeAll(); order.removeAll(); bytes = 0
     }
 }
