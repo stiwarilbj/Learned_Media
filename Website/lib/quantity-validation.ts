@@ -6,6 +6,7 @@ const aliasMap = new Map(units.flatMap(unit => unit.aliases.map(alias => [alias,
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const unitPattern = new RegExp("^(?:" + [...aliasMap.keys()].sort((a,b) => b.length-a.length).map(escape).join("|") + ")(?![a-zA-Z])", "i");
 const numberPattern = /(?<![\p{L}\p{N}_.,+−-])[+−-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:e[+−-]?\d+)?(?![\p{N}_]|[.,]\d)/giu;
+const wholeNumber = new RegExp("^(?:" + numberPattern.source + ")$", "iu");
 
 const words = Object.keys(numberWords).sort((a,b)=>b.length-a.length).map(escape).join("|");
 const hundredPattern = "(?:one|two|three|four|five|six|seven|eight|nine) hundred(?: (?:and )?(?:" + words + "))?";
@@ -46,7 +47,6 @@ function quantities(text: string): Quantity[] {
       decimals: match[0].includes("e") || match[0].includes("E") ? -1 : (match[0].split(".")[1]?.length ?? 0) }];
   });
   // Reject unsupported numerical formatting beside a known unit rather than ignoring it.
-  const wholeNumber = new RegExp("^(?:" + numberPattern.source + ")$", "iu");
   for (const match of text.matchAll(/\d+(?:[.,]\d+)+/gu)) {
     if (!wholeNumber.test(match[0]) && unitPattern.test(text.slice(match.index + match[0].length).trimStart())) {
       result.push({text: match[0], value: NaN, approximate: false, decimals: 0});
