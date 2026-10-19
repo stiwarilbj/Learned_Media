@@ -171,14 +171,59 @@ private struct WikipediaLookup {
     var topicPath: [String] = []
 }
 
+/// In-flight work has its own task. Callers can leave without canceling other subscribers.
+private actor SharedWikipediaWork<Key: Hashable, Value> {
+    private struct Flight {
+        let id: UUID
+        let task: Task<Void, Never>
+        var callers: [UUID: CheckedContinuation<Value, Error>]
+    }
+    private var flights: [Key: Flight] = [:]
+
+    func value(_ key: Key, load: @escaping @Sendable () async -> Value) async throws -> Value {
+        try Task.checkCancellation()
+        let caller = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                if var flight = flights[key] {
+                    flight.callers[caller] = continuation
+                    flights[key] = flight
+                } else {
+                    let id = UUID()
+                    let task = Task {
+                        let result = await load()
+                        finish(key, id: id, result: result)
+                    }
+                    flights[key] = Flight(id: id, task: task, callers: [caller: continuation])
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(key, caller: caller) }
+        }
+    }
+    private func finish(_ key: Key, id: UUID, result: Value) {
+        guard let flight = flights[key], flight.id == id else { return }
+        flights[key] = nil
+        for continuation in flight.callers.values { continuation.resume(returning: result) }
+    }
+    private func cancel(_ key: Key, caller: UUID) {
+        guard var flight = flights[key], let continuation = flight.callers.removeValue(forKey: caller) else { return }
+        if flight.callers.isEmpty { flights[key] = nil; flight.task.cancel() }
+        else { flights[key] = flight }
+        continuation.resume(throwing: CancellationError())
+    }
+}
+
 private actor WikipediaPageCache {
     private struct Entry<Value> { var value: Value; var expiresAt: Date; var touchedAt: Date; var bytes: Int }
     private var pages: [String: Entry<WikipediaPageResponse.Query.Page>] = [:]
-    private var pageFlights: [String: Task<WikipediaPageResolution?, Never>] = [:]
+    private let pageFlights = SharedWikipediaWork<String, WikipediaPageResolution?>()
     private var searches: [String: Entry<[String]>] = [:]
     private struct ImageKey: Hashable { let fileName: String; let size: Int }
     private var imageInfo: [ImageKey: Entry<WikipediaImageInfoResponse.Query.Page.ImageInfo>] = [:]
-    private var imageFlights: [ImageKey: Task<WikipediaImageInfoResponse.Query.Page.ImageInfo?, Never>] = [:]
+    private let imageFlights = SharedWikipediaWork<ImageKey, WikipediaImageInfoResponse.Query.Page.ImageInfo?>()
+    private let searchFlights = SharedWikipediaWork<String, [String]?>()
     private let lifetime: TimeInterval = 60 * 60
     private let capacity = 100
 
@@ -208,15 +253,9 @@ private actor WikipediaPageCache {
     func pageOrLoad(_ title: String, load: @escaping @Sendable () async -> WikipediaPageResolution?) async -> WikipediaPageResponse.Query.Page? {
         if let cached = page(title) { return cached }
         let key = title.lowercased()
-        if let pending = pageFlights[key] {
-            guard let result = await pending.value else { return nil }
-            return remember(result, requestedAs: title)
-        }
-        let pending = Task { await load() }
-        pageFlights[key] = pending
-        let result = await pending.value
-        pageFlights[key] = nil
-        return result.map { remember($0, requestedAs: title) }
+        guard !Task.isCancelled,
+              let result = try? await pageFlights.value(key, load: load), !Task.isCancelled else { return nil }
+        return remember(result, requestedAs: title)
     }
     func imageInfoOrLoad(fileName: String, size: Int, load: @escaping @Sendable () async -> WikipediaImageInfoResponse.Query.Page.ImageInfo?) async -> WikipediaImageInfoResponse.Query.Page.ImageInfo? {
         // Use the file name supplied by Wikipedia, preserving meaningful case.
@@ -226,11 +265,8 @@ private actor WikipediaPageCache {
             return entry.value
         }
         imageInfo[key] = nil
-        if let pending = imageFlights[key] { return await pending.value }
-        let pending = Task { await load() }
-        imageFlights[key] = pending
-        let result = await pending.value
-        imageFlights[key] = nil
+        let result = try? await imageFlights.value(key, load: load)
+        guard !Task.isCancelled else { return nil }
         if let result {
             let now = Date()
             imageInfo = imageInfo.filter { $0.value.expiresAt > now }
@@ -247,6 +283,13 @@ private actor WikipediaPageCache {
     }
     func insertSearch(_ results: [String], query: String) {
         store(results, key: query.lowercased(), in: &searches)
+    }
+    func searchOrLoad(_ query: String, load: @escaping @Sendable () async -> [String]?) async -> [String] {
+        guard !Task.isCancelled else { return [] }
+        if let cached = search(query) { return cached }
+        guard let result = try? await searchFlights.value(query.lowercased(), load: load), !Task.isCancelled else { return [] }
+        insertSearch(result, query: query)
+        return result
     }
     private func store<Value>(_ value: Value, key: String, in entries: inout [String: Entry<Value>]) {
         let now = Date()
@@ -284,34 +327,40 @@ private struct MetadataValue: Decodable, Sendable { let value: String? }
 
 private actor WikipediaRequestLimiter {
     private struct Waiter {
+        let id: UUID
         let priority: Int
         let order: Int
-        let continuation: CheckedContinuation<Void, Never>
+        let continuation: CheckedContinuation<Void, Error>
     }
     private var permits = 4
     private var waiters: [Waiter] = []
     private var nextOrder = 0
 
-    func acquire(priority: Int = 0) async {
-        if permits > 0 {
-            permits -= 1
-            return
-        }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            waiters.append(Waiter(priority: priority, order: nextOrder, continuation: continuation))
-            nextOrder += 1
+    func acquire(priority: Int = 0) async throws {
+        try Task.checkCancellation()
+        if permits > 0 { permits -= 1; return }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                waiters.append(Waiter(id: id, priority: priority, order: nextOrder, continuation: continuation))
+                nextOrder += 1
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
         }
     }
-
+    private func cancel(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
     func release() {
         if let nextIndex = waiters.indices.min(by: { left, right in
             let a = waiters[left], b = waiters[right]
             return a.priority == b.priority ? a.order < b.order : a.priority < b.priority
         }) {
             waiters.remove(at: nextIndex).continuation.resume()
-        } else {
-            permits += 1
-        }
+        } else { permits += 1 }
     }
 }
 
@@ -438,10 +487,11 @@ private final class WikipediaClient: @unchecked Sendable {
         var request = URLRequest(url: url, timeoutInterval: 20)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("LearnedMedia/1.0 (knowledge-feed)", forHTTPHeaderField: "User-Agent")
-        await limiter.acquire(priority: priority)
+        try await limiter.acquire(priority: priority)
         let data: Data
         let response: URLResponse
         do {
+            try Task.checkCancellation()
             (data, response) = try await session.data(for: request)
         } catch {
             await limiter.release()
@@ -516,11 +566,11 @@ private final class WikipediaClient: @unchecked Sendable {
         let fallbackSearches = await withTaskGroup(of: (String, [String]).self, returning: [String: [String]].self) { group in
             for (key, query) in uniqueFallbackQueries {
                 group.addTask {
-                    if let cached = await self.pageCache.search(query) { return (key, cached) }
-                    guard !Task.isCancelled, let searchURL = self.apiURL(["action": "query", "list": "search", "srsearch": query, "srnamespace": "0", "srlimit": "3"]) else { return (key, []) }
-                    guard let result: WikipediaSearchResponse = try? await self.request(searchURL) else { return (key, []) }
-                    let titles = Array(result.query?.search?.compactMap(\.title).prefix(3) ?? [])
-                    await self.pageCache.insertSearch(titles, query: query)
+                    let titles = await self.pageCache.searchOrLoad(query) {
+                        guard !Task.isCancelled, let searchURL = self.apiURL(["action": "query", "list": "search", "srsearch": query, "srnamespace": "0", "srlimit": "3"]) else { return nil }
+                        guard let result: WikipediaSearchResponse = try? await self.request(searchURL) else { return nil }
+                        return Array(result.query?.search?.compactMap(\.title).prefix(3) ?? [])
+                    }
                     return (key, titles)
                 }
             }

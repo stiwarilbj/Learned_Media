@@ -84,7 +84,10 @@ type SummaryResponse = {
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
 type WikipediaPage = NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string];
 type WikipediaImageInfo = NonNullable<NonNullable<NonNullable<ImageInfoResponse["query"]>["pages"]>[string]["imageinfo"]>[number];
-type CachedRequest<T> = { promise: Promise<T>; expiresAt: number; value?: T; bytes?: number };
+type CachedRequest<T> = {
+  promise: Promise<T>; expiresAt: number; value?: T; bytes?: number;
+  flight?: { controller: AbortController; callers: Set<symbol>; settled: boolean };
+};
 export type WikipediaResolutionCache = {
   pages: Map<string, CachedRequest<WikipediaPage[]>>;
   searches: Map<string, CachedRequest<string[]>>;
@@ -140,14 +143,65 @@ function cachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string) {
   return entry;
 }
 
-function storeCachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string, promise: Promise<T>) {
-  const entry: CachedRequest<T> = { promise, expiresAt: Date.now() + WIKIPEDIA_CACHE_TTL_MS };
-  entries.set(key, entry);
-  trimCache(entries);
-  void promise.then((value) => { entry.value = value; trimCache(entries); }, () => {
-    for (const [alias, cached] of entries) if (cached === entry) entries.delete(alias);
+function cancellationError() { return new DOMException("Wikipedia request canceled.", "AbortError"); }
+
+function removeCachedRequest<T>(entries: Map<string, CachedRequest<T>>, entry: CachedRequest<T>) {
+  for (const [alias, cached] of entries) if (cached === entry) entries.delete(alias);
+}
+
+/** Each caller owns its wait; only the final departing caller owns download cancellation. */
+function sharedCachedRequest<T>(entries: Map<string, CachedRequest<T>>, key: string, signal: AbortSignal | undefined,
+  operation: (signal: AbortSignal) => Promise<T>, reusable: (value: T) => boolean = () => true): Promise<T> {
+  if (signal?.aborted) return Promise.reject(cancellationError());
+  let entry = cachedRequest(entries, key);
+  if (!entry) {
+    const flight = { controller: new AbortController(), callers: new Set<symbol>(), settled: false };
+    const request = Promise.resolve().then(() => {
+      if (flight.controller.signal.aborted) throw cancellationError();
+      return operation(flight.controller.signal);
+    });
+    entry = { promise: request, expiresAt: Date.now() + WIKIPEDIA_CACHE_TTL_MS, flight };
+    const created = entry;
+    entries.set(key, created);
+    trimCache(entries);
+    void request.then((value) => {
+      flight.settled = true;
+      if (flight.controller.signal.aborted || !reusable(value)) removeCachedRequest(entries, created);
+      else { created.value = value; trimCache(entries); }
+    }, () => {
+      flight.settled = true;
+      removeCachedRequest(entries, created);
+    });
+  }
+  const shared = entry;
+  const flight = shared.flight;
+  const caller = Symbol();
+  flight?.callers.add(caller);
+  return new Promise<T>((resolve, reject) => {
+    let finished = false;
+    const release = () => {
+      signal?.removeEventListener("abort", abort);
+      flight?.callers.delete(caller);
+      if (flight && !flight.settled && !flight.callers.size) {
+        // Remove before aborting so a new caller never joins an abandoned request.
+        removeCachedRequest(entries, shared);
+        flight.controller.abort();
+      }
+    };
+    const abort = () => {
+      if (finished) return;
+      finished = true; release(); reject(cancellationError());
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    shared.promise.then((value) => {
+      if (finished) return;
+      finished = true; release(); resolve(value);
+    }, (error) => {
+      if (finished) return;
+      finished = true; release(); reject(error);
+    });
+    if (signal?.aborted) abort();
   });
-  return entry;
 }
 
 /**
@@ -234,9 +288,7 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
   const uniqueTitles = Array.from(new Set(titles.map((title) => title.trim()).filter(Boolean)));
   return (await Promise.all(uniqueTitles.map((title) => {
     const key = title.toLocaleLowerCase();
-    const pending = cache && cachedRequest(cache.pages, key);
-    if (pending) return pending.promise;
-    const request = (async () => {
+    const load = async (requestSignal: AbortSignal | undefined) => {
       const payload = await getJson<PageResponse>(apiUrl({
         action: "query",
         titles: title,
@@ -248,7 +300,7 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
         piprop: "thumbnail|name|original",
         pilicense: "free",
         pithumbsize: "1000"
-      }), signal, priority);
+      }), requestSignal, priority);
       const pages = Object.values(payload?.query?.pages ?? {}).filter((page) => page.title && page.fullurl);
       if (!cache || pages.length !== 1) return pages;
       const page = pages[0];
@@ -270,11 +322,8 @@ async function fetchPages(titles: string[], signal?: AbortSignal, cache?: Wikipe
       }
       trimCache(cache.pages);
       return entry.value!;
-    })();
-    if (cache) {
-      storeCachedRequest(cache.pages, key, request);
-    }
-    return request;
+    };
+    return cache ? sharedCachedRequest(cache.pages, key, signal, load) : load(signal);
   }))).flat();
 }
 
@@ -282,24 +331,16 @@ async function fetchImageInfo(pageimage: string, size: number, cache: WikipediaR
   // pageimage is Wikipedia's verified file name. File names are case-sensitive;
   // only the equivalent space/underscore representations share a cache key.
   const key = JSON.stringify([pageimage.replace(/_/g, " ").trim(), size]);
-  const pending = cachedRequest(cache.imageInfo, key);
-  if (pending) return pending.promise;
-  const request = (async () => {
+  return sharedCachedRequest(cache.imageInfo, key, signal, async (requestSignal) => {
     const payload = await getJson<ImageInfoResponse>(apiUrl({
       action: "query",
       titles: `File:${pageimage}`,
       prop: "imageinfo",
       iiprop: "url|extmetadata",
       iiurlwidth: String(size)
-    }), signal, priority);
+    }), requestSignal, priority);
     return Object.values(payload?.query?.pages ?? {})[0]?.imageinfo?.[0];
-  })();
-  const entry = storeCachedRequest(cache.imageInfo, key, request);
-  // Missing metadata and temporary failures must remain retryable.
-  void request.then((info) => {
-    if (!info && cache.imageInfo.get(key) === entry) cache.imageInfo.delete(key);
-  }, () => {});
-  return request;
+  }, (info) => !!info);
 }
 
 async function fetchSummary(title: string, signal?: AbortSignal, priority = 1) {
@@ -384,13 +425,7 @@ export async function resolveWikipediaSources(queries: string[], limit = 3, sign
   const exact = await fetchPages(cleanQueries.slice(0, limit), signal, cache);
   const searchedTitles = exact.length ? [] : await Promise.all(cleanQueries.map((query) => {
     const key = query.toLocaleLowerCase();
-    const pending = cachedRequest(cache.searches, key);
-    if (pending) return pending.promise;
-    const request = searchWikipedia(query, 1, signal);
-    if (cache) {
-      storeCachedRequest(cache.searches, key, request);
-    }
-    return request;
+    return sharedCachedRequest(cache.searches, key, signal, (requestSignal) => searchWikipedia(query, 1, requestSignal));
   }));
   const titles = Array.from(new Set(exact.length ? exact.map(page => page.title!) : searchedTitles.flat().filter(Boolean))).slice(0, limit);
   const pages = exact.length ? exact : await fetchPages(titles, signal, cache);
@@ -419,10 +454,8 @@ export async function resolveWikipediaSources(queries: string[], limit = 3, sign
 export async function resolveWikipediaImage(source: WikipediaSource, signal?: AbortSignal, cache?: WikipediaResolutionCache) {
   cache ??= sharedWikipediaResolutionCache;
   const key = (source.canonicalUrl ?? source.url ?? source.title).toLocaleLowerCase();
-  const pending = cachedRequest(cache.images, key);
-  if (pending) return pending.promise;
-  const request = (async () => {
-    const page = (await fetchPages([source.title], signal, cache, 1)).find((candidate) => candidate.title?.toLocaleLowerCase() === source.title.toLocaleLowerCase());
+  return sharedCachedRequest(cache.images, key, signal, async (requestSignal) => {
+    const page = (await fetchPages([source.title], requestSignal, cache, 1)).find((candidate) => candidate.title?.toLocaleLowerCase() === source.title.toLocaleLowerCase());
     if (!page?.title || !page.fullurl) return undefined;
     return resolveImage({
       title: page.title,
@@ -430,10 +463,8 @@ export async function resolveWikipediaImage(source: WikipediaSource, signal?: Ab
       pageimage: page.pageimage,
       thumbnail: page.thumbnail,
       original: page.original
-    }, cache, signal, 1);
-  })();
-  storeCachedRequest(cache.images, key, request);
-  return request;
+    }, cache, requestSignal, 1);
+  });
 }
 
 export async function resolveWikipediaTitle(title: string) {
