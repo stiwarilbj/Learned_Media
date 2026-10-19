@@ -1155,11 +1155,7 @@ private final class GeminiClient {
             let section = String(heading.dropFirst("[Section: ".count).dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
             let paragraph = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !section.isEmpty, !paragraph.isEmpty else { continue }
-            var sentences: [String] = []
-            paragraph.enumerateSubstrings(in: paragraph.startIndex..<paragraph.endIndex, options: .bySentences) { sentence, _, _, _ in
-                if let sentence { sentences.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            }
-            if sentences.isEmpty { sentences = [paragraph] }
+            let sentences = FactQuality.completeSentences(paragraph)
             var current = ""
             var quotes: [String] = []
             for sentence in sentences {

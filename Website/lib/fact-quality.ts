@@ -1,6 +1,7 @@
 import { unsupportedCausality } from "./causal-validation";
 import { unsupportedQuantities } from "./quantity-validation";
 import promptInstructions from "./prompt-instructions.json";
+import { SessionCache } from "./session-cache";
 import type { FactCard, WikipediaSource } from "./types";
 
 import type { SentenceLength } from "./types";
@@ -21,11 +22,23 @@ export function hasExactSentenceCount(text: string, expected: SentenceLength | n
   return countSentences(text) === normalizeSentenceLength(expected);
 }
 
-export function completeSentenceChunks(text: string, maxCharacters = 1200) {
+// Bump when sentence, section, tokenization or passage-eligibility rules change.
+const PASSAGE_VALIDATION_POLICY_VERSION = "wikipedia-passages-v1";
+const sentenceCache = new SessionCache<readonly string[]>(128, 60 * 60 * 1000);
+function completeSentences(text: string): readonly string[] {
+  const key = `${PASSAGE_VALIDATION_POLICY_VERSION}\u0000${text}`;
+  const cached = sentenceCache.get(key);
+  if (cached) return cached;
   const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locale: string, options: { granularity: "sentence" }) => { segment: (value: string) => Iterable<{ segment: string }> } }).Segmenter;
   const pieces = Segmenter
     ? Array.from(new Segmenter("en", { granularity: "sentence" }).segment(text), item => item.segment.trim()).filter(Boolean)
     : (text.match(/[^.!?]+[.!?]+[”’\"')\]]*(?=\s|$)|[^.!?]+$/g) ?? []).map(item => item.trim()).filter(Boolean);
+  if (text.length <= 20_000) sentenceCache.set(key, pieces);
+  return pieces;
+}
+
+export function completeSentenceChunks(text: string, maxCharacters = 1200) {
+  const pieces = completeSentences(text);
   const chunks: string[] = [];
   let current = "";
   for (const sentence of pieces) {
@@ -154,21 +167,39 @@ export function mergeFactMemory(current: FactMemory[], incoming: FactMemory[]) {
   return [...map.values()];
 }
 
-/** Rank complete passages locally; never send unrelated sections just to fill context. */
-export function selectEvidence(extract: string, focus: string, difficulty: number) {
-  const words = tokens(focus);
+type PreparedParagraph = { section: string; skipped: boolean; chunks: Array<{ text: string; terms: Set<string>; eligible: boolean }> };
+const passageCache = new SessionCache<readonly PreparedParagraph[]>(24, 60 * 60 * 1000);
+function preparedPassages(extract: string): readonly PreparedParagraph[] {
+  // Exact content is part of the key: titles/redirects cannot reuse stale passages.
+  const key = `${PASSAGE_VALIDATION_POLICY_VERSION}\u0000${extract}`;
+  const cached = passageCache.get(key);
+  if (cached) return cached;
   let section = "Introduction";
-  const passages: Array<{ text: string; section: string; score: number; position: number }> = [];
-  let position = 0;
+  const paragraphs: PreparedParagraph[] = [];
   for (const paragraph of extract.split(/\n+/)) {
     const heading = paragraph.match(/^=+\s*(.*?)\s*=+$/);
     if (heading) { section = heading[1]; continue; }
-    if (/^(References|Notes|External links|Further reading|Bibliography|See also)$/i.test(section) || paragraph.trim().length < 90) { position++; continue; }
-    if (difficulty >= 5 && section === "Introduction") { position++; continue; }
-    for (const text of completeSentenceChunks(paragraph, 1200)) {
+    const skipped = /^(References|Notes|External links|Further reading|Bibliography|See also)$/i.test(section) || paragraph.trim().length < 90;
+    paragraphs.push({ section, skipped, chunks: skipped ? [] : completeSentenceChunks(paragraph, 1200).map(text => ({
+      text, terms: tokens(text), eligible: text.length >= 90 && /[.!?][”’"\')\]]*$/.test(text)
+    })) });
+  }
+  if (extract.length <= 200_000) passageCache.set(key, paragraphs);
+  return paragraphs;
+}
+
+/** Rank complete passages locally; never cache question-specific scores or choices. */
+export function selectEvidence(extract: string, focus: string, difficulty: number) {
+  const words = tokens(focus);
+  const passages: Array<{ text: string; section: string; score: number; position: number }> = [];
+  let position = 0;
+  for (const paragraph of preparedPassages(extract)) {
+    const { section } = paragraph;
+    if (paragraph.skipped || (difficulty >= 5 && section === "Introduction")) { position++; continue; }
+    for (const { text, terms, eligible } of paragraph.chunks) {
       const index = position++;
-      if (text.length < 90 || !/[.!?][”’"\')\]]*$/.test(text)) continue;
-      const coverage = overlap(words, tokens(text));
+      if (!eligible) continue;
+      const coverage = overlap(words, terms);
       if (!coverage || passages.some(item => item.section === section && item.text === text)) continue;
       passages.push({ text, section, score: coverage * 5, position: index });
     }

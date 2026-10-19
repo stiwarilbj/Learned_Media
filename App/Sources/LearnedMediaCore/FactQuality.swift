@@ -65,45 +65,105 @@ public enum FactQuality {
         let a = words(card["body"] as? String ?? ""), b = words(old["body"] as? String ?? "")
         return overlap(a,b) >= 0.78 && overlap(words(card["title"] as? String ?? ""),words(old["title"] as? String ?? "")) >= 0.5
     }
-    public static func evidence(_ extract: String, focus: String, level: Int) -> String {
-        let terms = words(focus)
+    // Bump when sentence, section, tokenization or passage-eligibility rules change.
+    private static let passageValidationPolicyVersion = "wikipedia-passages-v1"
+    private struct PreparedChunk { let text: String; let terms: Set<String>; let complete: Bool }
+    private struct PreparedParagraph { let section: String; let skipped: Bool; let chunks: [PreparedChunk] }
+    private final class PreparedArticle: NSObject {
+        let paragraphs: [PreparedParagraph]
+        let expiresAt = Date().addingTimeInterval(3600)
+        init(_ paragraphs: [PreparedParagraph]) { self.paragraphs = paragraphs }
+    }
+    private final class PreparedSentences: NSObject {
+        let sentences: [String]
+        let expiresAt = Date().addingTimeInterval(3600)
+        init(_ sentences: [String]) { self.sentences = sentences }
+    }
+    // NSCache supports concurrent readers and evicts under memory pressure.
+    private static let passageCache: NSCache<NSData, PreparedArticle> = {
+        let cache = NSCache<NSData, PreparedArticle>()
+        cache.countLimit = 24; cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
+    private static let sentenceCache: NSCache<NSData, PreparedSentences> = {
+        let cache = NSCache<NSData, PreparedSentences>()
+        cache.countLimit = 128; cache.totalCostLimit = 4 * 1024 * 1024
+        return cache
+    }()
+    private static func preprocessingKey(_ content: String) -> NSData {
+        // UTF-8 identity preserves exact source characters, without hash collisions.
+        Data((passageValidationPolicyVersion + "\u{0}" + content).utf8) as NSData
+    }
+    public static func completeSentences(_ paragraph: String) -> [String] {
+        let key = preprocessingKey(paragraph)
+        if let cached = sentenceCache.object(forKey: key), cached.expiresAt > Date() { return cached.sentences }
+        var sentences: [String] = []
+        paragraph.enumerateSubstrings(in: paragraph.startIndex..<paragraph.endIndex, options: .bySentences) { sentence, _, _, _ in
+            if let sentence { sentences.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
+        if sentences.isEmpty { sentences = [paragraph] }
+        if paragraph.utf8.count <= 20_000 {
+            sentenceCache.setObject(PreparedSentences(sentences), forKey: key, cost: key.length + paragraph.utf8.count)
+        }
+        return sentences
+    }
+    private static func preparedPassages(_ extract: String) -> [PreparedParagraph] {
+        let key = preprocessingKey(extract)
+        if let cached = passageCache.object(forKey: key), cached.expiresAt > Date() { return cached.paragraphs }
         var section = "Introduction"
-        var passages: [(String, String, Int)] = []
-        var position = 0
+        var paragraphs: [PreparedParagraph] = []
         for paragraph in extract.components(separatedBy: .newlines) {
             if paragraph.hasPrefix("==") { section = paragraph.trimmingCharacters(in: CharacterSet(charactersIn: "= ")); continue }
-            if ["References", "Notes", "External links", "Further reading", "Bibliography", "See also"].contains(section) || paragraph.count < 90 { position += 1; continue }
-            if level >= 5 && section == "Introduction" { position += 1; continue }
-            var sentences: [String] = []
-            paragraph.enumerateSubstrings(in: paragraph.startIndex..<paragraph.endIndex, options: .bySentences) { sentence, _, _, _ in
-                if let sentence { sentences.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            let skipped = ["References", "Notes", "External links", "Further reading", "Bibliography", "See also"].contains(section) || paragraph.count < 90
+            if skipped {
+                paragraphs.append(PreparedParagraph(section: section, skipped: true, chunks: []))
+                continue
             }
-            if sentences.isEmpty { sentences = [paragraph] }
+            let sentences = completeSentences(paragraph)
+            var chunks: [String] = []
             var chunk = ""
             for sentence in sentences {
                 if !chunk.isEmpty && chunk.count + sentence.count + 1 > 1200 {
                     if chunk.count >= 90 {
-                        passages.append((section, chunk, position)); position += 1
+                        chunks.append(chunk)
                     }
                     chunk = ""
                 }
                 if sentence.count > 1200 {
                     if chunk.count >= 90 {
-                        passages.append((section, chunk, position)); position += 1
+                        chunks.append(chunk)
                     }
                     chunk = ""
-                    passages.append((section, sentence, position)); position += 1
+                    chunks.append(sentence)
                 } else { chunk += (chunk.isEmpty ? "" : " ") + sentence }
             }
             if chunk.count >= 90 {
-                passages.append((section, chunk, position)); position += 1
+                chunks.append(chunk)
+            }
+            paragraphs.append(PreparedParagraph(section: section, skipped: false, chunks: chunks.map {
+                PreparedChunk(text: $0, terms: words($0), complete: $0.range(of: "[.!?][”’\"')\\]]*$", options: .regularExpression) != nil)
+            }))
+        }
+        if extract.utf8.count <= 200_000 {
+            passageCache.setObject(PreparedArticle(paragraphs), forKey: key, cost: key.length + extract.utf8.count * 4)
+        }
+        return paragraphs
+    }
+    public static func evidence(_ extract: String, focus: String, level: Int) -> String {
+        let terms = words(focus)
+        var passages: [(String, PreparedChunk, Int)] = []
+        var position = 0
+        for paragraph in preparedPassages(extract) {
+            if paragraph.skipped || (level >= 5 && paragraph.section == "Introduction") { position += 1; continue }
+            for chunk in paragraph.chunks {
+                passages.append((paragraph.section, chunk, position)); position += 1
             }
         }
         // Require body support, not a heading-only match, and rank deterministically.
         let candidates = passages.compactMap { passage -> (Int, String, String, Double)? in
-            let coverage = overlap(terms, words(passage.1))
-            guard coverage > 0, passage.1.range(of: "[.!?][”’\"')\\]]*$", options: .regularExpression) != nil else { return nil }
-            return (passage.2, passage.0, passage.1, coverage * 5)
+            let coverage = overlap(terms, passage.1.terms)
+            guard coverage > 0, passage.1.complete else { return nil }
+            return (passage.2, passage.0, passage.1.text, coverage * 5)
         }.sorted { $0.3 == $1.3 ? $0.0 < $1.0 : $0.3 > $1.3 }
         guard let best = candidates.first else { return "" }
         let neighbor = candidates.dropFirst().first { $0.1 == best.1 && abs($0.0 - best.0) == 1 && $0.3 >= best.3 * 0.5 && $0.2 != best.2 }
