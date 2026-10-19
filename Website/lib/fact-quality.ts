@@ -312,9 +312,18 @@ export function validateDraft(draft: GroundedDraft, sources: WikipediaSource[], 
   const evidenceBySentence: GroundedDraft["evidence"][] = Array.from({ length: sentenceCount }, () => []);
   draft.evidence.forEach(item => evidenceBySentence[item.sentence].push(item));
   const sections = new Set<string>();
+  const normalizedExtracts = new Map<number, string>();
+  function normalizedExtract(sourceIndex: number) {
+    let extract = normalizedExtracts.get(sourceIndex);
+    if (extract === undefined) {
+      extract = normalizedText(sources[sourceIndex].extract ?? "");
+      normalizedExtracts.set(sourceIndex, extract);
+    }
+    return extract;
+  }
   for (let sentence = 0; sentence < sentenceCount; sentence++) {
     const quotes = evidenceBySentence[sentence];
-    if (!quotes.length || quotes.some(item => !Number.isInteger(item.sourceIndex) || !sources[item.sourceIndex] || typeof item.quote !== "string" || item.quote.trim().length < 30 || !normalizedText(sources[item.sourceIndex].extract ?? "").includes(normalizedText(item.quote)) || (difficulty > 0 && !item.section?.trim()) || (difficulty > 0 && !evidenceSection(sources[item.sourceIndex].extract ?? "", item.quote, item.section?.trim() ?? "")))) throw new Error("A sentence does not have a matching quotation in its specific Wikipedia passage.");
+    if (!quotes.length || quotes.some(item => !Number.isInteger(item.sourceIndex) || !sources[item.sourceIndex] || typeof item.quote !== "string" || item.quote.trim().length < 30 || !normalizedExtract(item.sourceIndex).includes(normalizedText(item.quote)) || (difficulty > 0 && !item.section?.trim()) || (difficulty > 0 && !evidenceSection(sources[item.sourceIndex].extract ?? "", item.quote, item.section?.trim() ?? "")))) throw new Error("A sentence does not have a matching quotation in its specific Wikipedia passage.");
     const unsupported = unsupportedQuantities(draft.sentences[sentence], quotes.map(item => item.quote));
     if (unsupported.length) throw new Error(`A sentence contains unsupported numbers or units: ${unsupported.join(", ")}.`);
     if (unsupportedCausality(draft.sentences[sentence], quotes.map(item => item.quote)).length) throw new Error("A sentence contains unsupported causal wording; its own evidence must establish the relationship, not co-occurrence.");
