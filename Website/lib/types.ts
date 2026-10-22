@@ -93,6 +93,8 @@ export type FactCard = {
   hook: string;
   title: string;
   body: string;
+  /** Original validated sentence boundaries used to place saved citations safely. */
+  sentences?: string[];
   sentenceCount?: SentenceLength;
   claim?: string;
   evidence?: Array<{ sentence: number; sourceIndex: number; quote: string; section?: string }>;

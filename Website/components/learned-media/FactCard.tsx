@@ -1,12 +1,16 @@
 "use client";
 
-import { memo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { DIFFICULTY_LABELS } from "@/lib/recommendations";
 import type { DisplayMode, FactCard as FactCardType, FactCardAction } from "@/lib/types";
+import { resolveWikipediaArticle } from "@/lib/wikipedia";
+import { buildSourceSpotlightModel, canonicalWikipediaUrl, locatePassageContext, longestSharedPhraseRange, sourceSpotlightContextKey } from "@/lib/source-spotlight";
+import { getSourceSpotlightState, setSourceSpotlightState, subscribeSourceSpotlight, updateSourceSpotlightState, type SpotlightContextState } from "@/lib/source-spotlight-state";
 import { Icon } from "./icons";
 
 type FactCardProps = {
   card: FactCardType;
+  workspaceId: string;
   displayMode: DisplayMode;
   learnLoading?: boolean;
   questionLoading?: boolean;
@@ -21,8 +25,64 @@ type FactCardProps = {
   onQuestionDetailed: (id: string, value: boolean) => void;
 };
 
-export const FactCard = memo(function FactCard({ card, displayMode, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed }: FactCardProps) {
+function updateContext(workspaceId: string, cardId: string, sentenceIndex: number, contextKey: string, next: SpotlightContextState) {
+  updateSourceSpotlightState(workspaceId, cardId, (current) => {
+    if (!current || current.sentenceIndex !== sentenceIndex || !current.expandedEvidence.includes(contextKey)) return current;
+    return { ...current, contexts: { ...current.contexts, [contextKey]: next } };
+  });
+}
+
+function EvidenceContextLoader({ workspaceId, cardId, sentenceIndex, expanded, evidenceIndex, sourceTitle, storedExtract, quote, section, status }: {
+  workspaceId: string;
+  cardId: string;
+  sentenceIndex: number;
+  expanded: boolean;
+  evidenceIndex: number;
+  sourceTitle: string;
+  storedExtract?: string;
+  quote: string;
+  section?: string;
+  status?: SpotlightContextState;
+}) {
+  useEffect(() => {
+    if (!expanded || status && status.status !== "idle") return;
+    const controller = new AbortController();
+    const contextKey = sourceSpotlightContextKey(evidenceIndex);
+    updateContext(workspaceId, cardId, sentenceIndex, contextKey, { status: "loading" });
+    const stored = locatePassageContext(storedExtract, quote, section);
+    const enoughStoredContext = stored.status === "found" && stored.before && stored.after;
+    const load = enoughStoredContext
+      ? Promise.resolve(stored)
+      : resolveWikipediaArticle(sourceTitle, controller.signal).then((article) => locatePassageContext(article?.extract, quote, section));
+    load.then((context) => {
+      if (controller.signal.aborted) return;
+      updateContext(workspaceId, cardId, sentenceIndex, contextKey, context.status === "found"
+        ? { status: "ready", before: context.before, after: context.after }
+        : { status: "unverified" });
+    }).catch(() => {
+      if (controller.signal.aborted) return;
+      updateContext(workspaceId, cardId, sentenceIndex, contextKey, { status: "error" });
+    });
+    return () => {
+      controller.abort();
+      updateSourceSpotlightState(workspaceId, cardId, (current) => {
+        if (!current || current.sentenceIndex !== sentenceIndex || current.contexts[contextKey]?.status !== "loading") return current;
+        return { ...current, contexts: { ...current.contexts, [contextKey]: { status: "idle" } } };
+      });
+    };
+  }, [cardId, evidenceIndex, expanded, quote, section, sourceTitle, status?.status === "idle" ? status.attempt : undefined, storedExtract, sentenceIndex, workspaceId]);
+  return null;
+}
+
+export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed }: FactCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
+  const spotlight = useSyncExternalStore(
+    (listener) => subscribeSourceSpotlight(workspaceId, card.id, listener),
+    () => getSourceSpotlightState(workspaceId, card.id),
+    () => undefined
+  );
+  const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const spotlightModel = useMemo(() => buildSourceSpotlightModel(card), [card]);
   const question = questionDraft ?? card.question ?? "";
   const detailed = questionDetailed ?? Boolean(card.questionDetailed);
   const showImage = displayMode === "picture-text";
@@ -32,6 +92,83 @@ export const FactCard = memo(function FactCard({ card, displayMode, learnLoading
     if (!clean || questionLoading) return;
     onAskQuestion(card.id, clean, detailed);
   }
+
+  function openSpotlight(sentenceIndex: number, triggerId: string) {
+    const current = getSourceSpotlightState(workspaceId, card.id);
+    setSourceSpotlightState(workspaceId, card.id, {
+      sentenceIndex,
+      triggerId,
+      expandedEvidence: current?.expandedEvidence ?? [],
+      contexts: current?.contexts ?? {}
+    });
+  }
+
+  function closeSpotlight() {
+    const triggerId = getSourceSpotlightState(workspaceId, card.id)?.triggerId;
+    setSourceSpotlightState(workspaceId, card.id, undefined);
+    requestAnimationFrame(() => triggerRefs.current.get(triggerId ?? "")?.focus());
+  }
+
+  function toggleContext(evidenceIndex: number) {
+    const contextKey = sourceSpotlightContextKey(evidenceIndex);
+    updateSourceSpotlightState(workspaceId, card.id, (current) => {
+      if (!current) return current;
+      const expanded = current.expandedEvidence.includes(contextKey);
+      const expandedEvidence = expanded ? current.expandedEvidence.filter((key) => key !== contextKey) : [...current.expandedEvidence, contextKey];
+      const contexts = expanded ? { ...current.contexts, [contextKey]: { status: "idle", attempt: (current.contexts[contextKey]?.status === "idle" ? current.contexts[contextKey].attempt ?? 0 : 0) + 1 } as SpotlightContextState } : current.contexts;
+      return { ...current, expandedEvidence, contexts };
+    });
+  }
+
+  function sourceSentenceIndex(sourceIndex: number) {
+    if (spotlight && spotlight.sentenceIndex >= 0 && spotlightModel.groups[spotlight.sentenceIndex]?.some((group) => group.sourceIndex === sourceIndex)) return spotlight.sentenceIndex;
+    const earliest = spotlightModel.groups.findIndex((groups) => groups.some((group) => group.sourceIndex === sourceIndex));
+    return earliest >= 0 ? earliest : 0;
+  }
+
+  function spotlightPanel(sentenceIndex: number, groups: typeof spotlightModel.groups[number], id: string) {
+    const isOpen = spotlight?.sentenceIndex === sentenceIndex;
+    return (
+      <span className="source-spotlight-panel" id={id} role="region" aria-label="Wikipedia source spotlight" hidden={!isOpen} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeSpotlight(); } }}>
+        {isOpen && <>
+          <span className="source-spotlight-heading"><strong>Source spotlight</strong><button type="button" className="source-spotlight-close" onClick={closeSpotlight} aria-label="Close source spotlight">Close</button></span>
+          {groups.map((group) => (
+            <span className="source-spotlight-group" key={group.sourceIndex}>
+              <span className="source-spotlight-source"><strong>{group.source.title}</strong><a href={canonicalWikipediaUrl(group.source)} target="_blank" rel="noreferrer" aria-label={`Open ${group.source.title} on Wikipedia`}><Icon name="external" size={12} /></a></span>
+              {group.evidence.map((evidence) => {
+                const contextKey = sourceSpotlightContextKey(evidence.index);
+                const context = spotlight.contexts[contextKey];
+                const expanded = spotlight.expandedEvidence.includes(contextKey);
+                const quote = evidence.quote;
+                const highlight = longestSharedPhraseRange(quote, spotlightModel.mapped ? spotlightModel.sentences[sentenceIndex] : "", spotlightModel.mapped ? "" : card.claim ?? "");
+                return <Fragment key={evidence.index}>
+                  <EvidenceContextLoader workspaceId={workspaceId} cardId={card.id} sentenceIndex={sentenceIndex} expanded={expanded} evidenceIndex={evidence.index} sourceTitle={group.source.title} storedExtract={group.source.extract} quote={quote} section={evidence.section} status={context} />
+                  <span className="source-spotlight-quote-wrap">
+                    {evidence.section && <span className="source-spotlight-section">{evidence.section}</span>}
+                    <span className="source-spotlight-quote">
+                      {expanded && context?.status === "ready" && context.before && <><span className="source-spotlight-context">{context.before} </span></>}
+                      “{highlight ? <>{quote.slice(0, highlight.start)}<mark>{quote.slice(highlight.start, highlight.end)}</mark>{quote.slice(highlight.end)}</> : quote}”
+                      {expanded && context?.status === "ready" && context.after && <><span className="source-spotlight-context"> {context.after}</span></>}
+                    </span>
+                    <span className="source-spotlight-context-actions">
+                      <button type="button" onClick={() => toggleContext(evidence.index)} disabled={context?.status === "loading"}>{expanded ? "Hide context" : "Read around this passage"}</button>
+                      {expanded && context?.status === "loading" && <span role="status">Loading nearby text…</span>}
+                      {expanded && context?.status === "unverified" && <span className="source-spotlight-note">This article has changed, or this quotation could not be located unambiguously. The saved evidence above is unchanged.</span>}
+                      {expanded && context?.status === "error" && <span className="source-spotlight-note">Surrounding text could not be loaded. Your saved evidence is unchanged.</span>}
+                      {expanded && (context?.status === "error" || context?.status === "unverified") && <button type="button" onClick={() => updateSourceSpotlightState(workspaceId, card.id, (current) => current ? { ...current, contexts: { ...current.contexts, [contextKey]: { status: "idle", attempt: (current.contexts[contextKey]?.status === "idle" ? current.contexts[contextKey].attempt ?? 0 : 0) + 1 } } } : current)}>Retry</button>}
+                    </span>
+                  </span>
+                </Fragment>;
+              })}
+            </span>
+          ))}
+        </>}
+      </span>
+    );
+  }
+
+  const activeSentence = spotlight?.sentenceIndex ?? -1;
+  const bodyGroups = spotlightModel.groups;
 
   return (
     <article className={`fact-card accent-${card.accent} ${card.feedback ? `feedback-${card.feedback}` : ""}`}>
@@ -54,12 +191,39 @@ export const FactCard = memo(function FactCard({ card, displayMode, learnLoading
         </div>
         <p className="fact-hook">{card.hook}</p>
         <h3>{card.title}</h3>
-        <p className="fact-body">{card.body}</p>
+        <p className="fact-body">
+          {spotlightModel.mapped ? spotlightModel.sentences.map((sentence, sentenceIndex) => {
+            const groups = bodyGroups[sentenceIndex] ?? [];
+            const markerId = `sentence-${sentenceIndex}`;
+            const panelId = `source-spotlight-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${sentenceIndex}`;
+            return <Fragment key={sentenceIndex}>
+              {sentenceIndex > 0 && " "}<span className="fact-sentence">{sentence}</span>
+              {groups.length > 0 && <button type="button" className="source-citation-marker" ref={(element) => { if (element) triggerRefs.current.set(markerId, element); else triggerRefs.current.delete(markerId); }} data-source-spotlight-trigger="true" aria-label={`Open sources for sentence ${sentenceIndex + 1}`} aria-expanded={activeSentence === sentenceIndex} aria-controls={panelId} onKeyDown={(event) => { if (event.key === "Escape" && spotlight) { event.preventDefault(); closeSpotlight(); } }} onClick={() => openSpotlight(sentenceIndex, markerId)}>{sentenceIndex + 1}</button>}
+              {groups.length > 0 && spotlightPanel(sentenceIndex, groups, panelId)}
+            </Fragment>;
+          }) : <>
+            {card.body}
+            {bodyGroups[0]?.length > 0 && <>
+              {" "}<button type="button" className="source-citation-marker" ref={(element) => { if (element) triggerRefs.current.set("whole-body", element); else triggerRefs.current.delete("whole-body"); }} data-source-spotlight-trigger="true" aria-label="Open saved sources for this fact" aria-expanded={activeSentence === 0} aria-controls={`source-spotlight-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-whole`} onKeyDown={(event) => { if (event.key === "Escape" && spotlight) { event.preventDefault(); closeSpotlight(); } }} onClick={() => openSpotlight(0, "whole-body")}>1</button>
+              {spotlightPanel(0, bodyGroups[0], `source-spotlight-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-whole`)}
+            </>}
+          </>}
+        </p>
 
         <div className="fact-sources">
           <span>Wikipedia sources</span>
           <div>
-            {(card.sources ?? []).slice(0, 3).map((source) => <a href={source.url} key={source.url} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={12} /></a>)}
+            {(card.sources ?? []).slice(0, 3).map((source, sourceIndex) => {
+              const hasEvidence = bodyGroups.some((groups) => groups.some((group) => group.sourceIndex === sourceIndex));
+              const sentenceIndex = sourceSentenceIndex(sourceIndex);
+              const triggerId = `footer-source-${sourceIndex}`;
+              const markerId = spotlightModel.mapped ? `source-spotlight-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${sentenceIndex}` : `source-spotlight-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-whole`;
+              const active = hasEvidence && spotlight?.sentenceIndex === sentenceIndex;
+              return <span className="source-link-controls" key={sourceIndex}>
+              {hasEvidence ? <button type="button" className="source-spotlight-link" ref={(element) => { if (element) triggerRefs.current.set(triggerId, element); else triggerRefs.current.delete(triggerId); }} data-source-spotlight-trigger="true" aria-expanded={active} aria-controls={markerId} onKeyDown={(event) => { if (event.key === "Escape" && spotlight) { event.preventDefault(); closeSpotlight(); } }} onClick={() => openSpotlight(sentenceIndex, triggerId)}>{source.title}</button> : <span>{source.title}</span>}
+                <a className="source-external-link" href={canonicalWikipediaUrl(source)} target="_blank" rel="noreferrer" aria-label={`Open ${source.title} on Wikipedia`}><Icon name="external" size={12} /></a>
+              </span>;
+            })}
           </div>
         </div>
 

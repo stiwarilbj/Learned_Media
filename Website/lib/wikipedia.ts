@@ -478,6 +478,15 @@ export async function resolveWikipediaSources(queries: string[], limit = 3, sign
   return resolved;
 }
 
+/** Fetch one exact article title through the shared cache without search or image attribution work. */
+export async function resolveWikipediaArticle(title: string, signal?: AbortSignal, cache = sharedWikipediaResolutionCache): Promise<WikipediaSource | undefined> {
+  const cleanTitle = title.trim();
+  if (!cleanTitle) return undefined;
+  const page = (await fetchPages([cleanTitle], signal, cache, 1))[0];
+  if (!page?.title || !page.fullurl || !page.extract) return undefined;
+  return { title: page.title, url: page.fullurl, canonicalUrl: page.fullurl, extract: page.extract.trim() };
+}
+
 export async function resolveWikipediaImage(source: WikipediaSource, signal?: AbortSignal, cache?: WikipediaResolutionCache) {
   cache ??= sharedWikipediaResolutionCache;
   const key = (source.canonicalUrl ?? source.url ?? source.title).toLocaleLowerCase();

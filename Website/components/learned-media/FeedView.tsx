@@ -12,6 +12,7 @@ import { TopicTree } from "./TopicTree";
 import { VirtualizedRows } from "./VirtualizedRows";
 
 type FeedViewProps = {
+  workspaceId: string;
   cards: FactCardType[];
   showReset: boolean;
   query?: string;
@@ -94,8 +95,8 @@ function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, c
   );
 }
 
-export function FeedView({ cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, questionDrafts, learningErrors, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
-  const renderCard = useCallback((card: FactCardType) => <FactCard card={card} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} />, [learnLoading, learningErrors, onAction, onAskQuestion, onLearnMore, onQuestionDetailed, onQuestionDraft, questionDrafts, questionLoading, settings.displayMode]);
+export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, questionDrafts, learningErrors, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+  const renderCard = useCallback((card: FactCardType) => <FactCard card={card} workspaceId={workspaceId} displayMode={settings.displayMode} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} />, [learnLoading, learningErrors, onAction, onAskQuestion, onLearnMore, onQuestionDetailed, onQuestionDraft, questionDrafts, questionLoading, settings.displayMode, workspaceId]);
   return (
     <div className="feed-workspace">
       {rabbitHole && <div className="rabbit-banner"><div><Icon name="arrow" size={16} /><span>Rabbit Hole Mode <strong>→ {rabbitHole}</strong></span></div><button type="button" onClick={onReset}>Exit rabbit hole</button></div>}

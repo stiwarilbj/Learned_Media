@@ -664,6 +664,12 @@ private final class WikipediaClient: @unchecked Sendable {
         return await resolveBatch([lookup])[0] ?? []
     }
 
+    func article(title: String) async -> [String: Any]? {
+        guard !Task.isCancelled, let page = await fetchPage(title), !Task.isCancelled,
+              let canonicalTitle = page.title, let url = page.fullurl, let extract = page.extract else { return nil }
+        return ["title": canonicalTitle, "url": url, "canonicalUrl": url, "extract": extract]
+    }
+
     private func fetchImageInfo(fileName: String, size: Int) async -> WikipediaImageInfoResponse.Query.Page.ImageInfo? {
         await pageCache.imageInfoOrLoad(fileName: fileName, size: size) { [weak self] in
             guard let self,
@@ -977,6 +983,10 @@ private final class GeminiClient {
 
     func resolveImage(source: [String: Any]) async -> [String: Any]? {
         await wikipedia.image(for: source)
+    }
+
+    func wikipediaArticle(title: String) async -> [String: Any]? {
+        await wikipedia.article(title: title)
     }
 
     private func isoNow() -> String { ISO8601DateFormatter().string(from: Date()) }
@@ -1523,7 +1533,7 @@ private final class GeminiClient {
             return value
         }
         let generatedAt = isoNow()
-        return ["id": "gemini-\(UUID().uuidString)", "title": title, "hook": hook, "body": sentences.joined(separator: " "), "sentenceCount": sentenceCount, "claim": claim, "evidence": remappedQuotes, "topicPath": slot.path, "sources": linkedSources, "difficulty": slot.level, "accent": ["blue", "lilac", "mint", "sand", "coral"][slot.index % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": resolvedModel ?? model ?? "Gemini", "generatedAt": generatedAt]]
+        return ["id": "gemini-\(UUID().uuidString)", "title": title, "hook": hook, "body": sentences.joined(separator: " "), "sentences": sentences, "sentenceCount": sentenceCount, "claim": claim, "evidence": remappedQuotes, "topicPath": slot.path, "sources": linkedSources, "difficulty": slot.level, "accent": ["blue", "lilac", "mint", "sand", "coral"][slot.index % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": resolvedModel ?? model ?? "Gemini", "generatedAt": generatedAt]]
     }
 
     func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [[String: Any]], requestedCount: Int = 7, onCard: @escaping ([String: Any], Int, Int) -> Void) async throws -> [String: Any] {
@@ -1974,6 +1984,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 guard let self else { return }
                 let image = await gemini.resolveImage(source: source)
                 respond(id: id, result: ["cardId": cardID, "image": image.map { $0 as Any } ?? NSNull()])
+                activeTasks[id] = nil
+            }
+            activeTasks[id] = task
+        case "wikipediaArticle":
+            let title = payload["title"] as? String ?? ""
+            let task = Task { [weak self] in
+                guard let self else { return }
+                let article = await gemini.wikipediaArticle(title: title)
+                guard !Task.isCancelled else { return }
+                respond(id: id, result: article.map { $0 as Any } ?? NSNull())
                 activeTasks[id] = nil
             }
             activeTasks[id] = task

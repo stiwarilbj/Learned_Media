@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		xBXxywER71/yT89Mefb7Bgk2oU4=
+		wPqy24oLkZ0eE/I9uY15KeANGD4=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -46,7 +46,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		b/gp9Jy6MaRfrOsxL12I6FSqHOE=
+		/oYCwSI0t8DKTNHbbYH/4TZUV8Y=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -80,9 +80,13 @@
 		<data>
 		MkAGKRj0aNV16TofLvXIrkiJaT8=
 		</data>
+		<key>Resources/frontend/source-spotlight.js</key>
+		<data>
+		/Fu9V/tttJcp2xRoqrkh5l/9U+s=
+		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		2S9S2bT2GLbQ3aFN6O5ZCjylfd0=
+		2qbf/Bgs3rgBvqTaFxjV33xe+Ts=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -153,7 +157,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			M5a45JoW1R5fIqvsN1GaCjyZLDuUuO5I7AeDxfshsvM=
+			AJNgHFbHfnCvDxlBYXEUNpT6Pko/iV1BMF5OsUX/zZw=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -209,7 +213,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			WFf5UD9IYj6xD2vWQHYJvHGiGGGQilJ9aJuALPT8FmE=
+			gKBncvub+pImS+ufMJzKX6a6bFk2Cast2UN/9cVdLFg=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -268,11 +272,18 @@
 			Ld6tT/qy5fM5XttuMDPgLdgaY2925bfmKIM7Il5S7NA=
 			</data>
 		</dict>
+		<key>Resources/frontend/source-spotlight.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			FRW8P5n4S/nE5uZR6Urf5yZJIB7kkDG/9lnJWZLh0AA=
+			</data>
+		</dict>
 		<key>Resources/frontend/styles.css</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			ehSygNj6dfhWfPWJe9bAR5YSz3WjadLmqlyZ4/OF8Bc=
+			fLW9AAyMgYndWoQMxzvkz9ysdEpN6AX6ZDnG33z+5n4=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>

@@ -1272,6 +1272,32 @@ body { background: var(--page-gradient); }
 .fact-card { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; animation: none; }
 .fact-content { --fact-inset: 22px; padding-left: var(--fact-inset); padding-right: var(--fact-inset); }
 .fact-content .fact-body { margin-left: calc(-1 * var(--fact-inset)); margin-right: calc(-1 * var(--fact-inset)); padding: 16px var(--fact-inset); background: var(--surface); }
+.source-citation-marker { display: inline-grid; place-items: center; vertical-align: text-top; min-width: 16px; height: 16px; margin: 0 0 0 4px; padding: 0 3px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-blue); color: var(--primary); font: inherit; font-size: 9px; line-height: 1; cursor: pointer; }
+.source-citation-marker:hover, .source-citation-marker[aria-expanded="true"] { border-color: var(--primary); background: var(--primary); color: #fff; }
+.source-citation-marker:focus-visible, .source-spotlight-link:focus-visible, .source-spotlight-close:focus-visible, .source-spotlight-context-actions button:focus-visible, .source-spotlight-source a:focus-visible, .source-external-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.source-spotlight-panel { display: block; max-width: 100%; margin: 12px 0 3px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); color: var(--ink); font-size: 12px; line-height: 1.55; white-space: normal; overflow-wrap: anywhere; }
+.source-spotlight-panel[hidden] { display: none !important; }
+.source-spotlight-heading, .source-spotlight-source { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.source-spotlight-heading { margin-bottom: 9px; color: var(--ink-strong); font-size: 11px; }
+.source-spotlight-close { border: 0; border-radius: 6px; background: transparent; color: var(--muted); padding: 3px 6px; font: inherit; font-size: 10px; cursor: pointer; }
+.source-spotlight-group { display: block; padding-top: 9px; border-top: 1px solid var(--border); }
+.source-spotlight-group + .source-spotlight-group { margin-top: 9px; }
+.source-spotlight-source { color: var(--ink-strong); font-size: 11px; }
+.source-spotlight-source a, .source-external-link { display: inline-flex; align-items: center; color: var(--primary); text-decoration: none; }
+.source-spotlight-quote-wrap { display: block; margin-top: 7px; }
+.source-spotlight-section { display: block; margin-bottom: 3px; color: var(--muted-soft); font-size: 10px; font-weight: 700; }
+.source-spotlight-quote { display: block; color: var(--ink); }
+.source-spotlight-quote mark { border-radius: 3px; background: #ffedaa; color: inherit; padding: 0 1px; }
+.theme-dark .source-spotlight-quote mark { background: #665521; }
+.source-spotlight-context { color: var(--muted); }
+.source-spotlight-context-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 7px; color: var(--muted-soft); font-size: 10px; }
+.source-spotlight-context-actions button { padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; font-weight: 800; cursor: pointer; }
+.source-spotlight-context-actions button:disabled { opacity: .65; cursor: progress; }
+.source-spotlight-note { flex-basis: 100%; color: var(--muted); }
+.source-link-controls { display: inline-flex; align-items: center; gap: 4px; }
+.source-spotlight-link { padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; font-weight: 800; cursor: pointer; }
+.source-spotlight-link:hover { text-decoration: underline; }
+.source-external-link { min-width: 16px; min-height: 20px; justify-content: center; }
 .fact-content h3 { margin-top: 16px; }
 .key-input-row input { min-height: 50px; }
 @media (max-width: 560px) {

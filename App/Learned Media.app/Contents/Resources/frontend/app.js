@@ -16,6 +16,11 @@
   const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Impossible"];
   const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
+  const sourceSpotlight = window.LEARNED_MEDIA_SOURCE_SPOTLIGHT;
+  const sourceSpotlightStates = new Map();
+  const sourceSpotlightRequests = new Map();
+  let focusedSpotlightTrigger = null;
+  let focusedSpotlightContext = null;
   const BEST_SELLING_BOOK_ORDER = [
     "A Tale of Two Cities", "The Little Prince", "The Alchemist", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber", "The Hobbit", "Alice's Adventures in Wonderland",
     "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World", "The Bridges of Madison County", "One Hundred Years of Solitude", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose", "The Eagle Has Landed", "Watership Down", "The Hite Report", "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life",
@@ -323,6 +328,7 @@
       else if (key === "checked") element.checked = Boolean(value);
       else if (key === "ariaLabel") element.setAttribute("aria-label", value);
       else if (key === "ariaExpanded") element.setAttribute("aria-expanded", String(Boolean(value)));
+      else if (key === "ariaControls") element.setAttribute("aria-controls", value);
       else if (key === "ariaPressed") element.setAttribute("aria-pressed", String(Boolean(value)));
       else if (key === "dataset") Object.keys(value).forEach(function (dataKey) { element.dataset[dataKey] = value[dataKey]; });
       else element.setAttribute(key, value);
@@ -796,12 +802,13 @@
   function normalizeCard(card, index) {
     const first = card.sources && card.sources[0] ? card.sources[0] : { title: card.sourceTitle || "Wikipedia", url: card.sourceUrl || wikiURL(card.sourceTitle || card.title) };
     const storedSources = card.sources && card.sources.length ? card.sources : [first];
-    const sources = storedSources.map(function (source, sourceIndex) {
+    const linkedSources = storedSources.map(function (source, sourceIndex) {
       const url = String(source.url || wikiURL(source.title || "Wikipedia"));
       const canonicalUrl = source.canonicalUrl || url.split("#")[0];
       const quote = (card.evidence || []).find(function (item) { return item.sourceIndex === sourceIndex; });
       return quote && quote.quote && url.indexOf("#:~:text=") < 0 ? Object.assign({}, source, { canonicalUrl: canonicalUrl, url: wikipediaEvidenceLink(canonicalUrl, quote.quote) }) : source;
-    }).slice(0, 3);
+    });
+    const references = sourceSpotlight.normalizeSpotlightSources(linkedSources, card.evidence || [], 3);
     const image = card.image || (card.imageUrl ? { url: card.imageUrl, alt: card.title, sourceTitle: first.title, sourceUrl: first.url, filePageUrl: first.url, credit: "Wikipedia image" } : null);
     const hook = titleCaseCatalogLabel(String(card.hook || card.title || "A small fact worth keeping").trim().replace(/\.+$/, ""));
     return Object.assign({
@@ -814,7 +821,7 @@
       sentenceCount: normalizeSentenceLength(card.sentenceCount),
       accent: ["blue", "lilac", "mint", "sand", "coral"][index % 5],
       createdAt: new Date().toISOString()
-    }, card, { sources: sources, image: image, hook: hook });
+    }, card, { sources: references.sources, evidence: references.evidence, image: image, hook: hook });
   }
   function wikipediaEvidenceLink(url, quote) {
     const text = String(quote || "").replace(/^\[Section:[^\]]+\]\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 180);
@@ -829,12 +836,215 @@
     });
     return link;
   }
+  function nativeSpotlightKey(card) { return state.workspaceId + "\u0000" + card.id; }
+  function storeNativeSpotlightState(key, value) {
+    sourceSpotlightStates.delete(key);
+    sourceSpotlightStates.set(key, value);
+    while (sourceSpotlightStates.size > 500) sourceSpotlightStates.delete(sourceSpotlightStates.keys().next().value);
+  }
+  function nativeSpotlightPanelId(card, model, sentenceIndex) {
+    return "source-spotlight-" + String(card.id).replace(/[^a-zA-Z0-9_-]/g, "-") + "-" + (model.mapped ? sentenceIndex : "whole");
+  }
+  function nativeSpotlightSentenceForSource(model, current, sourceIndex) {
+    if (current && current.sentenceIndex >= 0 && model.groups[current.sentenceIndex] && model.groups[current.sentenceIndex].some(function (group) { return group.sourceIndex === sourceIndex; })) return current.sentenceIndex;
+    const index = model.groups.findIndex(function (groups) { return groups.some(function (group) { return group.sourceIndex === sourceIndex; }); });
+    return index >= 0 ? index : 0;
+  }
+  function handleNativeSpotlightEscape(event, card) {
+    if (event.key !== "Escape" || !sourceSpotlightStates.has(nativeSpotlightKey(card))) return;
+    event.preventDefault();
+    closeNativeSpotlight(card);
+  }
+  function nativeCancelSpotlightRequest(requestKey) {
+    const request = sourceSpotlightRequests.get(requestKey);
+    if (!request) return;
+    request.task.cancel();
+    sourceSpotlightRequests.delete(requestKey);
+  }
+  function nativeCancelSpotlightRequests(workspaceId, cardId, exceptSentence) {
+    for (const [requestKey, request] of sourceSpotlightRequests) {
+      if (request.workspaceId === workspaceId && request.cardId === cardId && request.sentenceIndex !== exceptSentence) nativeCancelSpotlightRequest(requestKey);
+    }
+  }
+  function nativeUpdateSpotlightContext(card, sentenceIndex, contextKey, context) {
+    const key = nativeSpotlightKey(card);
+    const current = sourceSpotlightStates.get(key);
+    if (!current || current.sentenceIndex !== sentenceIndex || !current.expandedEvidence.includes(contextKey)) return false;
+    current.contexts[contextKey] = context;
+    storeNativeSpotlightState(key, current);
+    render();
+    return true;
+  }
+  function nativeLoadSpotlightContext(card, sentenceIndex, evidence) {
+    const contextKey = sourceSpotlight.sourceSpotlightContextKey(evidence.index);
+    const key = nativeSpotlightKey(card);
+    const current = sourceSpotlightStates.get(key);
+    if (!current || current.sentenceIndex !== sentenceIndex || !current.expandedEvidence.includes(contextKey)) return;
+    const stored = sourceSpotlight.locatePassageContext(card.sources[evidence.sourceIndex] && card.sources[evidence.sourceIndex].extract, evidence.quote, evidence.section);
+    if (stored.status === "found" && stored.before && stored.after) {
+      nativeUpdateSpotlightContext(card, sentenceIndex, contextKey, { status: "ready", before: stored.before, after: stored.after });
+      return;
+    }
+    const requestKey = key + "\u0000" + sentenceIndex + "\u0000" + evidence.index;
+    const existing = sourceSpotlightRequests.get(requestKey);
+    if (existing) return;
+    const source = card.sources[evidence.sourceIndex];
+    if (!source) { nativeUpdateSpotlightContext(card, sentenceIndex, contextKey, { status: "unverified" }); return; }
+    const task = bridge("wikipediaArticle", { title: source.title });
+    const request = { task: task, workspaceId: state.workspaceId, cardId: card.id, sentenceIndex: sentenceIndex, evidenceIndex: evidence.index };
+    sourceSpotlightRequests.set(requestKey, request);
+    task.then(function (article) {
+      const latest = sourceSpotlightStates.get(key);
+      if (state.workspaceId !== request.workspaceId || !latest || latest.sentenceIndex !== sentenceIndex || !latest.expandedEvidence.includes(contextKey)) return;
+      const context = sourceSpotlight.locatePassageContext(article && article.extract, evidence.quote, evidence.section);
+      nativeUpdateSpotlightContext(card, sentenceIndex, contextKey, context.status === "found"
+        ? { status: "ready", before: context.before, after: context.after }
+        : { status: "unverified" });
+    }).catch(function (error) {
+      if (state.workspaceId !== request.workspaceId || error && /canceled/i.test(error.message || "")) return;
+      nativeUpdateSpotlightContext(card, sentenceIndex, contextKey, { status: "error" });
+    }).finally(function () { if (sourceSpotlightRequests.get(requestKey) === request) sourceSpotlightRequests.delete(requestKey); });
+  }
+  function openNativeSpotlight(card, sentenceIndex, triggerId) {
+    const key = nativeSpotlightKey(card);
+    const current = sourceSpotlightStates.get(key);
+    nativeCancelSpotlightRequests(state.workspaceId, card.id, sentenceIndex);
+    storeNativeSpotlightState(key, {
+      sentenceIndex: sentenceIndex,
+      triggerId: triggerId,
+      expandedEvidence: current ? current.expandedEvidence : [],
+      contexts: current ? current.contexts : {}
+    });
+    focusedSpotlightTrigger = { workspaceId: state.workspaceId, cardId: card.id, triggerId: triggerId };
+    render();
+  }
+  function closeNativeSpotlight(card) {
+    const key = nativeSpotlightKey(card);
+    const current = sourceSpotlightStates.get(key);
+    if (!current) return;
+    focusedSpotlightTrigger = { workspaceId: state.workspaceId, cardId: card.id, triggerId: current.triggerId };
+    for (const [requestKey, request] of sourceSpotlightRequests) if (request.workspaceId === state.workspaceId && request.cardId === card.id) nativeCancelSpotlightRequest(requestKey);
+    sourceSpotlightStates.delete(key);
+    render();
+  }
+  function toggleNativeSpotlightContext(card, sentenceIndex, evidence) {
+    const key = nativeSpotlightKey(card);
+    const current = sourceSpotlightStates.get(key);
+    if (!current) return;
+    const contextKey = sourceSpotlight.sourceSpotlightContextKey(evidence.index);
+    const expanded = current.expandedEvidence.includes(contextKey);
+    if (expanded) {
+      const requestKey = key + "\u0000" + sentenceIndex + "\u0000" + evidence.index;
+      nativeCancelSpotlightRequest(requestKey);
+      current.expandedEvidence = current.expandedEvidence.filter(function (item) { return item !== contextKey; });
+      current.contexts[contextKey] = { status: "idle" };
+      storeNativeSpotlightState(key, current);
+      render();
+      return;
+    }
+    current.expandedEvidence = current.expandedEvidence.concat(contextKey);
+    current.contexts[contextKey] = { status: "loading" };
+    storeNativeSpotlightState(key, current);
+    render();
+    nativeLoadSpotlightContext(card, sentenceIndex, evidence);
+  }
+  function nativeSpotlightPanel(card, model, sentenceIndex, groups) {
+    const current = sourceSpotlightStates.get(nativeSpotlightKey(card));
+    const open = Boolean(current && current.sentenceIndex === sentenceIndex);
+    const panel = node("span", { className: "source-spotlight-panel", id: nativeSpotlightPanelId(card, model, sentenceIndex), role: "region", ariaLabel: "Wikipedia source spotlight" });
+    if (!open) { panel.hidden = true; return panel; }
+    panel.appendChild(node("span", { className: "source-spotlight-heading" }, node("strong", { text: "Source spotlight" }), node("button", { className: "source-spotlight-close", ariaLabel: "Close source spotlight", onClick: function () { closeNativeSpotlight(card); } }, "Close")));
+    groups.forEach(function (group) {
+      const source = group.source;
+      const groupNode = node("span", { className: "source-spotlight-group" });
+      const external = externalLink(sourceSpotlight.canonicalWikipediaUrl(source), "", "source-external-link");
+      external.setAttribute("aria-label", "Open " + source.title + " on Wikipedia");
+      groupNode.appendChild(node("span", { className: "source-spotlight-source" }, node("strong", { text: source.title }), external));
+      group.evidence.forEach(function (evidence) {
+        const contextKey = sourceSpotlight.sourceSpotlightContextKey(evidence.index);
+        const expanded = Boolean(current && current.expandedEvidence.includes(contextKey));
+        const context = current && current.contexts[contextKey];
+        const quote = evidence.quote;
+        const sentence = model.mapped ? model.sentences[sentenceIndex] : "";
+        const highlight = sourceSpotlight.longestSharedPhraseRange(quote, sentence, card.claim || "");
+        const quoteWrap = node("span", { className: "source-spotlight-quote-wrap" });
+        if (evidence.section) quoteWrap.appendChild(node("span", { className: "source-spotlight-section", text: evidence.section }));
+        const quoteNode = node("span", { className: "source-spotlight-quote" });
+        if (expanded && context && context.status === "ready" && context.before) quoteNode.appendChild(node("span", { className: "source-spotlight-context", text: context.before + " " }));
+        quoteNode.appendChild(document.createTextNode("“"));
+        if (highlight) {
+          quoteNode.appendChild(document.createTextNode(quote.slice(0, highlight.start)));
+          quoteNode.appendChild(node("mark", { text: quote.slice(highlight.start, highlight.end) }));
+          quoteNode.appendChild(document.createTextNode(quote.slice(highlight.end)));
+        } else quoteNode.appendChild(document.createTextNode(quote));
+        quoteNode.appendChild(document.createTextNode("”"));
+        if (expanded && context && context.status === "ready" && context.after) quoteNode.appendChild(node("span", { className: "source-spotlight-context", text: " " + context.after }));
+        quoteWrap.appendChild(quoteNode);
+        const controls = node("span", { className: "source-spotlight-context-actions" });
+        const contextControlData = { spotlightContextCard: card.id, spotlightEvidence: String(evidence.index) };
+        controls.appendChild(node("button", { type: "button", dataset: contextControlData, disabled: Boolean(context && context.status === "loading"), onClick: function () { toggleNativeSpotlightContext(card, sentenceIndex, evidence); } }, expanded ? "Hide context" : "Read around this passage"));
+        if (expanded && context && context.status === "loading") controls.appendChild(node("span", { role: "status", text: "Loading nearby text…" }));
+        if (expanded && context && context.status === "unverified") controls.appendChild(node("span", { className: "source-spotlight-note", text: "This article has changed, or this quotation could not be located unambiguously. The saved evidence above is unchanged." }));
+        if (expanded && context && context.status === "error") controls.appendChild(node("span", { className: "source-spotlight-note", text: "Surrounding text could not be loaded. Your saved evidence is unchanged." }));
+        if (expanded && context && (context.status === "error" || context.status === "unverified")) controls.appendChild(node("button", { type: "button", dataset: contextControlData, onClick: function () { const latest = sourceSpotlightStates.get(nativeSpotlightKey(card)); if (!latest) return; latest.contexts[contextKey] = { status: "loading" }; storeNativeSpotlightState(nativeSpotlightKey(card), latest); render(); nativeLoadSpotlightContext(card, sentenceIndex, evidence); } }, "Retry"));
+        quoteWrap.appendChild(controls);
+        groupNode.appendChild(quoteWrap);
+      });
+      panel.appendChild(groupNode);
+    });
+    panel.addEventListener("keydown", function (event) { if (event.key === "Escape") { event.preventDefault(); closeNativeSpotlight(card); } });
+    return panel;
+  }
+  function cardBody(card) {
+    const model = sourceSpotlight.buildSourceSpotlightModel(card);
+    const current = sourceSpotlightStates.get(nativeSpotlightKey(card));
+    const body = node("p", { className: "fact-body" });
+    if (model.mapped) {
+      model.sentences.forEach(function (sentence, sentenceIndex) {
+        if (sentenceIndex) body.appendChild(document.createTextNode(" "));
+        body.appendChild(document.createTextNode(sentence));
+        const groups = model.groups[sentenceIndex] || [];
+        if (!groups.length) return;
+        const triggerId = "sentence-" + sentenceIndex;
+        body.appendChild(node("button", { type: "button", className: "source-citation-marker", ariaLabel: "Open sources for sentence " + (sentenceIndex + 1), ariaExpanded: Boolean(current && current.sentenceIndex === sentenceIndex), ariaControls: nativeSpotlightPanelId(card, model, sentenceIndex), dataset: { spotlightCard: card.id, spotlightTrigger: triggerId }, onKeydown: function (event) { handleNativeSpotlightEscape(event, card); } }, String(sentenceIndex + 1)));
+        const marker = body.lastChild;
+        marker.addEventListener("click", function () { openNativeSpotlight(card, sentenceIndex, triggerId); });
+        body.appendChild(nativeSpotlightPanel(card, model, sentenceIndex, groups));
+      });
+    } else {
+      body.appendChild(document.createTextNode(card.body || ""));
+      const groups = model.groups[0] || [];
+      if (groups.length) {
+        body.appendChild(document.createTextNode(" "));
+        const triggerId = "whole-body";
+        body.appendChild(node("button", { type: "button", className: "source-citation-marker", ariaLabel: "Open saved sources for this fact", ariaExpanded: Boolean(current && current.sentenceIndex === 0), ariaControls: nativeSpotlightPanelId(card, model, 0), dataset: { spotlightCard: card.id, spotlightTrigger: triggerId }, text: "1", onClick: function () { openNativeSpotlight(card, 0, triggerId); }, onKeydown: function (event) { handleNativeSpotlightEscape(event, card); } }));
+        body.appendChild(nativeSpotlightPanel(card, model, 0, groups));
+      }
+    }
+    return body;
+  }
   function sourceList(card, answer) {
     const sources = (answer ? card.answerSources : card.sources) || [];
     const list = node("div", { className: answer ? "answer-sources" : "fact-sources" });
     list.appendChild(node("span", { text: answer ? "Sources" : "Wikipedia sources" }));
     const links = node("div", { className: "source-links" });
-    sources.slice(0, 3).forEach(function (source) { links.appendChild(externalLink(source.url || wikiURL(source.title), source.title || "Wikipedia")); });
+    sources.slice(0, 3).forEach(function (source, sourceIndex) {
+      if (answer) { links.appendChild(externalLink(source.url || wikiURL(source.title), source.title || "Wikipedia")); return; }
+      const sourceControl = node("span", { className: "source-link-controls" });
+      const model = sourceSpotlight.buildSourceSpotlightModel(card);
+      const hasEvidence = model.groups.some(function (groups) { return groups.some(function (group) { return group.sourceIndex === sourceIndex; }); });
+      const current = sourceSpotlightStates.get(nativeSpotlightKey(card));
+      const sentenceIndex = nativeSpotlightSentenceForSource(model, current, sourceIndex);
+      const triggerId = "footer-source-" + sourceIndex;
+      if (hasEvidence) {
+        const titleButton = node("button", { type: "button", className: "source-spotlight-link", ariaExpanded: Boolean(current && current.sentenceIndex === sentenceIndex), ariaControls: nativeSpotlightPanelId(card, model, sentenceIndex), dataset: { spotlightCard: card.id, spotlightTrigger: triggerId }, text: source.title || "Wikipedia", onClick: function () { openNativeSpotlight(card, sentenceIndex, triggerId); }, onKeydown: function (event) { handleNativeSpotlightEscape(event, card); } });
+        sourceControl.appendChild(titleButton);
+      } else sourceControl.appendChild(node("span", { text: source.title || "Wikipedia" }));
+      const external = externalLink(sourceSpotlight.canonicalWikipediaUrl(source), "", "source-external-link");
+      external.setAttribute("aria-label", "Open " + (source.title || "Wikipedia") + " on Wikipedia");
+      sourceControl.appendChild(external);
+      links.appendChild(sourceControl);
+    });
     list.appendChild(links);
     return list;
   }
@@ -1180,6 +1390,9 @@
     state.youtubeSmartLoading = false;
     if (stopYoutubePlayback) stopYoutubePlayback();
     cancelImageHydrations();
+    for (const [requestKey, request] of sourceSpotlightRequests) {
+      if (request.workspaceId === state.workspaceId) nativeCancelSpotlightRequest(requestKey);
+    }
     bridge("cancelAll", {}).catch(function () {});
   }
   function applyWorkspaceSnapshot(record) {
@@ -1717,7 +1930,7 @@
     content.appendChild(meta);
     content.appendChild(node("p", { className: "fact-hook", text: card.hook }));
     content.appendChild(node("h3", { text: card.title }));
-    content.appendChild(node("p", { className: "fact-body", text: card.body }));
+    content.appendChild(cardBody(card));
     content.appendChild(sourceList(card, false));
     if (card.learnMore) content.appendChild(node("div", { className: "learning-answer learn-more-answer" }, node("span", { className: "answer-label" }, svg("sparkles", 14), " Learn more"), node("p", { text: card.learnMore })));
     if (state.errorByCard[card.id]) content.appendChild(node("p", { className: "learning-error", text: state.errorByCard[card.id] }));
@@ -1886,6 +2099,12 @@
     const currentMainScroll = document.querySelector(".main-scroll");
     if (currentMainScroll) mainScrollTop = currentMainScroll.scrollTop;
     const activeElement = document.activeElement;
+    if (activeElement && activeElement.dataset && activeElement.dataset.spotlightCard && activeElement.dataset.spotlightTrigger) {
+      focusedSpotlightTrigger = { workspaceId: state.workspaceId, cardId: activeElement.dataset.spotlightCard, triggerId: activeElement.dataset.spotlightTrigger };
+    }
+    if (activeElement && activeElement.dataset && activeElement.dataset.spotlightContextCard && activeElement.dataset.spotlightEvidence) {
+      focusedSpotlightContext = { workspaceId: state.workspaceId, cardId: activeElement.dataset.spotlightContextCard, evidenceIndex: activeElement.dataset.spotlightEvidence };
+    }
     if (activeElement && activeElement.dataset && activeElement.dataset.topicId) focusedTopicId = activeElement.dataset.topicId;
     const activeField = activeElement && ["gemini-key", "youtube-key", "youtube-search", "global-search", "topic-search"].includes(activeElement.id) ? activeElement : null;
     if (activeField) { focusedFieldId = activeField.id; focusedSelection = typeof activeField.selectionStart === "number" ? [activeField.selectionStart, activeField.selectionEnd] : null; }
@@ -1903,6 +2122,10 @@
     app.appendChild(main);
     const confirmation = confirmationOverlay();
     if (confirmation) app.appendChild(confirmation);
+    const restoreSpotlightTrigger = focusedSpotlightTrigger;
+    focusedSpotlightTrigger = null;
+    const restoreSpotlightContext = focusedSpotlightContext;
+    focusedSpotlightContext = null;
     window.requestAnimationFrame(function () {
       const nextTopicTree = document.querySelector(".topic-tree");
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
@@ -1925,6 +2148,18 @@
           questionField.focus();
           if (focusedQuestionSelection && typeof questionField.setSelectionRange === "function") questionField.setSelectionRange(focusedQuestionSelection[0], focusedQuestionSelection[1]);
         }
+      }
+      if (restoreSpotlightTrigger && restoreSpotlightTrigger.workspaceId === state.workspaceId) {
+        const trigger = Array.from(document.querySelectorAll("[data-spotlight-card][data-spotlight-trigger]")).find(function (element) {
+          return element.dataset.spotlightCard === restoreSpotlightTrigger.cardId && element.dataset.spotlightTrigger === restoreSpotlightTrigger.triggerId;
+        });
+        if (trigger) trigger.focus();
+      }
+      if (restoreSpotlightContext && restoreSpotlightContext.workspaceId === state.workspaceId) {
+        const control = Array.from(document.querySelectorAll("[data-spotlight-context-card][data-spotlight-evidence]")).find(function (element) {
+          return element.dataset.spotlightContextCard === restoreSpotlightContext.cardId && element.dataset.spotlightEvidence === restoreSpotlightContext.evidenceIndex;
+        });
+        if (control) control.focus();
       }
     });
   }

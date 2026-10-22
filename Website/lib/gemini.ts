@@ -1022,6 +1022,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
               hook: localFact.hook.trim().replace(/[.]+$/, ""),
               title: localFact.title.trim(),
               body: localFact.sentences.map(sentence => sentence.trim()).join(" "),
+              sentences: localFact.sentences.map(sentence => sentence.trim()),
               sentenceCount,
               claim: localFact.claim.trim(),
               evidence: localFact.evidence.map(item => ({ ...item, sourceIndex: chosenIndexes.indexOf(item.sourceIndex) })),

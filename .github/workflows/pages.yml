@@ -33,6 +33,8 @@ jobs:
         run: npm ci
       - name: Check shared website and Mac data
         run: npm run check:native-data
+      - name: Test source spotlight evidence mapping
+        run: npm run test:source-spotlight
       - name: Verify account credential sync
         run: npm run test:credentials
       - name: Evaluate fixed prompt failure set
