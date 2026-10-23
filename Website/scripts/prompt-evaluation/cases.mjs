@@ -58,7 +58,19 @@ export function registerEvaluation(h) {
         }
         state=h.installNetworkMock({...options,learningAnswer:fixture.answer,evidencePrefix:fixture.evidencePrefix, sourceSentenceCount:Math.max(3,fixture.sentenceLength ?? 3)});
         const sessionId=await h.connectMock(state);
-        if (fixture.requiredInstruction) {
+        if (fixture.action === 'adapt') {
+          const fact=h.factBundle(h.words[0]);
+          const card={id:'fixed-eval-card',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),claim:fact.sentences[0],topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:h.articleExtract()}]};
+          const result=await h.generateLearningResponse({apiKey:'test-key',sessionId,action:'adapt',mode:fixture.mode,card});
+          assert.equal(result.answer,fixture.answer);
+          assert.equal(result.citations.length,1);
+          assert.equal(result.citations[0].url,card.sources[0].url);
+          row.citationTotal=result.citations.length;
+          row.citationValid=result.citations.filter(c=>c.url===card.sources[0].url).length;
+          const prompt=state.outputs[0].prompt;
+          questionInstructionPresent=prompt.includes(fixture.requiredInstruction)&&prompt.includes(fixture.secondaryInstruction)
+            &&prompt.includes('Original fact card:')&&prompt.includes('Wikipedia evidence:');
+        } else if (fixture.requiredInstruction) {
           const fact=h.factBundle(h.words[0]);
           const card={id:'fixed-eval-card',hook:fact.hook,title:fact.title,body:fact.sentences.join(' '),topicPath:['Science'],difficulty:5,accent:'blue',sources:[{title:'Shared Article',url:'https://en.wikipedia.org/wiki/Shared_Article',extract:(fixture.evidencePrefix ?? "")+h.articleExtract()}]};
           const args={apiKey:'test-key',sessionId,action:'question',card,question:fixture.query,history:[]};

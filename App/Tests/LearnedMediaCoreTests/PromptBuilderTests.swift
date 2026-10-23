@@ -342,11 +342,14 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertFalse(simpler.contains(PromptInstructions.rules["adaptDeeper"]![0]))
         XCTAssertTrue(simpler.contains("Original fact card:"))
         XCTAssertTrue(simpler.contains("Wikipedia evidence:"))
+        XCTAssertTrue(simpler.contains("citationIndexes for the supplied sources"))
+        XCTAssertFalse(simpler.contains("supplemental lookups may clarify"))
         XCTAssertFalse(simpler.contains("Question:"))
 
         let deeper = PromptBuilder.learning(action: .adapt, card: card, mode: "deeper", evidence: evidence)
         XCTAssertTrue(deeper.contains(PromptInstructions.rules["adaptDeeper"]![0]))
         XCTAssertFalse(deeper.contains(PromptInstructions.rules["adaptSimpler"]![0]))
+        XCTAssertFalse(deeper.contains("supplemental lookups may clarify"))
     }
 
 }

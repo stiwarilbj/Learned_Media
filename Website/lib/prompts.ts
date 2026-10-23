@@ -169,7 +169,10 @@ export function buildLearningPrompt(options: {
   if (options.action === "question") return buildQuestionPrompt(options);
   if (options.action === "adapt") {
     const mode = options.mode === "deeper" ? "deeper" : "simpler";
-    return buildPrompt("adapt", [...instructions.learningEvidence, ...instructions[mode === "deeper" ? "adaptDeeper" : "adaptSimpler"]], [
+    // Adaptation already carries its own evidence, citation, and scope rules.
+    // Reuse the card context and shared reference-data guard without also
+    // appending the longer learn-mode instructions.
+    return buildPrompt("adapt", instructions[mode === "deeper" ? "adaptDeeper" : "adaptSimpler"], [
       { label: "Original fact card", value: supportingCard(options.card), reference: true },
       { label: "Wikipedia evidence", value: options.evidence, reference: true }
     ]);

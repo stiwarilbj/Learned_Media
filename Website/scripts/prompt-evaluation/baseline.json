@@ -1,8 +1,8 @@
 {
   "version": 1,
   "mode": "deterministic-replay",
-  "suiteHash": "e9b5f565d42b8aa35ec335d551ea4de04014c3223308f64383b51f8e0ce4353b",
-  "promptHash": "b1868d029fd8f09c5c6235e5536acd3e1d093279860e6da8d628f78eb0ff8311",
+  "suiteHash": "f8844b02ac600bb55eae90577892eecc48acf77e9aed095398058f3c3ba3dd15",
+  "promptHash": "a56ffd2abfd7f3e91900de77c319ba18fe75b71afc61604e07f044c96cb968e0",
   "cases": [
     {
       "id": "direct-question",
@@ -275,6 +275,38 @@
       "sentenceCountValid": 7,
       "sentenceTotal": 21,
       "sentenceCited": 21
+    },
+    {
+      "id": "card-adaptation-simpler",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 86,
+      "promptBytes": 5807,
+      "geminiCalls": 1,
+      "expectedSentences": 0,
+      "cardTotal": 0,
+      "sentenceCountValid": 0,
+      "sentenceTotal": 0,
+      "sentenceCited": 0
+    },
+    {
+      "id": "card-adaptation-deeper",
+      "taskSuccess": true,
+      "citationValid": 1,
+      "citationTotal": 1,
+      "duplicateRate": 0,
+      "candidateDuplicateRate": 0,
+      "outputBytes": 171,
+      "promptBytes": 5848,
+      "geminiCalls": 1,
+      "expectedSentences": 0,
+      "cardTotal": 0,
+      "sentenceCountValid": 0,
+      "sentenceTotal": 0,
+      "sentenceCited": 0
     }
   ]
 }

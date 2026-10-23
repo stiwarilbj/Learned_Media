@@ -2,7 +2,7 @@
 
 Run `npm run test:prompts` from Website before retaining a prompt change. CI runs this gate before the Pages build. It spends no Gemini quota and changes no UI or runtime policy.
 
-Ten fixed scenarios reuse the existing mocked provider, actual response parser, card recovery pipeline, citation restoration, answer cache, and production topic ranker:
+Nineteen fixed scenarios reuse the existing mocked provider, actual response parser, card recovery pipeline, citation restoration, answer cache, and production topic ranker:
 
 - Direct question: answer the original pressure question, include the locally selected cause-first instruction, cite its source, and reuse a capitalization variant without a second call.
 - Paraphrase: ground shaking finds Earthquakes without shared keywords.
@@ -16,6 +16,7 @@ Ten fixed scenarios reuse the existing mocked provider, actual response parser, 
 - Scoped question: retain place, time, audience, and comparison qualifiers in the existing answer request; preserve a valid citation and cached capitalization variants.
 
 - Incomplete evidence answer: require a named unsupported detail instead of a generic disclaimer; preserve the mechanism explanation, citation, and answer-cache behavior.
+- Per-card explanation adaptation: run simpler and deeper through the production adaptation action, require the requested mode contract and the original card/evidence context, and preserve a supported citation in one Gemini call.
 
 ## Reports and comparison
 
@@ -230,5 +231,13 @@ items at all three logical positions.
 
 No recovery or publication code needed changing. This expands deterministic
 regression coverage while keeping the prompts, UI, and retry sequence unchanged.
-All fifteen previous fixed cases retain their exact metrics in the expanded
-seventeen-case baseline.
+All seventeen previous fixed cases retain their exact metrics in the expanded
+nineteen-case baseline.
+
+## Per-card explanation adaptation
+
+The fixed suite now includes **simpler** and **deeper** card-adaptation cases. They exercise the real `action: "adapt"` path with the same original card and cited Wikipedia evidence. Each case verifies the requested mode instruction, shared citation contract, saved card context, restored source citation, and one logical Gemini operation.
+
+The committed baseline was expanded only after a paired replay against the pre-feature commit passed the same 19-case fixture set. `card-adaptation-before.json` preserves the pre-feature report. Both new cases failed their requested-mode prompt contract before the feature and pass afterward; calls stayed at 1 and citations at 1/1. Prompt sizes changed from 5,468 to 5,807 bytes for simpler and from 5,468 to 5,848 bytes for deeper (both under the 10% limit). This establishes prompt construction and request/citation behavior, not live model quality. Reproduce the paired check with `npm run evaluate:prompts -- --compare scripts/prompt-evaluation/card-adaptation-before.json scripts/prompt-evaluation/baseline.json`.
+
+Historical reports retain their original fixture identities.

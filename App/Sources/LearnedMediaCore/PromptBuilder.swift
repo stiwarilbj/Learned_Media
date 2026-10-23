@@ -213,7 +213,7 @@ public enum PromptBuilder {
         }
         if action == .adapt {
             let modeRule = mode == "deeper" ? "adaptDeeper" : "adaptSimpler"
-            return build(.adapt, rules: (PromptInstructions.rules["learningEvidence"] ?? []) + (PromptInstructions.rules[modeRule] ?? []), fields: [
+            return build(.adapt, rules: PromptInstructions.rules[modeRule] ?? [], fields: [
                 PromptField("Original fact card", supportingCard(card), reference: true), PromptField("Wikipedia evidence", evidence, reference: true)
             ])
         }

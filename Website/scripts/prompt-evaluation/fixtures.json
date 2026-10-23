@@ -130,5 +130,25 @@
     "damageKind": "truncated",
     "maxCalls": 3,
     "expectedCalls": 3
+  },
+  {
+    "id": "card-adaptation-simpler",
+    "action": "adapt",
+    "mode": "simpler",
+    "answer": "The observatory recorded a signal that was unusual.",
+    "maxCalls": 1,
+    "expectedCalls": 1,
+    "requiredInstruction": "Explain the same fact in plain language in 2 to 4 sentences and no more than 100 words.",
+    "secondaryInstruction": "Return citationIndexes for the supplied sources that support the explanation."
+  },
+  {
+    "id": "card-adaptation-deeper",
+    "action": "adapt",
+    "mode": "deeper",
+    "answer": "The observatory recorded an unusual signal as part of its measurement process. This gives more background on what the observation meant.",
+    "maxCalls": 1,
+    "expectedCalls": 1,
+    "requiredInstruction": "Expand the same fact with its supported mechanism or background in 1 or 2 short paragraphs and no more than 220 words.",
+    "secondaryInstruction": "Return citationIndexes for the supplied sources that support the explanation."
   }
 ]
