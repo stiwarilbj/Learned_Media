@@ -30,6 +30,7 @@ import { diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVide
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import { normalizeSpotlightSources } from "@/lib/source-spotlight";
 import { cardExplanationFingerprint, getCardExplanationSelection, normalizeCardExplanations } from "@/lib/card-explanations";
+import { createSavedFollowUpQuestions, normalizeSavedFollowUpQuestions } from "@/lib/card-follow-ups";
 import { clearCardRevealProgress } from "@/lib/card-reveal";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, TopicNode, View, WikipediaSource } from "@/lib/types";
 
@@ -387,6 +388,9 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     provenance: raw.provenance
   };
   normalized.explanations = normalizeCardExplanations(normalized);
+  normalized.followUpQuestions = Array.isArray(raw.followUpQuestions)
+    ? createSavedFollowUpQuestions(raw.followUpQuestions, normalized)
+    : normalizeSavedFollowUpQuestions(raw.followUpQuestions, normalized);
   return normalized;
 }
 

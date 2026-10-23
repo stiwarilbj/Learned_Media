@@ -61,6 +61,64 @@ private struct GeminiGroundedFact: Decodable {
     let evidence: [GeminiEvidenceReference]?
     let sourceIndexes: [Int]?
     let difficulty: Int?
+    let followUpQuestions: TolerantStringArray?
+    enum CodingKeys: String, CodingKey {
+        case topicPath, status, claimEvidenceIds, missingEvidence, slot, title, hook, body, claim, sentences, evidence, sourceIndexes, difficulty, followUpQuestions
+    }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        topicPath = try container.decodeIfPresent([String].self, forKey: .topicPath)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        claimEvidenceIds = try container.decodeIfPresent([String].self, forKey: .claimEvidenceIds)
+        missingEvidence = try container.decodeIfPresent(String.self, forKey: .missingEvidence)
+        slot = try container.decodeIfPresent(Int.self, forKey: .slot)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        hook = try container.decodeIfPresent(String.self, forKey: .hook)
+        body = try container.decodeIfPresent(String.self, forKey: .body)
+        claim = try container.decodeIfPresent(String.self, forKey: .claim)
+        sentences = try container.decodeIfPresent([String].self, forKey: .sentences)
+        evidence = try container.decodeIfPresent([GeminiEvidenceReference].self, forKey: .evidence)
+        sourceIndexes = try container.decodeIfPresent([Int].self, forKey: .sourceIndexes)
+        difficulty = try container.decodeIfPresent(Int.self, forKey: .difficulty)
+        // Bad optional suggestions are discarded without making an otherwise valid card undecodable.
+        followUpQuestions = (try? container.decode(TolerantStringArray.self, forKey: .followUpQuestions))
+    }
+}
+private struct TolerantStringArray: Decodable {
+    let values: [String]
+    init(from decoder: Decoder) throws {
+        guard var container = try? decoder.unkeyedContainer() else { values = []; return }
+        var strings: [String] = []
+        while !container.isAtEnd {
+            if let value = try? container.decode(String.self) { strings.append(value) }
+            else { _ = try container.decode(DiscardedJSONValue.self) }
+        }
+        values = strings
+    }
+}
+private struct DiscardedJSONValue: Decodable {
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.container(keyedBy: DynamicJSONKey.self) {
+            for key in container.allKeys { _ = try container.decode(DiscardedJSONValue.self, forKey: key) }
+            return
+        }
+        if var container = try? decoder.unkeyedContainer() {
+            while !container.isAtEnd { _ = try container.decode(DiscardedJSONValue.self) }
+            return
+        }
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { return }
+        if (try? container.decode(Bool.self)) != nil { return }
+        if (try? container.decode(Double.self)) != nil { return }
+        if (try? container.decode(String.self)) != nil { return }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+    }
+}
+private struct DynamicJSONKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
 }
 private struct GeminiEvidenceReference: Decodable {
     let sentence: Int
@@ -1285,7 +1343,8 @@ private final class GeminiClient {
         ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": [
             "slot": ["type": "INTEGER"], "status": ["type": "STRING", "enum": ["grounded", "needs_evidence"]], "claimEvidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]], "missingEvidence": ["type": "STRING"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
             "sentences": ["type": "ARRAY", "minItems": sentenceCount, "maxItems": sentenceCount, "items": ["type": "STRING"]],
-            "evidence": ["type": "ARRAY", "maxItems": 12, "items": ["type": "OBJECT", "properties": ["sentence": ["type": "INTEGER"], "evidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["sentence", "evidenceIds"]]]
+            "evidence": ["type": "ARRAY", "maxItems": 12, "items": ["type": "OBJECT", "properties": ["sentence": ["type": "INTEGER"], "evidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["sentence", "evidenceIds"]]],
+            "followUpQuestions": ["type": "ARRAY", "maxItems": 2, "items": ["type": "STRING"]]
         ], "required": ["slot", "status", "claim"]]]], "required": ["facts"]]
     }
 
@@ -1533,7 +1592,9 @@ private final class GeminiClient {
             return value
         }
         let generatedAt = isoNow()
-        return ["id": "gemini-\(UUID().uuidString)", "title": title, "hook": hook, "body": sentences.joined(separator: " "), "sentences": sentences, "sentenceCount": sentenceCount, "claim": claim, "evidence": remappedQuotes, "topicPath": slot.path, "sources": linkedSources, "difficulty": slot.level, "accent": ["blue", "lilac", "mint", "sand", "coral"][slot.index % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": resolvedModel ?? model ?? "Gemini", "generatedAt": generatedAt]]
+        var card: [String: Any] = ["id": "gemini-\(UUID().uuidString)", "title": title, "hook": hook, "body": sentences.joined(separator: " "), "sentences": sentences, "sentenceCount": sentenceCount, "claim": claim, "evidence": remappedQuotes, "topicPath": slot.path, "sources": linkedSources, "difficulty": slot.level, "accent": ["blue", "lilac", "mint", "sand", "coral"][slot.index % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": resolvedModel ?? model ?? "Gemini", "generatedAt": generatedAt]]
+        if let questions = fact.followUpQuestions?.values, !questions.isEmpty { card["followUpQuestions"] = questions }
+        return card
     }
 
     func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [[String: Any]], requestedCount: Int = 7, onCard: @escaping ([String: Any], Int, Int) -> Void) async throws -> [String: Any] {

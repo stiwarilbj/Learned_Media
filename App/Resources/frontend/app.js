@@ -19,6 +19,7 @@
   const sourceSpotlight = window.LEARNED_MEDIA_SOURCE_SPOTLIGHT;
   const cardReveal = window.LEARNED_MEDIA_CARD_REVEAL;
   const cardExplanations = window.LEARNED_MEDIA_CARD_EXPLANATIONS;
+  const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
   const sourceSpotlightStates = new Map();
   const sourceSpotlightRequests = new Map();
   let adaptationRequest = null;
@@ -197,6 +198,7 @@
   let focusedSelection = null;
   let focusedQuestionCardId = null;
   let focusedQuestionSelection = null;
+  let dismissedFollowUpQuestionKey = "";
   let saveInFlight = false;
   let cloudSaveTimer = null;
   let cloudSyncToken = 0;
@@ -334,6 +336,7 @@
       else if (key === "onClick") element.addEventListener("click", value);
       else if (key === "onInput") element.addEventListener("input", value);
       else if (key === "onFocus") element.addEventListener("focus", value);
+      else if (key === "onBlur") element.addEventListener("blur", value);
       else if (key === "onChange") element.addEventListener("change", value);
       else if (key === "onKeydown") element.addEventListener("keydown", value);
       else if (key === "disabled") element.disabled = Boolean(value);
@@ -836,6 +839,9 @@
       createdAt: new Date().toISOString()
     }, card, { sources: references.sources, evidence: references.evidence, image: image, hook: hook });
     normalized.explanations = cardExplanations.normalizeCardExplanations(normalized);
+    normalized.followUpQuestions = Array.isArray(card.followUpQuestions)
+      ? cardFollowUps.createSavedFollowUpQuestions(card.followUpQuestions, normalized)
+      : cardFollowUps.normalizeSavedFollowUpQuestions(card.followUpQuestions, normalized);
     return normalized;
   }
   function wikipediaEvidenceLink(url, quote) {
@@ -2099,11 +2105,73 @@
   function questionArea(card) {
     const box = node("div", { className: "question-box" });
     const row = node("div", { className: "question-row" });
-    const input = node("input", { value: card.question || "", placeholder: "Ask a question about this fact", ariaLabel: "Ask a question about this fact", dataset: { cardId: card.id }, onInput: function (event) { card.question = event.target.value; } });
+    const followUpQuestions = cardFollowUps.getCardFollowUpQuestions(card);
+    const followUpKey = state.workspaceId + "\u0000" + card.id + "\u0000" + cardFollowUps.followUpQuestionFingerprint(card);
+    let suggestions = null;
+    if (followUpQuestions.length) {
+      suggestions = node("div", { className: "question-suggestions", role: "group", ariaLabel: "Suggested questions", dataset: { questionSuggestions: card.id }, onKeydown: function (event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dismissedFollowUpQuestionKey = followUpKey;
+          suggestions.hidden = true;
+          input.focus();
+        }
+      } });
+      followUpQuestions.forEach(function (question) {
+        suggestions.appendChild(node("button", { type: "button", className: "question-suggestion", dataset: { cardId: card.id, questionSuggestion: "true" }, onClick: function () {
+          card.question = question;
+          input.value = question;
+          dismissedFollowUpQuestionKey = followUpKey;
+          suggestions.hidden = true;
+          focusedQuestionCardId = card.id;
+          input.focus();
+          input.setSelectionRange(question.length, question.length);
+        } }, question));
+      });
+    }
+    const input = node("input", { value: card.question || "", placeholder: "Ask a question about this fact", ariaLabel: "Ask a question about " + card.title, dataset: { cardId: card.id }, onFocus: function () {
+      if (focusedQuestionCardId !== card.id) {
+        focusedQuestionCardId = card.id;
+        dismissedFollowUpQuestionKey = "";
+        render();
+      }
+    }, onBlur: function (event) {
+      if (!box.contains(event.relatedTarget)) {
+        focusedQuestionCardId = null;
+        dismissedFollowUpQuestionKey = "";
+        if (suggestions) suggestions.hidden = true;
+      }
+    }, onInput: function (event) {
+      card.question = event.target.value;
+      if (suggestions) {
+        if (!card.question.trim()) dismissedFollowUpQuestionKey = "";
+        suggestions.hidden = Boolean(card.question.trim()) || focusedQuestionCardId !== card.id || dismissedFollowUpQuestionKey === followUpKey;
+      }
+    }, onKeydown: function (event) {
+      if (event.key === "Escape" && suggestions && !suggestions.hidden) {
+        event.preventDefault();
+        dismissedFollowUpQuestionKey = followUpKey;
+        suggestions.hidden = true;
+      } else if (event.key === "Enter" && input.value.trim()) {
+        event.preventDefault();
+        askQuestion(card.id, input.value);
+      }
+    } });
     row.appendChild(input);
     row.appendChild(node("button", { className: "details-toggle" + (card.answerDetailed ? " selected" : ""), onClick: function () { card.answerDetailed = !card.answerDetailed; render(); } }, "More Details"));
     row.appendChild(node("button", { className: "question-send", ariaLabel: "Send question", onClick: function () { askQuestion(card.id, input.value); } }, svg("arrow", 16)));
     box.appendChild(row);
+    if (suggestions) {
+      suggestions.hidden = Boolean((card.question || "").trim()) || focusedQuestionCardId !== card.id || dismissedFollowUpQuestionKey === followUpKey;
+      box.appendChild(suggestions);
+    }
+    box.addEventListener("focusout", function (event) {
+      if (!box.contains(event.relatedTarget)) {
+        focusedQuestionCardId = null;
+        dismissedFollowUpQuestionKey = "";
+        if (suggestions) suggestions.hidden = true;
+      }
+    });
     if (card.answer) box.appendChild(node("div", { className: "learning-answer question-answer" }, node("span", { className: "answer-label" }, svg("message", 14), " ", card.answerDetailed ? "Detailed answer" : "Answer"), node("p", { text: card.answer }), sourceList(card, true)));
     if (state.loadingCard === card.id) box.appendChild(node("div", { className: "learning-loading" }, node("span", { className: "loading-dot" }), " Gemini is reading the cited Wikipedia pages"));
     return box;

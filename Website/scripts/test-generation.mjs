@@ -238,6 +238,9 @@ function installNetworkMock(options = {}) {
       } else {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
       }
+      if (options.groundedFollowUps !== undefined && (prompt.includes("Return one result for each slot") || prompt.includes("Choose candidates and write grounded cards in one batch")) && Array.isArray(output?.facts)) {
+        output.facts.forEach(fact => { if (fact) fact.followUpQuestions = options.groundedFollowUps; });
+      }
       if (options.transformOutput) output = options.transformOutput(output, prompt);
       const rawText = options.responseText?.(output, prompt, body);
       const finishReason = options.finishReason ? options.finishReason(output, prompt) : "STOP";
@@ -772,13 +775,27 @@ await t.test("default seven-card generation uses one candidate and one grounding
   assert.ok(candidate.includes("different fact and angle across the batch"));
   assert.ok(candidate.includes("omit that slot instead of padding the batch"));
   const schema = state.requests.find(request => request.url.pathname.includes(":streamGenerateContent")).body.generationConfig.responseSchema;
+  const groundingSchema = state.requests.find(request => request.body.generationConfig?.responseSchema?.properties?.facts?.items?.properties?.followUpQuestions).body.generationConfig.responseSchema;
   assert.equal(schema.properties.facts.maxItems, 7);
   assert.equal(schema.properties.facts.minItems, undefined, "omission is allowed rather than forcing padding");
+  assert.equal(groundingSchema.properties.facts.items.properties.followUpQuestions.maxItems, 2);
+  assert.ok(grounding.includes("full card does not already answer"));
   assert.equal(schema.properties.facts.items.properties.wikipediaSearchTitles.maxItems, 3);
   assert.ok(!candidate.includes("Optional thread context: none"));
   assert.ok(!candidate.includes("Surprise mode:") && !candidate.includes("picture-text"));
   assert.ok(candidate.includes("Difficulty 5/10:"));
   assert.ok(!candidate.includes("Difficulty 9/10:") && !candidate.includes("Difficulty 10/10:"));
+});
+
+await t.test("malformed optional follow-up questions never reject grounded cards or add calls", async () => {
+  const state = installNetworkMock({ groundedFollowUps: { malformed: true } });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 7 });
+  assert.equal(result.completedCount, 7);
+  assert.equal(result.partial, false);
+  assert.equal(geminiCallCount(state), 2);
+  assert.equal(state.candidatePrompts.length, 1);
+  assert.equal(state.groundingPrompts.length, 1);
 });
 
 await t.test("active surprise guidance stays within assigned topics without presentation rules", async () => {
@@ -1154,13 +1171,14 @@ test('complete local coverage makes zero Gemini calls and weak coverage enriches
 });
 
 test('validated cached evidence completes seven cards with one call and no Wikipedia lookups',async()=>{
- const state=installNetworkMock(),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
+ const state=installNetworkMock({groundedFollowUps:['How did the workshop equipment change over time?']}),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
  await generateGeminiFacts(args);const calls=geminiCallCount(state),lookups=state.requests.filter(r=>r.url.hostname==='en.wikipedia.org').length;
  const result=await generateGeminiFacts(args);
  assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state)-calls,1);
  assert.equal(state.requests.filter(r=>r.url.hostname==='en.wikipedia.org').length,lookups);
  assert.ok(state.groundingPrompts.at(-1).includes('Choose candidates and write grounded cards in one batch'));
  assert.ok(result.cards.every(card=>card.evidence.length && card.evidence.every(e=>card.sources[e.sourceIndex].extract.includes(e.quote))));
+ assert.ok(result.cards.every(card=>card.followUpQuestions?.questions.includes('How did the workshop equipment change over time?')));
 });
 test('combined validation failures preserve six cards and fall back only for the missing slot',async()=>{
  const options={},state=installNetworkMock(options),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
