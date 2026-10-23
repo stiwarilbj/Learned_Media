@@ -16,6 +16,9 @@ export type SavedFollowUpQuestions = { questions: string[]; fingerprint: string 
 export type CardChronologyAnchor = { field: "title" | "hook" | "body"; sentenceIndex?: number };
 export type CardChronologyEvent = { dateText: string; eventText: string; anchor: CardChronologyAnchor };
 export type SavedCardChronology = { events: CardChronologyEvent[]; fingerprint: string };
+export type CardLocationAnchor = { field: "title" | "hook" | "body"; sentenceIndex?: number };
+export type SavedCardLocation = { name: string; articleTitle: string; anchor: CardLocationAnchor; latitude?: number; longitude?: number; countryCode?: string; broad?: boolean };
+export type SavedCardLocations = { locations: SavedCardLocation[]; fingerprint: string };
 
 export type FactCardAction = "like" | "save" | "more" | "less" | "heard" | "unknown" | "rabbit";
 
@@ -126,6 +129,7 @@ export type FactCard = {
   glossary?: SavedCardGlossary;
   followUpQuestions?: SavedFollowUpQuestions;
   chronology?: SavedCardChronology;
+  locations?: SavedCardLocations;
   learnMore?: string;
   question?: string;
   questionDetailed?: boolean;

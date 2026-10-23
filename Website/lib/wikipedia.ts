@@ -62,6 +62,8 @@ type PageResponse = {
       pageimage?: string;
       thumbnail?: { source?: string };
       original?: { source?: string };
+      pageprops?: { disambiguation?: "" | boolean };
+      coordinates?: Array<{ lat?: number; lon?: number; primary?: "" | boolean; globe?: string; type?: string; dim?: number; country?: string; region?: string }>;
     }>;
   };
 };
@@ -87,6 +89,7 @@ type SummaryResponse = {
 };
 
 export type ResolvedWikipediaSource = WikipediaSource & { image?: ImageAttribution };
+export type ResolvedWikipediaCoordinate = { title: string; requestedTitle: string; url: string; latitude: number; longitude: number; broad?: boolean };
 type WikipediaPage = NonNullable<NonNullable<PageResponse["query"]>["pages"]>[string];
 type WikipediaImageInfo = NonNullable<NonNullable<NonNullable<ImageInfoResponse["query"]>["pages"]>[string]["imageinfo"]>[number];
 type CachedRequest<T> = {
@@ -98,16 +101,18 @@ export type WikipediaResolutionCache = {
   searches: Map<string, CachedRequest<string[]>>;
   images: Map<string, CachedRequest<ImageAttribution | undefined>>;
   imageInfo: Map<string, CachedRequest<WikipediaImageInfo | undefined>>;
+  places: Map<string, CachedRequest<ResolvedWikipediaCoordinate[]>>;
 };
 
 const cacheBudgets = new WeakMap<object, number>();
 
 export function createWikipediaResolutionCache(): WikipediaResolutionCache {
-  const cache: WikipediaResolutionCache = { pages: new Map(), searches: new Map(), images: new Map(), imageInfo: new Map() };
+  const cache: WikipediaResolutionCache = { pages: new Map(), searches: new Map(), images: new Map(), imageInfo: new Map(), places: new Map() };
   cacheBudgets.set(cache.pages, 4 * 1024 * 1024);
   cacheBudgets.set(cache.searches, 256 * 1024);
   cacheBudgets.set(cache.images, 512 * 1024);
   cacheBudgets.set(cache.imageInfo, 512 * 1024);
+  cacheBudgets.set(cache.places, 512 * 1024);
   return cache;
 }
 
@@ -485,6 +490,34 @@ export async function resolveWikipediaArticle(title: string, signal?: AbortSigna
   const page = (await fetchPages([cleanTitle], signal, cache, 1))[0];
   if (!page?.title || !page.fullurl || !page.extract) return undefined;
   return { title: page.title, url: page.fullurl, canonicalUrl: page.fullurl, extract: page.extract.trim() };
+}
+
+/** Resolve only exact article titles. Disambiguation pages and non-primary or non-Earth coordinates are ignored. */
+export async function resolveWikipediaCoordinates(titles: string[], signal?: AbortSignal, cache = sharedWikipediaResolutionCache): Promise<ResolvedWikipediaCoordinate[]> {
+  const cleanTitles = Array.from(new Set(titles.map(title => title.trim()).filter(Boolean))).slice(0, 2);
+  if (!cleanTitles.length) return [];
+  const key = cleanTitles.map(title => title.toLocaleLowerCase()).sort().join("\u0000");
+  return sharedCachedRequest(cache.places, key, signal, async requestSignal => {
+    const payload = await getJson<PageResponse>(apiUrl({
+      action: "query", titles: cleanTitles.join("|"), redirects: "1", prop: "coordinates|info|pageprops", inprop: "url",
+      coprimary: "primary", coprop: "type|dim|country|region"
+    }), requestSignal, 1, false);
+    if (!payload || payload.error !== undefined) throw new Error("Wikipedia location details could not be loaded.");
+    const pages = Object.values(payload.query?.pages ?? {});
+    const resolved: ResolvedWikipediaCoordinate[] = [];
+    for (const requested of cleanTitles) {
+      for (const page of pages) {
+        if (!page.title || !page.fullurl || page.missing !== undefined || page.invalid !== undefined || page.known !== undefined || page.pageprops?.disambiguation !== undefined) continue;
+        if (!verifiedWikipediaNames(requested, payload.query, page.title).includes(requested)) continue;
+        const coordinate = page.coordinates?.find(item => (item.primary === "" || item.primary === true) && item.globe?.toLocaleLowerCase() === "earth" && Number.isFinite(item.lat) && Number.isFinite(item.lon) && item.lat! >= -90 && item.lat! <= 90 && item.lon! >= -180 && item.lon! <= 180);
+        if (!coordinate) continue;
+        const broad = /^(?:country|continent|region|adm1|adm2)$/iu.test(coordinate.type ?? "") || (coordinate.dim !== undefined && coordinate.dim >= 500_000);
+        resolved.push({ title: page.title, requestedTitle: requested, url: page.fullurl, latitude: coordinate.lat!, longitude: coordinate.lon!, ...(broad ? { broad: true } : {}) });
+        break;
+      }
+    }
+    return resolved;
+  }, () => true);
 }
 
 export async function resolveWikipediaImage(source: WikipediaSource, signal?: AbortSignal, cache?: WikipediaResolutionCache) {

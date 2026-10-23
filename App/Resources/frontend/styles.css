@@ -302,6 +302,10 @@ a { color: inherit; }
 .fact-image-label { position: relative; z-index: 1; color: #fff; background: rgba(15, 43, 73, .64); border-radius: 999px; padding: 5px 8px; font-size: 10px; font-weight: 800; }
 .fact-content { padding: 20px 22px 14px; }
 .fact-meta { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.fact-location-row { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 12px; min-width: 0; }
+.card-location-trigger { border: 0; padding: 3px 0; background: transparent; color: var(--primary); font: inherit; font-size: 11px; font-weight: 750; text-align: left; cursor: pointer; }
+.card-location-trigger:hover { text-decoration: underline; }
+.card-location-trigger:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; border-radius: 3px; }
 .fact-breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--primary); font-size: 13px; line-height: 1.35; font-weight: 850; letter-spacing: .01em; }
 .fact-breadcrumbs span + span::before { content: "·"; color: var(--muted-soft); margin-right: 6px; }
 .obscurity-mark { color: var(--primary); letter-spacing: 2px; font-size: 9px; white-space: nowrap; }
@@ -663,6 +667,25 @@ a { color: inherit; }
 .card-chronology-list.vertical { display: grid; gap: 9px; }
 .card-chronology-list.vertical .card-chronology-event { position: relative; padding: 0 0 0 15px; border-left: 2px solid var(--border); }
 .card-chronology-list.vertical .card-chronology-event::before { content: ""; position: absolute; top: 3px; left: -5px; width: 8px; height: 8px; border-radius: 50%; background: var(--primary); }
+.card-pocket-map { min-width: 0; max-width: 100%; overflow: hidden; }
+.card-pocket-map h4 { margin: 0; }
+.card-pocket-map-canvas { width: 100%; margin-top: 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 13px; background: linear-gradient(145deg, var(--surface-blue), var(--surface)); }
+.card-pocket-map-canvas svg { display: block; width: 100%; height: auto; aspect-ratio: 720 / 330; }
+.card-pocket-map-outlines path { fill: rgba(92, 153, 205, .12); fill-rule: evenodd; stroke: rgba(76, 119, 158, .42); stroke-width: .7; vector-effect: non-scaling-stroke; }
+.card-pocket-map-outlines path.selected { fill: rgba(68, 143, 220, .23); stroke: rgba(48, 116, 190, .78); stroke-width: 1.15; }
+.card-pocket-map-pins g { filter: drop-shadow(0 2px 3px rgba(25, 65, 108, .2)); }
+.card-pocket-map-pins circle { fill: var(--primary); stroke: white; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.card-pocket-map-pins text { fill: white; font-size: 12px; font-weight: 800; font-family: inherit; }
+.card-pocket-map-places { list-style: none; display: grid; gap: 7px; margin: 10px 0 0; padding: 0; }
+.card-pocket-map-places li { display: flex; align-items: flex-start; gap: 8px; min-width: 0; color: var(--ink); font-size: 12px; line-height: 1.45; }
+.card-pocket-map-number { display: inline-grid; flex: 0 0 19px; width: 19px; height: 19px; place-items: center; margin-top: 1px; border-radius: 50%; background: var(--primary); color: white; font-size: 10px; font-weight: 800; }
+.card-pocket-map-place-label { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.card-pocket-map-place-label a { display: inline-flex; width: fit-content; align-items: center; gap: 4px; color: var(--primary); font-weight: 750; }
+.card-pocket-map-place-label small,.card-pocket-map-caption,.card-location-note { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.card-pocket-map-caption { margin: 8px 0 0; }
+.card-location-note { margin: 8px 0 0; }
+.card-location-note .text-button { margin-left: 4px; }
+.card-pocket-map .text-button:focus-visible,.card-pocket-map h4:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
 .difficulty-mark { display: inline-flex; align-items: center; white-space: nowrap; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px; font-size: 9px; font-weight: 850; letter-spacing: 0; }
 .difficulty-mark { cursor: pointer; font-family: inherit; }
 .difficulty-mark:focus-visible, .difficulty-menu button:focus-visible, .card-explanation button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }

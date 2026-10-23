@@ -17,6 +17,7 @@ import { transientRetryDelayMs } from "./retry-timing";
 import { createSavedFollowUpQuestions } from "./card-follow-ups";
 import { cardGlossaryFingerprint, normalizeCardGlossary } from "./card-glossary";
 import { createSavedCardChronology } from "./card-chronology";
+import { createSavedCardLocations } from "./card-locations";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
 const MODEL_CHECK_TIMEOUT_MS = 20_000;
@@ -50,7 +51,7 @@ type CandidateFact = {
   difficulty?: number;
 };
 
-type GroundedFact = { topicPath?: string[]; status?: "grounded" | "needs_evidence"; claimEvidenceIds?: string[]; missingEvidence?: string; slot?: number; title?: string; hook?: string; claim?: string; sentences?: string[]; evidence?: Array<{ sentence: number; evidenceIds?: string[] }>; followUpQuestions?: unknown; chronology?: unknown };
+type GroundedFact = { topicPath?: string[]; status?: "grounded" | "needs_evidence"; claimEvidenceIds?: string[]; missingEvidence?: string; slot?: number; title?: string; hook?: string; claim?: string; sentences?: string[]; evidence?: Array<{ sentence: number; evidenceIds?: string[] }>; followUpQuestions?: unknown; chronology?: unknown; locations?: unknown };
 type GroundingEvidence = { sourceIndex: number; quote: string; section: string };
 
 type ModelPool = {
@@ -717,7 +718,8 @@ function groundedSchema(sentenceCount: number, combined = false) {
     followUpQuestions: { type: "ARRAY", maxItems: 2, items: { type: "STRING" } },
     chronology: { type: "OBJECT", properties: { events: { type: "ARRAY", maxItems: 8, items: { type: "OBJECT", properties: {
       dateText: { type: "STRING" }, eventText: { type: "STRING" }, anchor: { type: "OBJECT", properties: { field: { type: "STRING", enum: ["title", "hook", "body"] }, sentenceIndex: { type: "INTEGER" } }, required: ["field"] }
-    }, required: ["dateText", "eventText", "anchor"] } } }, required: ["events"] }
+    }, required: ["dateText", "eventText", "anchor"] } } }, required: ["events"] },
+    locations: { type: "ARRAY", maxItems: 2, items: { type: "OBJECT", properties: { name: { type: "STRING" }, articleTitle: { type: "STRING" }, anchor: { type: "OBJECT", properties: { field: { type: "STRING", enum: ["title", "hook", "body"] }, sentenceIndex: { type: "INTEGER" } }, required: ["field"] } }, required: ["name", "articleTitle", "anchor"] } }
   }, required: ["slot", "status", "claim", ...(combined ? ["topicPath"] : [])] } } }, required: ["facts"] };
 }
 
@@ -1045,6 +1047,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             // Optional copy suggestions are sanitized independently; they can never invalidate a grounded card.
             card.followUpQuestions = createSavedFollowUpQuestions(fact.followUpQuestions, card);
             card.chronology = createSavedCardChronology(fact.chronology, card);
+            card.locations = createSavedCardLocations(fact.locations, card);
             if (!await uniqueForPublication(card)) throw new GeminiFailure("This information has already been shown. Trying a fresh fact.");
             rememberValidatedEvidence(sessionId, slot);
             acceptedSlots.add(slot.index);

@@ -2,8 +2,8 @@
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { DIFFICULTY_LABELS } from "@/lib/recommendations";
-import type { CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction } from "@/lib/types";
-import { resolveWikipediaArticle } from "@/lib/wikipedia";
+import type { CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, SavedCardLocations } from "@/lib/types";
+import { resolveWikipediaArticle, resolveWikipediaCoordinates } from "@/lib/wikipedia";
 import { buildSourceSpotlightModel, canonicalWikipediaUrl, locatePassageContext, longestSharedPhraseRange, sourceSpotlightContextKey } from "@/lib/source-spotlight";
 import { getSourceSpotlightState, setSourceSpotlightState, subscribeSourceSpotlight, updateSourceSpotlightState, type SpotlightContextState } from "@/lib/source-spotlight-state";
 import { cardExplanationFingerprint, getCardExplanationSelection, setCardExplanationSelection, subscribeCardExplanationSelection } from "@/lib/card-explanations";
@@ -11,6 +11,7 @@ import { buildCardRevealModel, getCardRevealProgress, revealCardThroughSentence,
 import { getCardFollowUpQuestions } from "@/lib/card-follow-ups";
 import { cardGlossaryFingerprint, getCardGlossaryPanelOpen, getVisibleCardGlossaryEntries, normalizeCardGlossary, setCardGlossaryPanelOpen, subscribeCardGlossaryPanel } from "@/lib/card-glossary";
 import { cardChronologyFingerprint, getCardChronologyEvents, getCardChronologyPanelOpen, setCardChronologyPanelOpen, subscribeCardChronologyPanel } from "@/lib/card-chronology";
+import { attachVerifiedLocationCoordinates, cardLocationsFingerprint, getCardLocationPanelOpen, getCardLocationPanelState, getVisibleCardLocations, layoutPocketMap, loadCountryOutlines, setCardLocationPanelOpen, setCardLocationPanelState, subscribeCardLocationPanel, wikiArticleUrl, type CountryOutlines } from "@/lib/card-locations";
 import { Icon } from "./icons";
 
 type FactCardProps = {
@@ -36,6 +37,7 @@ type FactCardProps = {
   onAdaptExplanation: (id: string, mode?: CardExplanationMode) => void;
   onExplainTerms: (id: string) => void;
   onCancelGlossary: (id: string) => void;
+  onLocationsResolved: (id: string, locations: SavedCardLocations) => void;
   onOpenSettings: () => void;
 };
 
@@ -88,7 +90,7 @@ function EvidenceContextLoader({ workspaceId, cardId, sentenceIndex, expanded, e
   return null;
 }
 
-export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, adaptationLoading, glossaryLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onOpenSettings }: FactCardProps) {
+export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, adaptationLoading, glossaryLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings }: FactCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const [questionFocused, setQuestionFocused] = useState(false);
   const [followUpDismissed, setFollowUpDismissed] = useState(false);
@@ -106,6 +108,10 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const learnMenuItemsRef = useRef<HTMLDivElement>(null);
   const glossaryHeadingRef = useRef<HTMLSpanElement>(null);
   const chronologyHeadingRef = useRef<HTMLHeadingElement>(null);
+  const locationHeadingRef = useRef<HTMLHeadingElement>(null);
+  const locationTriggerRef = useRef<HTMLButtonElement>(null);
+  const locationTitleRef = useRef<HTMLHeadingElement>(null);
+  const focusLocationHeadingOnOpenRef = useRef(false);
   const focusGlossaryHeadingOnOpenRef = useRef(false);
   const focusChronologyHeadingOnOpenRef = useRef(false);
   const questionBoxRef = useRef<HTMLDivElement>(null);
@@ -157,6 +163,25 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const chronologyEvents = useMemo(() => getCardChronologyEvents(card, visibleSentenceCount, !graduallyRevealing || visibleSentenceCount >= revealModel.sentences.length), [card, graduallyRevealing, revealModel.sentences.length, visibleSentenceCount]);
   const showChronology = chronologyEvents.length >= 2;
   const chronologyPanelOpen = chronologyOpen && showChronology;
+  const locationFingerprint = useMemo(() => cardLocationsFingerprint(card), [card]);
+  const cardLocations = useMemo(() => getVisibleCardLocations(card, visibleSentenceCount, !graduallyRevealing || visibleSentenceCount >= revealModel.sentences.length), [card, graduallyRevealing, revealModel.sentences.length, visibleSentenceCount]);
+  const locationPanelOpen = useSyncExternalStore(
+    (listener) => subscribeCardLocationPanel(workspaceId, card.id, listener),
+    () => getCardLocationPanelOpen(workspaceId, card.id, locationFingerprint),
+    () => false
+  );
+  const locationPanelState = useSyncExternalStore(
+    (listener) => subscribeCardLocationPanel(workspaceId, card.id, listener),
+    () => getCardLocationPanelState(workspaceId, card.id, locationFingerprint),
+    () => getCardLocationPanelState(workspaceId, card.id, locationFingerprint)
+  );
+  const [countryOutlines, setCountryOutlines] = useState<CountryOutlines | null>(null);
+  const [outlineErrorKey, setOutlineErrorKey] = useState<string | null>(null);
+  const outlineError = outlineErrorKey === `${workspaceId}\u0000${card.id}`;
+  const locatedPlaces = useMemo(() => cardLocations.map(place => ({ ...place, url: wikiArticleUrl(place.articleTitle) })), [cardLocations]);
+  const pendingLocationTitles = locatedPlaces.filter(place => place.latitude === undefined || place.longitude === undefined).map(place => place.articleTitle);
+  const pendingLocationKey = pendingLocationTitles.map(title => title.toLocaleLowerCase()).sort().join("\u0000");
+  const mapLayout = useMemo(() => countryOutlines ? layoutPocketMap(countryOutlines.countries, locatedPlaces) : null, [countryOutlines, locatedPlaces]);
 
   useEffect(() => {
     if (!difficultyMenuOpen) return;
@@ -206,6 +231,48 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
     focusChronologyHeadingOnOpenRef.current = false;
     chronologyHeadingRef.current?.focus();
   }, [chronologyPanelOpen]);
+
+  useEffect(() => {
+    if (!locationPanelOpen || !focusLocationHeadingOnOpenRef.current) return;
+    focusLocationHeadingOnOpenRef.current = false;
+    locationHeadingRef.current?.focus();
+  }, [locationPanelOpen]);
+
+  useEffect(() => {
+    if (!locationPanelOpen || countryOutlines || outlineError) return;
+    let active = true;
+    loadCountryOutlines().then(value => { if (active) setCountryOutlines(value); }).catch(() => { if (active) setOutlineErrorKey(`${workspaceId}\u0000${card.id}`); });
+    return () => { active = false; };
+  }, [countryOutlines, locationPanelOpen, outlineError]);
+
+  useEffect(() => {
+    if (!locationPanelOpen || !pendingLocationKey) return;
+    const current = getCardLocationPanelState(workspaceId, card.id, locationFingerprint);
+    if (current.requestedKey === pendingLocationKey && (current.status === "ready" || current.status === "error" || current.status === "loading")) return;
+    const controller = new AbortController();
+    setCardLocationPanelState(workspaceId, card.id, { fingerprint: locationFingerprint, requestedKey: pendingLocationKey, status: "loading", attempt: current.attempt });
+    resolveWikipediaCoordinates(pendingLocationTitles, controller.signal).then(coordinates => {
+      if (controller.signal.aborted) return;
+      const saved = attachVerifiedLocationCoordinates(card, coordinates.map(place => ({ articleTitle: place.requestedTitle, latitude: place.latitude, longitude: place.longitude, broad: place.broad })));
+      if (saved) onLocationsResolved(card.id, saved);
+      setCardLocationPanelState(workspaceId, card.id, { fingerprint: locationFingerprint, requestedKey: pendingLocationKey, status: "ready", attempt: current.attempt });
+    }).catch(error => {
+      if (controller.signal.aborted || error instanceof Error && error.name === "AbortError") return;
+      setCardLocationPanelState(workspaceId, card.id, { fingerprint: locationFingerprint, requestedKey: pendingLocationKey, status: "error", attempt: current.attempt });
+    });
+    return () => {
+      controller.abort();
+      const latest = getCardLocationPanelState(workspaceId, card.id, locationFingerprint);
+      if (latest.status === "loading" && latest.requestedKey === pendingLocationKey) setCardLocationPanelState(workspaceId, card.id, { fingerprint: locationFingerprint, status: "idle", attempt: current.attempt });
+    };
+  }, [card, card.id, locationFingerprint, locationPanelOpen, locationPanelState.attempt, onLocationsResolved, pendingLocationKey, workspaceId]);
+
+  useEffect(() => {
+    if (locationPanelOpen && !cardLocations.length) {
+      setCardLocationPanelOpen(workspaceId, card.id, locationFingerprint, false);
+      requestAnimationFrame(() => (locationTriggerRef.current ?? locationTitleRef.current)?.focus());
+    }
+  }, [card.id, cardLocations.length, locationFingerprint, locationPanelOpen, workspaceId]);
 
   useEffect(() => {
     if (chronologyOpen && !showChronology) {
@@ -300,6 +367,21 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   function closeChronology() {
     setCardChronologyPanelOpen(workspaceId, card.id, chronologyFingerprint, false);
     requestAnimationFrame(() => learnMenuTriggerRef.current?.focus());
+  }
+
+  function openLocationMap() {
+    focusLocationHeadingOnOpenRef.current = true;
+    setCardLocationPanelOpen(workspaceId, card.id, locationFingerprint, true);
+  }
+
+  function closeLocationMap() {
+    setCardLocationPanelOpen(workspaceId, card.id, locationFingerprint, false);
+    requestAnimationFrame(() => locationTriggerRef.current?.focus());
+  }
+
+  function retryLocationMap() {
+    setOutlineErrorKey(null);
+    setCardLocationPanelState(workspaceId, card.id, { fingerprint: locationFingerprint, status: "idle", attempt: (locationPanelState.attempt ?? 0) + 1 });
   }
 
   function handleMoreMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -423,6 +505,11 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
           closeChronology();
           return;
         }
+        if (locationPanelOpen) {
+          event.preventDefault();
+          closeLocationMap();
+          return;
+        }
         if (!glossaryOpen) return;
         event.preventDefault();
         closeGlossary();
@@ -442,7 +529,10 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
       )}
       <div className="fact-content">
         <div className="fact-meta">
-          <div className="fact-breadcrumbs">{card.topicPath.map((topic) => <span key={topic}>{topic}</span>)}</div>
+          <div className="fact-location-row">
+            <div className="fact-breadcrumbs">{card.topicPath.map((topic) => <span key={topic}>{topic}</span>)}</div>
+            {cardLocations.length > 0 && <button type="button" ref={locationTriggerRef} className="card-location-trigger" aria-expanded={locationPanelOpen} aria-controls={`card-location-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} onClick={() => locationPanelOpen ? closeLocationMap() : openLocationMap()}>See the location</button>}
+          </div>
           <div className="difficulty-picker" ref={difficultyPickerRef} onBlur={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDifficultyMenuOpen(false);
           }}>
@@ -466,7 +556,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
           </div>
         </div>
         <p className="fact-hook">{card.hook}</p>
-        <h3>{card.title}</h3>
+        <h3 ref={locationTitleRef} tabIndex={-1}>{card.title}</h3>
         <div className="card-reading-body">
         <p className="fact-body">
           {spotlightModel.mapped ? spotlightModel.sentences.slice(0, visibleSentenceCount).map((sentence, sentenceIndex) => {
@@ -492,6 +582,28 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
         </div>}
         <span className="sr-only" aria-live="polite" aria-atomic="true">{revealProgress && revealProgress.visibleCount > 0 ? `Revealed: ${revealModel.sentences[revealProgress.visibleCount - 1] ?? ""}` : ""}</span>
         </div>
+
+        {locationPanelOpen && cardLocations.length > 0 && <section className="learning-answer card-pocket-map" id={`card-location-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} role="region" aria-labelledby={`card-location-heading-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeLocationMap(); } }}>
+          <div className="card-explanation-heading">
+            <h4 ref={locationHeadingRef} tabIndex={-1} id={`card-location-heading-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} className="answer-label">Locations in this fact</h4>
+            <button type="button" className="text-button" onClick={closeLocationMap}>Close</button>
+          </div>
+          {locationPanelState.status === "loading" || !countryOutlines && !outlineError ? <div className="learning-loading" role="status"><span className="loading-dot" /> Loading map details…</div>
+            : locationPanelState.status === "error" || outlineError ? <div className="card-location-note" role="status">Location details could not be loaded. <button type="button" className="text-button" onClick={retryLocationMap}>Retry</button></div>
+              : <>
+                {mapLayout && mapLayout.markers.length > 0 && <div className="card-pocket-map-canvas" role="img" aria-label={`Outline map showing ${mapLayout.markers.map(marker => marker.name).join(" and ")}`}>
+                  <svg viewBox={`0 0 ${mapLayout.width} ${mapLayout.height}`} aria-hidden="true" focusable="false">
+                    <g className="card-pocket-map-outlines">{mapLayout.outlines.map(outline => <path key={outline.key} d={outline.d} className={outline.selected ? "selected" : ""} />)}</g>
+                    <g className="card-pocket-map-pins">{mapLayout.markers.map(marker => <g key={`${marker.number}:${marker.name}`} transform={`translate(${marker.x.toFixed(1)} ${marker.y.toFixed(1)})`}><circle r="12" /><text textAnchor="middle" dominantBaseline="central">{marker.number}</text></g>)}</g>
+                  </svg>
+                </div>}
+                <ol className="card-pocket-map-places">{locatedPlaces.map((place, index) => <li key={`${place.articleTitle}:${place.name}`}>
+                  <span className="card-pocket-map-number" aria-hidden="true">{index + 1}</span>
+                  <span className="card-pocket-map-place-label"><a href={place.url} target="_blank" rel="noreferrer">{place.name}<Icon name="external" size={11} /></a>{place.broad && <small>Approximate center for orientation</small>}{!place.broad && place.latitude === undefined && <small>Wikipedia has no verified primary coordinates for this title</small>}</span>
+                </li>)}</ol>
+                <p className="card-pocket-map-caption">Present-day borders are shown for geographic orientation.</p>
+              </>}
+        </section>}
 
         {chronologyPanelOpen && <section className="learning-answer card-chronology" role="region" aria-labelledby={`card-chronology-heading-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`}>
           <div className="card-explanation-heading">

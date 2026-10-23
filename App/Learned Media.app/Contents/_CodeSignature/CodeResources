@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		PwZzNrO6E2p+k/U2IanUAOK1eqs=
+		kulBIcEGxetzjjyaib1/ZUSXNsw=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -36,6 +36,10 @@
 		<data>
 		o9fmve0Q3LfLJKNnqmH9ufqe5HU=
 		</data>
+		<key>Resources/frontend/card-locations.js</key>
+		<data>
+		lRZaIVjL2rLQbUkOa1lIj8wHSBI=
+		</data>
 		<key>Resources/frontend/card-reveal.js</key>
 		<data>
 		wU/KJkyWiAzavqrAZ0dvzXf5ZrI=
@@ -47,6 +51,10 @@
 		<key>Resources/frontend/computer-science-catalog.js</key>
 		<data>
 		H1/InhTEki2f/UUb+7xWUE7CIRI=
+		</data>
+		<key>Resources/frontend/country-outlines.json</key>
+		<data>
+		rw2VONXPKKau4SniQ9faFqexaUY=
 		</data>
 		<key>Resources/frontend/disease-catalog.js</key>
 		<data>
@@ -66,7 +74,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		TWjMemXUF/ryc4Dc7QFKsyPWh9E=
+		m73ndo8i3OhQWYyzpEEAnRfO0gY=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -106,7 +114,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		hzI8OWKoHIgm4vGR/wIelLXyxCk=
+		B6gdhOOIEZIu9Cw7iv/7FDHjU/M=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -177,7 +185,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			YZ48rtJ8yma+j3QnWB1rLuOYBJfOTHMDwz4c+5EoZo4=
+			xRXNoGPBGfBDPIaoMEey2pyig4YP+envtIz5M8/cjjI=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -215,6 +223,13 @@
 			Ya9VWjJ2nwPXIF1B9mxWta7R2HJxa8wTHTb+0WWvLzg=
 			</data>
 		</dict>
+		<key>Resources/frontend/card-locations.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			Nb4HZDQelYFmxxTBVcyU3XaD0I9casUlu5fRtTPgPbs=
+			</data>
+		</dict>
 		<key>Resources/frontend/card-reveal.js</key>
 		<dict>
 			<key>hash2</key>
@@ -234,6 +249,13 @@
 			<key>hash2</key>
 			<data>
 			1j0a6QpEyx3Z6zV+qp2cZAKVtikE4inmgs4oQ6dmA8A=
+			</data>
+		</dict>
+		<key>Resources/frontend/country-outlines.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			38mbBgkafw3Sxhv7eA30qh951kyq3ikCpmJ9YY8GHAY=
 			</data>
 		</dict>
 		<key>Resources/frontend/disease-catalog.js</key>
@@ -268,7 +290,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ZHbbAePPGpNip/M7C9Z0rA3VV/nqNavSEVJYC5B6qJM=
+			nMvckYzYhMWn+AIhqJIAA5o4BGU6+JoRDYqqhPVhiWU=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -338,7 +360,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			hjCJWux9p6bI6A15zHTtrNXd+0e3YCfm2UnuDHr0zHc=
+			3vw475X+7qfh9w807MvtetSHC+RxT8G0g1OdZVXn5fM=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>

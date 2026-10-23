@@ -21,6 +21,7 @@
   const cardExplanations = window.LEARNED_MEDIA_CARD_EXPLANATIONS;
   const cardGlossary = window.LEARNED_MEDIA_CARD_GLOSSARY;
   const cardChronology = window.LEARNED_MEDIA_CARD_CHRONOLOGY;
+  const cardLocations = window.LEARNED_MEDIA_CARD_LOCATIONS;
   const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
   const sourceSpotlightStates = new Map();
   const sourceSpotlightRequests = new Map();
@@ -38,6 +39,10 @@
   let focusedGlossaryTriggerCardId = null;
   let focusedChronologyHeadingCardId = null;
   let focusedChronologyTriggerCardId = null;
+  let focusedLocationHeadingCardId = null;
+  let focusedLocationTriggerCardId = null;
+  const nativeLocationLoads = new Map();
+  let nativeCountryOutlines = null;
   const BEST_SELLING_BOOK_ORDER = [
     "A Tale of Two Cities", "The Little Prince", "The Alchemist", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber", "The Hobbit", "Alice's Adventures in Wonderland",
     "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World", "The Bridges of Madison County", "One Hundred Years of Solitude", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose", "The Eagle Has Landed", "Watership Down", "The Hite Report", "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life",
@@ -853,6 +858,7 @@
     normalized.explanations = cardExplanations.normalizeCardExplanations(normalized);
     normalized.glossary = cardGlossary.normalizeCardGlossary(normalized);
     normalized.chronology = cardChronology.createSavedCardChronology(normalized.chronology, normalized) || cardChronology.normalizeSavedCardChronology(normalized);
+    normalized.locations = cardLocations.createSavedCardLocations(normalized.locations, normalized);
     normalized.followUpQuestions = Array.isArray(card.followUpQuestions)
       ? cardFollowUps.createSavedFollowUpQuestions(card.followUpQuestions, normalized)
       : cardFollowUps.normalizeSavedFollowUpQuestions(card.followUpQuestions, normalized);
@@ -1022,6 +1028,72 @@
     const visibleCount = graduallyRevealing ? progress?.visibleCount || 0 : models.revealModel.sentences.length;
     const bodyFullyVisible = !graduallyRevealing || visibleCount >= models.revealModel.sentences.length;
     return cardChronology.getCardChronologyEvents(card, visibleCount, bodyFullyVisible);
+  }
+  function nativeCardLocations(card) {
+    const models = nativeCardRevealModel(card);
+    const progress = cardReveal.getCardRevealProgress(state.workspaceId, card.id, models.revealModel);
+    const graduallyRevealing = !progress?.complete && (Boolean(progress) || state.revealGradually);
+    const visibleCount = graduallyRevealing ? progress?.visibleCount || 0 : models.revealModel.sentences.length;
+    const bodyFullyVisible = !graduallyRevealing || visibleCount >= models.revealModel.sentences.length;
+    return cardLocations.getVisibleCardLocations(card, visibleCount, bodyFullyVisible);
+  }
+  function nativeLocationFingerprint(card) { return cardLocations.cardLocationsFingerprint(card); }
+  function nativeLocationPanelKey(card) { return state.workspaceId + "\u0000" + card.id + "\u0000" + nativeLocationFingerprint(card); }
+  function cancelNativeLocationLoad(card) {
+    const key = nativeLocationPanelKey(card), active = nativeLocationLoads.get(key);
+    if (active && active.status === "loading") {
+      if (active.coordinateTask && typeof active.coordinateTask.cancel === "function") active.coordinateTask.cancel();
+      nativeLocationLoads.set(key, Object.assign({}, active, { status: "idle" }));
+    }
+  }
+  function startNativeLocationLoad(card, places) {
+    const key = nativeLocationPanelKey(card);
+    const missing = places.filter(function (place) { return place.latitude === undefined || place.longitude === undefined; });
+    const requestedKey = missing.map(function (place) { return place.articleTitle.toLowerCase(); }).sort().join("\u0000");
+    const current = nativeLocationLoads.get(key);
+    if (current && current.requestedKey === requestedKey && ["loading", "ready", "error"].includes(current.status)) return current;
+    const operation = { status: "loading", requestedKey: requestedKey, attempt: current && current.attempt || 0 };
+    nativeLocationLoads.set(key, operation);
+    let coordinateTask = null;
+    const outlineTask = cardLocations.loadCountryOutlines(function () { return bridge("countryOutlineData", {}); });
+    if (requestedKey) coordinateTask = bridge("wikipediaCoordinates", { titles: missing.map(function (place) { return place.articleTitle; }) });
+    operation.coordinateTask = coordinateTask;
+    nativeLocationLoads.set(key, operation);
+    const task = Promise.all([outlineTask, coordinateTask || Promise.resolve([])]).then(function (result) {
+      nativeCountryOutlines = result[0];
+      const locationResult = result[1] || [];
+      const updates = locationResult.map(function (place) { return { articleTitle: place.requestedTitle || place.title, latitude: place.latitude, longitude: place.longitude, broad: place.broad }; });
+      const nextSaved = cardLocations.attachVerifiedLocationCoordinates(card, updates);
+      if (nextSaved) {
+        const currentCard = state.cards.find(function (item) { return item.id === card.id; });
+        if (currentCard && nativeLocationFingerprint(currentCard) === nextSaved.fingerprint && state.workspaceId + "\u0000" + card.id + "\u0000" + nextSaved.fingerprint === key) {
+          state.cards = state.cards.map(function (item) { return item.id === card.id ? Object.assign({}, item, { locations: nextSaved }) : item; });
+          saveState();
+        }
+      }
+      if (nativeLocationLoads.get(key) === operation) nativeLocationLoads.set(key, Object.assign({}, operation, { status: "ready", coordinateTask: null }));
+      render();
+    }).catch(function (error) {
+      if (nativeLocationLoads.get(key) !== operation) return;
+      if (error && error.message === "Request canceled.") nativeLocationLoads.set(key, Object.assign({}, operation, { status: "idle", coordinateTask: null }));
+      else nativeLocationLoads.set(key, Object.assign({}, operation, { status: "error", coordinateTask: null, error: error && error.message }));
+      render();
+    });
+    operation.task = task;
+    return operation;
+  }
+  function openNativeLocationMap(card) {
+    const places = nativeCardLocations(card);
+    if (!places.length) return;
+    cardLocations.setCardLocationPanelOpen(state.workspaceId, card.id, nativeLocationFingerprint(card), true);
+    focusedLocationHeadingCardId = card.id;
+    render();
+  }
+  function closeNativeLocationMap(card) {
+    cancelNativeLocationLoad(card);
+    cardLocations.setCardLocationPanelOpen(state.workspaceId, card.id, nativeLocationFingerprint(card), false);
+    focusedLocationTriggerCardId = card.id;
+    render();
   }
   function openNativeChronology(card) {
     closeLearnMenu(false);
@@ -1404,6 +1476,69 @@
     panel.appendChild(list);
     return panel;
   }
+  function nativePocketMapPanel(card) {
+    const places = nativeCardLocations(card);
+    const fingerprint = nativeLocationFingerprint(card);
+    const isOpen = cardLocations.getCardLocationPanelOpen(state.workspaceId, card.id, fingerprint);
+    if (!places.length) {
+      if (isOpen) { cancelNativeLocationLoad(card); cardLocations.setCardLocationPanelOpen(state.workspaceId, card.id, fingerprint, false); focusedLocationTriggerCardId = card.id; }
+      return null;
+    }
+    if (!isOpen) return null;
+    const status = startNativeLocationLoad(card, places);
+    const panelID = "card-location-" + safeCardElementId(card.id);
+    const panel = node("section", { id: panelID, className: "learning-answer card-pocket-map", role: "region", ariaLabelledby: "card-location-heading-" + safeCardElementId(card.id), onKeydown: function (event) { if (event.key === "Escape") { event.preventDefault(); closeNativeLocationMap(card); } } });
+    const heading = node("div", { className: "card-explanation-heading" });
+    heading.appendChild(node("h4", { id: "card-location-heading-" + safeCardElementId(card.id), className: "answer-label", tabIndex: -1, dataset: { locationHeadingCard: card.id } }, "Locations in this fact"));
+    heading.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { closeNativeLocationMap(card); } }, "Close"));
+    panel.appendChild(heading);
+    if (status.status === "loading") {
+      panel.appendChild(node("div", { className: "learning-loading", role: "status" }, node("span", { className: "loading-dot" }), " Loading map details…"));
+      return panel;
+    }
+    if (status.status === "error") {
+      const note = node("div", { className: "card-location-note", role: "status" }, status.error || "Location details could not be loaded.");
+      note.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { nativeLocationLoads.set(nativeLocationPanelKey(card), { status: "idle", attempt: (status.attempt || 0) + 1 }); render(); } }, "Retry"));
+      panel.appendChild(note);
+      return panel;
+    }
+    const located = places.filter(function (place) { return Number.isFinite(place.latitude) && Number.isFinite(place.longitude); }).map(function (place) { return Object.assign({}, place, { url: cardLocations.wikiArticleUrl(place.articleTitle) }); });
+    if (nativeCountryOutlines && located.length) {
+      const layout = cardLocations.layoutPocketMap(nativeCountryOutlines.countries, located);
+      const map = node("div", { className: "card-pocket-map-canvas", role: "img", ariaLabel: "Outline map showing " + located.map(function (place) { return place.name; }).join(" and ") });
+      const svgNS = "http://www.w3.org/2000/svg";
+      const svgMap = document.createElementNS(svgNS, "svg");
+      svgMap.setAttribute("viewBox", "0 0 " + layout.width + " " + layout.height);
+      svgMap.setAttribute("aria-hidden", "true");
+      svgMap.setAttribute("focusable", "false");
+      const outlines = document.createElementNS(svgNS, "g");
+      outlines.setAttribute("class", "card-pocket-map-outlines");
+      layout.outlines.forEach(function (outline) { const path = document.createElementNS(svgNS, "path"); path.setAttribute("d", outline.d); if (outline.selected) path.setAttribute("class", "selected"); outlines.appendChild(path); });
+      svgMap.appendChild(outlines);
+      const pins = document.createElementNS(svgNS, "g");
+      pins.setAttribute("class", "card-pocket-map-pins");
+      layout.markers.forEach(function (marker) {
+        const group = document.createElementNS(svgNS, "g"); group.setAttribute("transform", "translate(" + marker.x.toFixed(1) + " " + marker.y.toFixed(1) + ")");
+        const circle = document.createElementNS(svgNS, "circle"); circle.setAttribute("r", "12"); group.appendChild(circle);
+        const text = document.createElementNS(svgNS, "text"); text.setAttribute("text-anchor", "middle"); text.setAttribute("dominant-baseline", "central"); text.textContent = String(marker.number); group.appendChild(text);
+        pins.appendChild(group);
+      });
+      svgMap.appendChild(pins); map.appendChild(svgMap); panel.appendChild(map);
+    }
+    const list = node("ol", { className: "card-pocket-map-places" });
+    places.forEach(function (place, index) {
+      const item = node("li", {});
+      item.appendChild(node("span", { className: "card-pocket-map-number", ariaHidden: "true" }, String(index + 1)));
+      const label = node("span", { className: "card-pocket-map-place-label" });
+      label.appendChild(externalLink(cardLocations.wikiArticleUrl(place.articleTitle), place.name, "card-pocket-map-place-link"));
+      if (place.broad) label.appendChild(node("small", { text: "Approximate center for orientation" }));
+      else if (place.latitude === undefined) label.appendChild(node("small", { text: "Wikipedia has no verified primary coordinates for this title" }));
+      item.appendChild(label); list.appendChild(item);
+    });
+    panel.appendChild(list);
+    panel.appendChild(node("p", { className: "card-pocket-map-caption", text: "Present-day borders are shown for geographic orientation." }));
+    return panel;
+  }
   function sourceList(card, answer) {
     const sources = (answer ? card.answerSources : card.sources) || [];
     const list = node("div", { className: answer ? "answer-sources" : "fact-sources" });
@@ -1762,6 +1897,14 @@
   function cancelWorkspaceOperations() {
     cancelCardAdaptation();
     cancelCardGlossary();
+    focusedLocationHeadingCardId = null;
+    focusedLocationTriggerCardId = null;
+    const workspacePrefix = state.workspaceId + "\u0000";
+    nativeLocationLoads.forEach(function (request, key) {
+      if (!key.startsWith(workspacePrefix) || request.status !== "loading") return;
+      if (request.coordinateTask && typeof request.coordinateTask.cancel === "function") request.coordinateTask.cancel();
+      nativeLocationLoads.set(key, Object.assign({}, request, { status: "idle", coordinateTask: null }));
+    });
     closeLearnMenu(false);
     closeDifficultyMenu(false);
     generationToken += 1;
@@ -2197,6 +2340,13 @@
       }
       if (!event.defaultPrevented) {
         const focusedCard = event.target && event.target.closest && event.target.closest(".fact-card");
+        const locationHeading = focusedCard && focusedCard.querySelector("[data-location-heading-card]");
+        const locationCard = locationHeading && state.cards.find(function (card) { return card.id === locationHeading.dataset.locationHeadingCard; });
+        if (locationCard) {
+          event.preventDefault();
+          closeNativeLocationMap(locationCard);
+          return;
+        }
         const chronologyHeading = focusedCard && focusedCard.querySelector("[data-chronology-heading-card]");
         const chronologyCard = chronologyHeading && state.cards.find(function (card) { return card.id === chronologyHeading.dataset.chronologyHeadingCard; });
         if (chronologyCard) {
@@ -2422,7 +2572,13 @@
     const meta = node("div", { className: "fact-meta" });
     const crumbs = node("div", { className: "fact-breadcrumbs" });
     (card.topicPath || []).forEach(function (topic) { crumbs.appendChild(node("span", { text: topic })); });
-    meta.appendChild(crumbs);
+    const locationRow = node("div", { className: "fact-location-row" });
+    locationRow.appendChild(crumbs);
+    const cardPlaces = nativeCardLocations(card);
+    const locationFingerprint = nativeLocationFingerprint(card);
+    const locationPanelOpen = cardLocations.getCardLocationPanelOpen(state.workspaceId, card.id, locationFingerprint);
+    if (cardPlaces.length) locationRow.appendChild(node("button", { type: "button", className: "card-location-trigger", ariaExpanded: locationPanelOpen, ariaControls: "card-location-" + safeCardElementId(card.id), dataset: { locationTriggerCard: card.id }, onClick: function () { locationPanelOpen ? closeNativeLocationMap(card) : openNativeLocationMap(card); } }, "See the location"));
+    meta.appendChild(locationRow);
     const explanationMode = cardExplanations.getCardExplanationSelection(state.workspaceId, card.id);
     const explanation = explanationMode && card.explanations && card.explanations[explanationMode];
     const picker = node("div", { className: "difficulty-picker", dataset: { difficultyCard: card.id } });
@@ -2446,8 +2602,10 @@
     meta.appendChild(picker);
     content.appendChild(meta);
     content.appendChild(node("p", { className: "fact-hook", text: card.hook }));
-    content.appendChild(node("h3", { text: card.title }));
+    content.appendChild(node("h3", { tabIndex: -1, dataset: { locationTitleCard: card.id }, text: card.title }));
     content.appendChild(cardBody(card));
+    const pocketMapPanel = nativePocketMapPanel(card);
+    if (pocketMapPanel) content.appendChild(pocketMapPanel);
     const chronologyPanel = nativeChronologyPanel(card);
     if (chronologyPanel) content.appendChild(chronologyPanel);
     const glossaryPanel = nativeGlossaryPanel(card);
@@ -2697,6 +2855,7 @@
     if (activeElement && activeElement.dataset && activeElement.dataset.learnTriggerCard) focusedLearnCardId = activeElement.dataset.learnTriggerCard;
     if (activeElement && activeElement.dataset && activeElement.dataset.learnMenuCard) focusedLearnCardId = activeElement.dataset.learnMenuCard;
     if (activeElement && activeElement.dataset && activeElement.dataset.chronologyHeadingCard) focusedChronologyHeadingCardId = activeElement.dataset.chronologyHeadingCard;
+    if (activeElement && activeElement.dataset && activeElement.dataset.locationHeadingCard) focusedLocationHeadingCardId = activeElement.dataset.locationHeadingCard;
     const activeField = activeElement && ["gemini-key", "youtube-key", "youtube-search", "global-search", "topic-search"].includes(activeElement.id) ? activeElement : null;
     if (activeField) { focusedFieldId = activeField.id; focusedSelection = typeof activeField.selectionStart === "number" ? [activeField.selectionStart, activeField.selectionEnd] : null; }
     else if (activeElement && activeElement !== document.body) { focusedFieldId = null; focusedSelection = null; }
@@ -2737,6 +2896,10 @@
     focusedChronologyHeadingCardId = null;
     const restoreChronologyTriggerCardId = focusedChronologyTriggerCardId;
     focusedChronologyTriggerCardId = null;
+    const restoreLocationHeadingCardId = focusedLocationHeadingCardId;
+    focusedLocationHeadingCardId = null;
+    const restoreLocationTriggerCardId = focusedLocationTriggerCardId;
+    focusedLocationTriggerCardId = null;
     window.requestAnimationFrame(function () {
       const nextTopicTree = document.querySelector(".topic-tree");
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
@@ -2817,6 +2980,19 @@
       if (restoreChronologyTriggerCardId) {
         const trigger = Array.from(document.querySelectorAll("[data-learn-trigger-card]")).find(function (element) { return element.dataset.learnTriggerCard === restoreChronologyTriggerCardId; });
         if (trigger) trigger.focus();
+      }
+      if (restoreLocationHeadingCardId) {
+        const heading = Array.from(document.querySelectorAll("[data-location-heading-card]")).find(function (element) { return element.dataset.locationHeadingCard === restoreLocationHeadingCardId; });
+        if (heading) heading.focus();
+      }
+      if (restoreLocationTriggerCardId) {
+        const trigger = Array.from(document.querySelectorAll("[data-location-trigger-card]")).find(function (element) { return element.dataset.locationTriggerCard === restoreLocationTriggerCardId; });
+        if (trigger) trigger.focus();
+        else {
+          const title = Array.from(document.querySelectorAll("[data-location-title-card]"))
+            .find(function (element) { return element.dataset.locationTitleCard === restoreLocationTriggerCardId; });
+          if (title) title.focus();
+        }
       }
     });
   }

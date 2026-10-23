@@ -63,8 +63,9 @@ private struct GeminiGroundedFact: Decodable {
     let difficulty: Int?
     let followUpQuestions: TolerantStringArray?
     let chronology: GeminiChronology?
+    let locations: [GeminiLocationHint]?
     enum CodingKeys: String, CodingKey {
-        case topicPath, status, claimEvidenceIds, missingEvidence, slot, title, hook, body, claim, sentences, evidence, sourceIndexes, difficulty, followUpQuestions, chronology
+        case topicPath, status, claimEvidenceIds, missingEvidence, slot, title, hook, body, claim, sentences, evidence, sourceIndexes, difficulty, followUpQuestions, chronology, locations
     }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -84,6 +85,24 @@ private struct GeminiGroundedFact: Decodable {
         // Bad optional suggestions are discarded without making an otherwise valid card undecodable.
         followUpQuestions = (try? container.decode(TolerantStringArray.self, forKey: .followUpQuestions))
         chronology = try? container.decode(GeminiChronology.self, forKey: .chronology)
+        locations = try? container.decode([GeminiLocationHint].self, forKey: .locations)
+    }
+}
+private struct GeminiLocationAnchor: Decodable {
+    let field: String?
+    let sentenceIndex: Int?
+}
+private struct GeminiLocationHint: Decodable {
+    let name: String?
+    let articleTitle: String?
+    let anchor: GeminiLocationAnchor?
+    var dictionary: [String: Any]? {
+        guard let name, (2...100).contains(name.trimmingCharacters(in: .whitespacesAndNewlines).count),
+              let articleTitle, (2...160).contains(articleTitle.trimmingCharacters(in: .whitespacesAndNewlines).count),
+              let anchor, let field = anchor.field, ["title", "hook", "body"].contains(field) else { return nil }
+        var anchorValue: [String: Any] = ["field": field]
+        if let sentenceIndex = anchor.sentenceIndex, sentenceIndex >= 0 { anchorValue["sentenceIndex"] = sentenceIndex }
+        return ["name": name.trimmingCharacters(in: .whitespacesAndNewlines), "articleTitle": articleTitle.trimmingCharacters(in: .whitespacesAndNewlines), "anchor": anchorValue]
     }
 }
 private struct GeminiChronologyAnchor: Decodable {
@@ -239,7 +258,20 @@ private struct WikipediaPageResponse: Decodable, Sendable {
             let extract: String?
             let pageimage: String?
             let thumbnail: Thumbnail?
+            let coordinates: [Coordinate]?
+            let pageprops: PageProperties?
             struct Thumbnail: Decodable, Sendable { let source: String? }
+            struct Coordinate: Decodable, Sendable {
+                let lat: Double?
+                let lon: Double?
+                let primary: WikipediaPresenceFlag?
+                let globe: String?
+                let type: String?
+                let dim: Double?
+                let country: String?
+                let region: String?
+            }
+            struct PageProperties: Decodable, Sendable { let disambiguation: WikipediaPresenceFlag? }
         }
         struct TitleMapping: Decodable, Sendable { let from: String; let to: String }
         let normalized: [TitleMapping]?
@@ -261,6 +293,16 @@ private struct WikipediaPageResponse: Decodable, Sendable {
     struct APIError: Decodable, Sendable { let code: String? }
     let error: APIError?
     let query: Query?
+}
+
+private struct WikipediaPlaceCoordinate: Sendable {
+    let title: String
+    let requestedTitle: String
+    let url: String
+    let latitude: Double
+    let longitude: Double
+    let broad: Bool
+    var dictionary: [String: Any] { ["title": title, "requestedTitle": requestedTitle, "url": url, "latitude": latitude, "longitude": longitude, "broad": broad] }
 }
 
 private struct WikipediaPageResolution: Sendable {
@@ -332,6 +374,8 @@ private actor WikipediaPageCache {
     private var missingPages: [String: Entry<Bool>] = [:]
     private let pageFlights = SharedWikipediaWork<String, WikipediaPageLookupResult?>()
     private var searches: [String: Entry<[String]>] = [:]
+    private var placeCoordinates: [String: Entry<[WikipediaPlaceCoordinate]>] = [:]
+    private let placeFlights = SharedWikipediaWork<String, [WikipediaPlaceCoordinate]?>()
     private struct ImageKey: Hashable { let fileName: String; let size: Int }
     private var imageInfo: [ImageKey: Entry<WikipediaImageInfoResponse.Query.Page.ImageInfo>] = [:]
     private let imageFlights = SharedWikipediaWork<ImageKey, WikipediaImageInfoResponse.Query.Page.ImageInfo?>()
@@ -366,6 +410,23 @@ private actor WikipediaPageCache {
         PerformanceDiagnostics.shared.record(.wikipedia, .cacheHits)
         entry.touchedAt = Date(); pages[key] = entry
         return entry.value
+    }
+    func places(_ key: String) -> [WikipediaPlaceCoordinate]? {
+        guard var entry = placeCoordinates[key], entry.expiresAt > Date() else { placeCoordinates[key] = nil; return nil }
+        entry.touchedAt = Date(); placeCoordinates[key] = entry
+        PerformanceDiagnostics.shared.record(.wikipedia, .cacheHits)
+        return entry.value
+    }
+    func placesOrLoad(_ key: String, load: @escaping @Sendable () async -> [WikipediaPlaceCoordinate]?) async -> [WikipediaPlaceCoordinate]? {
+        guard !Task.isCancelled else { return nil }
+        if let cached = places(key) { return cached }
+        do {
+            guard let result = try await placeFlights.value(key, load: load), !Task.isCancelled else { return nil }
+            let now = Date()
+            placeCoordinates[key] = Entry(value: result, expiresAt: now.addingTimeInterval(lifetime), touchedAt: now, bytes: CacheMemory.estimatedBytes(result, limit: 512 * 1024))
+            trim(&placeCoordinates, budget: 512 * 1024)
+            return result
+        } catch { return nil }
     }
     func pageOrLoad(_ title: String, load: @escaping @Sendable () async -> WikipediaPageLookupResult?) async -> WikipediaPageResponse.Query.Page? {
         guard !Task.isCancelled else { return nil }
@@ -756,6 +817,41 @@ private final class WikipediaClient: @unchecked Sendable {
         return ["title": canonicalTitle, "url": url, "canonicalUrl": url, "extract": extract]
     }
 
+    func coordinates(titles: [String]) async -> [[String: Any]]? {
+        var seen = Set<String>()
+        let unique = Array(titles.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }.prefix(2))
+        guard !unique.isEmpty else { return [] }
+        let key = unique.map { $0.lowercased() }.sorted().joined(separator: "\u{0}")
+        guard let places = await pageCache.placesOrLoad(key, load: { [weak self] in
+            guard let self, !Task.isCancelled,
+                  let url = self.apiURL(["action": "query", "titles": unique.joined(separator: "|"), "redirects": "1", "prop": "coordinates|info|pageprops", "inprop": "url", "coprimary": "primary", "coprop": "type|dim|country|region"]),
+                  let response: WikipediaPageResponse = try? await self.request(url), !Task.isCancelled,
+                  response.error == nil, let query = response.query else { return nil }
+            let pages = Array(query.pages?.values ?? [:].values)
+            var result: [WikipediaPlaceCoordinate] = []
+            for requested in unique {
+                for page in pages {
+                    guard page.missing == nil, page.invalid == nil, page.known == nil,
+                          page.pageprops?.disambiguation?.isSet != true,
+                          let title = page.title, let fullurl = page.fullurl,
+                          query.verifiedNames(requested: requested, canonical: title).contains(requested),
+                          let point = page.coordinates?.first(where: { coordinate in
+                              coordinate.primary?.isSet == true && coordinate.globe?.lowercased() == "earth"
+                                  && coordinate.lat.map { (-90...90).contains($0) } == true
+                                  && coordinate.lon.map { (-180...180).contains($0) } == true
+                          }), let latitude = point.lat, let longitude = point.lon else { continue }
+                    let broadType = ["country", "continent", "region", "adm1", "adm2"].contains(point.type?.lowercased() ?? "")
+                    let broad = broadType || (point.dim ?? 0) >= 500_000
+                    result.append(WikipediaPlaceCoordinate(title: title, requestedTitle: requested, url: fullurl, latitude: latitude, longitude: longitude, broad: broad))
+                    break
+                }
+            }
+            return result
+        }) else { return nil }
+        return places.map { $0.dictionary }
+    }
+
     private func fetchImageInfo(fileName: String, size: Int) async -> WikipediaImageInfoResponse.Query.Page.ImageInfo? {
         await pageCache.imageInfoOrLoad(fileName: fileName, size: size) { [weak self] in
             guard let self,
@@ -1075,6 +1171,10 @@ private final class GeminiClient {
         await wikipedia.article(title: title)
     }
 
+    func wikipediaCoordinates(titles: [String]) async -> [[String: Any]]? {
+        await wikipedia.coordinates(titles: titles)
+    }
+
     private func isoNow() -> String { ISO8601DateFormatter().string(from: Date()) }
 
     private func isCredentialFailure(_ message: String) -> Bool {
@@ -1375,7 +1475,8 @@ private final class GeminiClient {
             "followUpQuestions": ["type": "ARRAY", "maxItems": 2, "items": ["type": "STRING"]],
             "chronology": ["type": "OBJECT", "properties": ["events": ["type": "ARRAY", "maxItems": 8, "items": ["type": "OBJECT", "properties": [
                 "dateText": ["type": "STRING"], "eventText": ["type": "STRING"], "anchor": ["type": "OBJECT", "properties": ["field": ["type": "STRING", "enum": ["title", "hook", "body"]], "sentenceIndex": ["type": "INTEGER"]], "required": ["field"]]
-            ], "required": ["dateText", "eventText", "anchor"]]]], "required": ["events"]]
+            ], "required": ["dateText", "eventText", "anchor"]]]], "required": ["events"]],
+            "locations": ["type": "ARRAY", "maxItems": 2, "items": ["type": "OBJECT", "properties": ["name": ["type": "STRING"], "articleTitle": ["type": "STRING"], "anchor": ["type": "OBJECT", "properties": ["field": ["type": "STRING", "enum": ["title", "hook", "body"]], "sentenceIndex": ["type": "INTEGER"]], "required": ["field"]]], "required": ["name", "articleTitle", "anchor"]]]
         ], "required": ["slot", "status", "claim"]]]], "required": ["facts"]]
     }
 
@@ -1626,6 +1727,8 @@ private final class GeminiClient {
         var card: [String: Any] = ["id": "gemini-\(UUID().uuidString)", "title": title, "hook": hook, "body": sentences.joined(separator: " "), "sentences": sentences, "sentenceCount": sentenceCount, "claim": claim, "evidence": remappedQuotes, "topicPath": slot.path, "sources": linkedSources, "difficulty": slot.level, "accent": ["blue", "lilac", "mint", "sand", "coral"][slot.index % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": resolvedModel ?? model ?? "Gemini", "generatedAt": generatedAt]]
         if let questions = fact.followUpQuestions?.values, !questions.isEmpty { card["followUpQuestions"] = questions }
         if let chronology = fact.chronology?.dictionary { card["chronology"] = chronology }
+        let locations = fact.locations?.compactMap(\.dictionary).prefix(2).map { $0 }
+        if let locations, !locations.isEmpty { card["locations"] = locations }
         return card
     }
 
@@ -2168,6 +2271,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 activeTasks[id] = nil
             }
             activeTasks[id] = task
+        case "wikipediaCoordinates":
+            let titles = payload["titles"] as? [String] ?? []
+            let task = Task { [weak self] in
+                guard let self else { return }
+                if let places = await gemini.wikipediaCoordinates(titles: titles) { respond(id: id, result: places) }
+                else { respond(id: id, error: "Wikipedia location details could not be loaded.") }
+                activeTasks[id] = nil
+            }
+            activeTasks[id] = task
+        case "countryOutlineData":
+            guard let url = Bundle.main.url(forResource: "country-outlines", withExtension: "json", subdirectory: "frontend"),
+                  let data = try? Data(contentsOf: url),
+                  let outlines = try? JSONSerialization.jsonObject(with: data) else {
+                respond(id: id, error: "The bundled country outlines could not be loaded.")
+                return
+            }
+            respond(id: id, result: outlines)
         case "learn":
             let card = payload["card"] as? [String: Any] ?? [:]
             let actionName = payload["action"] as? String ?? "learn"
