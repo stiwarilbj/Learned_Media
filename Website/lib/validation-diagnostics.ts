@@ -3,6 +3,7 @@
  */
 export type ValidationDiagnostic = { operation: string; slot: number; failureType: string; message: string; occurrences: number };
 const rules: Array<[string, RegExp, string]> = [
+  ["basic-overview", /basic definition or topic overview/i, "This fact is a basic definition or topic overview; choose a specific detail."],
   ["unknown-evidence-id", /unknown evidence ID|unknown ID|unassigned evidence/i, "The card referenced unknown or unassigned evidence."],
   ["needs-evidence", /more evidence is needed/i, "The main claim needs supporting evidence."],
   ["duplicate-fact", /already been shown|repeats another|duplicate/i, "The card repeats a completed fact."],

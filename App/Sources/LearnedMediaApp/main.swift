@@ -1483,7 +1483,11 @@ private final class GeminiClient {
     }
 
     private func candidatePrompt(slots: [GeminiGenerationSlot], attempt: Int, priorClaims: [[String: Any]] = []) -> String {
-        let assignments = slots.map { ["slot": $0.index, "topicPath": $0.path, "difficulty": $0.level] as [String: Any] }
+        let assignments = slots.map { slot -> [String: Any] in
+            var item: [String: Any] = ["slot": slot.index, "topicPath": slot.path, "difficulty": slot.level]
+            if let reason = slot.lastError { item["retryReason"] = String(reason.prefix(180)) }
+            return item
+        }
         let rubrics = Array(Set(slots.map(\.level))).sorted().map { FactQuality.rubric($0) }.joined(separator: "\n")
         return PromptBuilder.build(.candidate, rules: rubrics.components(separatedBy: "\n"), fields: [
             PromptField("Assignments", assignments), PromptField("Attempt", attempt + 1),
@@ -1632,6 +1636,7 @@ private final class GeminiClient {
                           let slotIndex = candidate.slot,
                           let slot = slots.first(where: { $0.index == slotIndex }),
                           candidate.title?.isEmpty == false, candidate.claim?.isEmpty == false,
+                          FactSpecificity.reason(candidate.claim ?? "") == nil,
                           self.topicPathMatches(candidate.topicPath, assigned: slot.path),
                           prefetched[slotIndex] == nil else { continue }
                     let noveltyRecord = self.candidateNoveltyRecord(candidate, slot: slot, round: attempt)
@@ -1737,6 +1742,9 @@ private final class GeminiClient {
               !references.isEmpty else {
             throw NativeError(message: "The fact did not contain \(sentenceCount) supported sentences with matching headings.")
         }
+        if let reason = FactSpecificity.reason(claim, sentences: sentences) {
+            throw NativeError(message: reason)
+        }
         guard FactQuality.validEvidenceReferences(references.map { ($0.sentence, $0.evidenceIds) }, assignedIDs: Set(evidenceByID.keys), sentenceCount: sentences.count) else {
             throw NativeError(message: "The card returned invalid evidence references, an unknown ID, or an ID assigned to another card.")
         }
@@ -1826,6 +1834,13 @@ private final class GeminiClient {
                           let claim = candidate.claim?.trimmingCharacters(in: .whitespacesAndNewlines), !claim.isEmpty,
                           let slotIndex = slots.firstIndex(where: { $0.index == index }), topicPathMatches(candidate.topicPath, assigned: slots[slotIndex].path) else {
                         if let slotIndex = slots.firstIndex(where: { $0.index == index }) { slots[slotIndex].lastError = result.error ?? diagnostics.record(operation: "candidate", slot: index, detail: "Gemini omitted a slot or returned a candidate for a different topic.") }
+                        continue
+                    }
+                    if let reason = FactSpecificity.reason(claim) {
+                        slots[slotIndex].lastError = diagnostics.record(operation: "candidate", slot: index, detail: reason)
+                        slots[slotIndex].mode = "candidate"
+                        slots[slotIndex].candidate = nil
+                        slots[slotIndex].sources = []
                         continue
                     }
                     let noveltyRecord = candidateNoveltyRecord(candidate, slot: slots[slotIndex], round: attempt)
@@ -1918,8 +1933,9 @@ private final class GeminiClient {
                             onCard(card, completed, targetCount)
                         } catch {
                             if Task.isCancelled { group.cancelAll(); break }
-                            slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: (error as? NativeError)?.message ?? "The fact failed local citation validation.")
-                            if attempt != 0 { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
+                            let reason = (error as? NativeError)?.message ?? "The fact failed local citation validation."
+                            slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: reason)
+                            if attempt != 0 || reason == FactSpecificity.failure { slots[slotIndex].mode = "candidate"; slots[slotIndex].candidate = nil; slots[slotIndex].sources = [] }
                         }
                     }
                 }

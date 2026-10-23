@@ -6,6 +6,7 @@ public struct ValidationDiagnostics {
     public init() {}
     public var snapshot: [[String: Any]] { records }
     private static let rules: [(String, String, String)] = [
+        ("basic-overview", "basic definition or topic overview", "This fact is a basic definition or topic overview; choose a specific detail."),
         ("unknown-evidence-id", "unknown evidence ID|unknown ID|unassigned evidence", "The card referenced unknown or unassigned evidence."),
         ("needs-evidence", "more evidence is needed", "The main claim needs supporting evidence."),
         ("duplicate-fact", "already been shown|repeats another|duplicate", "The card repeats a completed fact."),

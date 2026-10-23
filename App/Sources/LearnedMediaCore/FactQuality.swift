@@ -292,7 +292,7 @@ public enum FactQuality {
         let candidates = passages.compactMap { passage -> (Int, String, String, Double)? in
             let coverage = overlap(terms, passage.1.terms)
             guard coverage > 0, passage.1.complete else { return nil }
-            return (passage.2, passage.0, passage.1.text, coverage * 5)
+            return (passage.2, passage.0, passage.1.text, coverage * 5 * (level < 5 && passage.0 != "Introduction" ? 1.05 : 1))
         }.sorted { $0.3 == $1.3 ? $0.0 < $1.0 : $0.3 > $1.3 }
         guard let best = candidates.first else { return "" }
         let neighbor = candidates.dropFirst().first { $0.1 == best.1 && abs($0.0 - best.0) == 1 && $0.3 >= best.3 * 0.5 && $0.2 != best.2 }
@@ -339,6 +339,7 @@ public enum FactQuality {
         let expected = sentenceCount(expectedSentences)
         let count = hook.split(whereSeparator: { $0.isWhitespace }).count
         guard !title.isEmpty, !claim.isEmpty, normalized(title) != normalized(hook), (4...12).contains(count), sentences.count == expected, evidence.count <= 12 else { return false }
+        guard FactSpecificity.reason(claim, sentences: sentences) == nil else { return false }
         guard hook.range(of: "\\b(and|or|of|the|a|to|with)$", options: [.regularExpression,.caseInsensitive]) == nil else { return false }
         guard evidence.allSatisfy({ item in
             guard let sentence = item["sentence"] as? Int else { return false }

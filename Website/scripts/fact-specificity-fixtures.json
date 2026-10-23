@@ -1,0 +1,180 @@
+[
+  {
+    "name": "science definition",
+    "claim": "Astronomy is the study of celestial objects.",
+    "rejected": true
+  },
+  {
+    "name": "earthquake overview",
+    "claim": "Earthquakes are caused by movement of tectonic plates.",
+    "rejected": true
+  },
+  {
+    "name": "overview with a year prefix",
+    "claim": "In 1900, earthquakes are caused by movement of tectonic plates.",
+    "rejected": true
+  },
+  {
+    "name": "history identity",
+    "claim": "Napoleon was a French military leader.",
+    "rejected": true
+  },
+  {
+    "name": "author identity",
+    "claim": "Jane Austen was an English novelist.",
+    "rejected": true
+  },
+  {
+    "name": "famous author list",
+    "claim": "Jane Austen is known for Pride and Prejudice.",
+    "rejected": true
+  },
+  {
+    "name": "publication year alone",
+    "claim": "Crime and Punishment was published in 1866.",
+    "rejected": true
+  },
+  {
+    "name": "name and title alone",
+    "claim": "Jane Austen wrote Pride and Prejudice.",
+    "rejected": true
+  },
+  {
+    "name": "birth date alone",
+    "claim": "Jane Austen was born on December 16, 1775.",
+    "rejected": true
+  },
+  {
+    "name": "country overview",
+    "claim": "Japan is an island country in East Asia.",
+    "rejected": true
+  },
+  {
+    "name": "city overview",
+    "claim": "Paris is the capital of France.",
+    "rejected": true
+  },
+  {
+    "name": "narrow topic definition",
+    "claim": "A seismometer is an instrument that records ground motion.",
+    "rejected": false
+  },
+  {
+    "name": "narrow topic classification",
+    "claim": "A seismometer is a type of measuring instrument.",
+    "rejected": true
+  },
+  {
+    "name": "generic claim with generic padding",
+    "claim": "Jane Austen was an English novelist.",
+    "rejected": true,
+    "sentences": [
+      "Jane Austen was born in Hampshire in 1775.",
+      "Her work is an important contribution to literature."
+    ]
+  },
+  {
+    "name": "mechanism using is",
+    "claim": "A pistol shrimp claw is a cavitation device that creates a collapsing bubble.",
+    "rejected": false
+  },
+  {
+    "name": "unexpected effect without numbers",
+    "claim": "The earthquake made a Norwegian fjord slosh despite its distance from the fault.",
+    "rejected": false
+  },
+  {
+    "name": "experiment detail",
+    "claim": "The experiment used a torsion balance to measure attraction between lead spheres.",
+    "rejected": false
+  },
+  {
+    "name": "specific detail without date",
+    "claim": "The novel’s narrator addresses a reader whose identity is withheld until the ending.",
+    "rejected": false
+  },
+  {
+    "name": "author deadline",
+    "claim": "Dostoevsky wrote The Gambler to meet a publishing deadline.",
+    "rejected": false
+  },
+  {
+    "name": "author method",
+    "claim": "Dostoevsky wrote The Gambler while dictating to a stenographer.",
+    "rejected": false
+  },
+  {
+    "name": "book circumstance",
+    "claim": "The novel was published without its author’s name.",
+    "rejected": false
+  },
+  {
+    "name": "definition developed into specific result",
+    "claim": "Earthquakes are caused by movement of tectonic plates.",
+    "rejected": false,
+    "sentences": [
+      "The 1964 Alaska earthquake made well water oscillate in Florida."
+    ]
+  },
+  {
+    "name": "classification developed into mechanism",
+    "claim": "Astronomy is the study of celestial objects.",
+    "rejected": false,
+    "sentences": [
+      "A transit blocks different wavelengths depending on gases in the planet’s atmosphere."
+    ]
+  },
+  {
+    "name": "different event about same author",
+    "claim": "Jane Austen revised the manuscript after a publisher returned it unopened.",
+    "rejected": false
+  },
+  {
+    "name": "historical decision",
+    "claim": "The council replaced the wooden bridge after ice displaced its upstream pier.",
+    "rejected": false
+  },
+  {
+    "name": "unusual geographic boundary",
+    "claim": "The island’s border passes through a house, separating its kitchen from its bedroom.",
+    "rejected": false
+  },
+  {
+    "name": "legitimate named discovery",
+    "claim": "The experiment found that the metal became superconducting under pressure.",
+    "rejected": false
+  },
+  {
+    "name": "specific is sentence",
+    "claim": "The octopus is able to change skin texture by contracting papillae.",
+    "rejected": false
+  },
+  {
+    "name": "specific modal detail retained",
+    "claim": "Japan is an island country in East Asia.",
+    "rejected": false,
+    "sentences": [
+      "It can acquire new islands when submarine eruptions breach the ocean surface."
+    ]
+  },
+  {
+    "name": "specific earthquake mechanism",
+    "claim": "Earthquakes happen when injected fluids reduce the friction holding a fault in place.",
+    "rejected": false
+  },
+  {
+    "name": "specific known-for mechanism",
+    "claim": "The instrument is known for using a liquid mirror to follow the stars.",
+    "rejected": false
+  },
+  {
+    "name": "surprise adjective cannot rescue overview",
+    "claim": "Jane Austen was an unusual English novelist.",
+    "rejected": true
+  },
+  {
+    "name": "surprise adjective cannot rescue famous book",
+    "claim": "Jane Austen wrote the unusual novel Pride and Prejudice.",
+    "rejected": true
+  }
+]

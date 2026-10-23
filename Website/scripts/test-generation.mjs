@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { afterEach, test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
 const Module = require("node:module");
@@ -24,7 +25,8 @@ const { searchSemanticVideos, mergeVideoSearchPlans, makeLocalVideoPlan, shouldE
 const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
 const { parseStructuredResponse } = require("../lib/structured-response.ts");
 const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
-const { completeSentenceChunks, selectEvidence, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
+const { completeSentenceChunks, selectEvidence, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS, validateDraft } = require("../lib/fact-quality.ts");
+const { factSpecificityReason, FactSpecificityError, SPECIFICITY_FAILURE } = require("../lib/fact-specificity.ts");
 const { FactNoveltyIndex, factNoveltySignature, isRepeatedFact, selectPriorFactClaims } = require("../lib/fact-novelty.ts");
 const { sharedWikipediaResolutionCache } = require("../lib/wikipedia.ts");
 const originalFetch = globalThis.fetch;
@@ -674,7 +676,7 @@ await t.test("writing prompts include only the requested length, difficulty, and
   for (const level of [1, 4, 5, 8, 9, 10]) {
     const rubric = difficultyRubric(level);
     assert.ok(rubric.startsWith(`Difficulty ${level}/10:`));
-    assert.ok(rubric.includes(level < 5 ? "Introductory details are allowed" : "keep all sentence evidence in that section"));
+    assert.ok(rubric.includes(level < 5 ? "exclude basic topic introductions" : "keep all sentence evidence in that section"));
     assert.equal(rubric.includes("exceptionally obscure"), level === 10);
     assert.ok(!rubric.includes("difficulty 5+") && !rubric.includes("Difficulty 3/10"));
   }
@@ -923,7 +925,7 @@ await t.test("default seven-card generation uses one candidate and one grounding
   assert.deepEqual(assignments.map(item => item.slot), [0, 1, 2, 3, 4, 5, 6]);
   assert.deepEqual(assignments.map(item => item.topicPath), args.topicPaths.slice(0, 7).map(item => item.path));
   assert.ok(candidate.includes("different main fact and angle across the batch"));
-  assert.ok(candidate.includes("omit that slot instead of padding the batch"));
+  assert.ok(candidate.includes("Omit weak, repeated, or unverifiable slots instead of padding"));
   const schema = state.requests.find(request => request.url.pathname.includes(":streamGenerateContent")).body.generationConfig.responseSchema;
   const groundingSchema = state.requests.find(request => request.body.generationConfig?.responseSchema?.properties?.facts?.items?.properties?.followUpQuestions).body.generationConfig.responseSchema;
   assert.equal(schema.properties.facts.maxItems, 7);
@@ -2071,4 +2073,110 @@ test('truncated output recovers first, middle and last logical slots without reo
    onProgress:event=>{if(event.type==='card')published.push({slot:event.slot,card:structuredClone(event.card)});}});
   assertSlotRecovery(h,{slot,state,result,published});
  });
+});
+
+test('specificity policy agrees across website and generated Mac runtime', () => {
+  const scope = {};
+  runInNewContext(readFileSync(new URL('../../App/Resources/frontend/fact-specificity.js', import.meta.url), 'utf8'), scope);
+  const fixtures = JSON.parse(readFileSync(new URL('./fact-specificity-fixtures.json', import.meta.url), 'utf8'));
+  for (const fixture of fixtures) {
+    const args = [fixture.claim, fixture.sentences ?? []];
+    assert.equal(Boolean(factSpecificityReason(...args)), fixture.rejected, fixture.name);
+    assert.equal(scope.LEARNED_MEDIA_FACT_SPECIFICITY.factSpecificityReason(...args), factSpecificityReason(...args), fixture.name + ' native runtime');
+  }
+});
+
+test('specificity validates the central claim and explanation independently of citations and difficulty', () => {
+  const sentences = ['Astronomy is the study of celestial objects in space.', 'This field is an important part of human knowledge.', 'It helps our understanding of the world around us.'];
+  const draft = {title:'Astronomy Overview', hook:'Looking Up At The Night Sky', claim:'Astronomy is the study of celestial objects.', sentences,
+    evidence:sentences.map((quote,sentence)=>({sentence,sourceIndex:0,quote,section:'Study'}))};
+  const sources = [{title:'Astronomy',url:'https://en.wikipedia.org/wiki/Astronomy',extract:'[Section: Study]\n'+sentences.join(' ')}];
+  for (let difficulty=1;difficulty<=10;difficulty++) {
+    assert.throws(()=>validateDraft(draft,sources,3,difficulty), FactSpecificityError);
+    assert.ok(!difficultyRubric(difficulty).includes('Introductory details are allowed'));
+  }
+  const developed = {...draft,sentences:[...draft.sentences]};
+  developed.sentences[2] = 'A transit blocks different wavelengths depending on gases in the planet’s atmosphere.';
+  const source = { ...sources[0], extract: '[Section: Study]\n'+developed.sentences.join(' ') };
+  developed.evidence = developed.sentences.map((quote,sentence)=>({sentence,sourceIndex:0,quote,section:'Study'}));
+  assert.doesNotThrow(()=>validateDraft(developed,[source],3,1),'a concrete explained detail rescues a basic opening');
+  const fabricated = {...developed, evidence:developed.evidence.map(e=>({...e,quote:'A fabricated quotation with no supporting text in the article.'}))};
+  assert.throws(()=>validateDraft(fabricated,[source],3,1),/matching quotation/,'specific wording never bypasses evidence checks');
+});
+
+test('easy cards prefer relevant inner passages while specific introductory evidence remains eligible', () => {
+  const text='The coastal bell used a cork float to sound an alarm when water passed the brass pin inside its protective housing.';
+  assert.ok(selectEvidence(text+'\n== Mechanism ==\n'+text,'coastal bell cork float',1).startsWith('[Section: Mechanism]'));
+  assert.ok(selectEvidence(text,'coastal bell cork float',1).startsWith('[Section: Introduction]'));
+  assert.equal(selectEvidence(text,'coastal bell cork float',5),'');
+  assert.equal(selectEvidence(text+'\n== Unrelated ==\nA completely unrelated paragraph discusses orchard harvests, birds, fruit trees, baskets and farming work.','coastal bell cork float',1),'[Section: Introduction]\n'+text,'an irrelevant inner passage never displaces relevant introductory evidence');
+});
+
+function makeOverview(fact) {
+  fact.claim = 'Astronomy is the study of celestial objects.';
+  fact.sentences = ['Astronomy is the study of celestial objects in space.', 'This field is an important part of human knowledge.', 'It helps our understanding of the world around us.'];
+}
+
+test('basic candidates are rejected before streamed evidence lookup and only their slots retry',async t=>{
+  for(const slot of [0,3,6]) await t.test('slot '+slot,async()=>{
+    sharedWikipediaResolutionCache.pages.clear(); sharedWikipediaResolutionCache.searches.clear();
+    let damaged=false;
+    const state=installNetworkMock({transformOutput(output,prompt){
+      if(!damaged && prompt.startsWith('Generate one batch')) {
+        const fact=output.facts.find(f=>f.slot===slot);
+        fact.claim='Astronomy is the study of celestial objects.';
+        fact.title='Rejected Basic Overview'; fact.wikipediaSearchTitles=['Rejected Basic Overview']; damaged=true;
+      }
+      return output;
+    }}),sessionId=await connectMock(state),published=[];
+    const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7,onProgress:e=>{if(e.type==='card')published.push(e.slot);}});
+    assert.equal(result.completedCount,7); assert.equal(geminiCallCount(state),4);
+    assert.equal(state.candidatePrompts.length,2);
+    assert.deepEqual(candidateAssignments(state.candidatePrompts[1]).map(a=>a.slot),[slot]);
+    assert.ok(state.candidatePrompts[1].includes('retryReason') && state.candidatePrompts[1].includes('basic definition'));
+    assert.ok(!JSON.stringify(state.wikipediaQueries).includes('Rejected Basic Overview'),'even streamed candidates must pass before source lookups');
+    assert.deepEqual(published.slice(0,6),[0,1,2,3,4,5,6].filter(i=>i!==slot));
+    assert.equal(published.at(-1),slot);assert.equal(new Set(published).size,7);
+    assert.ok(result.cards.every(c=>!factSpecificityReason(c.claim,c.sentences)));
+  });
+});
+
+test('grounded basic cards return to candidate selection at first middle and last slots',async t=>{
+  for(const slot of [0,3,6]) await t.test('slot '+slot,async()=>{
+    let damaged=false;
+    const state=installNetworkMock({transformOutput(output,prompt){
+      if(!damaged && prompt.startsWith('Return one result')) { makeOverview(output.facts.find(f=>f.slot===slot));damaged=true; }
+      return output;
+    }}),sessionId=await connectMock(state),published=[];
+    const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7,onProgress:e=>{if(e.type==='card')published.push(e.slot);}});
+    assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state),4);
+    assert.equal(state.candidatePrompts.length,2,'replace the claim instead of re-grounding an overview');
+    assert.deepEqual(candidateAssignments(state.candidatePrompts[1]).map(a=>a.slot),[slot]);
+    assert.deepEqual(published.slice(0,6),[0,1,2,3,4,5,6].filter(i=>i!==slot));assert.equal(published.at(-1),slot);
+  });
+});
+
+test('cached-evidence overview recovery preserves six cards and retries only one candidate',async()=>{
+  let enabled=false,damaged=false;
+  const state=installNetworkMock({transformOutput(output,prompt){
+    if(enabled && !damaged && prompt.startsWith('Choose candidates')) {makeOverview(output.facts.find(f=>f.slot===3));damaged=true;}
+    return output;
+  }}),sessionId=await connectMock(state),args={...generationArgs(sessionId),requestedCount:7};
+  await generateGeminiFacts(args);
+  enabled=true;const calls=geminiCallCount(state),published=[];
+  const result=await generateGeminiFacts({...args,onProgress:e=>{if(e.type==='card')published.push(e.slot);}});
+  assert.ok(damaged);assert.equal(result.completedCount,7);assert.equal(geminiCallCount(state)-calls,3);
+  assert.deepEqual(candidateAssignments(state.candidatePrompts.at(-1)).map(a=>a.slot),[3]);
+  assert.deepEqual(published.slice(0,6),[0,1,2,4,5,6]);assert.equal(published.at(-1),3);
+});
+
+test('persistent overview failure preserves the valid partial batch within existing recovery limits',async()=>{
+  const state=installNetworkMock({transformOutput(output,prompt){
+    if(prompt.startsWith('Generate one batch')) {const fact=output.facts.find(f=>f.slot===3);if(fact)fact.claim='Astronomy is the study of celestial objects.';}
+    return output;
+  }}),sessionId=await connectMock(state);
+  const result=await generateGeminiFacts({...generationArgs(sessionId),requestedCount:7});
+  assert.equal(result.completedCount,6);assert.ok(result.partial);assert.equal(result.failedJobs,1);
+  assert.equal(state.candidatePrompts.length,3);assert.equal(state.groundingPrompts.length,1);
+  assert.ok(state.candidatePrompts.slice(1).every(p=>JSON.stringify(candidateAssignments(p).map(a=>a.slot))==='[3]'));
 });

@@ -9,6 +9,7 @@ import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from 
 import { resolveWikipediaArticle, resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
 import { hashFactKey, difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
 import { FactNoveltyIndex, isRepeatedFact as noveltyRepeatedFact, selectPriorFactClaims, type FactNoveltySignature, type NoveltyInput } from "./fact-novelty";
+import { factSpecificityReason, FactSpecificityError } from "./fact-specificity";
 import type { YouTubeSearchCandidate } from "./youtube";
 import { canonicalRequestIdentity, reusableStructuredValue, requestCacheKey, SessionCache, type RequestIdentity } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
@@ -737,7 +738,8 @@ async function runGroups<T>(groups: T[][], worker: (group: T[]) => Promise<void>
 }
 
 function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbitHole: string | null | undefined, attempt: number, priorClaims: Array<{ id: string; claim: string }> = []) {
-  const assignments = slots.map(slot => ({ slot: slot.index, topicPath: slot.path, difficulty: slot.target }));
+  const assignments = slots.map(slot => ({ slot: slot.index, topicPath: slot.path, difficulty: slot.target,
+    ...(slot.lastError ? { retryReason: slot.lastError.slice(0, 180) } : {}) }));
   const rubrics = Array.from(new Set(slots.map(slot => slot.target))).map(target => difficultyRubric(target)).join("\n");
   return buildPrompt("candidate", rubrics.split("\n"), [
     { label: "Assignments", value: assignments },
@@ -933,7 +935,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       const candidateIdentity = (candidate: CandidateFact) => JSON.stringify([candidate.title, candidate.claim, candidate.topicPath, candidate.wikipediaSearchTitles]);
       const startEvidenceLookup = (slot: GenerationSlot, candidate: CandidateFact) => {
         const identity = candidateIdentity(candidate);
-        if (streamedCandidates.has(slot.index) || !candidate.title?.trim() || !candidate.claim?.trim() || !hasAssignedTopic(candidate, slot.path)) return;
+        if (streamedCandidates.has(slot.index) || !candidate.title?.trim() || !candidate.claim?.trim() || !hasAssignedTopic(candidate, slot.path) || factSpecificityReason(candidate.claim)) return;
         const noveltyCandidate: NoveltyInput = { id: `stream-${round}-${slot.index}`, title: candidate.title, claim: candidate.claim, body: "", topicPath: candidate.topicPath ?? slot.path };
         if (noveltyIndex.findDuplicate(noveltyCandidate) || candidatesThisRound.findDuplicate(noveltyCandidate) || streamedNoveltyCandidates.some(previous => noveltyRepeatedFact(noveltyCandidate, previous))) {
           prefetchRejected.add(slot.index);
@@ -972,6 +974,14 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
           const candidate = matches.length === 1 ? matches[0] : undefined;
           if (!candidate?.title?.trim() || !candidate.claim?.trim() || !hasAssignedTopic(candidate, slot.path)) {
             slot.lastError = diagnostics.record("candidate", slot.index, "Gemini omitted a slot or returned a candidate for the wrong topic.");
+            continue;
+          }
+          const specificityReason = factSpecificityReason(candidate.claim);
+          if (specificityReason) {
+            slot.lastError = diagnostics.record("candidate", slot.index, specificityReason);
+            slot.mode = "candidate";
+            slot.candidate = undefined;
+            slot.sources = [];
             continue;
           }
           const noveltyCandidate: NoveltyInput = { id: `candidate-${round}-${slot.index}`, title: candidate.title, claim: candidate.claim, body: "", topicPath: candidate.topicPath ?? slot.path };
@@ -1092,7 +1102,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
           } catch (rawError) {
             if (signal?.aborted) throw abortError();
             const error = classifyFailure(rawError);
-            markRetry(slot, error.message, round, !combined && !/already been shown|repeats another|duplicate/i.test(error.message));
+            markRetry(slot, error.message, round, !combined && !(rawError instanceof FactSpecificityError) && !/already been shown|repeats another|duplicate/i.test(error.message));
           }
         }
       } catch (rawError) {

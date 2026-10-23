@@ -64,6 +64,10 @@
 		<data>
 		FcECy7xPiUR5ZKO3ofDnu1HgvEw=
 		</data>
+		<key>Resources/frontend/fact-specificity.js</key>
+		<data>
+		QEcGk+4WkkpWIqHqhSrRydtB06A=
+		</data>
 		<key>Resources/frontend/favicon.svg</key>
 		<data>
 		QZBUVLJ06rdQ0MvEhaUSEp7+gNc=
@@ -78,7 +82,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		mPoBudMPRoAt2BoCmOGoLXCC184=
+		iGpVNJGWm5nrDGq4hKuAiYQ5DQM=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -276,6 +280,13 @@
 			D/k3775kArmPd+FHNv9szeu0ONVfZ6GzI8GEJ+4ZeKU=
 			</data>
 		</dict>
+		<key>Resources/frontend/fact-specificity.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ktsMEDZVM8Ch4HdCo1ICepepOrzN1aSqazUmt/EXyk4=
+			</data>
+		</dict>
 		<key>Resources/frontend/favicon.svg</key>
 		<dict>
 			<key>hash2</key>
@@ -301,7 +312,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			aPCpH7HXL3d5FgVU5CBrmym7abRci2rVWLuagKr7Il4=
+			NZCVtZI2KBg0ZO2xyO1f7cfDKjZAyCBGFsilm+vLRd0=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>

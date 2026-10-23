@@ -1,0 +1,17 @@
+{
+  "basic": [
+    "^.{1,100}\\b(?:is|are|was|were) (?:an?|the) (?:[a-z-]+ ){0,4}(?:author|novelist|poet|writer|philosopher|leader|general|emperor|president|king|queen|musician|actor|painter|artist|scientist|city|capital|country|continent|island|river|mountain|novel|book|poem|play|genre|branch|field|study|type|kind|form|process|phenomenon|force|planet|star|galaxy|science)(?: (?:of|in|by|from|about|known for|famous for|best known for) [a-z0-9 ,\\'-]+)?$",
+    "^.{1,100}\\b(?:is|are|was|were) (?:best |widely )?(?:known|famous|remembered) (?:as|for) [a-z0-9 ,\\'-]+$",
+    "^.{1,100}\\b(?:was|were) born (?:in|on) [a-z0-9 ,\\'-]+$",
+    "^.{1,100}\\b(?:was|were) (?:first )?(?:published|released) (?:in \\d{4}|on [a-z]+ \\d{1,2},? \\d{4})(?: by [a-z ,\\'-]+)?$",
+    "^.{1,100}\\b(?:wrote|authored) (?:the (?:novel|book|poem|play) )?(?!(?:.*\\b(?:in|while|during|under|before|after|to|with|using|because|on|from|when|where)\\b))[a-z0-9 ,\\'-]+$",
+    "^(?:earthquakes? (?:are caused by (?:the )?(?:movement|motion) of (?:the )?tectonic plates?|(?:happen|occur) (?:when|because) (?:the )?tectonic plates? move)(?: (?:beneath|within) (?:the )?(?:earth|crust))?|volcanoes erupt when (?:magma|molten rock) (?:reaches|rises to) (?:the )?(?:surface|earth\\'s surface)|plants use sunlight to make (?:their own )?food|gravity pulls objects (?:toward|towards) (?:the )?earth|the earth (?:orbits|revolves around) the sun|water (?:boils at 100 (?:degrees )?celsius|freezes at 0 (?:degrees )?celsius))$",
+    "^.{1,100}\\b(?:studies|is the study of|involves the study of|includes the study of) [a-z0-9 ,\\'-]+$",
+    "^.{1,100}\\b(?:has|have|had) (?:a long|a rich|an important) history$"
+  ],
+  "padding": [
+    "^.{1,100}\\b(?:is|are|was|were|remains?|became|plays?|played|has|have|had) (?:an? )?(?:important|famous|influential|significant|well-known|major|central|essential|popular|interesting|fascinating) (?:role|part|influence|impact|figure|subject|topic|work|book|event|discovery|field|contribution|example)\\b[a-z0-9 ,\\'-]*$",
+    "^(?:it|they|this|these|the (?:topic|subject|field|work|book|event|discovery)) (?:helps?|helped|changed|shaped|influenced) (?:our understanding|many (?:later |other )?(?:people|writers|readers|scientists)|the (?:world|field|course of history)|society|human history)[a-z0-9 ,\\'-]*$"
+  ],
+  "detail": "\\b(?:instead of|unlike|despite|although|except|exception|secretly|accidentally|reversed|refused|without|rather than|using|while|during|under|after|before|through)\\b"
+}

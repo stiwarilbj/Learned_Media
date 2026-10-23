@@ -2,6 +2,25 @@ import XCTest
 @testable import LearnedMediaCore
 
 final class FactQualityTests: XCTestCase {
+    func testSharedSpecificityFixturesMatchWebsitePolicy() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Website/scripts/fact-specificity-fixtures.json"))
+        let fixtures = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        for fixture in fixtures {
+            let claim = try XCTUnwrap(fixture["claim"] as? String)
+            XCTAssertEqual(FactSpecificity.reason(claim, sentences: fixture["sentences"] as? [String] ?? []) != nil,
+                fixture["rejected"] as? Bool, fixture["name"] as? String ?? "fixture")
+        }
+    }
+
+    func testLowDifficultyPrefersRelevantInnerEvidenceButAllowsSpecificIntroduction() {
+        let passage = "The coastal bell used a cork float to sound an alarm when water passed the brass pin inside its protective housing."
+        let extract = "\(passage)\n== Mechanism ==\n\(passage)"
+        XCTAssertTrue(FactQuality.evidence(extract, focus: "coastal bell cork float", level: 1).hasPrefix("[Section: Mechanism]"))
+        XCTAssertTrue(FactQuality.evidence(passage, focus: "coastal bell cork float", level: 1).hasPrefix("[Section: Introduction]"))
+        XCTAssertEqual(FactQuality.evidence(passage, focus: "coastal bell cork float", level: 5), "")
+    }
+
     private let source: [[String: Any]] = [[
         "extract": "The 1847 Relief Act created soup kitchens in Ireland. The kitchens served millions of meals during the famine. Parliament later replaced the program with a revised poor-law system. The revised system changed how relief was administered. The policy left a documented mark on Ireland’s relief institutions. County inspectors recorded the kitchens’ daily operations in detailed reports. Local committees purchased food through a centralized relief network. The program connected emergency meals with the broader poor-law administration. Historians use the surviving records to compare relief across counties. The legislation changed how officials measured hunger during the crisis."
     ]]

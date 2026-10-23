@@ -1,4 +1,5 @@
 import { unsupportedCausality } from "./causal-validation";
+import { factSpecificityReason, FactSpecificityError } from "./fact-specificity";
 import { createQuantityValidator } from "./quantity-validation";
 import promptInstructions from "./prompt-instructions.json";
 import { SessionCache } from "./session-cache";
@@ -203,7 +204,7 @@ export function selectEvidence(extract: string, focus: string, difficulty: numbe
       if (seenInSection?.has(text)) continue;
       if (!seenInSection) { seenInSection = new Set(); seenPassages.set(section, seenInSection); }
       seenInSection.add(text);
-      passages.push({ text, section, score: coverage * 5, position: index });
+      passages.push({ text, section, score: coverage * 5 * (difficulty < 5 && section !== "Introduction" ? 1.05 : 1), position: index });
     }
   }
   let best: typeof passages[number] | undefined;
@@ -267,6 +268,8 @@ export function validateDraft(draft: GroundedDraft, sources: WikipediaSource[], 
   if (count < 4 || count > 12 || /\b(?:and|or|of|the|a|to|with)$/i.test(draft.hook.trim())) throw new Error("The fact hook is incomplete or outside 4–12 words.");
   if (normalizedText(draft.title) === normalizedText(draft.hook)) throw new Error("The black heading must be more specific than the blue hook.");
   if (!Array.isArray(draft.sentences) || draft.sentences.length !== sentenceCount || draft.sentences.some(sentence => typeof sentence !== "string" || sentence.trim().length < 35 || sentence.trim().split(/\s+/).length < 8 || sentence.length > 600 || !/[.!?][”"']?$/.test(sentence.trim()))) throw new Error(`Each fact must contain exactly ${sentenceCount} complete sentence${sentenceCount === 1 ? "" : "s"}.`);
+  const specificityReason = factSpecificityReason(draft.claim, draft.sentences);
+  if (specificityReason) throw new FactSpecificityError(specificityReason);
   if (!Array.isArray(draft.evidence) || draft.evidence.length > 12 || draft.evidence.some(item => !item || !Number.isInteger(item.sentence) || item.sentence < 0 || item.sentence >= sentenceCount)) throw new Error("The fact is missing verifiable evidence.");
   const evidenceBySentence: GroundedDraft["evidence"][] = Array.from({ length: sentenceCount }, () => []);
   draft.evidence.forEach(item => evidenceBySentence[item.sentence].push(item));

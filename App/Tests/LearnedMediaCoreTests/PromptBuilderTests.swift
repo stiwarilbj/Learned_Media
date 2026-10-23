@@ -193,8 +193,8 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Return each ID at most once"))
         XCTAssertTrue(prompt.contains("different main fact and angle across the batch, including slots with the same topic"))
         XCTAssertTrue(prompt.contains("Different titles, paraphrases, reordered wording, or extra background about the same main claim are repeats"))
-        XCTAssertTrue(prompt.contains("omit that slot instead of padding the batch"))
-        XCTAssertTrue(prompt.contains("Return an empty facts array if none qualifies"))
+        XCTAssertTrue(prompt.contains("Omit weak, repeated, or unverifiable slots instead of padding"))
+        XCTAssertTrue(prompt.contains("an empty facts array is valid"))
         let payload = prompt.components(separatedBy: "Assignments: ")[1]
         let decoded = try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [[String: Any]]
         XCTAssertEqual(decoded?.compactMap { $0["slot"] as? Int }, Array(0..<7))
@@ -213,7 +213,7 @@ final class PromptBuilderTests: XCTestCase {
             let rules = FactQuality.rubric(level)
             XCTAssertTrue(rules.hasPrefix("Difficulty \(level)/10:"))
             XCTAssertEqual(rules.contains("exceptionally obscure"), level == 10)
-            XCTAssertTrue(rules.contains(level < 5 ? "Introductory details are allowed" : "keep all sentence evidence in that section"))
+            XCTAssertTrue(rules.contains(level < 5 ? "exclude basic topic introductions" : "keep all sentence evidence in that section"))
         }
         let easy = PromptBuilder.build(.grounding, rules: [FactQuality.writingRules(for: 1, evidenceIDs: true), FactQuality.rubric(1)])
         XCTAssertFalse(easy.contains("difficulty 5+") || easy.contains("non-lead"))
