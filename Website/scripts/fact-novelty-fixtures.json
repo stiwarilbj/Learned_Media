@@ -1,0 +1,50 @@
+[
+  {
+    "name": "same claim with a renamed title and reordered expanded explanation",
+    "duplicate": true,
+    "candidate": { "id": "new-1", "title": "A New Name for the Relief Law", "claim": "Ireland's 1847 Relief Act founded a network of soup kitchens.", "body": "Inspectors recorded the network's operation. During the famine, local committees prepared meals. Ireland's 1847 Relief Act founded soup kitchens, with later records adding administrative context.", "topicPath": ["History", "Ireland"] },
+    "memory": { "id": "old-1", "title": "The Irish Soup Kitchen Act", "claim": "The 1847 Relief Act established soup kitchens in Ireland.", "body": "The 1847 Relief Act established soup kitchens in Ireland. Local committees prepared meals during the famine. Inspectors recorded how the program operated.", "topicPath": ["History", "Ireland"] }
+  },
+  {
+    "name": "different event about the same named person",
+    "duplicate": false,
+    "candidate": { "id": "tesla-1", "title": "Tesla's Remote Control Boat", "claim": "Nikola Tesla invented a remote-control boat." },
+    "memory": { "id": "tesla-2", "title": "Tesla's Induction Motor", "claim": "Nikola Tesla developed an induction motor.", "evidence": ["A shared passage"], "sourceUrls": ["https://example.test/tesla"] }
+  },
+  {
+    "name": "meaningful negation",
+    "duplicate": false,
+    "candidate": { "id": "negated", "title": "Relief Kitchens", "claim": "The 1847 Relief Act did not establish soup kitchens in Ireland." },
+    "memory": { "id": "positive", "title": "Relief Kitchens", "claim": "The 1847 Relief Act established soup kitchens in Ireland." }
+  },
+  {
+    "name": "different event date",
+    "duplicate": false,
+    "candidate": { "id": "year-1848", "title": "Relief Kitchens", "claim": "The 1848 Relief Act established soup kitchens in Ireland." },
+    "memory": { "id": "year-1847", "title": "Relief Kitchens", "claim": "The 1847 Relief Act established soup kitchens in Ireland." }
+  },
+  {
+    "name": "equivalent distance using converted units",
+    "duplicate": true,
+    "candidate": { "id": "route-km", "title": "Mountain Route", "claim": "The mountain route measured 12 kilometres.", "body": "The mountain route measured 12 kilometres." },
+    "memory": { "id": "route-m", "title": "Route Measurement", "claim": "The mountain route measured 12000 meters.", "body": "The mountain route measured 12000 meters." }
+  },
+  {
+    "name": "different distance using the same number and a different unit",
+    "duplicate": false,
+    "candidate": { "id": "route-km-2", "title": "Mountain Route", "claim": "The mountain route measured 12 kilometres.", "body": "The mountain route measured 12 kilometres." },
+    "memory": { "id": "route-mi", "title": "Route Measurement", "claim": "The mountain route measured 12 miles.", "body": "The mountain route measured 12 miles." }
+  },
+  {
+    "name": "shared quotation does not make distinct facts duplicates",
+    "duplicate": false,
+    "candidate": { "id": "shared-a", "title": "Tesla's Remote Control Boat", "claim": "Nikola Tesla invented a remote-control boat.", "evidence": ["A shared passage"], "sourceUrls": ["https://example.test/tesla"] },
+    "memory": { "id": "shared-b", "title": "Tesla's Induction Motor", "claim": "Nikola Tesla developed an induction motor.", "evidence": ["A shared passage"], "sourceUrls": ["https://example.test/tesla"] }
+  },
+  {
+    "name": "legacy cards with the same broad title but different facts remain distinct",
+    "duplicate": false,
+    "candidate": { "id": "moon-a", "title": "The Moon", "body": "Lunar dust clings to spacesuit fabric because sharp grains carry electrostatic charge from sunlight." },
+    "memory": { "id": "moon-b", "title": "The Moon", "body": "The Moon drifts away from Earth by a few centimetres each year as tidal energy changes their orbit." }
+  }
+]

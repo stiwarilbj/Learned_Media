@@ -49,21 +49,150 @@ public enum FactQuality {
     private static let stop = Set("a an the of in on at to for from by with and or but is was were are be been this that it its as his her their had has have who which they he she into through about also one two three".split(separator: " ").map(String.init))
     public static func words(_ text: String) -> Set<String> { Set(normalized(text).split(separator: " ").map(String.init).filter { $0.count > 2 && !stop.contains($0) }) }
     public static func overlap(_ a: Set<String>, _ b: Set<String>) -> Double { Double(a.intersection(b).count) / Double(max(1, min(a.count,b.count))) }
+
+    private static let noveltyAliases: [String: String] = [
+        "build":"build", "built":"build", "construct":"build", "constructed":"build", "erect":"build", "erected":"build",
+        "found":"found", "founded":"found", "establish":"found", "established":"found", "form":"found", "formed":"found",
+        "begin":"begin", "began":"begin", "start":"begin", "started":"begin", "commence":"begin", "commenced":"begin",
+        "end":"end", "ended":"end", "cease":"end", "ceased":"end", "conclude":"end", "concluded":"end",
+        "discover":"discover", "discovered":"discover", "identify":"discover", "identified":"discover", "uncover":"discover", "uncovered":"discover",
+        "invent":"invent", "invented":"invent", "devise":"invent", "devised":"invent",
+        "ban":"ban", "banned":"ban", "prohibit":"ban", "prohibited":"ban", "forbid":"ban", "forbade":"ban", "outlaw":"ban", "outlawed":"ban",
+        "declare":"declare", "declared":"declare", "proclaim":"declare", "proclaimed":"declare", "sign":"sign", "signed":"sign",
+        "kill":"kill", "killed":"kill", "slay":"kill", "slain":"kill",
+        "create":"create", "created":"create", "make":"create", "made":"create", "produce":"create", "produced":"create",
+        "use":"use", "used":"use", "employ":"use", "employed":"use",
+        "measure":"measure", "measured":"measure", "record":"record", "recorded":"record",
+        "contain":"contain", "contained":"contain", "include":"include", "included":"include",
+        "reach":"reach", "reached":"reach", "survive":"survive", "survived":"survive",
+        "travel":"travel", "travelled":"travel", "traveled":"travel", "orbit":"orbit", "orbited":"orbit",
+        "erupt":"erupt", "erupted":"erupt", "collapse":"collapse", "collapsed":"collapse",
+        "cause":"cause", "caused":"cause", "lead":"cause", "led":"cause",
+        "weigh":"weigh", "weighed":"weigh", "publish":"publish", "published":"publish", "release":"publish", "released":"publish",
+        "write":"write", "wrote":"write", "written":"write", "author":"write", "authored":"write",
+        "win":"win", "won":"win", "serve":"serve", "served":"serve", "name":"name", "named":"name", "call":"name", "called":"name",
+        "award":"award", "awarded":"award", "grant":"award", "granted":"award",
+        "elect":"elect", "elected":"elect", "choose":"elect", "chosen":"elect", "select":"elect", "selected":"elect",
+        "acquire":"acquire", "acquired":"acquire", "purchase":"acquire", "purchased":"acquire", "buy":"acquire", "bought":"acquire",
+        "convert":"convert", "converted":"convert", "transform":"convert", "transformed":"convert",
+        "move":"move", "moved":"move", "relocate":"move", "relocated":"move",
+        "remove":"remove", "removed":"remove", "abolish":"remove", "abolished":"remove", "dismantle":"remove", "dismantled":"remove",
+        "defeat":"defeat", "defeated":"defeat", "beat":"defeat", "beaten":"defeat",
+        "separate":"separate", "separated":"separate", "split":"separate", "divided":"separate",
+        "restore":"restore", "restored":"restore", "rebuild":"restore", "rebuilt":"restore",
+        "expand":"expand", "expanded":"expand", "enlarge":"expand", "enlarged":"expand",
+        "reduce":"reduce", "reduced":"reduce", "decrease":"reduce", "decreased":"reduce",
+        "km":"distance", "kilometer":"distance", "kilometers":"distance", "kilometre":"distance", "kilometres":"distance",
+        "meter":"distance", "meters":"distance", "metre":"distance", "metres":"distance", "mile":"distance", "miles":"distance", "mi":"distance", "m":"distance",
+        "kilogram":"mass", "kilograms":"mass", "kg":"mass", "pound":"mass", "pounds":"mass", "lb":"mass",
+        "celsius":"temperature", "centigrade":"temperature", "fahrenheit":"temperature", "c":"temperature", "f":"temperature"
+    ]
+    private static let noveltyRelations = Set(["build", "found", "begin", "end", "discover", "invent", "ban", "declare", "sign", "kill", "create", "use", "measure", "record", "contain", "include", "reach", "survive", "travel", "orbit", "erupt", "collapse", "cause", "weigh", "publish", "write", "win", "serve", "name", "award", "elect", "acquire", "convert", "move", "remove", "defeat", "separate", "restore", "expand", "reduce"])
+
+    private static func noveltyWords(_ text: String) -> Set<String> {
+        var result = Set(normalized(text).split(separator: " ").map(String.init).filter { $0.count > 2 && Int($0) == nil && !stop.contains($0) }.map { noveltyAliases[$0] ?? $0 })
+        if let expression = try? NSRegularExpression(pattern: #"\b[A-Z]{2,}\b"#) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            for match in expression.matches(in: text, range: range) {
+                if let value = Range(match.range, in: text) { result.insert(String(text[value]).lowercased()) }
+            }
+        }
+        return result
+    }
+
+    public static func noveltyLookupTerms(_ card: [String: Any]) -> Set<String> {
+        let title = card["title"] as? String ?? ""
+        let claim = card["claim"] as? String ?? title
+        let body = card["body"] as? String ?? ""
+        return noveltyWords(title).union(noveltyWords(claim)).union(noveltyWords(body))
+    }
+
+    public static func noveltyClaimKey(_ card: [String: Any]) -> String {
+        guard let claim = card["claim"] as? String, !claim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        return normalized(claim)
+    }
+
+    public static func noveltyBodyKey(_ card: [String: Any]) -> String {
+        normalized(card["body"] as? String ?? "")
+    }
+
+    private static func noveltyDetails(_ text: String) -> [String] {
+        guard let expression = try? NSRegularExpression(pattern: #"\b(\d[\d,]*(?:\.\d+)?)\s*(km|kilometers?|kilometres?|miles?|mi|meters?|metres?|kg|kilograms?|pounds?|lb|celsius|centigrade|fahrenheit|c|f)?\b"#, options: [.caseInsensitive]) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return expression.matches(in: text, range: range).compactMap { match -> String? in
+            guard let amountRange = Range(match.range(at: 1), in: text) else { return nil }
+            guard let amount = Double(String(text[amountRange]).replacingOccurrences(of: ",", with: "")) else { return nil }
+            let rawUnit = Range(match.range(at: 2), in: text).map { String(text[$0]).lowercased() } ?? ""
+            var value = amount, base = rawUnit
+            if ["km", "kilometer", "kilometers", "kilometre", "kilometres"].contains(rawUnit) { value *= 1_000; base = "m" }
+            else if ["mile", "miles", "mi"].contains(rawUnit) { value *= 1_609.344; base = "m" }
+            else if ["meter", "meters", "metre", "metres", "m"].contains(rawUnit) { base = "m" }
+            else if ["kilogram", "kilograms", "kg"].contains(rawUnit) { base = "kg" }
+            else if ["pound", "pounds", "lb"].contains(rawUnit) { value *= 0.45359237; base = "kg" }
+            else if ["fahrenheit", "f"].contains(rawUnit) { value = (value - 32) * 5 / 9; base = "c" }
+            else if ["celsius", "centigrade", "c"].contains(rawUnit) { base = "c" }
+            let rounded = (value * 1_000_000).rounded() / 1_000_000
+            var amountText = String(format: "%.6f", rounded)
+            while amountText.contains("."), amountText.last == "0" { amountText.removeLast() }
+            if amountText.last == "." { amountText.removeLast() }
+            return "\(amountText):\(base)"
+        }.sorted()
+    }
+
+    private static func noveltyPolarity(_ text: String) -> Bool {
+        text.range(of: #"\b(?:no|not|never|without|neither|cannot|can't|didn't|doesn't|wasn't|weren't|failed to)\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private static func noveltyEvidenceKeys(_ card: [String: Any]) -> Set<String> {
+        if let keys = card["evidenceKeys"] as? [String], !keys.isEmpty { return Set(keys) }
+        let sources = card["sources"] as? [[String: Any]] ?? []
+        let evidence = card["evidence"] as? [[String: Any]] ?? []
+        return Set(evidence.compactMap { item -> String? in
+            guard let quote = item["quote"] as? String, !quote.isEmpty else { return nil }
+            let index = item["sourceIndex"] as? Int ?? -1
+            guard sources.indices.contains(index) else { return nil }
+            let source = sources[index]
+            let url = (source["canonicalUrl"] as? String ?? source["url"] as? String ?? "").components(separatedBy: "#").first ?? ""
+            guard !url.isEmpty else { return nil }
+            return url + "\u{0}" + normalized(item["section"] as? String ?? "") + "\u{0}" + normalized(quote)
+        })
+    }
+
     public static func repeated(_ card: [String: Any], _ old: [String: Any]) -> Bool {
         if let id = card["id"] as? String, id == old["id"] as? String { return true }
-        for field in ["title", "body", "claim"] {
-            if let a = card[field] as? String, let b = old[field] as? String, !a.isEmpty, normalized(a) == normalized(b) { return true }
+        let explicitNewClaim = (card["claim"] as? String).map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+        let explicitOldClaim = (old["claim"] as? String).map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+        let newClaim = explicitNewClaim ? card["claim"] as? String ?? "" : card["title"] as? String ?? ""
+        let oldClaim = explicitOldClaim ? old["claim"] as? String ?? "" : old["title"] as? String ?? ""
+        let newBody = card["body"] as? String ?? "", oldBody = old["body"] as? String ?? ""
+        let newComparisonText = explicitNewClaim ? newClaim : newBody
+        let oldComparisonText = explicitOldClaim ? oldClaim : oldBody
+        let newDetails = noveltyDetails(newComparisonText), oldDetails = noveltyDetails(oldComparisonText)
+        if noveltyPolarity(newComparisonText) != noveltyPolarity(oldComparisonText) || (!newDetails.isEmpty && !oldDetails.isEmpty && newDetails != oldDetails) { return false }
+        if explicitNewClaim && explicitOldClaim && !newClaim.isEmpty && normalized(newClaim) == normalized(oldClaim) { return true }
+        if !newBody.isEmpty && normalized(newBody) == normalized(oldBody) { return true }
+        let newClaimWords = noveltyWords(newComparisonText), oldClaimWords = noveltyWords(oldComparisonText)
+        let newRelations = newClaimWords.intersection(noveltyRelations), oldRelations = oldClaimWords.intersection(noveltyRelations)
+        if !newRelations.isEmpty && !oldRelations.isEmpty && newRelations.isDisjoint(with: oldRelations) { return false }
+        if (explicitNewClaim && explicitOldClaim || (!newBody.isEmpty && !oldBody.isEmpty)) && newClaimWords.count >= 3 && oldClaimWords.count >= 3 {
+            let common = newClaimWords.intersection(oldClaimWords).count
+            let containment = Double(common) / Double(max(1, min(newClaimWords.count, oldClaimWords.count)))
+            let jaccard = Double(common) / Double(max(1, newClaimWords.union(oldClaimWords).count))
+            let sharedRelation = !newRelations.isDisjoint(with: oldRelations)
+            if containment >= 0.84 && jaccard >= 0.68 && (sharedRelation || jaccard >= 0.9) { return true }
+            let sharedEvidence = !noveltyEvidenceKeys(card).isDisjoint(with: noveltyEvidenceKeys(old))
+            if sharedEvidence && containment >= 0.78 && jaccard >= 0.58 { return true }
         }
-        if let a = card["fingerprint"] as? String, let b = old["fingerprint"] as? String, !a.isEmpty, a == b { return true }
-        if let a = card["claimFingerprint"] as? String, let b = old["claimFingerprint"] as? String, !a.isEmpty, a == b { return true }
-        let newEvidence = card["evidence"] as? [[String: Any]] ?? []
-        let oldEvidence = old["evidence"] as? [[String: Any]] ?? []
-        if newEvidence.contains(where: { item in
-            guard let quote = item["quote"] as? String else { return false }
-            return oldEvidence.contains { oldItem in normalized(quote) == normalized(oldItem["quote"] as? String ?? "") }
-        }) { return true }
-        let a = words(card["body"] as? String ?? ""), b = words(old["body"] as? String ?? "")
-        return overlap(a,b) >= 0.78 && overlap(words(card["title"] as? String ?? ""),words(old["title"] as? String ?? "")) >= 0.5
+
+        let newBodyWords = noveltyWords(newBody), oldBodyWords = noveltyWords(oldBody)
+        guard newBodyWords.count >= 5 && oldBodyWords.count >= 5 else { return false }
+        let sharedBody = newBodyWords.intersection(oldBodyWords).count
+        let bodyContainment = Double(sharedBody) / Double(max(1, min(newBodyWords.count, oldBodyWords.count)))
+        let bodyJaccard = Double(sharedBody) / Double(max(1, newBodyWords.union(oldBodyWords).count))
+        let titleWords = noveltyWords(card["title"] as? String ?? ""), oldTitleWords = noveltyWords(old["title"] as? String ?? "")
+        let sharedTitle = titleWords.intersection(oldTitleWords).count
+        let titleContainment = Double(sharedTitle) / Double(max(1, min(titleWords.count, oldTitleWords.count)))
+        return bodyContainment >= 0.92 && bodyJaccard >= 0.78 && titleContainment >= 0.65
     }
     // Bump when sentence, section, tokenization or passage-eligibility rules change.
     private static let passageValidationPolicyVersion = "wikipedia-passages-v1"
@@ -245,12 +374,55 @@ public enum FactQuality {
     }
 }
 
+public struct FactNoveltyIndex {
+    private var records: [[String: Any]] = []
+    private var ids: [String: Int] = [:]
+    private var claims: [String: [Int]] = [:]
+    private var bodies: [String: [Int]] = [:]
+    private var terms: [String: [Int]] = [:]
+
+    public init(_ initial: [[String: Any]] = []) { for card in initial { add(card) } }
+
+    public mutating func add(_ card: [String: Any]) {
+        let id = card["id"] as? String ?? ""
+        if !id.isEmpty, ids[id] != nil { return }
+        let index = records.count
+        records.append(card)
+        if !id.isEmpty { ids[id] = index }
+        let claim = FactQuality.noveltyClaimKey(card)
+        if !claim.isEmpty { claims[claim, default: []].append(index) }
+        let body = FactQuality.noveltyBodyKey(card)
+        if !body.isEmpty { bodies[body, default: []].append(index) }
+        for term in FactQuality.noveltyLookupTerms(card) { terms[term, default: []].append(index) }
+    }
+
+    public func findDuplicate(_ card: [String: Any]) -> [String: Any]? {
+        if let id = card["id"] as? String, let index = ids[id] { return records[index] }
+        var candidates = Set<Int>()
+        let claim = FactQuality.noveltyClaimKey(card)
+        let body = FactQuality.noveltyBodyKey(card)
+        if let matches = claims[claim] { candidates.formUnion(matches) }
+        if let matches = bodies[body] { candidates.formUnion(matches) }
+        let queryTerms = FactQuality.noveltyLookupTerms(card)
+        // Check the rarest terms first; near-duplicates share most of their claim tokens.
+        for term in queryTerms.sorted(by: { (terms[$0]?.count ?? 0) < (terms[$1]?.count ?? 0) }) {
+            if let matches = terms[term] { candidates.formUnion(matches) }
+        }
+        for index in max(0, records.count - 24)..<records.count { candidates.insert(index) }
+        for index in candidates.sorted() where FactQuality.repeated(card, records[index]) { return records[index] }
+        return nil
+    }
+
+    public var count: Int { records.count }
+}
+
 public actor FactPublicationLedger {
-    private var cards: [[String: Any]] = []
-    public init(initial: [[String: Any]] = []) { cards = initial }
+    private var index: FactNoveltyIndex
+    public init(initial: [[String: Any]] = []) { index = FactNoveltyIndex(initial) }
+    public func isDuplicate(_ card: [String: Any]) -> Bool { index.findDuplicate(card) != nil }
     public func accept(_ card: [String: Any]) -> Bool {
-        if cards.contains(where: { FactQuality.repeated(card,$0) }) { return false }
-        cards.append(card)
+        if index.findDuplicate(card) != nil { return false }
+        index.add(card)
         return true
     }
 }

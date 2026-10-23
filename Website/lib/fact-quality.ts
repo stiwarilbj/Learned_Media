@@ -2,6 +2,7 @@ import { unsupportedCausality } from "./causal-validation";
 import { createQuantityValidator } from "./quantity-validation";
 import promptInstructions from "./prompt-instructions.json";
 import { SessionCache } from "./session-cache";
+export { isRepeatedFact } from "./fact-novelty";
 import type { FactCard, WikipediaSource } from "./types";
 
 import type { SentenceLength } from "./types";
@@ -146,61 +147,19 @@ function overlap(a: Set<string>, b: Set<string>) {
   for (const token of smaller) if (larger.has(token)) shared++;
   return shared / Math.max(1, Math.min(a.size, b.size));
 }
-type PreparedFactMemory = {
-  title: string; body: string; claim: string;
-  quotes: Set<string>; sections: Set<string>; titleTokens: Set<string>; bodyTokens: Set<string>;
-};
-const preparedFactMemories = new WeakMap<FactMemory, {
-  title: string; body: string; claim?: string; evidence: string[]; evidenceSections: string[];
-  prepared: PreparedFactMemory;
-}>();
-function prepareFactMemory(memory: FactMemory): PreparedFactMemory {
-  const cached = preparedFactMemories.get(memory);
-  const evidence = memory.evidence ?? [];
-  const evidenceSections = memory.evidenceSections ?? [];
-  if (cached && cached.title === memory.title && cached.body === memory.body && cached.claim === memory.claim &&
-      cached.evidence.length === evidence.length && cached.evidence.every((quote, index) => quote === evidence[index]) &&
-      cached.evidenceSections.length === evidenceSections.length && cached.evidenceSections.every((section, index) => section === evidenceSections[index])) return cached.prepared;
-  const title = normalizedText(memory.title);
-  const body = normalizedText(memory.body);
-  const prepared = {
-    title, body, claim: normalizedText(memory.claim ?? ""),
-    quotes: new Set(evidence.map(normalizedText)), sections: new Set(evidenceSections.map(normalizedText)),
-    titleTokens: normalizedTokens(title), bodyTokens: normalizedTokens(body)
-  };
-  // Copy source arrays so in-place edits also invalidate the cached preparation.
-  preparedFactMemories.set(memory, { title: memory.title, body: memory.body, claim: memory.claim, evidence: [...evidence], evidenceSections: [...evidenceSections], prepared });
-  return prepared;
-}
 export function nearestMemories(fact: Pick<FactMemory, "title" | "body" | "topicPath">, memories: FactMemory[], limit = 40) {
   const words = tokens(fact.title + " " + fact.body);
   return memories.map(memory => ({ memory, score: overlap(words, tokens(memory.title + " " + memory.body)) + (memory.topicPath.at(-1) === fact.topicPath.at(-1) ? .2 : 0) }))
     .filter(item => item.score > .12).sort((a, b) => b.score - a.score).slice(0, limit).map(item => item.memory);
-}
-export function isRepeatedFact(fact: FactMemory, memory: FactMemory) {
-  if (fact.id === memory.id) return true;
-  const preparedFact = prepareFactMemory(fact), preparedMemory = prepareFactMemory(memory);
-  if (preparedFact.title === preparedMemory.title || preparedFact.body === preparedMemory.body) return true;
-  if (fact.fingerprint && memory.fingerprint && fact.fingerprint === memory.fingerprint) return true;
-  if (fact.claimFingerprint && memory.claimFingerprint && fact.claimFingerprint === memory.claimFingerprint) return true;
-  if (fact.claim && memory.claim && preparedFact.claim === preparedMemory.claim) return true;
-  if (fact.evidenceKeys?.some(key => memory.evidenceKeys?.includes(key))) return true;
-  if ([...preparedFact.quotes].some(quote => preparedMemory.quotes.has(quote))) return true;
-  const sharedSection = [...preparedFact.sections].some(section => preparedMemory.sections.has(section));
-  return overlap(preparedFact.bodyTokens, preparedMemory.bodyTokens) >= (sharedSection ? .62 : .78) && (overlap(preparedFact.titleTokens, preparedMemory.titleTokens) >= .5 || fact.sourceUrls.some(url => memory.sourceUrls.includes(url)));
 }
 export function mergeFactMemory(current: FactMemory[], incoming: FactMemory[]) {
   const map = new Map<string, FactMemory>();
   for (const item of [...current, ...incoming]) {
     const fingerprint = item.fingerprint || factFingerprint(item);
     const normalized = { ...item, fingerprint, claimFingerprint: item.claimFingerprint || claimFingerprint(item), sourceUrls: item.sourceUrls || [], evidenceKeys: item.evidenceKeys || [], evidenceSections: item.evidenceSections || [] };
-    let existing: [string, FactMemory] | undefined;
-    for (const entry of map) {
-      if (isRepeatedFact(normalized, entry[1])) { existing = entry; break; }
-    }
-    const key = existing?.[0] ?? fingerprint ?? item.id;
-    const previous = existing?.[1] ?? map.get(key);
-    map.set(key, { ...previous, ...normalized, known: Boolean(item.known || previous?.known) });
+    // Keep approximate duplicates and wording variants as separate history records.
+    const previous = map.get(item.id);
+    map.set(item.id || fingerprint, { ...previous, ...normalized, known: Boolean(item.known || previous?.known) });
   }
   return [...map.values()];
 }

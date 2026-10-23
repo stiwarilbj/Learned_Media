@@ -143,6 +143,52 @@ final class FactQualityTests: XCTestCase {
         let accepted = await ledger.accept(remembered)
         XCTAssertFalse(accepted)
     }
+
+    func testNoveltyCheckFindsRewordedMainClaimsButAllowsDistinctSameSubjectFacts() {
+        let first: [String: Any] = [
+            "id": "first", "title": "The Irish Relief Act", "topicPath": ["History", "Ireland"],
+            "claim": "The 1847 Relief Act established soup kitchens in Ireland.",
+            "body": "The 1847 Relief Act established soup kitchens in Ireland. Local committees prepared meals during the famine. Inspectors recorded how the program operated."
+        ]
+        let paraphrase: [String: Any] = [
+            "id": "second", "title": "A Different Title For The Same Law", "topicPath": ["History", "Ireland"],
+            "claim": "Ireland's 1847 Relief Act founded a network of soup kitchens.",
+            "body": "Inspectors recorded the network's operation. During the famine, local committees prepared meals. Ireland's 1847 Relief Act founded soup kitchens, with later records adding administrative context."
+        ]
+        XCTAssertTrue(FactQuality.repeated(paraphrase, first), "renamed and expanded explanations of the same main fact are repeats")
+
+        let negated: [String: Any] = [
+            "id": "third", "title": "A Different Relief Claim", "claim": "The 1847 Relief Act did not establish soup kitchens in Ireland.",
+            "body": "The act did not establish kitchens, according to the record."
+        ]
+        XCTAssertFalse(FactQuality.repeated(negated, first), "negation changes the fact")
+        let changedDate: [String: Any] = ["id": "fourth", "title": "A Different Relief Claim", "claim": "The 1848 Relief Act established soup kitchens in Ireland.", "body": "The 1848 law established soup kitchens in Ireland." ]
+        XCTAssertFalse(FactQuality.repeated(changedDate, first), "a changed year remains meaningful")
+
+        let convertedMetric: [String: Any] = ["id": "metric-1", "title": "Mountain Route", "claim": "The mountain route measured 12 kilometres.", "body": "The mountain route measured 12 kilometres." ]
+        let equivalentMetric: [String: Any] = ["id": "metric-2", "title": "A Route Measurement", "claim": "The mountain route measured 12000 meters.", "body": "The mountain route measured 12000 meters." ]
+        XCTAssertTrue(FactQuality.repeated(equivalentMetric, convertedMetric), "equivalent values and units identify the same quantity")
+        let differentMetric: [String: Any] = ["id": "metric-3", "title": "A Route Measurement", "claim": "The mountain route measured 12 miles.", "body": "The mountain route measured 12 miles." ]
+        XCTAssertFalse(FactQuality.repeated(differentMetric, convertedMetric), "different distances are preserved")
+
+        let teslaOne: [String: Any] = ["id": "tesla-1", "title": "Tesla's Remote Control Boat", "claim": "Nikola Tesla invented a remote-control boat.", "evidence": [["quote": "The same source passage."]], "sources": [["url": "https://example.test/tesla"]]]
+        let teslaTwo: [String: Any] = ["id": "tesla-2", "title": "Tesla's Induction Motor", "claim": "Nikola Tesla developed an induction motor.", "evidence": [["quote": "The same source passage."]], "sources": [["url": "https://example.test/tesla"]]]
+        XCTAssertFalse(FactQuality.repeated(teslaOne, teslaTwo), "sharing a subject, source, or quotation does not make distinct facts duplicates")
+    }
+
+    func testSharedNoveltyFixturesMatchWebsitePolicy() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Website/scripts/fact-novelty-fixtures.json"))
+        let fixtures = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        for fixture in fixtures {
+            let name = try XCTUnwrap(fixture["name"] as? String)
+            let candidate = try XCTUnwrap(fixture["candidate"] as? [String: Any])
+            let memory = try XCTUnwrap(fixture["memory"] as? [String: Any])
+            let expected = try XCTUnwrap(fixture["duplicate"] as? Bool)
+            XCTAssertEqual(FactQuality.repeated(candidate, memory), expected, name)
+        }
+    }
+
     func testPassageIdentityDeduplicatesOnlyFormattingWithinSourceSection() {
         let url = "https://en.wikipedia.org/wiki/Pressure"
         let quote = "A precise café measurement recorded 3.5 units, not 35 units."

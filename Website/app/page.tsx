@@ -7,7 +7,8 @@ import { Icon } from "@/components/learned-media/icons";
 import { readCredential, saveCredential } from "@/lib/remembered-keys";
 import { AccountCredentials } from "@/lib/account-credentials";
 import { LatestSnapshotQueue } from "@/lib/latest-snapshot-queue";
-import { rememberFact, mergeFactMemory, isRepeatedFact, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
+import { rememberFact, mergeFactMemory, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
+import { FactNoveltyIndex, factNoveltySignatures } from "@/lib/fact-novelty";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
@@ -604,6 +605,7 @@ export default function HomePage() {
   const workspaceEpochRef = useRef(0);
   const keyEditEpoch = useRef(0);
   const factMemoryRef = useRef<FactMemory[]>([]);
+  const factNoveltyIndexRef = useRef(new FactNoveltyIndex());
   const cloudSyncRef = useRef<WorkspaceCloudSync | null>(null);
   const cloudAbortController = useRef<AbortController | null>(null);
   const cloudSaveTimer = useRef<number | null>(null);
@@ -622,18 +624,19 @@ export default function HomePage() {
     const details = geminiFailureDetails(error);
     recordGeminiOutcomes(details.outcomes, details.status);
   }, [recordGeminiOutcomes]);
-  // This history is used only on this device. It is never supplied to Gemini.
+  // Full history stays local; generation receives compact signatures and a bounded list of relevant claims.
   const archiveFacts = useCallback((incoming: FactCard[]) => {
     const previous = factMemoryRef.current;
     const next = mergeFactMemory(previous, incoming.map(rememberFact));
     cloudSyncRef.current?.markFactMemoriesChanged(previous, next, new Set(incoming.map(card => card.id)));
     factMemoryRef.current = next;
+    for (const card of incoming) factNoveltyIndexRef.current.add(rememberFact(card));
     if (workspaceStoreRef.current) workspaceStoreRef.current.factMemory = factMemoryRef.current;
   }, []);
   const acceptFact = useCallback((card: FactCard) => {
     if (!hasExactSentenceCount(card.body, settings.sentenceLength)) return false;
     const next = rememberFact(card);
-    if (factMemoryRef.current.some(old => isRepeatedFact(next, old))) return false;
+    if (factNoveltyIndexRef.current.findDuplicate(next)) return false;
     archiveFacts([card]);
     setCards(current => appendUniqueCards(current, [card]));
     return true;
@@ -1041,6 +1044,7 @@ export default function HomePage() {
       store = restorePendingWorkspaceJournal(store, initialTopicCatalog.current ?? undefined);
       const activeRecord = store.records.find((record) => record.id === store.activeId) ?? store.records[0];
       factMemoryRef.current = mergeFactMemory(store.factMemory ?? [], store.records.flatMap(record => (record.state.cards ?? []).map(rememberFact)));
+      factNoveltyIndexRef.current = new FactNoveltyIndex(factMemoryRef.current);
       store.factMemory = factMemoryRef.current;
       workspaceStoreRef.current = store;
       workspaceIdRef.current = activeRecord.id;
@@ -1205,6 +1209,7 @@ export default function HomePage() {
         const mergedStore: AppWorkspaceStore = { version: 1, ownerId: user.id, activeId: preferredId, records, theme: localStore?.theme ?? records[0].state.theme ?? theme, factMemory: mergeFactMemory(compatible ? (localStore?.factMemory ?? []) : [], remote.factMemory) };
         workspaceStoreRef.current = mergedStore;
         factMemoryRef.current = mergedStore.factMemory ?? [];
+        factNoveltyIndexRef.current = new FactNoveltyIndex(factMemoryRef.current);
         const target = records.find((record) => record.id === preferredId) ?? records[0];
         workspaceIdRef.current = target.id;
         workspaceNameRef.current = target.name;
@@ -1800,7 +1805,7 @@ export default function HomePage() {
           settings,
           learningProfile,
           rabbitHole: activeRabbitHole,
-          avoid: [],
+          avoid: factNoveltySignatures(factMemoryRef.current),
           signal: controller.signal,
           onProgress: (event) => {
             if (controller.signal.aborted || requestGeneration.current !== requestId) return;
@@ -1820,7 +1825,7 @@ export default function HomePage() {
         });
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
         result.cards.forEach((card, index) => { const normalized = normalizeFact(card, index); if (!receivedIds.has(normalized.id)) acceptGeneratedCard(normalized); });
-        if (!result.completedCount) {
+        if (!receivedIds.size) {
           setFeedHasMore(false);
           setPendingSlots(count);
           setGenerationError("Gemini returned no new complete cards. Retry when you are ready.");
@@ -1829,7 +1834,7 @@ export default function HomePage() {
           setFeedHasMore(false);
           setPendingSlots(Math.max(1, count - receivedIds.size));
           setGenerationError(result.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards.");
-          setToast(result.completedCount + " facts arrived. Retry to fill the remaining slots.");
+          setToast(receivedIds.size + " facts arrived. Retry to fill the remaining slots.");
         } else {
           setFeedHasMore(true);
           setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
@@ -1840,7 +1845,7 @@ export default function HomePage() {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
-        body: JSON.stringify({ topics: selectWeightedTopicPaths(topics, count), requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: [] }),
+        body: JSON.stringify({ topics: selectWeightedTopicPaths(topics, count), requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: factNoveltySignatures(factMemoryRef.current) }),
         signal: controller.signal
       });
       if (!response.ok) {

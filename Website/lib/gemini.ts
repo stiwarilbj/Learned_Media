@@ -7,7 +7,8 @@ import type { CardGlossaryEntry, Difficulty, FactCard, FeedSettings, GeminiModel
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaArticle, resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
-import { hashFactKey, difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
+import { hashFactKey, difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
+import { FactNoveltyIndex, isRepeatedFact as noveltyRepeatedFact, selectPriorFactClaims, type FactNoveltySignature, type NoveltyInput } from "./fact-novelty";
 import type { YouTubeSearchCandidate } from "./youtube";
 import { canonicalRequestIdentity, reusableStructuredValue, requestCacheKey, SessionCache, type RequestIdentity } from "./session-cache";
 import { geminiAttemptRounds } from "./model-retry-policy";
@@ -51,7 +52,7 @@ type CandidateFact = {
   difficulty?: number;
 };
 
-type GroundedFact = { topicPath?: string[]; status?: "grounded" | "needs_evidence"; claimEvidenceIds?: string[]; missingEvidence?: string; slot?: number; title?: string; hook?: string; claim?: string; sentences?: string[]; evidence?: Array<{ sentence: number; evidenceIds?: string[] }>; followUpQuestions?: unknown; chronology?: unknown; locations?: unknown };
+type GroundedFact = { topicPath?: string[]; status?: "grounded" | "needs_evidence" | "duplicate"; duplicateOf?: string; claimEvidenceIds?: string[]; missingEvidence?: string; slot?: number; title?: string; hook?: string; claim?: string; sentences?: string[]; evidence?: Array<{ sentence: number; evidenceIds?: string[] }>; followUpQuestions?: unknown; chronology?: unknown; locations?: unknown };
 type GroundingEvidence = { sourceIndex: number; quote: string; section: string };
 
 type ModelPool = {
@@ -674,13 +675,13 @@ function shuffle<T>(items: T[]) {
   return next;
 }
 
-function normalizeAvoidMemory(avoid: Array<FactMemory | FactAvoidKey | string>) {
+function normalizeAvoidMemory(avoid: Array<FactMemory | FactAvoidKey | FactNoveltySignature | string>) {
   return avoid.map((item, index) => typeof item === "string"
     ? { id: `legacy-memory-${index}`, title: item, hook: "", body: "", topicPath: [], claim: item, fingerprint: normalizedText(item), claimFingerprint: normalizedText(item), sourceUrls: [], evidence: [], evidenceKeys: [], evidenceSections: [] }
     : "body" in item && typeof item.id === "string" && typeof item.title === "string" ? item : null).filter(Boolean) as FactMemory[];
 }
 
-function normalizeAvoidKeys(avoid: Array<FactMemory | FactAvoidKey | string>) {
+function normalizeAvoidKeys(avoid: Array<FactMemory | FactAvoidKey | FactNoveltySignature | string>) {
   const keys = new Set<string>();
   for (const item of avoid) {
     if (typeof item === "string") keys.add(`f:${item}`);
@@ -712,7 +713,7 @@ function candidateSchema(slotCount: number) {
 }
 function groundedSchema(sentenceCount: number, combined = false) {
   return { type: "OBJECT", properties: { facts: { type: "ARRAY", items: { type: "OBJECT", properties: {
-    ...(combined ? {topicPath: { type: "ARRAY", items: {type: "STRING"} }} : {}), slot: { type: "INTEGER" }, status: { type: "STRING", enum: ["grounded", "needs_evidence"] }, claimEvidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } }, missingEvidence: { type: "STRING" }, title: { type: "STRING" }, hook: { type: "STRING" }, claim: { type: "STRING" },
+    ...(combined ? {topicPath: { type: "ARRAY", items: {type: "STRING"} }} : {}), slot: { type: "INTEGER" }, status: { type: "STRING", enum: ["grounded", "needs_evidence", "duplicate"] }, duplicateOf: { type: "STRING" }, claimEvidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } }, missingEvidence: { type: "STRING" }, title: { type: "STRING" }, hook: { type: "STRING" }, claim: { type: "STRING" },
     sentences: { type: "ARRAY", items: { type: "STRING" }, minItems: sentenceCount, maxItems: sentenceCount },
     evidence: { type: "ARRAY", maxItems: 12, items: { type: "OBJECT", properties: { sentence: { type: "INTEGER" }, evidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } } }, required: ["sentence", "evidenceIds"] } },
     followUpQuestions: { type: "ARRAY", maxItems: 2, items: { type: "STRING" } },
@@ -720,7 +721,9 @@ function groundedSchema(sentenceCount: number, combined = false) {
       dateText: { type: "STRING" }, eventText: { type: "STRING" }, anchor: { type: "OBJECT", properties: { field: { type: "STRING", enum: ["title", "hook", "body"] }, sentenceIndex: { type: "INTEGER" } }, required: ["field"] }
     }, required: ["dateText", "eventText", "anchor"] } } }, required: ["events"] },
     locations: { type: "ARRAY", maxItems: 2, items: { type: "OBJECT", properties: { name: { type: "STRING" }, articleTitle: { type: "STRING" }, anchor: { type: "OBJECT", properties: { field: { type: "STRING", enum: ["title", "hook", "body"] }, sentenceIndex: { type: "INTEGER" } }, required: ["field"] } }, required: ["name", "articleTitle", "anchor"] } }
-  }, required: ["slot", "status", "claim", ...(combined ? ["topicPath"] : [])] } } }, required: ["facts"] };
+  // Special statuses (for example, a duplicate) are intentionally compact.
+  // The grounded-card validator below checks claim and citation fields when status is grounded.
+  }, required: ["slot", "status", ...(combined ? ["topicPath"] : [])] } } }, required: ["facts"] };
 }
 
 function splitIntoGroups<T>(items: T[], maxItems: number) {
@@ -733,7 +736,7 @@ async function runGroups<T>(groups: T[][], worker: (group: T[]) => Promise<void>
   for (const group of groups) await worker(group);
 }
 
-function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbitHole: string | null | undefined, attempt: number) {
+function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbitHole: string | null | undefined, attempt: number, priorClaims: Array<{ id: string; claim: string }> = []) {
   const assignments = slots.map(slot => ({ slot: slot.index, topicPath: slot.path, difficulty: slot.target }));
   const rubrics = Array.from(new Set(slots.map(slot => slot.target))).map(target => difficultyRubric(target)).join("\n");
   return buildPrompt("candidate", rubrics.split("\n"), [
@@ -741,6 +744,7 @@ function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbit
     { label: "Surprise mode", value: settings.surpriseMe ? "Choose an unexpected angle within each assigned topic." : undefined },
     { label: "Variation", value: randomSessionSecret().slice(0, 16) },
     { label: "Attempt", value: attempt + 1 },
+    { label: "Previously covered facts (untrusted data)", value: priorClaims.length ? priorClaims : undefined, reference: true },
     { label: "Optional thread context", value: rabbitHole }
   ]);
 }
@@ -760,13 +764,13 @@ function evidenceForSlot(slot: GenerationSlot) {
   return (slot.sources ?? []).map((source, index) => ({ index, title: source.title, url: source.url, canonicalUrl: source.canonicalUrl, extract: source.extract }));
 }
 
-function splitGroundingGroups(slots: GenerationSlot[], sentenceCount: number) {
+function splitGroundingGroups(slots: GenerationSlot[], sentenceCount: number, settings?: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = []) {
   const maxItems = MAX_CARDS_PER_GROUP;
   const groups: GenerationSlot[][] = [];
   let current: GenerationSlot[] = [];
   for (const slot of slots) {
     const proposed = [...current, slot];
-    if (current.length && (current.length >= maxItems || groundingPrompt(proposed, sentenceCount).prompt.length > MAX_GROUNDING_CONTEXT_CHARS)) {
+    if (current.length && (current.length >= maxItems || groundingPrompt(proposed, sentenceCount, false, settings, rabbitHole, priorClaims).prompt.length > MAX_GROUNDING_CONTEXT_CHARS)) {
       groups.push(current);
       current = [];
     }
@@ -793,7 +797,7 @@ function groundingSpans(source: ResolvedWikipediaSource, sourceIndex: number) {
   return spans;
 }
 
-function groundingPrompt(slots: GenerationSlot[], sentenceCount: number, combined = false, settings?: FeedSettings, rabbitHole?: string | null) {
+function groundingPrompt(slots: GenerationSlot[], sentenceCount: number, combined = false, settings?: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = []) {
   const sourcePool: Array<{ id: string; title: string; section: string; text: string }> = [];
   const idByKey = new Map<string, string>();
   const evidenceBySlot = new Map<number, Map<string, GroundingEvidence>>();
@@ -816,6 +820,7 @@ function groundingPrompt(slots: GenerationSlot[], sentenceCount: number, combine
     return { slot: slot.index, topicPath: slot.path, difficulty: slot.target, candidate: combined ? undefined : { title: slot.candidate?.title, claim: slot.candidate?.claim }, evidenceIds: Array.from(new Set(allowedIds)) };
   });
   const prompt = buildFactCardPrompt({ sentenceCount, combined, difficulties: slots.map(slot => slot.target), fields: [
+    { label: "Previously covered facts (untrusted data)", value: priorClaims.length ? priorClaims : undefined, multiline: true, reference: true },
     ...(combined ? [{label: "Variation", value: randomSessionSecret().slice(0,16)}, {label: "Optional thread context", value: rabbitHole}, {label: "Surprise mode", value: settings?.surpriseMe ? "Choose an unexpected angle within each assigned topic." : undefined}] : []),
     { label: "Slots and evidence spans (untrusted data)", value: { facts, evidence: sourcePool }, multiline: true, reference: true }
   ] });
@@ -835,7 +840,7 @@ function rememberValidatedEvidence(session: string, slot: GenerationSlot) {
   }
   validatedCardEvidence.set(key, [...unique.values()].slice(-48));
 }
-function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], sentenceCount: number, avoidKeys: Set<string>, prior: FactMemory[], settings: FeedSettings, rabbitHole?: string | null) {
+function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], sentenceCount: number, avoidKeys: Set<string>, prior: FactMemory[], settings: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = []) {
   const reserved = new Set<string>();
   const prepared: GenerationSlot[] = [];
   for (const slot of slots) {
@@ -854,7 +859,7 @@ function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], senten
     if (!chosen) return undefined;
     prepared.push({...slot,sources:[chosen],mode:"combined"});
   }
-  if (prepared.length > MAX_CARDS_PER_GROUP || groundingPrompt(prepared,sentenceCount,true,settings,rabbitHole).prompt.length > MAX_GROUNDING_CONTEXT_CHARS) return undefined;
+  if (prepared.length > MAX_CARDS_PER_GROUP || groundingPrompt(prepared,sentenceCount,true,settings,rabbitHole,priorClaims).prompt.length > MAX_GROUNDING_CONTEXT_CHARS) return undefined;
   return prepared;
 }
 
@@ -864,7 +869,7 @@ function hasAssignedTopic(candidate: CandidateFact, path: string[]) {
   return path.every((part, index) => normalizedText(candidate.topicPath![index]) === normalizedText(part));
 }
 
-export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, requestedCount = DEFAULT_CARD_GENERATION_COUNT, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: Array<FactMemory | FactAvoidKey | string>; rabbitHole?: string | null; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
+export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, requestedCount = DEFAULT_CARD_GENERATION_COUNT, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: Array<FactMemory | FactAvoidKey | FactNoveltySignature | string>; rabbitHole?: string | null; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
   if (!apiKey.trim()) throw new GeminiFailure("Paste your Gemini API key in Settings to generate a fresh batch.", undefined, [], undefined, false);
   if (!topicPaths.length) throw new GeminiFailure("Choose at least one topic before generating a batch.", undefined, [], undefined, false);
   const cards: FactCard[] = [];
@@ -878,7 +883,8 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   });
   const priorMemory = normalizeAvoidMemory(avoid);
   const priorAvoidKeys = normalizeAvoidKeys(avoid);
-  const seenTitles = new Set(priorMemory.map(item => normalizedText(item.title)));
+  const noveltyHistory: NoveltyInput[] = [...priorMemory, ...avoid.filter((item): item is FactNoveltySignature => typeof item === "object" && item !== null && "kind" in item && item.kind === "fact-novelty")];
+  const noveltyIndex = new FactNoveltyIndex(noveltyHistory);
   const memory = [...priorMemory];
   const acceptedSlots = new Set<number>();
   const diagnostics = new ValidationDiagnostics();
@@ -897,9 +903,10 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
     try {
       if (signal?.aborted) throw abortError();
       const next = rememberFact(card);
-      if (memory.some(old => isRepeatedFact(next, old)) || [...factAvoidKeySet(next)].some(key => priorAvoidKeys.has(key)) || seenTitles.has(normalizedText(card.title))) return false;
+      const exactKeys = [...factAvoidKeySet(next)].filter(key => !key.startsWith("e:"));
+      if (noveltyIndex.findDuplicate(next) || exactKeys.some(key => priorAvoidKeys.has(key))) return false;
       memory.push(next);
-      seenTitles.add(normalizedText(card.title));
+      noveltyIndex.add(next);
       return true;
     } finally { unlock(); }
   };
@@ -908,29 +915,45 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
     slot.mode = retryGrounding && round === 0 ? "grounding" : "candidate";
   };
 
-  const cachedSlots = cachedEvidenceForSlots(sessionId, slots, sentenceCount, priorAvoidKeys, priorMemory, settings, rabbitHole);
+  const initialPriorClaims = selectPriorFactClaims(noveltyHistory, topicPaths.map(topic => topic.path));
+  const cachedSlots = cachedEvidenceForSlots(sessionId, slots, sentenceCount, priorAvoidKeys, priorMemory, settings, rabbitHole, initialPriorClaims);
   if (cachedSlots) cachedSlots.forEach((slot,index) => { slots[index] = slot; });
   for (let round = cachedSlots ? -1 : 0; round < MAX_CANDIDATE_RETRIES && acceptedSlots.size < targetCount; round += 1) {
     if (signal?.aborted) throw abortError();
     const candidateSlots = slots.filter(slot => !acceptedSlots.has(slot.index) && slot.mode === "candidate");
     const candidateGroups = splitIntoGroups(candidateSlots, candidateSlots.some(slot => slot.candidateOutputFloor === MAX_OUTPUT_CAPACITY) ? 1 : candidateGroupSize);
+    const candidatesThisRound = new FactNoveltyIndex();
     await runGroups(candidateGroups, async group => {
       if (providerExhausted) return;
       if (signal?.aborted) throw abortError();
       const streamedCandidates = new Map<number, { identity: string; promise: Promise<ResolvedWikipediaSource[]> }>();
+      const streamedNoveltyCandidates: NoveltyInput[] = [];
+      const prefetchRejected = new Set<number>();
       const streamParser = new JsonArrayItemStreamParser("facts");
       const candidateIdentity = (candidate: CandidateFact) => JSON.stringify([candidate.title, candidate.claim, candidate.topicPath, candidate.wikipediaSearchTitles]);
       const startEvidenceLookup = (slot: GenerationSlot, candidate: CandidateFact) => {
         const identity = candidateIdentity(candidate);
         if (streamedCandidates.has(slot.index) || !candidate.title?.trim() || !candidate.claim?.trim() || !hasAssignedTopic(candidate, slot.path)) return;
+        const noveltyCandidate: NoveltyInput = { id: `stream-${round}-${slot.index}`, title: candidate.title, claim: candidate.claim, body: "", topicPath: candidate.topicPath ?? slot.path };
+        if (noveltyIndex.findDuplicate(noveltyCandidate) || candidatesThisRound.findDuplicate(noveltyCandidate) || streamedNoveltyCandidates.some(previous => noveltyRepeatedFact(noveltyCandidate, previous))) {
+          prefetchRejected.add(slot.index);
+          return;
+        }
+        streamedNoveltyCandidates.push(noveltyCandidate);
         const promise = lookupCandidateEvidence(slot, candidate, signal, wikiCache).catch(() => []);
         streamedCandidates.set(slot.index, { identity, promise });
       };
       try {
-        const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(group, settings, rabbitHole, round), candidateSchema(group.length), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
+        const priorClaims = selectPriorFactClaims([...noveltyHistory, ...memory], group.map(slot => slot.path));
+        const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(group, settings, rabbitHole, round, priorClaims), candidateSchema(group.length), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
           maxOutputTokens: Math.max(4096, ...group.map(slot => slot.candidateOutputFloor ?? 0)),
           streaming: true,
-          onStreamAttemptStart: () => { streamParser.reset(); streamedCandidates.clear(); },
+          onStreamAttemptStart: () => {
+            streamParser.reset();
+            streamedCandidates.clear();
+            streamedNoveltyCandidates.length = 0;
+            prefetchRejected.clear();
+          },
           onStreamText: (text) => {
             for (const value of streamParser.push(text)) {
               const candidate = normalizeStructuredValue(value, candidateSchema(group.length).properties.facts.items) as CandidateFact | undefined;
@@ -951,6 +974,14 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             slot.lastError = diagnostics.record("candidate", slot.index, "Gemini omitted a slot or returned a candidate for the wrong topic.");
             continue;
           }
+          const noveltyCandidate: NoveltyInput = { id: `candidate-${round}-${slot.index}`, title: candidate.title, claim: candidate.claim, body: "", topicPath: candidate.topicPath ?? slot.path };
+          if (prefetchRejected.has(slot.index) || noveltyIndex.findDuplicate(noveltyCandidate) || candidatesThisRound.findDuplicate(noveltyCandidate)) {
+            slot.lastError = diagnostics.record("candidate", slot.index, "This candidate repeats a fact already covered in your history or this batch.");
+            slot.mode = "candidate";
+            slot.candidate = undefined;
+            continue;
+          }
+          candidatesThisRound.add(noveltyCandidate);
           slot.candidate = candidate;
           eligible.push(slot);
         }
@@ -978,13 +1009,14 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
     });
 
     const groundingSlots = slots.filter(slot => !acceptedSlots.has(slot.index) && (slot.mode === "combined" || slot.mode === "grounding" && slot.candidate) && slot.sources?.length);
-    const groundingGroups = splitGroundingGroups(groundingSlots, sentenceCount).flatMap(group => group.some(slot => slot.groundingOutputFloor === MAX_OUTPUT_CAPACITY) ? group.map(slot => [slot]) : [group]);
+    const groundingGroups = splitGroundingGroups(groundingSlots, sentenceCount, settings, rabbitHole, selectPriorFactClaims([...noveltyHistory, ...memory], groundingSlots.map(slot => slot.path))).flatMap(group => group.some(slot => slot.groundingOutputFloor === MAX_OUTPUT_CAPACITY) ? group.map(slot => [slot]) : [group]);
     await runGroups(groundingGroups, async group => {
       if (providerExhausted) return;
       if (signal?.aborted) throw abortError();
       try {
         const combined = group.every(slot => slot.mode === "combined");
-        const grounding = groundingPrompt(group, sentenceCount, combined, settings, rabbitHole);
+        const priorClaims = selectPriorFactClaims([...noveltyHistory, ...memory], group.map(slot => slot.path));
+        const grounding = groundingPrompt(group, sentenceCount, combined, settings, rabbitHole, priorClaims);
         const maxOutputTokens = Math.min(65_536, Math.max(8192, group.length * sentenceCount * 500, ...group.map(slot => slot.groundingOutputFloor ?? 0)));
         const result = await requestStructured<{ facts?: GroundedFact[] }>(apiKey, sessionId, grounding.prompt, groundedSchema(sentenceCount, combined), "grounding", GENERATION_TIMEOUT_MS, signal, emit, { maxOutputTokens });
         const floor = truncatedOutputFloor(result.outcomes);
@@ -1001,6 +1033,10 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             }
             if (fact.status === "needs_evidence") {
               markRetry(slot, "The supplied passages do not support this card’s specific main claim; more evidence is needed.", round, false);
+              continue;
+            }
+            if (fact.status === "duplicate") {
+              markRetry(slot, `This fact repeats ${fact.duplicateOf || "another covered fact"}.`, round, false);
               continue;
             }
             if (fact.status !== "grounded") throw new GeminiFailure("The grounded result is missing a valid evidence status.");

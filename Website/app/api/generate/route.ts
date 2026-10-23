@@ -1,4 +1,6 @@
 import { describeGeminiError, generateGeminiFacts } from "@/lib/gemini";
+import type { FactAvoidKey, FactMemory } from "@/lib/fact-quality";
+import type { FactNoveltySignature } from "@/lib/fact-novelty";
 import type { FeedSettings, LearningProfile } from "@/lib/types";
 import { NextResponse } from "next/server";
 
@@ -6,7 +8,7 @@ type GenerateBody = {
   topics?: Array<{ path: string[]; weight: number }>;
   settings?: FeedSettings;
   learningProfile?: LearningProfile;
-  avoid?: string[];
+  avoid?: Array<FactNoveltySignature | FactMemory | FactAvoidKey | string>;
   rabbitHole?: string | null;
   requestedCount?: number;
 };

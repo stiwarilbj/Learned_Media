@@ -20,6 +20,9 @@
   const cardReveal = window.LEARNED_MEDIA_CARD_REVEAL;
   const cardExplanations = window.LEARNED_MEDIA_CARD_EXPLANATIONS;
   const cardGlossary = window.LEARNED_MEDIA_CARD_GLOSSARY;
+  const factNovelty = window.LEARNED_MEDIA_FACT_NOVELTY;
+  let factNoveltyIndex = null;
+  let factNoveltyIndexSource = null;
   const cardChronology = window.LEARNED_MEDIA_CARD_CHRONOLOGY;
   const cardLocations = window.LEARNED_MEDIA_CARD_LOCATIONS;
   const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
@@ -656,9 +659,10 @@
     if (!changedCards.length) return;
     const previousHistory = state.factMemory;
     const map = new Map();
-    state.factMemory.forEach(function (item) { map.set(item.fingerprint || item.id, item); });
+    // Preserve wording variants as separate historical records; only the same saved ID is an update.
+    state.factMemory.forEach(function (item) { map.set(item.id || item.fingerprint, item); });
     const changedIds = new Set();
-    changedCards.forEach(function (card) { const item = memoryOf(card); const key = item.fingerprint || item.id; const previous = map.get(key); item.known = item.known || Boolean(previous && previous.known); const merged = Object.assign({}, previous || {}, item); map.set(key, merged); changedIds.add(merged.id); });
+    changedCards.forEach(function (card) { const item = memoryOf(card); const key = item.id || item.fingerprint; const previous = map.get(key); item.known = item.known || Boolean(previous && previous.known); const merged = Object.assign({}, previous || {}, item); map.set(key, merged); changedIds.add(merged.id); });
     state.factMemory = Array.from(map.values());
     if (trackedFactMemory === previousHistory) {
       const retained = new Set(state.factMemory.map(function (item) { return item.id; }));
@@ -668,18 +672,13 @@
     }
   }
   function repeatedFact(card) {
-    function normalized(text) { return String(text || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
-    const stop = new Set("a an the of in on at to for from by with and or but is was were are be been this that it its as his her their had has have who which they he she into through about also one two three".split(" "));
-    function words(text) { return new Set(normalized(text).split(" ").filter(function (word) { return word.length > 2 && !stop.has(word); })); }
-    function overlap(a,b) { return Array.from(a).filter(function (word) { return b.has(word); }).length / Math.max(1,Math.min(a.size,b.size)); }
+    if (!factNovelty || typeof factNovelty.FactNoveltyIndex !== "function") return false;
+    if (factNoveltyIndexSource !== state.factMemory) {
+      factNoveltyIndex = new factNovelty.FactNoveltyIndex(state.factMemory || []);
+      factNoveltyIndexSource = state.factMemory;
+    }
     const item = memoryOf(card);
-    return state.factMemory.some(function (old) {
-      if (old.id === item.id || normalized(old.title) === normalized(item.title) || normalized(old.body) === normalized(item.body)) return true;
-      if (item.fingerprint && old.fingerprint && item.fingerprint === old.fingerprint) return true;
-      if (item.claim && old.claim && normalized(item.claim) === normalized(old.claim)) return true;
-      if (item.evidence.some(function (quote) { return (old.evidence || []).some(function (other) { return normalized(quote) === normalized(other); }); })) return true;
-      return overlap(words(item.body),words(old.body)) >= .78 && (overlap(words(item.title),words(old.title)) >= .5 || item.sourceUrls.some(function (url) { return (old.sourceUrls || []).indexOf(url) >= 0; }));
-    });
+    return Boolean(factNoveltyIndex.findDuplicate(item));
   }
   function acceptNewFact(raw, expectedSentenceLength) {
     if (!raw || !raw.id || !raw.body || !hasExactSentenceCount(raw.body, expectedSentenceLength === undefined ? state.settings.sentenceLength : expectedSentenceLength) || repeatedFact(raw)) return false;

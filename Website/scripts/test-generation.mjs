@@ -22,8 +22,10 @@ const { shouldExpandNaturalSearch } = require("../lib/search.ts");
 const { searchYouTubeCandidates, strongLocalVideoCandidates } = require("../lib/youtube.ts");
 const { searchSemanticVideos, mergeVideoSearchPlans, makeLocalVideoPlan, shouldEnrichVideoSearch } = require("../lib/video-semantic.ts");
 const { JsonArrayItemStreamParser } = require("../lib/stream-json.ts");
+const { parseStructuredResponse } = require("../lib/structured-response.ts");
 const { transientRetryDelayMs } = require("../lib/retry-timing.ts");
 const { completeSentenceChunks, selectEvidence, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, factWritingRules, difficultyRubric, SENTENCE_LENGTH_OPTIONS } = require("../lib/fact-quality.ts");
+const { FactNoveltyIndex, factNoveltySignature, isRepeatedFact, selectPriorFactClaims } = require("../lib/fact-novelty.ts");
 const { sharedWikipediaResolutionCache } = require("../lib/wikipedia.ts");
 const originalFetch = globalThis.fetch;
 const originalDateNow = Date.now;
@@ -146,8 +148,22 @@ function streamedJsonResponse(output, model, delayMs = 0, onComplete = () => {},
   return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
 }
 
+function candidatePrefixFailureResponse(fact, model) {
+  let sent = false;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (sent) { controller.error(new Error("Mock network disconnected after a complete candidate item.")); return; }
+      sent = true;
+      const text = JSON.stringify({ facts: [fact] }).replace(/\]}$/, ",");
+      const event = JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }], modelVersion: model });
+      controller.enqueue(new TextEncoder().encode("data: " + event + "\n\n"));
+    }
+  });
+  return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
 function installNetworkMock(options = {}) {
-  const state = { outputs: [], requests: [], candidatePrompts: [], groundingPrompts: [], omittedSlots: new Set(), candidateStreamCompletedAt: 0, wikipediaStartedAt: 0, requestFailures: options.requestFailures || {}, requestFailureMessages: options.requestFailureMessages || {}, connectionFailures: options.connectionFailures || {}, connectionFailureMessages: options.connectionFailureMessages || {} };
+  const state = { outputs: [], requests: [], wikipediaQueries: [], candidatePrompts: [], groundingPrompts: [], omittedSlots: new Set(), partialCandidateStreamFailures: new Set(), candidateStreamCompletedAt: 0, wikipediaStartedAt: 0, requestFailures: options.requestFailures || {}, requestFailureMessages: options.requestFailureMessages || {}, connectionFailures: options.connectionFailures || {}, connectionFailureMessages: options.connectionFailureMessages || {} };
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url ?? input.toString());
     const body = init.body ? JSON.parse(String(init.body)) : {};
@@ -180,9 +196,11 @@ function installNetworkMock(options = {}) {
           }
           if (options.omitAllCandidates) return null;
           let word = words[assignment.slot];
+          if (options.differentCandidateAfterGroundedDuplicate && assignment.slot === 0 && attempt > 1) word = words[10];
           if (options.duplicateSlot === 5 && assignment.slot === 5 && attempt === 1) word = words[0];
           if (options.duplicateSlot === 5 && assignment.slot === 0 && attempt > 1) word = words[10];
-          return { slot: assignment.slot, title: "Shared Article", claim: factBundle(word).claim, topicPath: assignment.topicPath, wikipediaSearchTitles: ["Shared Article"] };
+          if (options.avoidPriorSlot === assignment.slot && assignment.slot === 0) word = attempt === 1 ? words[0] : words[10];
+          return { slot: assignment.slot, title: "Shared Article", claim: factBundle(word).claim, topicPath: assignment.topicPath, wikipediaSearchTitles: [options.uniqueWikiSearch ? `${word} record` : "Shared Article"] };
         }).filter(Boolean).reverse() };
       } else if (prompt.includes("Return one result for each slot") || prompt.includes("Choose candidates and write grounded cards in one batch")) {
         const combined = prompt.includes("Choose candidates and write grounded cards in one batch");
@@ -202,6 +220,10 @@ function installNetworkMock(options = {}) {
           if (options.needsEvidenceSlot === slot && (!options.needsEvidenceOnce || !state.omittedSlots.has("evidence:" + slot))) {
             state.omittedSlots.add("evidence:" + slot);
             return { slot, status: "needs_evidence", claim, missingEvidence: "The passage mentions the subject but does not establish the claimed mechanism." };
+          }
+          if (options.duplicateGroundedSlot === slot && !state.omittedSlots.has("grounded-duplicate:" + slot)) {
+            state.omittedSlots.add("grounded-duplicate:" + slot);
+            return { slot, status: "duplicate", duplicateOf: "previously covered claim" };
           }
           // Read the actual writing instruction, rather than silently following fixture settings.
           const count = Number(prompt.match(/Write exactly (\d+) complete, useful sentences/)?.[1] ?? 3);
@@ -249,6 +271,10 @@ function installNetworkMock(options = {}) {
       if (process.env.PROMPT_EVALUATION_REPORT && !connectionCheck) state.outputs.push({ prompt, output, text: rawText ?? JSON.stringify(output) });
       if (url.pathname.includes(":streamGenerateContent")) {
         const candidateStream = prompt.includes("Generate one batch of distinct, narrow, Wikipedia-verifiable candidates");
+        if (candidateStream && options.partialCandidateStreamFailureModel === model && !state.partialCandidateStreamFailures.has(model)) {
+          state.partialCandidateStreamFailures.add(model);
+          return candidatePrefixFailureResponse(output.facts?.[0], model);
+        }
         return streamedJsonResponse(output, model, candidateStream ? options.streamChunkDelayMs || 0 : 0, candidateStream ? () => { state.candidateStreamCompletedAt = performance.now(); } : undefined, rawText, finishReason);
       }
       return jsonResponse({ candidates: [{ content: { parts: [{ text: rawText ?? JSON.stringify(output) }] }, finishReason }], modelVersion: model });
@@ -256,6 +282,7 @@ function installNetworkMock(options = {}) {
     if (url.hostname === "en.wikipedia.org" && url.pathname === "/w/api.php") {
       const action = url.searchParams.get("action");
       const title = url.searchParams.get("titles") ?? "";
+      if (action === "query") state.wikipediaQueries.push(title || url.searchParams.get("gsrsearch") || "");
       if (action === "query" && !title.startsWith("File:")) state.wikipediaStartedAt ||= performance.now();
       if (action === "query" && title.startsWith("File:")) {
         return jsonResponse({ query: { pages: { "-1": { imageinfo: [{ url: "https://upload.wikimedia.org/shared.jpg", thumburl: "https://upload.wikimedia.org/shared-thumb.jpg", descriptionurl: "https://commons.wikimedia.org/wiki/File:Shared.jpg", extmetadata: { Artist: { value: "Test Artist" } } }] } } } });
@@ -335,6 +362,77 @@ function expireCooldownsWithoutWaiting() {
   let now = originalDateNow();
   Date.now = () => { now += 60_000; return now; };
 }
+
+test("fact novelty rejects paraphrases while preserving distinct claims", () => {
+  const sharedFixtures = JSON.parse(readFileSync(new URL("./fact-novelty-fixtures.json", import.meta.url), "utf8"));
+  for (const fixture of sharedFixtures) {
+    assert.equal(isRepeatedFact(fixture.candidate, fixture.memory), fixture.duplicate, fixture.name);
+  }
+  const first = {
+    id: "old-1", title: "The 1847 Act Created Irish Soup Kitchens", topicPath: ["History", "Ireland"],
+    claim: "The 1847 Relief Act established soup kitchens in Ireland.",
+    body: "The 1847 Relief Act established soup kitchens in Ireland. Local committees prepared meals during the famine. Inspectors recorded how the program operated."
+  };
+  const paraphrase = {
+    id: "new-1", title: "A New Name For The Same Law", topicPath: ["History", "Ireland"],
+    claim: "Ireland's 1847 Relief Act founded a network of soup kitchens.",
+    body: "Inspectors recorded the network's operation. During the famine, local committees prepared meals. Ireland's 1847 Relief Act founded soup kitchens, and later records describe many additional administrative details."
+  };
+  assert.equal(isRepeatedFact(paraphrase, first), true, "title changes, reordered sentences, and extra background do not disguise the main fact");
+  const index = new FactNoveltyIndex([first]);
+  assert.ok(index.findDuplicate(paraphrase));
+  assert.equal(index.size, 1);
+
+  const distinct = (claim, extra = {}) => ({ ...first, id: "new-2", title: "A Different Irish Relief Fact", claim, ...extra });
+  assert.equal(isRepeatedFact(distinct("The 1847 Relief Act did not establish soup kitchens in Ireland."), first), false, "negation changes the fact");
+  assert.equal(isRepeatedFact(distinct("The 1847 Relief Act established soup kitchens in Ireland in 1848."), first), false, "a changed date remains meaningful");
+  assert.equal(isRepeatedFact(distinct("The 1847 Relief Act established 12 relief kitchens in Ireland."), first), false, "a changed quantity remains meaningful");
+  assert.equal(isRepeatedFact(
+    { ...first, id: "metric-a", body: "The mountain route measured 12 kilometres.", claim: "The mountain route measured 12 kilometres." },
+    { ...first, id: "metric-b", body: "The mountain route measured 12000 meters.", claim: "The mountain route measured 12000 meters." }
+  ), true, "equivalent number and unit expressions match");
+  assert.equal(isRepeatedFact(
+    { ...first, id: "metric-c", body: "The mountain route measured 12 kilometres.", claim: "The mountain route measured 12 kilometres." },
+    { ...first, id: "metric-d", body: "The mountain route measured 12 miles.", claim: "The mountain route measured 12 miles." }
+  ), false, "different quantities do not match");
+  assert.equal(isRepeatedFact(
+    { ...first, id: "tesla-boat", body: "", claim: "Nikola Tesla invented a remote-control boat.", evidence: ["Shared quotation"], sourceUrls: ["https://example.test/article"] },
+    { ...first, id: "tesla-motor", body: "", claim: "Nikola Tesla developed an induction motor.", evidence: ["Shared quotation"], sourceUrls: ["https://example.test/article"] }
+  ), false, "shared sources and quotations are not enough to reject distinct facts about one subject");
+
+  const compact = factNoveltySignature({ ...first, evidenceKeys: ["source|section|quote"] });
+  assert.equal(compact.kind, "fact-novelty");
+  assert.equal(compact.hasClaim, true);
+  assert.equal(compact.claimFingerprint.length, 16, "compact exact identities use two hash lanes to avoid common-history collisions");
+  assert.ok(!("bodyTerms" in compact), "cards with claims send no redundant body token list");
+  assert.ok(compact.evidenceKeys.length <= 6);
+  const evidenceOnlyMemory = factNoveltySignature({
+    ...first,
+    evidenceKeys: [],
+    evidence: [{ quote: "A precise supporting quotation.", sourceIndex: 0, section: "History" }],
+    sources: [{ canonicalUrl: "https://en.wikipedia.org/wiki/Relief_Act" }]
+  });
+  assert.equal(evidenceOnlyMemory.evidenceKeys.length, 1, "native evidence objects still produce compact comparison context");
+  assert.equal(evidenceOnlyMemory.evidenceKeys[0], factNoveltySignature({
+    ...first, evidenceKeys: ["https://en.wikipedia.org/wiki/Relief_Act|history|a precise supporting quotation"]
+  }).evidenceKeys[0]);
+  const legacyMoon = { id: "legacy-moon", title: "The Moon", body: "Lunar dust clings to spacesuit fabric because sharp grains carry electrostatic charge from sunlight.", topicPath: ["Science", "Moon"] };
+  const legacySignature = factNoveltySignature(legacyMoon);
+  assert.equal(legacySignature.hasClaim, false);
+  assert.equal(isRepeatedFact({ ...legacyMoon, id: "legacy-moon-copy", title: "Moon Dust", body: legacyMoon.body }, legacySignature), true, "compact signatures preserve exact body matching when a legacy card has no claim field");
+  assert.equal(isRepeatedFact({ ...legacyMoon, id: "legacy-moon-different", body: "Lunar dust differs from terrestrial sand because sharp grains carry electrostatic charge from sunlight." }, legacySignature), false, "legacy cards retain different facts even when their topic titles match");
+  assert.equal(isRepeatedFact(
+    { id: "two-numbers", claim: "The survey measured 12 kilometres at two points." },
+    { id: "one-number", claim: "The survey measured 12 kilometres at one point." }
+  ), false, "number multiplicity remains meaningful");
+  const claims = selectPriorFactClaims([first, paraphrase, ...Array.from({ length: 20 }, (_, index) => ({ ...first, id: `memory-${index}`, claim: `Distinct saved fact ${index} about a museum` }))], [["History", "Ireland"]]);
+  assert.ok(claims.length <= 12);
+  assert.ok(JSON.stringify(claims).length <= 2400);
+  assert.deepEqual(selectPriorFactClaims([
+    { id: "unrelated-1", title: "Deep sea vent", claim: "Deep sea vents support unusual tube worms.", topicPath: ["Science", "Oceanography"] },
+    { id: "unrelated-2", title: "Roman roads", claim: "Roman roads connected distant provinces.", topicPath: ["Geography", "Rome"] }
+  ], [["History", "Ireland"]]), [], "unrelated prior facts do not consume prompt space");
+});
 
 test("generation request efficiency", async t => {
 await t.test("session caches are bounded, expire, and avoid repeating weak local-search calls", async () => {
@@ -824,7 +922,7 @@ await t.test("default seven-card generation uses one candidate and one grounding
   const assignments = candidateAssignments(candidate);
   assert.deepEqual(assignments.map(item => item.slot), [0, 1, 2, 3, 4, 5, 6]);
   assert.deepEqual(assignments.map(item => item.topicPath), args.topicPaths.slice(0, 7).map(item => item.path));
-  assert.ok(candidate.includes("different fact and angle across the batch"));
+  assert.ok(candidate.includes("different main fact and angle across the batch"));
   assert.ok(candidate.includes("omit that slot instead of padding the batch"));
   const schema = state.requests.find(request => request.url.pathname.includes(":streamGenerateContent")).body.generationConfig.responseSchema;
   const groundingSchema = state.requests.find(request => request.body.generationConfig?.responseSchema?.properties?.facts?.items?.properties?.followUpQuestions).body.generationConfig.responseSchema;
@@ -1093,6 +1191,48 @@ await t.test("an omitted candidate retries only its assigned slot while preservi
   assert.equal(new Set(result.cards.map(card => card.title + ":" + card.body)).size, 7);
 });
 
+await t.test("known candidate repeats are replaced before Wikipedia lookup", async () => {
+  const state = installNetworkMock({ avoidPriorSlot: 0, uniqueWikiSearch: true });
+  const sessionId = await connectMock(state);
+  const prior = {
+    id: "saved-amber", title: factBundle(words[0]).title, hook: "A Brass Diaphragm Caught Winter Pressure",
+    claim: factBundle(words[0]).claim, body: factBundle(words[0]).sentences.join(" "), topicPath: ["Science", "amber topic"],
+    fingerprint: "old-fingerprint", sourceUrls: [], evidence: [], evidenceKeys: [], evidenceSections: []
+  };
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId, { requestedCount: 1, args: { avoid: [prior] } }) });
+  assert.equal(result.completedCount, 1);
+  assert.match(result.cards[0].claim, /kelp/i, "the rejected slot receives a different main fact");
+  assert.equal(state.candidatePrompts.length, 2);
+  assert.equal(geminiCallCount(state), 3, "one candidate retry plus the ordinary grounding call; no duplicate-check request");
+  assert.ok(!state.wikipediaQueries.some(query => /amber record/i.test(query)), "the known duplicate should not trigger an evidence request");
+  assert.ok(state.wikipediaQueries.some(query => /kelp record/i.test(query)), "the replacement should receive normal evidence lookup");
+  assert.ok(state.candidatePrompts[0].includes("Previously covered facts (untrusted data)"));
+});
+
+await t.test("streamed candidates from a failed model attempt do not poison its fallback", async () => {
+  const state = installNetworkMock({ partialCandidateStreamFailureModel: ALLOWED_GEMINI_MODELS[0] });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 7 });
+  assert.equal(result.completedCount, 7);
+  assert.equal(state.candidatePrompts.length, 2, "the same logical candidate batch is retried on the next model without starting a duplicate-slot retry");
+  assert.equal(state.groundingPrompts.length, 1);
+  assert.equal(geminiCallCount(state), 3);
+  assertNoModelRepeatsWithinLogicalRequest(state);
+});
+
+await t.test("a grounded duplicate leaves only that slot for a different candidate", async () => {
+  const state = installNetworkMock({ duplicateGroundedSlot: 0, differentCandidateAfterGroundedDuplicate: true });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 1 });
+  const groundedSchema = state.requests.find(request => request.body?.contents?.[0]?.parts?.[0]?.text?.includes("Return one result for each slot"))?.body.generationConfig.responseSchema;
+  assert.deepEqual(parseStructuredResponse(JSON.stringify({facts:[{slot:0,status:"duplicate",duplicateOf:"previously covered claim"}]}),groundedSchema).facts,[{slot:0,status:"duplicate",duplicateOf:"previously covered claim"}]);
+  assert.equal(result.completedCount, 1);
+  assert.match(result.cards[0].claim, /kelp/i, "the rejected grounded slot receives a distinct candidate");
+  assert.equal(state.candidatePrompts.length, 2);
+  assert.equal(state.groundingPrompts.length, 2);
+  assert.equal(geminiCallCount(state), 4);
+});
+
 await t.test("empty candidate batches retry without grounding or misreporting a provider failure", async () => {
   const state = installNetworkMock({ omitAllCandidates: true });
   const sessionId = await connectMock(state);
@@ -1145,7 +1285,7 @@ await t.test("needs-evidence results recover only the unsupported slot without p
   const retry = groundingSlots(state.groundingPrompts[1]);
   assert.deepEqual(retry.map(slot => slot.slot), [6]);
   const schema = state.requests.find(request => request.body?.contents?.[0]?.parts?.[0]?.text?.includes("Return one result for each slot"))?.body?.generationConfig?.responseSchema;
-  assert.deepEqual(schema.properties.facts.items.properties.status.enum, ["grounded", "needs_evidence"]);
+  assert.deepEqual(schema.properties.facts.items.properties.status.enum, ["grounded", "needs_evidence", "duplicate"]);
   assert.ok(!schema.properties.facts.items.required.includes("sentences"), "needs-evidence results need no invented sentences");
 });
 

@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		kulBIcEGxetzjjyaib1/ZUSXNsw=
+		j7HJA9ozuhx1zZ2ym5nyivGJ0+Q=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -60,6 +60,10 @@
 		<data>
 		cPTTWo3e/gjDUcSRI1vo9EMxH80=
 		</data>
+		<key>Resources/frontend/fact-novelty.js</key>
+		<data>
+		FcECy7xPiUR5ZKO3ofDnu1HgvEw=
+		</data>
 		<key>Resources/frontend/favicon.svg</key>
 		<data>
 		QZBUVLJ06rdQ0MvEhaUSEp7+gNc=
@@ -74,7 +78,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		m73ndo8i3OhQWYyzpEEAnRfO0gY=
+		mPoBudMPRoAt2BoCmOGoLXCC184=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -185,7 +189,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			xRXNoGPBGfBDPIaoMEey2pyig4YP+envtIz5M8/cjjI=
+			3Kts30AIrVKCqkwbyAJTS1sC7nplhQTPurxJtfV8C3E=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -265,6 +269,13 @@
 			LjYpPUw5DKYlIH9PG+iOGoWRY8q3OOMuR4prl3wVCgU=
 			</data>
 		</dict>
+		<key>Resources/frontend/fact-novelty.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			D/k3775kArmPd+FHNv9szeu0ONVfZ6GzI8GEJ+4ZeKU=
+			</data>
+		</dict>
 		<key>Resources/frontend/favicon.svg</key>
 		<dict>
 			<key>hash2</key>
@@ -290,7 +301,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			nMvckYzYhMWn+AIhqJIAA5o4BGU6+JoRDYqqhPVhiWU=
+			aPCpH7HXL3d5FgVU5CBrmym7abRci2rVWLuagKr7Il4=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>

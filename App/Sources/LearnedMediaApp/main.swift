@@ -50,6 +50,7 @@ private struct GeminiCandidateEnvelope: Decodable { let facts: [GeminiCandidate]
 private struct GeminiGroundedFact: Decodable {
     let topicPath: [String]?
     let status: String?
+    let duplicateOf: String?
     let claimEvidenceIds: [String]?
     let missingEvidence: String?
     let slot: Int?
@@ -65,12 +66,13 @@ private struct GeminiGroundedFact: Decodable {
     let chronology: GeminiChronology?
     let locations: [GeminiLocationHint]?
     enum CodingKeys: String, CodingKey {
-        case topicPath, status, claimEvidenceIds, missingEvidence, slot, title, hook, body, claim, sentences, evidence, sourceIndexes, difficulty, followUpQuestions, chronology, locations
+        case topicPath, status, duplicateOf, claimEvidenceIds, missingEvidence, slot, title, hook, body, claim, sentences, evidence, sourceIndexes, difficulty, followUpQuestions, chronology, locations
     }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         topicPath = try container.decodeIfPresent([String].self, forKey: .topicPath)
         status = try container.decodeIfPresent(String.self, forKey: .status)
+        duplicateOf = try container.decodeIfPresent(String.self, forKey: .duplicateOf)
         claimEvidenceIds = try container.decodeIfPresent([String].self, forKey: .claimEvidenceIds)
         missingEvidence = try container.decodeIfPresent(String.self, forKey: .missingEvidence)
         slot = try container.decodeIfPresent(Int.self, forKey: .slot)
@@ -1469,7 +1471,7 @@ private final class GeminiClient {
 
     private func groundedSchema(sentenceCount: Int) -> [String: Any] {
         ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": [
-            "slot": ["type": "INTEGER"], "status": ["type": "STRING", "enum": ["grounded", "needs_evidence"]], "claimEvidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]], "missingEvidence": ["type": "STRING"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
+            "slot": ["type": "INTEGER"], "status": ["type": "STRING", "enum": ["grounded", "needs_evidence", "duplicate"]], "duplicateOf": ["type": "STRING"], "claimEvidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]], "missingEvidence": ["type": "STRING"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
             "sentences": ["type": "ARRAY", "minItems": sentenceCount, "maxItems": sentenceCount, "items": ["type": "STRING"]],
             "evidence": ["type": "ARRAY", "maxItems": 12, "items": ["type": "OBJECT", "properties": ["sentence": ["type": "INTEGER"], "evidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["sentence", "evidenceIds"]]],
             "followUpQuestions": ["type": "ARRAY", "maxItems": 2, "items": ["type": "STRING"]],
@@ -1477,15 +1479,44 @@ private final class GeminiClient {
                 "dateText": ["type": "STRING"], "eventText": ["type": "STRING"], "anchor": ["type": "OBJECT", "properties": ["field": ["type": "STRING", "enum": ["title", "hook", "body"]], "sentenceIndex": ["type": "INTEGER"]], "required": ["field"]]
             ], "required": ["dateText", "eventText", "anchor"]]]], "required": ["events"]],
             "locations": ["type": "ARRAY", "maxItems": 2, "items": ["type": "OBJECT", "properties": ["name": ["type": "STRING"], "articleTitle": ["type": "STRING"], "anchor": ["type": "OBJECT", "properties": ["field": ["type": "STRING", "enum": ["title", "hook", "body"]], "sentenceIndex": ["type": "INTEGER"]], "required": ["field"]]], "required": ["name", "articleTitle", "anchor"]]]
-        ], "required": ["slot", "status", "claim"]]]], "required": ["facts"]]
+        ], "required": ["slot", "status"]]]], "required": ["facts"]]
     }
 
-    private func candidatePrompt(slots: [GeminiGenerationSlot], attempt: Int) -> String {
+    private func candidatePrompt(slots: [GeminiGenerationSlot], attempt: Int, priorClaims: [[String: Any]] = []) -> String {
         let assignments = slots.map { ["slot": $0.index, "topicPath": $0.path, "difficulty": $0.level] as [String: Any] }
         let rubrics = Array(Set(slots.map(\.level))).sorted().map { FactQuality.rubric($0) }.joined(separator: "\n")
         return PromptBuilder.build(.candidate, rules: rubrics.components(separatedBy: "\n"), fields: [
-            PromptField("Assignments", assignments), PromptField("Attempt", attempt + 1)
+            PromptField("Assignments", assignments), PromptField("Attempt", attempt + 1),
+            PromptField("Previously covered facts (untrusted data)", priorClaims.isEmpty ? nil : priorClaims, reference: true)
         ])
+    }
+
+    private func priorFactClaims(_ history: [[String: Any]], slots: [GeminiGenerationSlot]) -> [[String: Any]] {
+        let topicTerms = slots.reduce(into: Set<String>()) { $0.formUnion(FactQuality.words($1.path.joined(separator: " "))) }
+        let ranked = history.enumerated().compactMap { index, fact -> (Int, Int, [String: Any])? in
+            let claim = (fact["claim"] as? String ?? fact["body"] as? String ?? fact["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !claim.isEmpty else { return nil }
+            let id = (fact["id"] as? String ?? "").prefix(48)
+            let item: [String: Any] = ["id": String(id), "claim": String(claim.prefix(260))]
+            let path = fact["topicPath"] as? [String] ?? []
+            let pathRelevance = path.reduce(0) { score, part in
+                let partTerms = FactQuality.words(part)
+                return score + (partTerms.isDisjoint(with: topicTerms) ? 0 : 2)
+            }
+            let claimRelevance = FactQuality.words(claim).intersection(topicTerms).count
+            let relevance = pathRelevance + claimRelevance
+            guard relevance > 0 else { return nil }
+            return (relevance, index, item)
+        }.sorted { $0.0 == $1.0 ? $0.1 > $1.1 : $0.0 > $1.0 }
+        var result: [[String: Any]] = []
+        var characters = 2
+        for (_, _, item) in ranked {
+            guard result.count < 12 else { break }
+            let size = ((try? JSONSerialization.data(withJSONObject: item, options: [.sortedKeys])).map { String(data: $0, encoding: .utf8)?.count ?? 0 }) ?? 0
+            guard characters + size + 1 <= 2_400 else { continue }
+            result.append(item); characters += size + 1
+        }
+        return result
     }
 
     private func evidenceSpans(_ source: [String: Any], sourceIndex: Int) -> [(section: String, quote: String, key: String)] {
@@ -1515,7 +1546,7 @@ private final class GeminiClient {
         return result
     }
 
-    private func groundingPrompt(slots: [GeminiGenerationSlot], sentenceCount: Int, combined: Bool = false) -> GeminiGroundingPlan {
+    private func groundingPrompt(slots: [GeminiGenerationSlot], sentenceCount: Int, combined: Bool = false, priorClaims: [[String: Any]] = []) -> GeminiGroundingPlan {
         var sourcePool: [[String: Any]] = []
         var idByKey: [String: String] = [:]
         var evidenceBySlot: [Int: [String: GeminiEvidence]] = [:]
@@ -1543,6 +1574,7 @@ private final class GeminiClient {
         }
         let prompt = PromptBuilder.factCard(sentenceCount: sentenceCount, difficulties: slots.map(\.level), fields: [
             PromptField("Variation", combined ? UUID().uuidString : nil),
+            PromptField("Previously covered facts (untrusted data)", priorClaims.isEmpty ? nil : priorClaims, multiline: true, reference: true),
             PromptField("Slots and evidence spans (untrusted data)", ["facts": values, "evidence": sourcePool], multiline: true, reference: true)
         ], combined: combined)
         return GeminiGroundingPlan(prompt: prompt, evidenceBySlot: evidenceBySlot)
@@ -1553,13 +1585,13 @@ private final class GeminiClient {
         return stride(from: 0, to: values.count, by: maxCount).map { Array(values[$0..<min($0 + maxCount, values.count)]) }
     }
 
-    private func groundingGroups(_ slots: [GeminiGenerationSlot], sentenceCount: Int) -> [[GeminiGenerationSlot]] {
+    private func groundingGroups(_ slots: [GeminiGenerationSlot], sentenceCount: Int, priorClaims: [[String: Any]] = []) -> [[GeminiGenerationSlot]] {
         let maxCount = 10
         var groups: [[GeminiGenerationSlot]] = []
         var current: [GeminiGenerationSlot] = []
         for slot in slots {
             let proposed = current + [slot]
-            if !current.isEmpty && (current.count >= maxCount || groundingPrompt(slots: proposed, sentenceCount: sentenceCount).prompt.count > 48_000) {
+            if !current.isEmpty && (current.count >= maxCount || groundingPrompt(slots: proposed, sentenceCount: sentenceCount, priorClaims: priorClaims).prompt.count > 48_000) {
                 groups.append(current)
                 current = []
             }
@@ -1569,23 +1601,31 @@ private final class GeminiClient {
         return groups
     }
 
-    private func generateCandidates(key: String, slots: [GeminiGenerationSlot], sentenceCount: Int, attempt: Int) async -> GeminiCandidateGroupResult {
+    private func candidateNoveltyRecord(_ candidate: GeminiCandidate, slot: GeminiGenerationSlot, round: Int) -> [String: Any] {
+        ["id": "candidate-\(round)-\(slot.index)", "title": candidate.title ?? "", "claim": candidate.claim ?? "", "body": "", "topicPath": candidate.topicPath ?? slot.path]
+    }
+
+    private func generateCandidates(key: String, slots: [GeminiGenerationSlot], sentenceCount: Int, attempt: Int, avoid: [[String: Any]], priorClaims: [[String: Any]], allowStreamPrefetch: Bool) async -> GeminiCandidateGroupResult {
         var requestOutcomes: [[String: Any]] = []
         let parser = JSONArrayItemStreamParser(property: "facts")
         let schema = candidateSchema(slotCount: slots.count)
         let fields = schema["properties"] as? [String: Any] ?? [:]
         let itemSchema = (fields["facts"] as? [String: Any])?["items"] as? [String: Any] ?? [:]
         var prefetched: [Int: (identity: String, task: Task<[[String: Any]], Never>)] = [:]
+        var streamedNoveltyCandidates: [[String: Any]] = []
+        let historicalNovelty = allowStreamPrefetch ? FactNoveltyIndex(avoid) : nil
         func identity(_ candidate: GeminiCandidate) -> String {
             [candidate.title ?? "", candidate.claim ?? "", candidate.topicPath?.joined(separator: "\u{0}") ?? "", candidate.wikipediaSearchTitles?.joined(separator: "\u{0}") ?? ""].joined(separator: "\u{1}")
         }
         do {
-            let result = try await structured(key: key, prompt: candidatePrompt(slots: slots, attempt: attempt), schema: schema, stage: "candidate", maxOutputTokens: max(4096, slots.map(\.candidateOutputFloor).max() ?? 0), streaming: true, onStreamAttemptStart: {
+            let result = try await structured(key: key, prompt: candidatePrompt(slots: slots, attempt: attempt, priorClaims: priorClaims), schema: schema, stage: "candidate", maxOutputTokens: max(4096, slots.map(\.candidateOutputFloor).max() ?? 0), streaming: true, onStreamAttemptStart: {
                 parser.reset()
                 prefetched.values.forEach { $0.task.cancel() }
                 prefetched.removeAll()
+                streamedNoveltyCandidates.removeAll()
             }, onStreamText: { fragment in
                 for object in parser.append(fragment) {
+                    guard allowStreamPrefetch else { continue }
                     guard let normalized = StructuredResponse.normalize(object, schema: itemSchema),
                           let data = try? JSONSerialization.data(withJSONObject: normalized),
                           let candidate = try? JSONDecoder().decode(GeminiCandidate.self, from: data),
@@ -1594,6 +1634,11 @@ private final class GeminiClient {
                           candidate.title?.isEmpty == false, candidate.claim?.isEmpty == false,
                           self.topicPathMatches(candidate.topicPath, assigned: slot.path),
                           prefetched[slotIndex] == nil else { continue }
+                    let noveltyRecord = self.candidateNoveltyRecord(candidate, slot: slot, round: attempt)
+                    if historicalNovelty?.findDuplicate(noveltyRecord) != nil || streamedNoveltyCandidates.contains(where: { FactQuality.repeated(noveltyRecord, $0) }) {
+                        continue
+                    }
+                    streamedNoveltyCandidates.append(noveltyRecord)
                     let lookup = WikipediaLookup(slot: slotIndex, title: candidate.title!, searchTitles: candidate.wikipediaSearchTitles ?? [], claim: candidate.claim!, difficulty: slot.level, topicPath: slot.path)
                     prefetched[slotIndex] = (identity(candidate), Task { await self.wikipedia.resolveBatch([lookup])[slotIndex] ?? [] })
                 }
@@ -1629,7 +1674,7 @@ private final class GeminiClient {
         return schema
     }
 
-    private func cachedSlots(_ slots: [GeminiGenerationSlot], sentenceCount: Int, avoid: [[String: Any]]) async -> [GeminiGenerationSlot]? {
+    private func cachedSlots(_ slots: [GeminiGenerationSlot], sentenceCount: Int, avoid: [[String: Any]], priorClaims: [[String: Any]]) async -> [GeminiGenerationSlot]? {
         var prepared: [GeminiGenerationSlot] = [], reserved = Set<String>()
         let usedQuotes = Set(avoid.flatMap { ($0["evidence"] as? [Any] ?? []).compactMap { entry -> String? in
             (entry as? String) ?? (entry as? [String: Any])?["quote"] as? String
@@ -1649,14 +1694,14 @@ private final class GeminiClient {
             guard let chosen else { return nil }
             var copy = slot; copy.mode = "combined"; copy.sources = [chosen]; prepared.append(copy)
         }
-        guard prepared.count <= 10, groundingPrompt(slots: prepared, sentenceCount: sentenceCount, combined: true).prompt.count <= 48_000 else { return nil }
+        guard prepared.count <= 10, groundingPrompt(slots: prepared, sentenceCount: sentenceCount, combined: true, priorClaims: priorClaims).prompt.count <= 48_000 else { return nil }
         return prepared
     }
 
-    private func generateGrounded(key: String, slots: [GeminiGenerationSlot], sentenceCount: Int, combined: Bool = false) async -> GeminiGroundedGroupResult {
+    private func generateGrounded(key: String, slots: [GeminiGenerationSlot], sentenceCount: Int, combined: Bool = false, priorClaims: [[String: Any]] = []) async -> GeminiGroundedGroupResult {
         var requestOutcomes: [[String: Any]] = []
         do {
-            let plan = groundingPrompt(slots: slots, sentenceCount: sentenceCount, combined: combined)
+            let plan = groundingPrompt(slots: slots, sentenceCount: sentenceCount, combined: combined, priorClaims: priorClaims)
             let outputTokens = min(OutputCapacity.maximum, max(8192, slots.count * sentenceCount * 500, slots.map(\.groundingOutputFloor).max() ?? 0))
             let result = try await structured(key: key, prompt: plan.prompt, schema: combinedSchema(sentenceCount: sentenceCount, combined: combined), stage: "grounding", maxOutputTokens: outputTokens)
             requestOutcomes = result.outcomes
@@ -1750,20 +1795,25 @@ private final class GeminiClient {
         var providerExhausted = false
         var completed = 0
 
-        let cached = await cachedSlots(slots, sentenceCount: sentenceCount, avoid: avoid)
+        let cached = await cachedSlots(slots, sentenceCount: sentenceCount, avoid: avoid, priorClaims: priorFactClaims(avoid, slots: slots))
         if let cached { slots = cached }
         for attempt in (cached == nil ? 0 : -1)..<3 where accepted.count < targetCount && !providerExhausted {
             try Task.checkCancellation()
+            var candidateClaimsThisRound: [[String: Any]] = []
+            let currentHistory = avoid + accepted.keys.sorted().compactMap { accepted[$0] }
             let pendingCandidates = slots.filter { $0.mode == "candidate" && accepted[$0.index] == nil }
             let candidateGroups = generationGroups(pendingCandidates, maxCount: pendingCandidates.contains(where: { $0.candidateOutputFloor == OutputCapacity.maximum }) ? 1 : groupSize)
             let candidateResults = await withTaskGroup(of: GeminiCandidateGroupResult.self, returning: [GeminiCandidateGroupResult].self) { group in
-                for batch in candidateGroups { group.addTask { await self.generateCandidates(key: key, slots: batch, sentenceCount: sentenceCount, attempt: attempt) } }
+                for batch in candidateGroups {
+                    let priorClaims = priorFactClaims(currentHistory, slots: batch)
+                    group.addTask { await self.generateCandidates(key: key, slots: batch, sentenceCount: sentenceCount, attempt: attempt, avoid: currentHistory, priorClaims: priorClaims, allowStreamPrefetch: candidateGroups.count == 1) }
+                }
                 var results: [GeminiCandidateGroupResult] = []
                 for await result in group { results.append(result) }
                 return results
             }
             try Task.checkCancellation()
-            for result in candidateResults {
+            for result in candidateResults.sorted(by: { ($0.slots.first ?? .max) < ($1.slots.first ?? .max) }) {
                 outcomes.append(contentsOf: result.outcomes)
                 if result.outcomes.contains(where: { $0["status"] as? String == "success" }) { generationStatus = "connected" }
                 if let status = result.status { generationStatus = status; providerExhausted = true }
@@ -1778,6 +1828,15 @@ private final class GeminiClient {
                         if let slotIndex = slots.firstIndex(where: { $0.index == index }) { slots[slotIndex].lastError = result.error ?? diagnostics.record(operation: "candidate", slot: index, detail: "Gemini omitted a slot or returned a candidate for a different topic.") }
                         continue
                     }
+                    let noveltyRecord = candidateNoveltyRecord(candidate, slot: slots[slotIndex], round: attempt)
+                    if await ledger.isDuplicate(noveltyRecord) || candidateClaimsThisRound.contains(where: { FactQuality.repeated(noveltyRecord, $0) }) {
+                        slots[slotIndex].lastError = diagnostics.record(operation: "candidate", slot: index, detail: "This candidate repeats a fact already covered in your history or this batch.")
+                        slots[slotIndex].mode = "candidate"
+                        slots[slotIndex].candidate = nil
+                        slots[slotIndex].sources = []
+                        continue
+                    }
+                    candidateClaimsThisRound.append(noveltyRecord)
                     slots[slotIndex].candidate = candidate
                     slots[slotIndex].sources = result.sources[index] ?? []
                     slots[slotIndex].mode = "grounding"
@@ -1801,12 +1860,16 @@ private final class GeminiClient {
 
             if providerExhausted { break }
             let readyToGround = slots.filter { ($0.mode == "grounding" || $0.mode == "combined") && !$0.sources.isEmpty && accepted[$0.index] == nil }
-            let groundingBatches = groundingGroups(readyToGround, sentenceCount: sentenceCount).flatMap { batch in
+            let priorGroundingClaims = priorFactClaims(currentHistory, slots: readyToGround)
+            let groundingBatches = groundingGroups(readyToGround, sentenceCount: sentenceCount, priorClaims: priorGroundingClaims).flatMap { batch in
                 batch.contains(where: { $0.groundingOutputFloor == OutputCapacity.maximum }) ? batch.map { [$0] } : [batch]
             }
             var groundedCredentialError: String?
             await withTaskGroup(of: GeminiGroundedGroupResult.self) { group in
-                for batch in groundingBatches { group.addTask { await self.generateGrounded(key: key, slots: batch, sentenceCount: sentenceCount, combined: attempt < 0) } }
+                for batch in groundingBatches {
+                    let priorClaims = priorFactClaims(currentHistory, slots: batch)
+                    group.addTask { await self.generateGrounded(key: key, slots: batch, sentenceCount: sentenceCount, combined: attempt < 0, priorClaims: priorClaims) }
+                }
                 for await result in group {
                     if Task.isCancelled { group.cancelAll(); break }
                     outcomes.append(contentsOf: result.outcomes)
@@ -1826,6 +1889,13 @@ private final class GeminiClient {
                         }
                         if fact.status == "needs_evidence" {
                             slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: "The supplied passages do not support this card’s specific main claim; more evidence is needed.")
+                            slots[slotIndex].mode = "candidate"
+                            slots[slotIndex].candidate = nil
+                            slots[slotIndex].sources = []
+                            continue
+                        }
+                        if fact.status == "duplicate" {
+                            slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: "Gemini identified this as a repeat of \(fact.duplicateOf ?? "another covered fact").")
                             slots[slotIndex].mode = "candidate"
                             slots[slotIndex].candidate = nil
                             slots[slotIndex].sources = []

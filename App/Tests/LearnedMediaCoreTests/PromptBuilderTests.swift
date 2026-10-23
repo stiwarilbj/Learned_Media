@@ -191,8 +191,8 @@ final class PromptBuilderTests: XCTestCase {
         let assignments: [[String: Any]] = (0..<7).map { ["slot": $0, "topicPath": ["Science", "Physics"], "difficulty": 5] }
         let prompt = PromptBuilder.build(.candidate, fields: [PromptField("Assignments", assignments)])
         XCTAssertTrue(prompt.contains("Return each ID at most once"))
-        XCTAssertTrue(prompt.contains("different fact and angle across the batch, including slots with the same topic"))
-        XCTAssertTrue(prompt.contains("Different titles or wording of the same underlying claim do not count as distinct facts"))
+        XCTAssertTrue(prompt.contains("different main fact and angle across the batch, including slots with the same topic"))
+        XCTAssertTrue(prompt.contains("Different titles, paraphrases, reordered wording, or extra background about the same main claim are repeats"))
         XCTAssertTrue(prompt.contains("omit that slot instead of padding the batch"))
         XCTAssertTrue(prompt.contains("Return an empty facts array if none qualifies"))
         let payload = prompt.components(separatedBy: "Assignments: ")[1]
