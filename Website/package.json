@@ -12,6 +12,7 @@
     "test:card-follow-ups": "node scripts/build-native-follow-ups.mjs --check && node scripts/test-card-follow-ups.mjs",
     "test:card-explanations": "node scripts/build-native-card-explanations.mjs --check && node scripts/test-card-explanations.mjs",
     "test:card-glossary": "node scripts/build-native-card-glossary.mjs --check && node scripts/test-card-glossary.mjs",
+    "test:card-chronology": "node scripts/build-native-card-chronology.mjs --check && node scripts/test-card-chronology.mjs",
     "test:responsive-data": "node scripts/test-responsive-data.mjs",
     "test:video-semantic": "node scripts/test-video-semantic.mjs",
     "test:search-workers": "node scripts/test-search-workers.mjs",

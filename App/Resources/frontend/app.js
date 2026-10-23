@@ -20,6 +20,7 @@
   const cardReveal = window.LEARNED_MEDIA_CARD_REVEAL;
   const cardExplanations = window.LEARNED_MEDIA_CARD_EXPLANATIONS;
   const cardGlossary = window.LEARNED_MEDIA_CARD_GLOSSARY;
+  const cardChronology = window.LEARNED_MEDIA_CARD_CHRONOLOGY;
   const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
   const sourceSpotlightStates = new Map();
   const sourceSpotlightRequests = new Map();
@@ -35,6 +36,8 @@
   let focusLearnMenuAfterRender = false;
   let focusedGlossaryHeadingCardId = null;
   let focusedGlossaryTriggerCardId = null;
+  let focusedChronologyHeadingCardId = null;
+  let focusedChronologyTriggerCardId = null;
   const BEST_SELLING_BOOK_ORDER = [
     "A Tale of Two Cities", "The Little Prince", "The Alchemist", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber", "The Hobbit", "Alice's Adventures in Wonderland",
     "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World", "The Bridges of Madison County", "One Hundred Years of Solitude", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose", "The Eagle Has Landed", "Watership Down", "The Hite Report", "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life",
@@ -849,6 +852,7 @@
     }, card, { sources: references.sources, evidence: references.evidence, image: image, hook: hook });
     normalized.explanations = cardExplanations.normalizeCardExplanations(normalized);
     normalized.glossary = cardGlossary.normalizeCardGlossary(normalized);
+    normalized.chronology = cardChronology.createSavedCardChronology(normalized.chronology, normalized) || cardChronology.normalizeSavedCardChronology(normalized);
     normalized.followUpQuestions = Array.isArray(card.followUpQuestions)
       ? cardFollowUps.createSavedFollowUpQuestions(card.followUpQuestions, normalized)
       : cardFollowUps.normalizeSavedFollowUpQuestions(card.followUpQuestions, normalized);
@@ -1008,6 +1012,28 @@
     cardGlossary.setCardGlossaryPanelOpen(state.workspaceId, card.id, cardGlossary.cardGlossaryFingerprint(card), false);
     cancelCardGlossary(card.id);
     focusedGlossaryTriggerCardId = card.id;
+    render();
+  }
+  function nativeChronologyFingerprint(card) { return cardChronology.cardChronologyFingerprint(card); }
+  function nativeChronologyEvents(card) {
+    const models = nativeCardRevealModel(card);
+    const progress = cardReveal.getCardRevealProgress(state.workspaceId, card.id, models.revealModel);
+    const graduallyRevealing = !progress?.complete && (Boolean(progress) || state.revealGradually);
+    const visibleCount = graduallyRevealing ? progress?.visibleCount || 0 : models.revealModel.sentences.length;
+    const bodyFullyVisible = !graduallyRevealing || visibleCount >= models.revealModel.sentences.length;
+    return cardChronology.getCardChronologyEvents(card, visibleCount, bodyFullyVisible);
+  }
+  function openNativeChronology(card) {
+    closeLearnMenu(false);
+    cardChronology.setCardChronologyPanelOpen(state.workspaceId, card.id, nativeChronologyFingerprint(card), true);
+    focusedLearnCardId = null;
+    focusLearnMenuAfterRender = false;
+    focusedChronologyHeadingCardId = card.id;
+    render();
+  }
+  function closeNativeChronology(card) {
+    cardChronology.setCardChronologyPanelOpen(state.workspaceId, card.id, nativeChronologyFingerprint(card), false);
+    focusedChronologyTriggerCardId = card.id;
     render();
   }
   function handleLearnMenuKeydown(event) {
@@ -1347,6 +1373,35 @@
       retry.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { void explainCardTerms(card.id); } }, "Retry"));
       panel.appendChild(retry);
     }
+    return panel;
+  }
+  function nativeChronologyPanel(card) {
+    const events = nativeChronologyEvents(card);
+    const fingerprint = nativeChronologyFingerprint(card);
+    const isOpen = cardChronology.getCardChronologyPanelOpen(state.workspaceId, card.id, fingerprint);
+    if (events.length < 2) {
+      if (isOpen) {
+        cardChronology.setCardChronologyPanelOpen(state.workspaceId, card.id, fingerprint, false);
+        focusedChronologyTriggerCardId = card.id;
+      }
+      return null;
+    }
+    if (!isOpen) return null;
+    const panelID = "card-chronology-" + safeCardElementId(card.id);
+    const panel = node("section", { className: "learning-answer card-chronology", role: "region", ariaLabelledby: panelID, onKeydown: function (event) { if (event.key === "Escape") { event.preventDefault(); closeNativeChronology(card); } } });
+    const heading = node("div", { className: "card-explanation-heading" });
+    heading.appendChild(node("h4", { id: panelID, className: "answer-label", tabIndex: -1, dataset: { chronologyHeadingCard: card.id } }, "Dates in this fact"));
+    heading.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { closeNativeChronology(card); } }, "Close"));
+    panel.appendChild(heading);
+    const list = node("ol", { className: "card-chronology-list " + (events.length > 4 ? "vertical" : "horizontal count-" + events.length) });
+    events.forEach(function (event) {
+      const item = node("li", { className: "card-chronology-event" });
+      if (event.intervalBefore) item.appendChild(node("span", { className: "card-chronology-interval", text: event.intervalBefore }));
+      item.appendChild(node("time", { className: "card-chronology-date", text: event.dateText }));
+      item.appendChild(node("span", { className: "card-chronology-description", text: event.description }));
+      list.appendChild(item);
+    });
+    panel.appendChild(list);
     return panel;
   }
   function sourceList(card, answer) {
@@ -2142,6 +2197,13 @@
       }
       if (!event.defaultPrevented) {
         const focusedCard = event.target && event.target.closest && event.target.closest(".fact-card");
+        const chronologyHeading = focusedCard && focusedCard.querySelector("[data-chronology-heading-card]");
+        const chronologyCard = chronologyHeading && state.cards.find(function (card) { return card.id === chronologyHeading.dataset.chronologyHeadingCard; });
+        if (chronologyCard) {
+          event.preventDefault();
+          closeNativeChronology(chronologyCard);
+          return;
+        }
         const glossaryHeading = focusedCard && focusedCard.querySelector("[data-glossary-heading-card]");
         const glossaryCard = glossaryHeading && state.cards.find(function (card) { return card.id === glossaryHeading.dataset.glossaryHeadingCard; });
         if (glossaryCard) {
@@ -2386,6 +2448,8 @@
     content.appendChild(node("p", { className: "fact-hook", text: card.hook }));
     content.appendChild(node("h3", { text: card.title }));
     content.appendChild(cardBody(card));
+    const chronologyPanel = nativeChronologyPanel(card);
+    if (chronologyPanel) content.appendChild(chronologyPanel);
     const glossaryPanel = nativeGlossaryPanel(card);
     if (glossaryPanel) content.appendChild(glossaryPanel);
     if (explanationMode) {
@@ -2433,6 +2497,7 @@
     } }, svg("chevronDown", 14)));
     if (state.learnMenuCardId === card.id) {
       const menu = node("div", { id: learnMenuID, className: "learn-more-popover", role: "menu", ariaLabel: "Learning tools", onKeydown: handleLearnMenuKeydown });
+      if (nativeChronologyEvents(card).length >= 2) menu.appendChild(node("button", { type: "button", role: "menuitem", dataset: { learnMenuCard: card.id }, onClick: function () { openNativeChronology(card); } }, svg("sparkles", 14), " ", "View dates"));
       menu.appendChild(node("button", { type: "button", role: "menuitem", dataset: { learnMenuCard: card.id }, onClick: function () { openNativeGlossary(card); } }, svg("sparkles", 14), " ", "Explain the terms"));
       learnMenu.appendChild(menu);
     }
@@ -2631,6 +2696,7 @@
     if (activeElement && activeElement.dataset && activeElement.dataset.moreMenuCard) focusedMoreCardId = activeElement.dataset.moreMenuCard;
     if (activeElement && activeElement.dataset && activeElement.dataset.learnTriggerCard) focusedLearnCardId = activeElement.dataset.learnTriggerCard;
     if (activeElement && activeElement.dataset && activeElement.dataset.learnMenuCard) focusedLearnCardId = activeElement.dataset.learnMenuCard;
+    if (activeElement && activeElement.dataset && activeElement.dataset.chronologyHeadingCard) focusedChronologyHeadingCardId = activeElement.dataset.chronologyHeadingCard;
     const activeField = activeElement && ["gemini-key", "youtube-key", "youtube-search", "global-search", "topic-search"].includes(activeElement.id) ? activeElement : null;
     if (activeField) { focusedFieldId = activeField.id; focusedSelection = typeof activeField.selectionStart === "number" ? [activeField.selectionStart, activeField.selectionEnd] : null; }
     else if (activeElement && activeElement !== document.body) { focusedFieldId = null; focusedSelection = null; }
@@ -2667,6 +2733,10 @@
     focusedGlossaryHeadingCardId = null;
     const restoreGlossaryTriggerCardId = focusedGlossaryTriggerCardId;
     focusedGlossaryTriggerCardId = null;
+    const restoreChronologyHeadingCardId = focusedChronologyHeadingCardId;
+    focusedChronologyHeadingCardId = null;
+    const restoreChronologyTriggerCardId = focusedChronologyTriggerCardId;
+    focusedChronologyTriggerCardId = null;
     window.requestAnimationFrame(function () {
       const nextTopicTree = document.querySelector(".topic-tree");
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
@@ -2738,6 +2808,14 @@
       }
       if (restoreGlossaryTriggerCardId) {
         const trigger = Array.from(document.querySelectorAll("[data-learn-trigger-card]")).find(function (element) { return element.dataset.learnTriggerCard === restoreGlossaryTriggerCardId; });
+        if (trigger) trigger.focus();
+      }
+      if (restoreChronologyHeadingCardId) {
+        const heading = Array.from(document.querySelectorAll("[data-chronology-heading-card]")).find(function (element) { return element.dataset.chronologyHeadingCard === restoreChronologyHeadingCardId; });
+        if (heading) heading.focus();
+      }
+      if (restoreChronologyTriggerCardId) {
+        const trigger = Array.from(document.querySelectorAll("[data-learn-trigger-card]")).find(function (element) { return element.dataset.learnTriggerCard === restoreChronologyTriggerCardId; });
         if (trigger) trigger.focus();
       }
     });

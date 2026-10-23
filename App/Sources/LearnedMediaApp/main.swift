@@ -62,8 +62,9 @@ private struct GeminiGroundedFact: Decodable {
     let sourceIndexes: [Int]?
     let difficulty: Int?
     let followUpQuestions: TolerantStringArray?
+    let chronology: GeminiChronology?
     enum CodingKeys: String, CodingKey {
-        case topicPath, status, claimEvidenceIds, missingEvidence, slot, title, hook, body, claim, sentences, evidence, sourceIndexes, difficulty, followUpQuestions
+        case topicPath, status, claimEvidenceIds, missingEvidence, slot, title, hook, body, claim, sentences, evidence, sourceIndexes, difficulty, followUpQuestions, chronology
     }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -82,6 +83,31 @@ private struct GeminiGroundedFact: Decodable {
         difficulty = try container.decodeIfPresent(Int.self, forKey: .difficulty)
         // Bad optional suggestions are discarded without making an otherwise valid card undecodable.
         followUpQuestions = (try? container.decode(TolerantStringArray.self, forKey: .followUpQuestions))
+        chronology = try? container.decode(GeminiChronology.self, forKey: .chronology)
+    }
+}
+private struct GeminiChronologyAnchor: Decodable {
+    let field: String?
+    let sentenceIndex: Int?
+}
+private struct GeminiChronologyEvent: Decodable {
+    let dateText: String?
+    let eventText: String?
+    let anchor: GeminiChronologyAnchor?
+}
+private struct GeminiChronology: Decodable {
+    let events: [GeminiChronologyEvent]?
+    var dictionary: [String: Any]? {
+        guard let events else { return nil }
+        let valid = events.compactMap { event -> [String: Any]? in
+            guard let dateText = event.dateText, !dateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let eventText = event.eventText, !eventText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let anchor = event.anchor, let field = anchor.field, ["title", "hook", "body"].contains(field) else { return nil }
+            var anchorValue: [String: Any] = ["field": field]
+            if let sentenceIndex = anchor.sentenceIndex { anchorValue["sentenceIndex"] = sentenceIndex }
+            return ["dateText": dateText, "eventText": eventText, "anchor": anchorValue]
+        }.prefix(8)
+        return valid.isEmpty ? nil : ["events": Array(valid)]
     }
 }
 private struct TolerantStringArray: Decodable {
@@ -1346,7 +1372,10 @@ private final class GeminiClient {
             "slot": ["type": "INTEGER"], "status": ["type": "STRING", "enum": ["grounded", "needs_evidence"]], "claimEvidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]], "missingEvidence": ["type": "STRING"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
             "sentences": ["type": "ARRAY", "minItems": sentenceCount, "maxItems": sentenceCount, "items": ["type": "STRING"]],
             "evidence": ["type": "ARRAY", "maxItems": 12, "items": ["type": "OBJECT", "properties": ["sentence": ["type": "INTEGER"], "evidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["sentence", "evidenceIds"]]],
-            "followUpQuestions": ["type": "ARRAY", "maxItems": 2, "items": ["type": "STRING"]]
+            "followUpQuestions": ["type": "ARRAY", "maxItems": 2, "items": ["type": "STRING"]],
+            "chronology": ["type": "OBJECT", "properties": ["events": ["type": "ARRAY", "maxItems": 8, "items": ["type": "OBJECT", "properties": [
+                "dateText": ["type": "STRING"], "eventText": ["type": "STRING"], "anchor": ["type": "OBJECT", "properties": ["field": ["type": "STRING", "enum": ["title", "hook", "body"]], "sentenceIndex": ["type": "INTEGER"]], "required": ["field"]]
+            ], "required": ["dateText", "eventText", "anchor"]]]], "required": ["events"]]
         ], "required": ["slot", "status", "claim"]]]], "required": ["facts"]]
     }
 
@@ -1596,6 +1625,7 @@ private final class GeminiClient {
         let generatedAt = isoNow()
         var card: [String: Any] = ["id": "gemini-\(UUID().uuidString)", "title": title, "hook": hook, "body": sentences.joined(separator: " "), "sentences": sentences, "sentenceCount": sentenceCount, "claim": claim, "evidence": remappedQuotes, "topicPath": slot.path, "sources": linkedSources, "difficulty": slot.level, "accent": ["blue", "lilac", "mint", "sand", "coral"][slot.index % 5], "createdAt": generatedAt, "provenance": ["provider": "gemini", "model": resolvedModel ?? model ?? "Gemini", "generatedAt": generatedAt]]
         if let questions = fact.followUpQuestions?.values, !questions.isEmpty { card["followUpQuestions"] = questions }
+        if let chronology = fact.chronology?.dictionary { card["chronology"] = chronology }
         return card
     }
 

@@ -10,6 +10,7 @@ import { cardExplanationFingerprint, getCardExplanationSelection, setCardExplana
 import { buildCardRevealModel, getCardRevealProgress, revealCardThroughSentence, revealNextCardSentence, showAllCardSentences, startCardReveal, subscribeCardRevealProgress } from "@/lib/card-reveal";
 import { getCardFollowUpQuestions } from "@/lib/card-follow-ups";
 import { cardGlossaryFingerprint, getCardGlossaryPanelOpen, getVisibleCardGlossaryEntries, normalizeCardGlossary, setCardGlossaryPanelOpen, subscribeCardGlossaryPanel } from "@/lib/card-glossary";
+import { cardChronologyFingerprint, getCardChronologyEvents, getCardChronologyPanelOpen, setCardChronologyPanelOpen, subscribeCardChronologyPanel } from "@/lib/card-chronology";
 import { Icon } from "./icons";
 
 type FactCardProps = {
@@ -104,7 +105,9 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const learnMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const learnMenuItemsRef = useRef<HTMLDivElement>(null);
   const glossaryHeadingRef = useRef<HTMLSpanElement>(null);
+  const chronologyHeadingRef = useRef<HTMLHeadingElement>(null);
   const focusGlossaryHeadingOnOpenRef = useRef(false);
+  const focusChronologyHeadingOnOpenRef = useRef(false);
   const questionBoxRef = useRef<HTMLDivElement>(null);
   const questionInputRef = useRef<HTMLInputElement>(null);
   const explanationMode = useSyncExternalStore(
@@ -145,6 +148,15 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const glossaryError = adaptationErrors[`${card.id}:glossary`];
   const visibleGlossaryText = `${card.hook} ${card.title} ${graduallyRevealing ? revealModel.sentences.slice(0, visibleSentenceCount).join(" ") : card.body}`;
   const visibleGlossaryEntries = getVisibleCardGlossaryEntries(savedGlossary, visibleGlossaryText);
+  const chronologyFingerprint = useMemo(() => cardChronologyFingerprint(card), [card]);
+  const chronologyOpen = useSyncExternalStore(
+    (listener) => subscribeCardChronologyPanel(workspaceId, card.id, listener),
+    () => getCardChronologyPanelOpen(workspaceId, card.id, chronologyFingerprint),
+    () => false
+  );
+  const chronologyEvents = useMemo(() => getCardChronologyEvents(card, visibleSentenceCount, !graduallyRevealing || visibleSentenceCount >= revealModel.sentences.length), [card, graduallyRevealing, revealModel.sentences.length, visibleSentenceCount]);
+  const showChronology = chronologyEvents.length >= 2;
+  const chronologyPanelOpen = chronologyOpen && showChronology;
 
   useEffect(() => {
     if (!difficultyMenuOpen) return;
@@ -188,6 +200,20 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
     focusGlossaryHeadingOnOpenRef.current = false;
     glossaryHeadingRef.current?.focus();
   }, [glossaryOpen]);
+
+  useEffect(() => {
+    if (!chronologyPanelOpen || !focusChronologyHeadingOnOpenRef.current) return;
+    focusChronologyHeadingOnOpenRef.current = false;
+    chronologyHeadingRef.current?.focus();
+  }, [chronologyPanelOpen]);
+
+  useEffect(() => {
+    if (chronologyOpen && !showChronology) {
+      setCardChronologyPanelOpen(workspaceId, card.id, chronologyFingerprint, false);
+      if (learnMenuOpen) setLearnMenuOpen(false);
+      requestAnimationFrame(() => learnMenuTriggerRef.current?.focus());
+    }
+  }, [card.id, chronologyFingerprint, chronologyOpen, learnMenuOpen, showChronology, workspaceId]);
 
   useEffect(() => {
     if (!difficultyMenuOpen) return;
@@ -262,6 +288,17 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   function closeGlossary() {
     setCardGlossaryPanelOpen(workspaceId, card.id, glossaryFingerprint, false);
     onCancelGlossary(card.id);
+    requestAnimationFrame(() => learnMenuTriggerRef.current?.focus());
+  }
+
+  function openChronology() {
+    closeLearnMenu();
+    focusChronologyHeadingOnOpenRef.current = true;
+    setCardChronologyPanelOpen(workspaceId, card.id, chronologyFingerprint, true);
+  }
+
+  function closeChronology() {
+    setCardChronologyPanelOpen(workspaceId, card.id, chronologyFingerprint, false);
     requestAnimationFrame(() => learnMenuTriggerRef.current?.focus());
   }
 
@@ -380,7 +417,13 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
     <article
       className={`fact-card accent-${card.accent} ${card.feedback ? `feedback-${card.feedback}` : ""}`}
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.defaultPrevented || !glossaryOpen) return;
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+        if (chronologyPanelOpen) {
+          event.preventDefault();
+          closeChronology();
+          return;
+        }
+        if (!glossaryOpen) return;
         event.preventDefault();
         closeGlossary();
       }}
@@ -449,6 +492,20 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
         </div>}
         <span className="sr-only" aria-live="polite" aria-atomic="true">{revealProgress && revealProgress.visibleCount > 0 ? `Revealed: ${revealModel.sentences[revealProgress.visibleCount - 1] ?? ""}` : ""}</span>
         </div>
+
+        {chronologyPanelOpen && <section className="learning-answer card-chronology" role="region" aria-labelledby={`card-chronology-heading-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`}>
+          <div className="card-explanation-heading">
+            <h4 ref={chronologyHeadingRef} tabIndex={-1} id={`card-chronology-heading-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} className="answer-label">Dates in this fact</h4>
+            <button type="button" className="text-button" onClick={closeChronology}>Close</button>
+          </div>
+          <ol className={`card-chronology-list ${chronologyEvents.length > 4 ? "vertical" : `horizontal count-${chronologyEvents.length}`}`}>
+            {chronologyEvents.map((event, index) => <li className="card-chronology-event" key={`${event.dateText}-${event.anchor.field}-${event.anchor.sentenceIndex ?? ""}-${index}`}>
+              {event.intervalBefore && <span className="card-chronology-interval">{event.intervalBefore}</span>}
+              <time className="card-chronology-date">{event.dateText}</time>
+              <span className="card-chronology-description">{event.description}</span>
+            </li>)}
+          </ol>
+        </section>}
 
         {glossaryOpen && <section className="learning-answer card-glossary" role="region" aria-labelledby={`card-glossary-heading-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} aria-live="polite" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeGlossary(); } }}>
           <div className="card-explanation-heading">
@@ -546,6 +603,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
           <button type="button" className="learn-more-button" onClick={() => onLearnMore(card.id)} disabled={learnLoading || Boolean(card.learnMore)}><Icon name="sparkles" size={16} /> <span>{learnLoading ? "Reading" : card.learnMore ? "Learned" : "Learn more"}</span></button>
           <button type="button" ref={learnMenuTriggerRef} className="learn-more-menu-trigger" aria-label="More learning tools" aria-haspopup="menu" aria-expanded={learnMenuOpen} aria-controls={`learn-more-menu-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} onClick={() => setLearnMenuOpen(open => !open)}><Icon name="chevronDown" size={14} /></button>
           {learnMenuOpen && <div className="learn-more-popover" id={`learn-more-menu-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} ref={learnMenuItemsRef} role="menu" aria-label="Learning tools" onKeyDown={handleLearnMenuKeyDown}>
+            {showChronology && <button type="button" role="menuitem" onClick={openChronology}><Icon name="sparkles" size={14} /> View dates</button>}
             <button type="button" role="menuitem" onClick={openGlossary}><Icon name="sparkles" size={14} /> Explain the terms</button>
           </div>}
         </div>

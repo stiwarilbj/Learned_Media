@@ -13,6 +13,9 @@ export type CardExplanation = { text: string; sources: WikipediaSource[]; finger
 export type CardGlossaryEntry = { term: string; definition: string; sourceIndexes: number[] };
 export type SavedCardGlossary = { entries: CardGlossaryEntry[]; sources: WikipediaSource[]; fingerprint: string };
 export type SavedFollowUpQuestions = { questions: string[]; fingerprint: string };
+export type CardChronologyAnchor = { field: "title" | "hook" | "body"; sentenceIndex?: number };
+export type CardChronologyEvent = { dateText: string; eventText: string; anchor: CardChronologyAnchor };
+export type SavedCardChronology = { events: CardChronologyEvent[]; fingerprint: string };
 
 export type FactCardAction = "like" | "save" | "more" | "less" | "heard" | "unknown" | "rabbit";
 
@@ -122,6 +125,7 @@ export type FactCard = {
   explanations?: Partial<Record<CardExplanationMode, CardExplanation>>;
   glossary?: SavedCardGlossary;
   followUpQuestions?: SavedFollowUpQuestions;
+  chronology?: SavedCardChronology;
   learnMore?: string;
   question?: string;
   questionDetailed?: boolean;

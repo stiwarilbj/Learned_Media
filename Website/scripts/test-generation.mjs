@@ -850,6 +850,24 @@ await t.test("malformed optional follow-up questions never reject grounded cards
   assert.equal(state.groundingPrompts.length, 1);
 });
 
+await t.test("malformed optional chronology metadata is ignored without rejecting cards or adding calls", async () => {
+  const state = installNetworkMock({ transformOutput(output, prompt) {
+    if (prompt.includes("Return one result for each slot") || prompt.includes("Choose candidates and write grounded cards in one batch")) {
+      output.facts.forEach(fact => { if (fact) fact.chronology = { events: [{ dateText: "1900", eventText: "An unsupported event", anchor: { field: "hook" } }] }; });
+    }
+    return output;
+  } });
+  const sessionId = await connectMock(state);
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 7 });
+  assert.equal(result.completedCount, 7);
+  assert.equal(result.partial, false);
+  assert.equal(geminiCallCount(state), 2);
+  assert.ok(result.cards.every(card => !card.chronology));
+  const schema = state.requests.find(request => request.body.generationConfig?.responseSchema?.properties?.facts?.items?.properties?.chronology).body.generationConfig.responseSchema;
+  assert.ok(schema.properties.facts.items.properties.chronology.properties.events.maxItems === 8);
+  assert.ok(state.groundingPrompts[0].includes("Optionally return chronology.events"));
+});
+
 await t.test("active surprise guidance stays within assigned topics without presentation rules", async () => {
   const state = installNetworkMock();
   const sessionId = await connectMock(state);
