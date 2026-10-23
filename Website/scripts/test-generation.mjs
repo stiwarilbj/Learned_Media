@@ -233,7 +233,7 @@ function installNetworkMock(options = {}) {
             evidence
           };
         }).filter(Boolean).reverse() };
-      } else if (prompt.startsWith("Explain this one card") || prompt.startsWith("Answer the user's exact question")) {
+      } else if (prompt.startsWith("Rewrite the original fact") || prompt.startsWith("Explain this one card") || prompt.startsWith("Answer the user's exact question")) {
         output = { answer: options.emptyAnswer ? "" : options.learningAnswer ?? "The instrument used a diaphragm to detect pressure changes.", citationIndexes: [0] };
       } else {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
@@ -603,6 +603,29 @@ await t.test("learning prompts contain only the active length and operation with
   assert.ok(prompt.startsWith("Explain this one card"));
   assert.ok(!prompt.includes("Original user query:") && !prompt.includes("2 to 4 sentences"));
   assert.equal(geminiCallCount(state), 3);
+});
+
+await t.test("card adaptation uses the selected compact rules, original evidence, and one logical call", async () => {
+  const state = installNetworkMock({ learningAnswer: "The instrument used a diaphragm to detect pressure changes." });
+  const sessionId = await connectMock(state);
+  const fact = factBundle("amber");
+  const card = { id: "adapt-card", hook: fact.hook, title: fact.title, body: fact.sentences.join(" "), claim: fact.sentences[0], topicPath: ["Science"], sources: [{ title: "Shared Article", url: "https://en.wikipedia.org/wiki/Shared_Article", extract: articleExtract() }] };
+  const callsBefore = geminiCallCount(state);
+  const simple = await generateLearningResponse({ apiKey: "test-key", sessionId, action: "adapt", mode: "simpler", card });
+  assert.equal(simple.citations.length, 1);
+  assert.equal(geminiCallCount(state), callsBefore + 1);
+  const simplePrompt = geminiCalls(state).at(-1).prompt;
+  assert.ok(simplePrompt.startsWith("Rewrite the original fact"));
+  assert.ok(simplePrompt.includes("2 to 4 sentences") && simplePrompt.includes("no more than 100 words"));
+  assert.ok(!simplePrompt.includes("1 or 2 short paragraphs") && !simplePrompt.includes("Answer the user's exact question"));
+  assert.ok(simplePrompt.includes("Original fact card:") && simplePrompt.includes("Wikipedia evidence:"));
+  await generateLearningResponse({ apiKey: "test-key", sessionId, action: "adapt", mode: "deeper", card });
+  const deeperPrompt = geminiCalls(state).at(-1).prompt;
+  assert.ok(deeperPrompt.includes("1 or 2 short paragraphs") && deeperPrompt.includes("no more than 220 words"));
+  assert.ok(!deeperPrompt.includes("2 to 4 sentences"));
+  const afterBothModes = geminiCallCount(state);
+  await generateLearningResponse({ apiKey: "test-key", sessionId, action: "adapt", mode: "deeper", card });
+  assert.equal(geminiCallCount(state), afterBothModes, "identical successful alternative work should reuse the session cache");
 });
 
 await t.test("the original question takes priority over unrelated card details and previous questions", () => {

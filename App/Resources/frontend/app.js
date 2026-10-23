@@ -17,10 +17,14 @@
   const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const sourceSpotlight = window.LEARNED_MEDIA_SOURCE_SPOTLIGHT;
+  const cardExplanations = window.LEARNED_MEDIA_CARD_EXPLANATIONS;
   const sourceSpotlightStates = new Map();
   const sourceSpotlightRequests = new Map();
+  let adaptationRequest = null;
   let focusedSpotlightTrigger = null;
   let focusedSpotlightContext = null;
+  let focusedDifficultyCardId = null;
+  let focusDifficultyMenuAfterRender = false;
   const BEST_SELLING_BOOK_ORDER = [
     "A Tale of Two Cities", "The Little Prince", "The Alchemist", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber", "The Hobbit", "Alice's Adventures in Wonderland",
     "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World", "The Bridges of Madison County", "One Hundred Years of Solitude", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose", "The Eagle Has Landed", "Watership Down", "The Hite Report", "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life",
@@ -75,6 +79,9 @@
     confirmation: null,
     loading: false,
     loadingCard: null,
+    adaptationLoading: null,
+    adaptationErrorByCard: {},
+    difficultyMenuCardId: null,
     errorByCard: {},
     generationError: "",
     pendingSlots: 7,
@@ -102,6 +109,7 @@
     changed: function (keys) {
       const restored = !nativeKeyEditing && keys.gemini && keys.gemini !== state.key;
       if (state.key !== keys.gemini) {
+        cancelCardAdaptation();
         nativeCheckedRestoredKey = "";
         state.key = keys.gemini; state.geminiStatus = "not-configured";
         state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; });
@@ -811,7 +819,7 @@
     const references = sourceSpotlight.normalizeSpotlightSources(linkedSources, card.evidence || [], 3);
     const image = card.image || (card.imageUrl ? { url: card.imageUrl, alt: card.title, sourceTitle: first.title, sourceUrl: first.url, filePageUrl: first.url, credit: "Wikipedia image" } : null);
     const hook = titleCaseCatalogLabel(String(card.hook || card.title || "A small fact worth keeping").trim().replace(/\.+$/, ""));
-    return Object.assign({
+    const normalized = Object.assign({
       id: "card-" + Date.now() + "-" + index,
       title: "",
       hook: "",
@@ -822,6 +830,8 @@
       accent: ["blue", "lilac", "mint", "sand", "coral"][index % 5],
       createdAt: new Date().toISOString()
     }, card, { sources: references.sources, evidence: references.evidence, image: image, hook: hook });
+    normalized.explanations = cardExplanations.normalizeCardExplanations(normalized);
+    return normalized;
   }
   function wikipediaEvidenceLink(url, quote) {
     const text = String(quote || "").replace(/^\[Section:[^\]]+\]\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 180);
@@ -854,6 +864,88 @@
     if (event.key !== "Escape" || !sourceSpotlightStates.has(nativeSpotlightKey(card))) return;
     event.preventDefault();
     closeNativeSpotlight(card);
+  }
+  function safeCardElementId(cardID) { return String(cardID || "card").replace(/[^a-zA-Z0-9_-]/g, "-"); }
+  function closeDifficultyMenu(restoreFocus) {
+    const cardID = state.difficultyMenuCardId;
+    if (!cardID) return;
+    state.difficultyMenuCardId = null;
+    const picker = Array.from(document.querySelectorAll(".difficulty-picker")).find(function (element) { return element.dataset.difficultyCard === cardID; });
+    if (picker) {
+      const menu = picker.querySelector(".difficulty-menu");
+      if (menu) menu.remove();
+      const trigger = picker.querySelector(".difficulty-mark");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+      if (restoreFocus && trigger) trigger.focus();
+    } else if (restoreFocus) focusedDifficultyCardId = cardID;
+  }
+  function cancelCardAdaptation(cardID) {
+    const active = adaptationRequest;
+    if (!active || cardID && active.cardID !== cardID) return;
+    adaptationRequest = null;
+    active.request.cancel();
+    state.adaptationLoading = null;
+  }
+  function chooseCardExplanation(card, mode) {
+    const validMode = mode === "simpler" || mode === "deeper" ? mode : undefined;
+    cardExplanations.setCardExplanationSelection(state.workspaceId, card.id, validMode);
+    state.difficultyMenuCardId = null;
+    focusedDifficultyCardId = card.id;
+    if (!validMode) cancelCardAdaptation(card.id);
+    else if (card.explanations && card.explanations[validMode] && card.explanations[validMode].fingerprint === cardExplanations.cardExplanationFingerprint(card)) cancelCardAdaptation(card.id);
+    else void adaptCardExplanation(card.id, validMode);
+    render();
+  }
+  function handleDifficultyMenuKeydown(event, card) {
+    const options = Array.from(event.currentTarget.querySelectorAll("[role='menuitemradio']"));
+    const activeIndex = options.indexOf(document.activeElement);
+    let nextIndex = null;
+    if (event.key === "ArrowDown") nextIndex = (activeIndex + 1 + options.length) % options.length;
+    else if (event.key === "ArrowUp") nextIndex = (activeIndex - 1 + options.length) % options.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else if (event.key === "Escape") { event.preventDefault(); closeDifficultyMenu(true); return; }
+    if (nextIndex !== null) { event.preventDefault(); if (options[nextIndex]) options[nextIndex].focus(); }
+  }
+  async function adaptCardExplanation(cardID, mode) {
+    if (mode !== "simpler" && mode !== "deeper") { cancelCardAdaptation(cardID); return; }
+    const card = state.cards.find(function (item) { return item.id === cardID; });
+    if (!card) return;
+    if (!state.key.trim()) { cancelCardAdaptation(cardID); return; }
+    const fingerprint = cardExplanations.cardExplanationFingerprint(card);
+    const existing = card.explanations && card.explanations[mode];
+    if (existing && existing.fingerprint === fingerprint && existing.text && existing.sources && existing.sources.length) return;
+    const requestKey = state.workspaceId + "\u0000" + cardID + "\u0000" + mode + "\u0000" + fingerprint;
+    if (adaptationRequest && adaptationRequest.key === requestKey) return;
+    cancelCardAdaptation();
+    const workspaceID = state.workspaceId;
+    const activeGeneration = generationToken;
+    const errorKey = cardID + ":adapt:" + mode;
+    const request = bridge("learn", { action: "adapt", mode: mode, card: card });
+    const active = { key: requestKey, cardID: cardID, mode: mode, workspaceID: workspaceID, request: request };
+    adaptationRequest = active;
+    state.adaptationLoading = cardID + ":" + mode;
+    state.adaptationErrorByCard[errorKey] = "";
+    render();
+    try {
+      const result = await request;
+      if (adaptationRequest !== active || workspaceID !== state.workspaceId || activeGeneration !== generationToken || cardExplanations.getCardExplanationSelection(workspaceID, cardID) !== mode) return;
+      const currentCard = state.cards.find(function (item) { return item.id === cardID; });
+      if (!currentCard || cardExplanations.cardExplanationFingerprint(currentCard) !== fingerprint) return;
+      if (!result.answer || !String(result.answer).trim() || !Array.isArray(result.citations) || !result.citations.length) throw new Error("Gemini could not support this alternate explanation with the card’s sources.");
+      mergeGeminiModelOutcomes(result.modelOutcomes || []);
+      currentCard.explanations = Object.assign({}, currentCard.explanations || {}, { [mode]: { text: String(result.answer).trim(), sources: result.citations, fingerprint: fingerprint } });
+      saveState();
+    } catch (error) {
+      if (adaptationRequest !== active || workspaceID !== state.workspaceId || activeGeneration !== generationToken) return;
+      state.adaptationErrorByCard[errorKey] = error.message || "Gemini could not adapt this explanation.";
+    } finally {
+      if (adaptationRequest === active) {
+        adaptationRequest = null;
+        state.adaptationLoading = null;
+        render();
+      }
+    }
   }
   function nativeCancelSpotlightRequest(requestKey) {
     const request = sourceSpotlightRequests.get(requestKey);
@@ -1379,6 +1471,8 @@
     });
   }
   function cancelWorkspaceOperations() {
+    cancelCardAdaptation();
+    closeDifficultyMenu(false);
     generationToken += 1;
     state.connectionToken += 1;
     state.generationRequestToken += 1;
@@ -1387,6 +1481,7 @@
     cancelPendingSemanticSearch();
     state.loading = false;
     state.loadingCard = null;
+    state.adaptationLoading = null;
     state.youtubeSmartLoading = false;
     if (stopYoutubePlayback) stopYoutubePlayback();
     cancelImageHydrations();
@@ -1767,12 +1862,24 @@
     window.__learnedMediaPopoverDismiss = true;
     document.addEventListener("pointerdown", function (event) {
       const target = event.target;
+      if (state.difficultyMenuCardId && !(target && target.closest && target.closest(".difficulty-picker"))) closeDifficultyMenu(false);
       if (target && target.closest && (target.closest(".workspace-switcher") || target.closest(".global-search-wrap"))) return;
       clearWorkspaceRename();
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
     });
+    document.addEventListener("focusin", function (event) {
+      if (!state.difficultyMenuCardId) return;
+      const target = event.target;
+      const picker = target && target.closest && target.closest(".difficulty-picker");
+      if (!picker || picker.dataset.difficultyCard !== state.difficultyMenuCardId) closeDifficultyMenu(false);
+    });
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape") return;
+      if (state.difficultyMenuCardId) {
+        event.preventDefault();
+        closeDifficultyMenu(true);
+        return;
+      }
       if (state.confirmation) {
         closeConfirmation();
         return;
@@ -1926,11 +2033,58 @@
     const crumbs = node("div", { className: "fact-breadcrumbs" });
     (card.topicPath || []).forEach(function (topic) { crumbs.appendChild(node("span", { text: topic })); });
     meta.appendChild(crumbs);
-    meta.appendChild(node("span", { className: "difficulty-mark", text: "Difficulty " + (card.difficulty || 5) + " · " + difficultyLabel(card.difficulty || 5) }));
+    const explanationMode = cardExplanations.getCardExplanationSelection(state.workspaceId, card.id);
+    const explanation = explanationMode && card.explanations && card.explanations[explanationMode];
+    const picker = node("div", { className: "difficulty-picker", dataset: { difficultyCard: card.id } });
+    const menuID = "difficulty-menu-" + safeCardElementId(card.id);
+    picker.appendChild(node("button", { type: "button", className: "difficulty-mark", ariaLabel: "Difficulty " + (card.difficulty || 5) + " of 10 · " + difficultyLabel(card.difficulty || 5) + ". Change this card’s explanation.", "aria-haspopup": "menu", ariaExpanded: state.difficultyMenuCardId === card.id, ariaControls: menuID, dataset: { difficultyTriggerCard: card.id }, onClick: function () {
+      const open = state.difficultyMenuCardId !== card.id;
+      state.difficultyMenuCardId = open ? card.id : null;
+      focusedDifficultyCardId = card.id;
+      focusDifficultyMenuAfterRender = open;
+      render();
+    } }, "Difficulty " + (card.difficulty || 5) + " · " + difficultyLabel(card.difficulty || 5)));
+    if (state.difficultyMenuCardId === card.id) {
+      const menu = node("div", { id: menuID, className: "difficulty-menu", role: "menu", ariaLabel: "Explanation difficulty", onKeydown: function (event) { handleDifficultyMenuKeydown(event, card); } });
+      [["simpler", "Simpler"], [undefined, "Original"], ["deeper", "Deeper"]].forEach(function (option) {
+        const mode = option[0];
+        const selected = explanationMode === mode;
+        menu.appendChild(node("button", { type: "button", role: "menuitemradio", "aria-checked": String(selected), className: selected ? "selected" : "", dataset: { difficultyCard: card.id }, onClick: function () { chooseCardExplanation(card, mode); } }, option[1]));
+      });
+      picker.appendChild(menu);
+    }
+    meta.appendChild(picker);
     content.appendChild(meta);
     content.appendChild(node("p", { className: "fact-hook", text: card.hook }));
     content.appendChild(node("h3", { text: card.title }));
     content.appendChild(cardBody(card));
+    if (explanationMode) {
+      const currentFingerprint = cardExplanations.cardExplanationFingerprint(card);
+      const savedExplanation = explanation && explanation.fingerprint === currentFingerprint && explanation.text && explanation.sources && explanation.sources.length ? explanation : null;
+      const panel = node("div", { className: "learning-answer card-explanation", "aria-live": "polite" });
+      const heading = node("div", { className: "card-explanation-heading" }, node("span", { className: "answer-label" }, svg("sparkles", 14), " ", explanationMode === "simpler" ? "Simpler explanation" : "Deeper explanation"));
+      heading.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { chooseCardExplanation(card, undefined); } }, "Return to original"));
+      panel.appendChild(heading);
+      if (savedExplanation) {
+        panel.appendChild(node("p", { text: savedExplanation.text }));
+        const citations = node("div", { className: "answer-sources" });
+        savedExplanation.sources.forEach(function (source, sourceIndex) {
+          citations.appendChild(externalLink(source.canonicalUrl || source.url, source.title, "card-explanation-source-" + sourceIndex));
+        });
+        panel.appendChild(citations);
+      } else if (state.adaptationLoading === card.id + ":" + explanationMode) {
+        panel.appendChild(node("div", { className: "learning-loading", role: "status" }, node("span", { className: "loading-dot" }), " Writing a " + explanationMode + " version from this card’s sources…"));
+      } else if (!state.key.trim()) {
+        const settings = node("div", { className: "card-explanation-settings" }, node("span", { text: "Add a Gemini key to create this explanation." }));
+        settings.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Open Settings"));
+        panel.appendChild(settings);
+      } else {
+        const settings = node("div", { className: "card-explanation-settings" }, node("span", { text: state.adaptationErrorByCard[card.id + ":adapt:" + explanationMode] || "This explanation could not be created." }));
+        settings.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { void adaptCardExplanation(card.id, explanationMode); } }, "Retry"));
+        panel.appendChild(settings);
+      }
+      content.appendChild(panel);
+    }
     content.appendChild(sourceList(card, false));
     if (card.learnMore) content.appendChild(node("div", { className: "learning-answer learn-more-answer" }, node("span", { className: "answer-label" }, svg("sparkles", 14), " Learn more"), node("p", { text: card.learnMore })));
     if (state.errorByCard[card.id]) content.appendChild(node("p", { className: "learning-error", text: state.errorByCard[card.id] }));
@@ -1977,10 +2131,10 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", state.key); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { cancelCardAdaptation(); state.adaptationLoading = null; closeDifficultyMenu(false); state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", state.key); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.key = ""; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", ""); showToast("Remembered key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { cancelCardAdaptation(); state.adaptationLoading = null; closeDifficultyMenu(false); state.key = ""; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", ""); showToast("Remembered key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain and privately synced when you sign in with Google. Remove also clears it from your account." })));
@@ -2106,6 +2260,7 @@
       focusedSpotlightContext = { workspaceId: state.workspaceId, cardId: activeElement.dataset.spotlightContextCard, evidenceIndex: activeElement.dataset.spotlightEvidence };
     }
     if (activeElement && activeElement.dataset && activeElement.dataset.topicId) focusedTopicId = activeElement.dataset.topicId;
+    if (activeElement && activeElement.dataset && activeElement.dataset.difficultyCard) focusedDifficultyCardId = activeElement.dataset.difficultyCard;
     const activeField = activeElement && ["gemini-key", "youtube-key", "youtube-search", "global-search", "topic-search"].includes(activeElement.id) ? activeElement : null;
     if (activeField) { focusedFieldId = activeField.id; focusedSelection = typeof activeField.selectionStart === "number" ? [activeField.selectionStart, activeField.selectionEnd] : null; }
     else if (activeElement && activeElement !== document.body) { focusedFieldId = null; focusedSelection = null; }
@@ -2126,6 +2281,10 @@
     focusedSpotlightTrigger = null;
     const restoreSpotlightContext = focusedSpotlightContext;
     focusedSpotlightContext = null;
+    const restoreDifficultyCardId = focusedDifficultyCardId;
+    focusedDifficultyCardId = null;
+    const focusMenuAfterRender = focusDifficultyMenuAfterRender;
+    focusDifficultyMenuAfterRender = false;
     window.requestAnimationFrame(function () {
       const nextTopicTree = document.querySelector(".topic-tree");
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
@@ -2160,6 +2319,16 @@
           return element.dataset.spotlightContextCard === restoreSpotlightContext.cardId && element.dataset.spotlightEvidence === restoreSpotlightContext.evidenceIndex;
         });
         if (control) control.focus();
+      }
+      if (restoreDifficultyCardId) {
+        const trigger = Array.from(document.querySelectorAll("[data-difficulty-trigger-card]")).find(function (element) { return element.dataset.difficultyTriggerCard === restoreDifficultyCardId; });
+        if (trigger) {
+          if (focusMenuAfterRender && state.difficultyMenuCardId === restoreDifficultyCardId) {
+            const picker = trigger.closest(".difficulty-picker");
+            const items = picker ? Array.from(picker.querySelectorAll("[role='menuitemradio']")) : [];
+            (items.find(function (item) { return item.getAttribute("aria-checked") === "true"; }) || items[0] || trigger).focus();
+          } else trigger.focus();
+        }
       }
     });
   }

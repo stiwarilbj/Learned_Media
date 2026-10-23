@@ -2,7 +2,7 @@ import { annotateEvidenceDates } from "./evidence-dates";
 import instructions from "./prompt-instructions.json";
 import { factWritingRules, difficultyRubric } from "./fact-quality";
 
-export type PromptOperation = "connection" | "candidate" | "combined" | "grounding" | "learn" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
+export type PromptOperation = "connection" | "candidate" | "combined" | "grounding" | "learn" | "adapt" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
 export type PromptField = { label: string; value: unknown; multiline?: boolean; reference?: boolean };
 export type QuestionType = "when" | "why" | "difference";
 
@@ -99,7 +99,7 @@ export function questionScope(question?: string): string[] {
 export function buildPrompt(operation: PromptOperation, rules: string[] = [], fields: PromptField[] = []) {
   const priority = operation === "connection" ? [] : instructions[operation === "question" ? "questionPriority" : "taskPriority"];
   const sourceData = fields.some(field => field.reference) ? instructions.sourceData : [];
-  const datedEvidence = ["grounding", "combined", "learn", "question"].includes(operation);
+  const datedEvidence = ["grounding", "combined", "learn", "adapt", "question"].includes(operation);
   const dateRules = datedEvidence ? instructions.evidenceDates : [];
   const acronymRules = datedEvidence ? instructions.acronymWriting : [];
   const uniqueRules = Array.from(new Set([...instructions[operation], ...priority, ...sourceData, ...dateRules, ...acronymRules, ...rules]
@@ -131,7 +131,7 @@ export function buildFactCardPrompt({ sentenceCount, difficulties, fields, combi
 function supportingCard(card: unknown) {
   if (!card || typeof card !== "object" || Array.isArray(card)) return undefined;
   const data = card as Record<string, unknown>;
-  return Object.fromEntries(["topicPath", "hook", "title", "body"].filter(key => data[key] !== undefined).map(key => [key, data[key]]));
+  return Object.fromEntries(["topicPath", "hook", "title", "body", "claim"].filter(key => data[key] !== undefined).map(key => [key, data[key]]));
 }
 
 /** Question answers have independent coverage and length guidance, never card settings. */
@@ -158,7 +158,8 @@ export function buildQuestionPrompt({ card, question, detailed, history, evidenc
 }
 
 export function buildLearningPrompt(options: {
-  action: "learn" | "question";
+  action: "learn" | "adapt" | "question";
+  mode?: "simpler" | "deeper";
   card: unknown;
   question?: string;
   detailed?: boolean;
@@ -166,6 +167,13 @@ export function buildLearningPrompt(options: {
   evidence: unknown[];
 }) {
   if (options.action === "question") return buildQuestionPrompt(options);
+  if (options.action === "adapt") {
+    const mode = options.mode === "deeper" ? "deeper" : "simpler";
+    return buildPrompt("adapt", [...instructions.learningEvidence, ...instructions[mode === "deeper" ? "adaptDeeper" : "adaptSimpler"]], [
+      { label: "Original fact card", value: supportingCard(options.card), reference: true },
+      { label: "Wikipedia evidence", value: options.evidence, reference: true }
+    ]);
+  }
   return buildPrompt("learn", instructions.learningEvidence, [
     { label: "Card", value: supportingCard(options.card), reference: true },
     { label: "Wikipedia evidence", value: options.evidence, reference: true }

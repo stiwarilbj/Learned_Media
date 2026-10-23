@@ -1,11 +1,12 @@
 "use client";
 
-import { Fragment, memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { DIFFICULTY_LABELS } from "@/lib/recommendations";
-import type { DisplayMode, FactCard as FactCardType, FactCardAction } from "@/lib/types";
+import type { CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction } from "@/lib/types";
 import { resolveWikipediaArticle } from "@/lib/wikipedia";
 import { buildSourceSpotlightModel, canonicalWikipediaUrl, locatePassageContext, longestSharedPhraseRange, sourceSpotlightContextKey } from "@/lib/source-spotlight";
 import { getSourceSpotlightState, setSourceSpotlightState, subscribeSourceSpotlight, updateSourceSpotlightState, type SpotlightContextState } from "@/lib/source-spotlight-state";
+import { cardExplanationFingerprint, getCardExplanationSelection, setCardExplanationSelection, subscribeCardExplanationSelection } from "@/lib/card-explanations";
 import { Icon } from "./icons";
 
 type FactCardProps = {
@@ -18,11 +19,16 @@ type FactCardProps = {
   questionError?: string;
   questionDraft?: string;
   questionDetailed?: boolean;
+  adaptationLoading?: boolean;
+  adaptationErrors: Record<string, string | undefined>;
+  hasGeminiKey?: boolean;
   onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
   onAskQuestion: (id: string, question: string, detailed: boolean) => void;
   onQuestionDraft: (id: string, value: string) => void;
   onQuestionDetailed: (id: string, value: boolean) => void;
+  onAdaptExplanation: (id: string, mode?: CardExplanationMode) => void;
+  onOpenSettings: () => void;
 };
 
 function updateContext(workspaceId: string, cardId: string, sentenceIndex: number, contextKey: string, next: SpotlightContextState) {
@@ -74,8 +80,17 @@ function EvidenceContextLoader({ workspaceId, cardId, sentenceIndex, expanded, e
   return null;
 }
 
-export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed }: FactCardProps) {
+export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, adaptationLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onOpenSettings }: FactCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
+  const [difficultyMenuOpen, setDifficultyMenuOpen] = useState(false);
+  const difficultyPickerRef = useRef<HTMLDivElement>(null);
+  const difficultyTriggerRef = useRef<HTMLButtonElement>(null);
+  const difficultyMenuRef = useRef<HTMLDivElement>(null);
+  const explanationMode = useSyncExternalStore(
+    (listener) => subscribeCardExplanationSelection(workspaceId, card.id, listener),
+    () => getCardExplanationSelection(workspaceId, card.id),
+    () => undefined
+  );
   const spotlight = useSyncExternalStore(
     (listener) => subscribeSourceSpotlight(workspaceId, card.id, listener),
     () => getSourceSpotlightState(workspaceId, card.id),
@@ -86,6 +101,52 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const question = questionDraft ?? card.question ?? "";
   const detailed = questionDetailed ?? Boolean(card.questionDetailed);
   const showImage = displayMode === "picture-text";
+  const savedExplanation = explanationMode ? card.explanations?.[explanationMode] : undefined;
+  const selectedExplanation = savedExplanation?.fingerprint === cardExplanationFingerprint(card) ? savedExplanation : undefined;
+  const adaptationError = explanationMode ? adaptationErrors[`${card.id}:adapt:${explanationMode}`] : undefined;
+
+  useEffect(() => {
+    if (!difficultyMenuOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!difficultyPickerRef.current?.contains(event.target as Node)) setDifficultyMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOutside);
+    return () => window.removeEventListener("pointerdown", closeOutside);
+  }, [difficultyMenuOpen]);
+
+  useEffect(() => {
+    if (!difficultyMenuOpen) return;
+    const options = Array.from(difficultyMenuRef.current?.querySelectorAll<HTMLButtonElement>("[role='menuitemradio']") ?? []);
+    const selected = options.find((option) => option.getAttribute("aria-checked") === "true");
+    (selected ?? options[0])?.focus();
+  }, [difficultyMenuOpen]);
+
+  function chooseExplanation(mode?: CardExplanationMode) {
+    setCardExplanationSelection(workspaceId, card.id, mode);
+    setDifficultyMenuOpen(false);
+    requestAnimationFrame(() => difficultyTriggerRef.current?.focus());
+    onAdaptExplanation(card.id, mode);
+  }
+
+  function handleDifficultyMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitemradio']"));
+    const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1 + options.length) % options.length;
+    else if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + options.length) % options.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else if (event.key === "Escape") {
+      event.preventDefault();
+      setDifficultyMenuOpen(false);
+      difficultyTriggerRef.current?.focus();
+      return;
+    }
+    if (nextIndex !== undefined) {
+      event.preventDefault();
+      options[nextIndex]?.focus();
+    }
+  }
 
   function submitQuestion() {
     const clean = question.trim();
@@ -187,7 +248,27 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
       <div className="fact-content">
         <div className="fact-meta">
           <div className="fact-breadcrumbs">{card.topicPath.map((topic) => <span key={topic}>{topic}</span>)}</div>
-          <span className={`difficulty-mark difficulty-${card.difficulty}`} aria-label={`Difficulty ${card.difficulty} of 10 · ${DIFFICULTY_LABELS[card.difficulty]}`}>Difficulty {card.difficulty} · {DIFFICULTY_LABELS[card.difficulty]}</span>
+          <div className="difficulty-picker" ref={difficultyPickerRef} onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDifficultyMenuOpen(false);
+          }}>
+            <button
+              type="button"
+              ref={difficultyTriggerRef}
+              className={`difficulty-mark difficulty-${card.difficulty}`}
+              aria-label={`Difficulty ${card.difficulty} of 10 · ${DIFFICULTY_LABELS[card.difficulty]}. Change this card’s explanation.`}
+              aria-haspopup="menu"
+              aria-expanded={difficultyMenuOpen}
+              aria-controls={`difficulty-menu-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`}
+              onClick={() => setDifficultyMenuOpen((open) => !open)}
+            >Difficulty {card.difficulty} · {DIFFICULTY_LABELS[card.difficulty]}</button>
+            {difficultyMenuOpen && <div id={`difficulty-menu-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} ref={difficultyMenuRef} className="difficulty-menu" role="menu" aria-label="Explanation difficulty" onKeyDown={handleDifficultyMenuKeyDown}>
+              {([
+                ["simpler", "Simpler"],
+                [undefined, "Original"],
+                ["deeper", "Deeper"]
+              ] as const).map(([mode, label]) => <button type="button" key={label} role="menuitemradio" aria-checked={explanationMode === mode} className={explanationMode === mode ? "selected" : ""} onClick={() => chooseExplanation(mode)}>{label}</button>)}
+            </div>}
+          </div>
         </div>
         <p className="fact-hook">{card.hook}</p>
         <h3>{card.title}</h3>
@@ -209,6 +290,19 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
             </>}
           </>}
         </p>
+
+        {explanationMode && <div className={`learning-answer card-explanation ${selectedExplanation ? `card-explanation-${explanationMode}` : ""}`} aria-live="polite">
+          <div className="card-explanation-heading">
+            <span className="answer-label"><Icon name="sparkles" size={14} /> {explanationMode === "simpler" ? "Simpler explanation" : "Deeper explanation"}</span>
+            <button type="button" className="text-button" onClick={() => chooseExplanation(undefined)}>Return to original</button>
+          </div>
+          {selectedExplanation ? <>
+            <p>{selectedExplanation.text}</p>
+            <div className="answer-sources">{selectedExplanation.sources.map((source, index) => <a href={canonicalWikipediaUrl(source)} key={`${source.canonicalUrl ?? source.url}-${index}`} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={11} /></a>)}</div>
+          </> : adaptationLoading ? <div className="learning-loading" role="status"><span className="loading-dot" /> Writing a {explanationMode} version from this card’s sources…</div>
+            : !hasGeminiKey ? <div className="card-explanation-settings"><span>Add a Gemini key to create this explanation.</span><button type="button" className="text-button" onClick={onOpenSettings}>Open Settings</button></div>
+              : <div className="card-explanation-settings"><span>{adaptationError || "This explanation could not be created."}</span><button type="button" className="text-button" onClick={() => onAdaptExplanation(card.id, explanationMode)}>Retry</button></div>}
+        </div>}
 
         <div className="fact-sources">
           <span>Wikipedia sources</span>

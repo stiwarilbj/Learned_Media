@@ -14,11 +14,15 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		wPqy24oLkZ0eE/I9uY15KeANGD4=
+		HooUoHOxEnwnNLejn83s3/xGOLU=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
 		0EDGsHB/SEa1TbSwRVRaUzpUFA0=
+		</data>
+		<key>Resources/frontend/card-explanations.js</key>
+		<data>
+		8tbV+qrk0XrfIql6ieuc8HcSVto=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -46,7 +50,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		/oYCwSI0t8DKTNHbbYH/4TZUV8Y=
+		t09yuOWknFKZcg/YY9sLYcWpebM=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -78,7 +82,7 @@
 		</data>
 		<key>Resources/frontend/snapshot-validation.js</key>
 		<data>
-		MkAGKRj0aNV16TofLvXIrkiJaT8=
+		tDXMsr12BYh9OW9MzpYXqGyCGig=
 		</data>
 		<key>Resources/frontend/source-spotlight.js</key>
 		<data>
@@ -86,7 +90,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		2qbf/Bgs3rgBvqTaFxjV33xe+Ts=
+		zNsZx9yRyBt9oNmTX4WZB0G1m3w=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -157,7 +161,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			AJNgHFbHfnCvDxlBYXEUNpT6Pko/iV1BMF5OsUX/zZw=
+			8MoGhcHZYoeYIt7eR8CupUas1SeMDMdIh+AmNP5B9Ow=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -165,6 +169,13 @@
 			<key>hash2</key>
 			<data>
 			ufRHq09utZFQhdVlBy2GHDhN68adXtU9epZaKViyvAI=
+			</data>
+		</dict>
+		<key>Resources/frontend/card-explanations.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			Sq3SKAC3L3ouVrMb7YF1GpZy+8QPnhMrozycvyUqh0s=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -213,7 +224,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			gKBncvub+pImS+ufMJzKX6a6bFk2Cast2UN/9cVdLFg=
+			YiW47hyUQo0Pkqi/f348nf/0CiKED8HawGiWTCzW9+Q=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -269,7 +280,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Ld6tT/qy5fM5XttuMDPgLdgaY2925bfmKIM7Il5S7NA=
+			Z+JGZC+5eY5iPF7aR9gMHM0hqlLvmxBniV6nUT3Wu2E=
 			</data>
 		</dict>
 		<key>Resources/frontend/source-spotlight.js</key>
@@ -283,7 +294,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			fLW9AAyMgYndWoQMxzvkz9ysdEpN6AX6ZDnG33z+5n4=
+			7ACssSUx5Wi+ykRxpF+Lmqe/dxjJYV5liUmQQZzBgRI=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>

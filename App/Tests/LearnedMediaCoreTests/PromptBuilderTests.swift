@@ -334,4 +334,19 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertTrue(rule.contains("never invent an expansion from initials alone"))
     }
 
+    func testCardAdaptationUsesOnlyItsSelectedModeAndCitedEvidence() {
+        let card: [String: Any] = ["topicPath": ["Science", "Astronomy"], "hook": "A recorded signal", "title": "A signal", "body": "The observatory recorded a signal.", "claim": "The observatory recorded a signal."]
+        let evidence: [[String: Any]] = [["index": 0, "kind": "original", "title": "Observatory", "extract": "The observatory recorded a signal."]]
+        let simpler = PromptBuilder.learning(action: .adapt, card: card, mode: "simpler", evidence: evidence)
+        XCTAssertTrue(simpler.contains(PromptInstructions.rules["adaptSimpler"]![0]))
+        XCTAssertFalse(simpler.contains(PromptInstructions.rules["adaptDeeper"]![0]))
+        XCTAssertTrue(simpler.contains("Original fact card:"))
+        XCTAssertTrue(simpler.contains("Wikipedia evidence:"))
+        XCTAssertFalse(simpler.contains("Question:"))
+
+        let deeper = PromptBuilder.learning(action: .adapt, card: card, mode: "deeper", evidence: evidence)
+        XCTAssertTrue(deeper.contains(PromptInstructions.rules["adaptDeeper"]![0]))
+        XCTAssertFalse(deeper.contains(PromptInstructions.rules["adaptSimpler"]![0]))
+    }
+
 }

@@ -1068,7 +1068,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   return { cards, validationDiagnostics: diagnostics.snapshot(), modelOutcomes: outcomes, requestedCount: targetCount, completedCount: cards.length, partial, failedJobs: failedSlots.length, retryable: partial, retryGuidance: partial ? cards.length + " facts arrived. Retry to fill the remaining slots." : undefined };
 }
 
-export async function generateLearningResponse({ apiKey, sessionId = "default-session", action, card, question, detailed, history, signal }: { apiKey: string; sessionId?: string; action: "learn" | "question"; card: FactCard; question?: string; detailed?: boolean; history?: LearningMessage[]; signal?: AbortSignal }): Promise<{ answer: string; citations: WikipediaSource[]; modelOutcomes: GeminiModelOutcome[] }> {
+export async function generateLearningResponse({ apiKey, sessionId = "default-session", action, card, question, detailed, history, mode, signal }: { apiKey: string; sessionId?: string; action: "learn" | "adapt" | "question"; card: FactCard; question?: string; detailed?: boolean; history?: LearningMessage[]; mode?: "simpler" | "deeper"; signal?: AbortSignal }): Promise<{ answer: string; citations: WikipediaSource[]; modelOutcomes: GeminiModelOutcome[] }> {
   if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before asking for more detail.", undefined, [], undefined, false);
   const cachedOriginals = card.sources.filter(source => source.extract?.trim());
   const cachedTitles = new Set(cachedOriginals.map(source => source.title.toLocaleLowerCase()));
@@ -1088,12 +1088,16 @@ export async function generateLearningResponse({ apiKey, sessionId = "default-se
     if (!originalUrls.has(source.canonicalUrl ?? source.url)) source.extract = selectEvidence(source.extract ?? "", question?.trim() ? question : card.title, 5);
   });
   const context = sources.map((source, index) => ({ index, kind: originalUrls.has(source.canonicalUrl ?? source.url) ? "original" : "supplemental", title: source.title, extract: source.extract ?? "No extract returned" }));
-  const prompt = buildLearningPrompt({ action, question, detailed, history,
-    card: { topicPath: card.topicPath, hook: card.hook, title: card.title, body: card.body }, evidence: context
+  const prompt = buildLearningPrompt({ action, mode, question, detailed, history,
+    card: { topicPath: card.topicPath, hook: card.hook, title: card.title, body: card.body, claim: card.claim }, evidence: context
   });
-  const result = await requestStructured<{ answer?: string; citationIndexes?: number[] }>(apiKey, sessionId, prompt, { type: "OBJECT", properties: { answer: { type: "STRING" }, citationIndexes: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["answer", "citationIndexes"] }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, {identity: {task: action === "question" ? "question" : "learn", query: action === "question" ? question : undefined, topics: card.topicPath, filters: {detailed: action === "question" && Boolean(detailed)}, context: {card: {hook: card.hook, title: card.title, body: card.body}, history: action === "question" ? history?.slice(-6) ?? [] : [], evidence: context, sourceUrls: sources.map(source => source.canonicalUrl ?? source.url)}}});
+  const result = await requestStructured<{ answer?: string; citationIndexes?: number[] }>(apiKey, sessionId, prompt, { type: "OBJECT", properties: { answer: { type: "STRING" }, citationIndexes: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["answer", "citationIndexes"] }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, {
+    maxOutputTokens: action === "adapt" && mode === "simpler" ? 2048 : action === "adapt" ? 4096 : undefined,
+    identity: {task: action === "question" ? "question" : action === "adapt" ? "adapt" : "learn", query: action === "question" ? question : undefined, topics: card.topicPath, filters: action === "question" ? {detailed: Boolean(detailed)} : action === "adapt" ? {mode} : {}, context: {card: {hook: card.hook, title: card.title, body: card.body, claim: card.claim}, history: action === "question" ? history?.slice(-6) ?? [] : [], evidence: context, sourceUrls: sources.map(source => source.canonicalUrl ?? source.url)}}
+  });
   if (!result.value.answer?.trim()) throw new GeminiFailure("Gemini returned an empty explanation.", undefined, result.outcomes, undefined, true);
   const indexes = Array.from(new Set((result.value.citationIndexes ?? []).filter((index) => index >= 0 && index < sources.length))).slice(0, 3);
+  if (action === "adapt" && indexes.length === 0) throw new GeminiFailure("Gemini could not support this alternate explanation with the card’s sources.", undefined, result.outcomes, undefined, true);
   return { answer: result.value.answer, citations: (indexes.length ? indexes : [0]).map((index) => sources[index]).filter(Boolean), modelOutcomes: result.outcomes };
 }
 

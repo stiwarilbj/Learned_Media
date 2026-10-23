@@ -16,6 +16,16 @@
   "learn": [
     "Explain this one card in one useful paragraph of approximately 100 to 160 words. Add context rather than repeating its body."
   ],
+  "adapt": [
+    "Rewrite the original fact at the requested explanation level. Preserve its exact main claim, names, numbers, dates, and qualifications. Stay on this card's fact; do not add a separate fact, personal connection, everyday analogy, or unsupported detail.",
+    "Use only the supplied Wikipedia evidence. Return citationIndexes for the supplied sources that support the explanation. If a requested explanation detail is not supported, state that briefly instead of guessing."
+  ],
+  "adaptSimpler": [
+    "Explain the same fact in plain language in 2 to 4 sentences and no more than 100 words. Prefer familiar words, define necessary technical terms briefly, and retain the card's essential details."
+  ],
+  "adaptDeeper": [
+    "Expand the same fact with its supported mechanism or background in 1 or 2 short paragraphs and no more than 220 words. Explain how or why the original fact works or happened, but include only details supported by the supplied sources."
+  ],
   "question": [
     "Answer the user's exact question directly in the first sentence. The Original user query is the answer's target; address every requested part and omit card details that do not help answer it.",
     "If supplied evidence leaves any requested detail unsupported, identify that detail in the first sentence and distinguish it from what the sources support. For example: \"The sources describe the mechanism but do not explain why it was abandoned.\" Do not use vague disclaimers, invent missing details, or substitute an unrelated card summary."

@@ -46,6 +46,8 @@ function cardsValid(value: unknown): boolean {
       // Older cards use display labels such as "Just now" here.
       || !optional(card.createdAt, v => typeof v === "string")
       || !optional(card.answerSources, v => Array.isArray(v) && v.every(sourceValid))
+      || !optional(card.explanations, v => object(v) && ["simpler", "deeper"].every(mode => optional(v[mode], item => object(item)
+        && text(item.text) && /^[a-f0-9]{16}$/.test(item.fingerprint) && Array.isArray(item.sources) && item.sources.length > 0 && item.sources.every(sourceValid))))
       || !optional(card.questionHistory, v => Array.isArray(v) && v.every(item => object(item) && (item.role === "user" || item.role === "assistant") && typeof item.content === "string"))
       || !optional(card.evidence, v => Array.isArray(v) && v.every(item => object(item) && number(item.sentence) && number(item.sourceIndex) && typeof item.quote === "string" && optional(item.section, v => typeof v === "string")))
       || !optional(card.image, v => object(v) && text(v.url) && ["alt", "sourceTitle", "sourceUrl", "fileUrl", "filePageUrl", "credit"].every(key => optional(v[key], v => typeof v === "string")))) return false;

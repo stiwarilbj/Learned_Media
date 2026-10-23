@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PromptOperation: String, CaseIterable {
-    case connection, candidate, combined, grounding, learn, question, videoInterpret, topicInterpret, videoVerify
+    case connection, candidate, combined, grounding, learn, adapt, question, videoInterpret, topicInterpret, videoVerify
 }
 
 public enum QuestionType: String {
@@ -175,7 +175,7 @@ public enum PromptBuilder {
     }
 
     private static func supportingCard(_ card: [String: Any]) -> [String: Any] {
-        card.filter { ["topicPath", "hook", "title", "body"].contains($0.key) }
+        card.filter { ["topicPath", "hook", "title", "body", "claim"].contains($0.key) }
     }
 
     public static func question(card: [String: Any], query: String?, detailed: Bool = false,
@@ -206,9 +206,16 @@ public enum PromptBuilder {
     }
 
     public static func learning(action: PromptOperation, card: [String: Any], question: String? = nil,
-                                detailed: Bool = false, history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
+                                detailed: Bool = false, history: [[String: Any]] = [], mode: String? = nil,
+                                evidence: [[String: Any]]) -> String {
         if action == .question {
             return self.question(card: card, query: question, detailed: detailed, history: history, evidence: evidence)
+        }
+        if action == .adapt {
+            let modeRule = mode == "deeper" ? "adaptDeeper" : "adaptSimpler"
+            return build(.adapt, rules: (PromptInstructions.rules["learningEvidence"] ?? []) + (PromptInstructions.rules[modeRule] ?? []), fields: [
+                PromptField("Original fact card", supportingCard(card), reference: true), PromptField("Wikipedia evidence", evidence, reference: true)
+            ])
         }
         return build(.learn, rules: PromptInstructions.rules["learningEvidence"] ?? [], fields: [
             PromptField("Card", supportingCard(card), reference: true), PromptField("Wikipedia evidence", evidence, reference: true)

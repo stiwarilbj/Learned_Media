@@ -8,6 +8,9 @@ export type Difficulty = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 export type FactFeedback = "heard" | "unknown";
 
+export type CardExplanationMode = "simpler" | "deeper";
+export type CardExplanation = { text: string; sources: WikipediaSource[]; fingerprint: string };
+
 export type FactCardAction = "like" | "save" | "more" | "less" | "heard" | "unknown" | "rabbit";
 
 export type TopicLearningProfile = {
@@ -113,6 +116,7 @@ export type FactCard = {
   lessLike?: boolean;
   surprise?: boolean;
   createdAt?: string;
+  explanations?: Partial<Record<CardExplanationMode, CardExplanation>>;
   learnMore?: string;
   question?: string;
   questionDetailed?: boolean;

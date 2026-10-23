@@ -1670,8 +1670,9 @@ private final class GeminiClient {
         return ["cards": cards, "validationDiagnostics": diagnostics.snapshot, "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "modelStatus": generationStatus ?? "connected", "partial": failed > 0, "failedJobs": failed, "retryable": failed > 0, "retryGuidance": failed > 0 ? "Some work failed. Retry to fill the remaining cards." : ""]
     }
 
-    func learn(key: String, action: String, card: [String: Any], question: String?, detailed: Bool, history: [[String: Any]]) async throws -> [String: Any] {
+    func learn(key: String, action: String, card: [String: Any], question: String?, detailed: Bool, history: [[String: Any]], mode: String? = nil) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using this feature.") }
+        if action == "adapt" && mode != "simpler" && mode != "deeper" { throw NativeError(message: "Choose a simpler or deeper explanation.", retryable: false) }
         let sourceTitles = (card["sources"] as? [[String: Any]] ?? []).prefix(3).compactMap { $0["title"] as? String }
         let cachedSources = (card["sources"] as? [[String: Any]] ?? []).filter { !($0["extract"] as? String ?? "").isEmpty }
         let cachedTitles = Set(cachedSources.compactMap { ($0["title"] as? String)?.lowercased() })
@@ -1702,13 +1703,18 @@ private final class GeminiClient {
                     "title": source["title"] as? String ?? "Wikipedia", "extract": source["extract"] as? String ?? "No extract returned"]
         }
         let cardIdentity: [String: Any] = ["topicPath": card["topicPath"] as? [String] ?? [], "hook": card["hook"] as? String ?? "",
-                                         "title": card["title"] as? String ?? "", "body": card["body"] as? String ?? ""]
-        let prompt = PromptBuilder.learning(action: action == "learn" ? .learn : .question,
-            card: cardIdentity, question: question, detailed: detailed, history: history, evidence: context)
-        let result = try await structured(key: key, prompt: prompt, schema: ["type": "OBJECT", "properties": ["answer": ["type": "STRING"], "citationIndexes": ["type": "ARRAY", "items": ["type": "INTEGER"]]], "required": ["answer", "citationIndexes"]], stage: "learning", maxOutputTokens: detailed ? 8192 : 4096, identity: try RequestIdentity.data(task: action == "learn" ? "learn" : "question", query: action == "question" ? question : nil, topics: cardIdentity["topicPath"] ?? [], filters: ["detailed": detailed], context: ["card": cardIdentity, "history": action == "question" ? Array(history.suffix(6)) : [], "evidence": context, "sourceUrls": sourceArray.prefix(5).map { $0["canonicalUrl"] as? String ?? $0["url"] as? String ?? "" }]))
+                                         "title": card["title"] as? String ?? "", "body": card["body"] as? String ?? "", "claim": card["claim"] as? String ?? ""]
+        let promptAction: PromptOperation = action == "adapt" ? .adapt : action == "learn" ? .learn : .question
+        let prompt = PromptBuilder.learning(action: promptAction,
+            card: cardIdentity, question: question, detailed: detailed, history: history, mode: mode, evidence: context)
+        let requestTask = action == "question" ? "question" : action == "adapt" ? "adapt" : "learn"
+        let requestFilters: [String: Any] = action == "question" ? ["detailed": detailed] : action == "adapt" ? ["mode": mode ?? "simpler"] : [:]
+        let outputLimit = action == "adapt" ? (mode == "deeper" ? 4096 : 2048) : detailed ? 8192 : 4096
+        let result = try await structured(key: key, prompt: prompt, schema: ["type": "OBJECT", "properties": ["answer": ["type": "STRING"], "citationIndexes": ["type": "ARRAY", "items": ["type": "INTEGER"]]], "required": ["answer", "citationIndexes"]], stage: "learning", maxOutputTokens: outputLimit, identity: try RequestIdentity.data(task: requestTask, query: action == "question" ? question : nil, topics: cardIdentity["topicPath"] ?? [], filters: requestFilters, context: ["card": cardIdentity, "history": action == "question" ? Array(history.suffix(6)) : [], "evidence": context, "sourceUrls": sourceArray.prefix(5).map { $0["canonicalUrl"] as? String ?? $0["url"] as? String ?? "" }]))
         let envelope = try JSONDecoder().decode(GeminiAnswerEnvelope.self, from: Data(result.text.utf8))
         guard let answer = envelope.answer, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NativeError(message: "Gemini returned an empty explanation.") }
         let citations = (envelope.citationIndexes ?? []).filter { $0 >= 0 && $0 < sourceArray.count }.prefix(3).map { sourceArray[$0] }
+        if action == "adapt" && citations.isEmpty { throw NativeError(message: "Gemini could not support this alternate explanation with the card’s sources.") }
         return ["answer": answer, "citations": Array(citations.isEmpty ? Array(sourceArray.prefix(1)) : citations), "modelOutcomes": result.outcomes]
     }
 
@@ -2003,9 +2009,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let question = payload["question"] as? String
             let detailed = payload["detailed"] as? Bool ?? false
             let history = payload["history"] as? [[String: Any]] ?? []
+            let mode = payload["mode"] as? String
             let task = Task { [weak self] in
                 guard let self else { return }
-                do { respond(id: id, result: try await gemini.learn(key: geminiKey, action: actionName, card: card, question: question, detailed: detailed, history: history)) }
+                do { respond(id: id, result: try await gemini.learn(key: geminiKey, action: actionName, card: card, question: question, detailed: detailed, history: history, mode: mode)) }
                 catch { respondGeminiFailure(id: id, error: error) }
                 activeTasks[id] = nil
             }
