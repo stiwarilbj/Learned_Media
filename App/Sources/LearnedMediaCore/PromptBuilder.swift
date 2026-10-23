@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PromptOperation: String, CaseIterable {
-    case connection, candidate, combined, grounding, learn, adapt, question, videoInterpret, topicInterpret, videoVerify
+    case connection, candidate, combined, grounding, learn, adapt, glossary, question, videoInterpret, topicInterpret, videoVerify
 }
 
 public enum QuestionType: String {
@@ -215,6 +215,12 @@ public enum PromptBuilder {
             let modeRule = mode == "deeper" ? "adaptDeeper" : "adaptSimpler"
             return build(.adapt, rules: PromptInstructions.rules[modeRule] ?? [], fields: [
                 PromptField("Original fact card", supportingCard(card), reference: true), PromptField("Wikipedia evidence", evidence, reference: true)
+            ])
+        }
+        if action == .glossary {
+            return build(.glossary, fields: [
+                PromptField("Original fact card", supportingCard(card), reference: true),
+                PromptField("Wikipedia evidence", evidence, reference: true)
             ])
         }
         return build(.learn, rules: PromptInstructions.rules["learningEvidence"] ?? [], fields: [

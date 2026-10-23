@@ -10,6 +10,8 @@ export type FactFeedback = "heard" | "unknown";
 
 export type CardExplanationMode = "simpler" | "deeper";
 export type CardExplanation = { text: string; sources: WikipediaSource[]; fingerprint: string };
+export type CardGlossaryEntry = { term: string; definition: string; sourceIndexes: number[] };
+export type SavedCardGlossary = { entries: CardGlossaryEntry[]; sources: WikipediaSource[]; fingerprint: string };
 export type SavedFollowUpQuestions = { questions: string[]; fingerprint: string };
 
 export type FactCardAction = "like" | "save" | "more" | "less" | "heard" | "unknown" | "rabbit";
@@ -118,6 +120,7 @@ export type FactCard = {
   surprise?: boolean;
   createdAt?: string;
   explanations?: Partial<Record<CardExplanationMode, CardExplanation>>;
+  glossary?: SavedCardGlossary;
   followUpQuestions?: SavedFollowUpQuestions;
   learnMore?: string;
   question?: string;

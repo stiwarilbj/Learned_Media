@@ -633,6 +633,21 @@ a { color: inherit; }
 .fact-actions { align-items: center; }
 .fact-actions .learn-more-button { color: var(--primary); background: var(--surface-blue); }
 .fact-actions .learn-more-button:disabled { opacity: .65; }
+.learn-more-menu { position: relative; display: inline-flex; align-items: stretch; }
+.learn-more-menu .learn-more-button { border-radius: 8px 0 0 8px; }
+.fact-actions .learn-more-menu-trigger { width: 30px; min-width: 30px; justify-content: center; padding: 7px 6px; border-left: 1px solid var(--border); border-radius: 0 8px 8px 0; background: var(--surface-blue); color: var(--primary); }
+.learn-more-menu-trigger:focus-visible, .learn-more-popover button:focus-visible, .card-glossary .text-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.learn-more-popover { position: absolute; z-index: 30; left: 0; bottom: calc(100% + 7px); width: 190px; padding: 6px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); box-shadow: var(--shadow); }
+.learn-more-popover button { width: 100%; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); padding: 9px; font: inherit; font-size: 11px; font-weight: 800; text-align: left; cursor: pointer; }
+.learn-more-popover button:hover { color: var(--primary); background: var(--surface-soft); }
+.card-glossary { max-width: 100%; }
+.card-glossary-heading { min-width: 0; }
+.card-glossary-list { display: grid; gap: 10px; margin: 10px 0 0; }
+.card-glossary-entry { min-width: 0; }
+.card-glossary-entry dt { color: var(--ink-strong); font-size: 12px; font-weight: 850; }
+.card-glossary-entry dd { margin: 3px 0 0; color: var(--ink); font-size: 12px; line-height: 1.55; }
+.card-glossary-entry .answer-sources { margin-top: 4px; }
+.card-glossary-empty { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .difficulty-mark { display: inline-flex; align-items: center; white-space: nowrap; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px; font-size: 9px; font-weight: 850; letter-spacing: 0; }
 .difficulty-mark { cursor: pointer; font-family: inherit; }
 .difficulty-mark:focus-visible, .difficulty-menu button:focus-visible, .card-explanation button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }

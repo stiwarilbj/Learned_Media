@@ -3,10 +3,10 @@ import { ValidationDiagnostics, type ValidationDiagnostic } from "./validation-d
 import { nextOutputCapacity, truncatedOutputFloor, MAX_OUTPUT_CAPACITY } from "./output-capacity";
 import { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildSearchInterpretationPrompt } from "./prompts";
 import { validateTopicPlan, type TopicQueryPlan } from "./topic-suggestions";
-import type { Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, WikipediaSource } from "./types";
+import type { CardGlossaryEntry, Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, SavedCardGlossary, WikipediaSource } from "./types";
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
-import { resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
+import { resolveWikipediaArticle, resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
 import { hashFactKey, difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, nearestMemories, isRepeatedFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
 import type { YouTubeSearchCandidate } from "./youtube";
 import { canonicalRequestIdentity, reusableStructuredValue, requestCacheKey, SessionCache, type RequestIdentity } from "./session-cache";
@@ -15,6 +15,7 @@ import { JsonArrayItemStreamParser } from "./stream-json";
 import { normalizeStructuredValue, parseStructuredResponse, stripResponseBom } from "./structured-response";
 import { transientRetryDelayMs } from "./retry-timing";
 import { createSavedFollowUpQuestions } from "./card-follow-ups";
+import { cardGlossaryFingerprint, normalizeCardGlossary } from "./card-glossary";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
 const MODEL_CHECK_TIMEOUT_MS = 20_000;
@@ -1072,7 +1073,55 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   return { cards, validationDiagnostics: diagnostics.snapshot(), modelOutcomes: outcomes, requestedCount: targetCount, completedCount: cards.length, partial, failedJobs: failedSlots.length, retryable: partial, retryGuidance: partial ? cards.length + " facts arrived. Retry to fill the remaining slots." : undefined };
 }
 
-export async function generateLearningResponse({ apiKey, sessionId = "default-session", action, card, question, detailed, history, mode, signal }: { apiKey: string; sessionId?: string; action: "learn" | "adapt" | "question"; card: FactCard; question?: string; detailed?: boolean; history?: LearningMessage[]; mode?: "simpler" | "deeper"; signal?: AbortSignal }): Promise<{ answer: string; citations: WikipediaSource[]; modelOutcomes: GeminiModelOutcome[] }> {
+type GlossaryLearningResponse = { glossary: SavedCardGlossary; modelOutcomes: GeminiModelOutcome[] };
+type AnswerLearningResponse = { answer: string; citations: WikipediaSource[]; modelOutcomes: GeminiModelOutcome[] };
+type GlossaryLearningRequest = { apiKey: string; sessionId?: string; action: "glossary"; card: FactCard; signal?: AbortSignal };
+type AnswerLearningRequest = { apiKey: string; sessionId?: string; action: "learn" | "adapt" | "question"; card: FactCard; question?: string; detailed?: boolean; history?: LearningMessage[]; mode?: "simpler" | "deeper"; signal?: AbortSignal };
+
+async function generateCardGlossary({ apiKey, sessionId = "default-session", card, signal }: GlossaryLearningRequest): Promise<GlossaryLearningResponse> {
+  if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before explaining terms.", undefined, [], undefined, false);
+  const resolved = await Promise.all(card.sources.slice(0, 3).map(async (source, sourceIndex) => {
+    let extract = source.extract?.trim() ?? "";
+    if (!extract) {
+      extract = (card.evidence ?? []).filter(item => item.sourceIndex === sourceIndex)
+        .map(item => `${item.section ? `[Section: ${item.section}]\n` : ""}${item.quote}`).join("\n\n");
+    }
+    if (!extract) {
+      const article = await resolveWikipediaArticle(source.title, signal);
+      extract = article?.extract?.trim() ?? "";
+    }
+    return extract ? { source: { title: source.title, url: source.canonicalUrl ?? source.url, canonicalUrl: source.canonicalUrl ?? source.url }, originalIndex: sourceIndex, extract } : undefined;
+  }));
+  const available = resolved.filter((item): item is NonNullable<typeof item> => Boolean(item));
+  if (!available.length) throw new GeminiFailure("The cited Wikipedia passages could not be loaded to explain these terms.", undefined, [], undefined, true);
+  const evidence = available.map((item, index) => ({ index, title: item.source.title, extract: item.extract.slice(0, 12_000) }));
+  const prompt = buildLearningPrompt({ action: "glossary", card: { topicPath: card.topicPath, hook: card.hook, title: card.title, body: card.body, claim: card.claim }, evidence });
+  const result = await requestStructured<{ entries?: Array<{ term?: unknown; definition?: unknown; citationIndexes?: unknown }> }>(apiKey, sessionId, prompt, {
+    type: "OBJECT",
+    properties: { entries: { type: "ARRAY", maxItems: 3, items: { type: "OBJECT", properties: { term: { type: "STRING" }, definition: { type: "STRING" }, citationIndexes: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["term", "definition", "citationIndexes"] } } },
+    required: ["entries"]
+  }, "learning", GENERATION_TIMEOUT_MS, signal, undefined, {
+    maxOutputTokens: 1024,
+    identity: { task: "glossary", topics: card.topicPath, filters: {}, context: { card: { hook: card.hook, title: card.title, body: card.body, claim: card.claim }, evidence, sourceUrls: available.map(item => item.source.canonicalUrl) } }
+  });
+  const sources = available.map(item => item.source);
+  const entries: CardGlossaryEntry[] = (result.value.entries ?? []).slice(0, 12).flatMap(raw => {
+    const term = typeof raw?.term === "string" ? raw.term.trim() : "";
+    const definition = typeof raw?.definition === "string" ? raw.definition.trim() : "";
+    const sourceIndexes = Array.isArray(raw?.citationIndexes) ? Array.from(new Set(raw.citationIndexes.filter((index): index is number => Number.isInteger(index) && Number(index) >= 0 && Number(index) < sources.length))).slice(0, 3) : [];
+    return term && definition && sourceIndexes.length ? [{ term, definition, sourceIndexes }] : [];
+  });
+  const fingerprint = cardGlossaryFingerprint(card);
+  const glossary = normalizeCardGlossary({ ...card, glossary: { entries, sources, fingerprint } });
+  if (!glossary) throw new GeminiFailure("Gemini returned glossary terms that could not be checked against the card and its sources.", undefined, result.outcomes, undefined, true);
+  return { glossary, modelOutcomes: result.outcomes };
+}
+
+export function generateLearningResponse(request: GlossaryLearningRequest): Promise<GlossaryLearningResponse>;
+export function generateLearningResponse(request: AnswerLearningRequest): Promise<AnswerLearningResponse>;
+export async function generateLearningResponse(request: GlossaryLearningRequest | AnswerLearningRequest): Promise<GlossaryLearningResponse | AnswerLearningResponse> {
+  if (request.action === "glossary") return generateCardGlossary({ ...request, sessionId: request.sessionId ?? "default-session" });
+  const { apiKey, sessionId = "default-session", action, card, question, detailed, history, mode, signal } = request;
   if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before asking for more detail.", undefined, [], undefined, false);
   const cachedOriginals = card.sources.filter(source => source.extract?.trim());
   const cachedTitles = new Set(cachedOriginals.map(source => source.title.toLocaleLowerCase()));

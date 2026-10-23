@@ -48,6 +48,10 @@ function cardsValid(value: unknown): boolean {
       || !optional(card.answerSources, v => Array.isArray(v) && v.every(sourceValid))
       || !optional(card.explanations, v => object(v) && ["simpler", "deeper"].every(mode => optional(v[mode], item => object(item)
         && text(item.text) && /^[a-f0-9]{16}$/.test(item.fingerprint) && Array.isArray(item.sources) && item.sources.length > 0 && item.sources.every(sourceValid))))
+      || !optional(card.glossary, v => object(v) && /^[a-f0-9]{16}$/.test(v.fingerprint) && Array.isArray(v.entries) && v.entries.length <= 3
+        && Array.isArray(v.sources) && v.sources.length <= 3 && v.sources.every(sourceValid)
+        && v.entries.every(item => object(item) && text(item.term) && text(item.definition) && Array.isArray(item.sourceIndexes)
+          && (v.entries.length === 0 || item.sourceIndexes.length > 0) && item.sourceIndexes.every(index => number(index) && Number.isInteger(index) && index >= 0 && index < v.sources.length)))
       || !optional(card.questionHistory, v => Array.isArray(v) && v.every(item => object(item) && (item.role === "user" || item.role === "assistant") && typeof item.content === "string"))
       || !optional(card.evidence, v => Array.isArray(v) && v.every(item => object(item) && number(item.sentence) && number(item.sourceIndex) && typeof item.quote === "string" && optional(item.section, v => typeof v === "string")))
       || !optional(card.image, v => object(v) && text(v.url) && ["alt", "sourceTitle", "sourceUrl", "fileUrl", "filePageUrl", "credit"].every(key => optional(v[key], v => typeof v === "string")))) return false;

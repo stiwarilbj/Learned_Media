@@ -233,6 +233,8 @@ function installNetworkMock(options = {}) {
             evidence
           };
         }).filter(Boolean).reverse() };
+      } else if (prompt.includes("Return at most three specialized or potentially unfamiliar terms")) {
+        output = { entries: options.glossaryEntries ?? [] };
       } else if (prompt.startsWith("Rewrite the original fact") || prompt.startsWith("Explain this one card") || prompt.startsWith("Answer the user's exact question")) {
         output = { answer: options.emptyAnswer ? "" : options.learningAnswer ?? "The instrument used a diaphragm to detect pressure changes.", citationIndexes: [0] };
       } else {
@@ -606,6 +608,56 @@ await t.test("learning prompts contain only the active length and operation with
   assert.ok(prompt.startsWith("Explain this one card"));
   assert.ok(!prompt.includes("Original user query:") && !prompt.includes("2 to 4 sentences"));
   assert.equal(geminiCallCount(state), 3);
+});
+
+await t.test("glossaries use one cached learning request, salvage valid cited terms, and reuse empty results", async () => {
+  const state = installNetworkMock({ glossaryEntries: [
+    { term: "meteorograph", definition: "A meteorograph is an instrument that records weather measurements over time.", citationIndexes: [0] },
+    { term: "not in this card", definition: "An unsupported term should be ignored.", citationIndexes: [0] },
+    { term: "meteorograph", definition: "A duplicate should be ignored.", citationIndexes: [0] }
+  ] });
+  const sessionId = await connectMock(state);
+  const fact = factBundle("amber");
+  const card = { id: "glossary-card", hook: fact.hook, title: fact.title, body: fact.sentences.join(" "), claim: fact.claim, topicPath: ["Science"], sources: [{ title: "Shared Article", url: "https://en.wikipedia.org/wiki/Shared_Article", extract: articleExtract() }] };
+  const result = await generateLearningResponse({ apiKey: "test-key", sessionId, action: "glossary", card });
+  assert.deepEqual(result.glossary.entries.map(entry => entry.term), ["meteorograph"]);
+  assert.deepEqual(result.glossary.entries[0].sourceIndexes, [0]);
+  assert.equal(result.glossary.sources[0].url, card.sources[0].url);
+  assert.equal(geminiCallCount(state), 1, "a glossary with cached source text takes one Gemini request");
+  const prompt = geminiCalls(state)[0].prompt;
+  assert.ok(prompt.includes("explaining its meaning specifically in this fact"));
+  assert.ok(prompt.includes("citationIndexes"));
+  assert.ok(!prompt.includes("Original user query:") && !prompt.includes("150 to 250 words"));
+  assert.equal(state.requests.filter(request => request.url.hostname === "en.wikipedia.org").length, 0, "cached source text needs no Wikipedia request");
+  await generateLearningResponse({ apiKey: "test-key", sessionId, action: "glossary", card });
+  assert.equal(geminiCallCount(state), 1, "identical successful glossaries reuse the session cache");
+
+  const evidenceState = installNetworkMock({ glossaryEntries: [
+    { term: "meteorograph", definition: "A meteorograph records weather measurements over time.", citationIndexes: [0] }
+  ] });
+  const evidenceSessionId = await connectMock(evidenceState);
+  const evidenceOnlyCard = { ...card, id: "glossary-evidence-card", sources: [{ ...card.sources[0], extract: "" }], evidence: [{ sentence: 0, sourceIndex: 0, section: "Instrument", quote: "The meteorograph recorded pressure and temperature over time." }] };
+  await generateLearningResponse({ apiKey: "test-key", sessionId: evidenceSessionId, action: "glossary", card: evidenceOnlyCard });
+  assert.equal(evidenceState.requests.filter(request => request.url.hostname === "en.wikipedia.org").length, 0, "saved citation excerpts are preferred to an article fetch");
+
+  const exactState = installNetworkMock({ glossaryEntries: [
+    { term: "meteorograph", definition: "A meteorograph records weather measurements over time.", citationIndexes: [0] }
+  ] });
+  const exactSessionId = await connectMock(exactState);
+  const exactCard = { ...card, id: "glossary-exact-card", sources: [{ title: "Glossary Exact Article", url: "https://en.wikipedia.org/wiki/Glossary_Exact_Article" }], evidence: [] };
+  await generateLearningResponse({ apiKey: "test-key", sessionId: exactSessionId, action: "glossary", card: exactCard });
+  const wikipediaRequests = exactState.requests.filter(request => request.url.hostname === "en.wikipedia.org");
+  assert.equal(wikipediaRequests.length, 1, "a missing extract fetches only the exact cited article");
+  assert.equal(wikipediaRequests[0].url.searchParams.get("titles"), "Glossary Exact Article");
+  assert.equal(wikipediaRequests[0].url.searchParams.get("action"), "query");
+  assert.ok(!exactState.requests.some(request => request.url.hostname === "en.wikipedia.org" && request.url.searchParams.has("srsearch")), "glossaries never perform source discovery");
+
+  const emptyState = installNetworkMock({ glossaryEntries: [] });
+  const emptySessionId = await connectMock(emptyState);
+  const empty = await generateLearningResponse({ apiKey: "test-key", sessionId: emptySessionId, action: "glossary", card });
+  assert.deepEqual(empty.glossary.entries, []);
+  await generateLearningResponse({ apiKey: "test-key", sessionId: emptySessionId, action: "glossary", card });
+  assert.equal(geminiCallCount(emptyState), 1, "an empty successful glossary is cached too");
 });
 
 await t.test("card adaptation uses the selected compact rules, original evidence, and one logical call", async () => {

@@ -138,6 +138,8 @@ private struct GeminiEvidence {
 }
 private struct GeminiGroundedEnvelope: Decodable { let facts: [GeminiGroundedFact]? }
 private struct GeminiAnswerEnvelope: Decodable { let answer: String?; let citationIndexes: [Int]? }
+private struct GeminiGlossaryEnvelope: Decodable { let entries: [GeminiGlossaryEntry]? }
+private struct GeminiGlossaryEntry: Decodable { let term: String?; let definition: String?; let citationIndexes: [Int]? }
 private struct GeminiVideoConceptGroup: Decodable { let label: String?; let terms: [String]?; let related: [String]?; let required: Bool? }
 private struct GeminiVideoSearchEnvelope: Decodable {
     let terms: [String]?
@@ -1731,8 +1733,75 @@ private final class GeminiClient {
         return ["cards": cards, "validationDiagnostics": diagnostics.snapshot, "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "modelStatus": generationStatus ?? "connected", "partial": failed > 0, "failedJobs": failed, "retryable": failed > 0, "retryGuidance": failed > 0 ? "Some work failed. Retry to fill the remaining cards." : ""]
     }
 
+    private func glossary(key: String, card: [String: Any]) async throws -> [String: Any] {
+        let originalSources = Array((card["sources"] as? [[String: Any]] ?? []).prefix(3))
+        let originalEvidence = card["evidence"] as? [[String: Any]] ?? []
+        var sources: [[String: Any]] = []
+        var evidence: [[String: Any]] = []
+        for (originalIndex, original) in originalSources.enumerated() {
+            try Task.checkCancellation()
+            guard let title = original["title"] as? String, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let url = original["canonicalUrl"] as? String ?? (original["url"] as? String ?? "")
+            var extract = original["extract"] as? String ?? ""
+            if extract.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                extract = originalEvidence.filter { ($0["sourceIndex"] as? Int) == originalIndex }.map { item in
+                    let section = item["section"] as? String
+                    let quote = item["quote"] as? String ?? ""
+                    return section.map { "[Section: \($0)]\n\(quote)" } ?? quote
+                }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+            }
+            if extract.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let article = await wikipedia.article(title: title) {
+                extract = article["extract"] as? String ?? ""
+            }
+            guard !extract.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let index = sources.count
+            sources.append(["title": title, "url": url, "canonicalUrl": url])
+            evidence.append(["index": index, "title": title, "extract": String(extract.prefix(12_000))])
+        }
+        guard !sources.isEmpty else { throw NativeError(message: "The cited Wikipedia passages could not be loaded to explain these terms.", retryable: true) }
+
+        let cardIdentity: [String: Any] = [
+            "topicPath": card["topicPath"] as? [String] ?? [], "hook": card["hook"] as? String ?? "",
+            "title": card["title"] as? String ?? "", "body": card["body"] as? String ?? "",
+            "claim": card["claim"] as? String ?? ""
+        ]
+        let prompt = PromptBuilder.learning(action: .glossary, card: cardIdentity, evidence: evidence)
+        let entrySchema: [String: Any] = ["type": "OBJECT", "properties": [
+            "term": ["type": "STRING"], "definition": ["type": "STRING"],
+            "citationIndexes": ["type": "ARRAY", "items": ["type": "INTEGER"]]
+        ], "required": ["term", "definition", "citationIndexes"]]
+        let schema: [String: Any] = ["type": "OBJECT", "properties": ["entries": ["type": "ARRAY", "maxItems": 3, "items": entrySchema]], "required": ["entries"]]
+        let result = try await structured(key: key, prompt: prompt, schema: schema, stage: "learning", maxOutputTokens: 1024,
+            identity: try RequestIdentity.data(task: "glossary", topics: cardIdentity["topicPath"] ?? [], context: ["card": cardIdentity, "evidence": evidence, "sourceUrls": sources.map { $0["canonicalUrl"] as? String ?? "" }]))
+        let envelope = try JSONDecoder().decode(GeminiGlossaryEnvelope.self, from: Data(result.text.utf8))
+        let visibleText = [cardIdentity["title"] as? String ?? "", cardIdentity["hook"] as? String ?? "", cardIdentity["body"] as? String ?? ""].joined(separator: " ")
+        let wordRegex = try! NSRegularExpression(pattern: #"[\p{L}\p{N}]+(?:[’'-][\p{L}\p{N}]+)*"#)
+        let sentenceRegex = try! NSRegularExpression(pattern: #"[.!?]["'”’)]*(?:\s|$)"#)
+        var seen = Set<String>()
+        let entries: [[String: Any]] = (envelope.entries ?? []).prefix(12).compactMap { raw in
+            guard let term = raw.term?.trimmingCharacters(in: .whitespacesAndNewlines), !term.isEmpty, term.count <= 80,
+                  let definition = raw.definition?.trimmingCharacters(in: .whitespacesAndNewlines), !definition.isEmpty,
+                  definition.count <= 300 else { return nil }
+            let range = NSRange(definition.startIndex..<definition.endIndex, in: definition)
+            let words = wordRegex.numberOfMatches(in: definition, range: range)
+            let sentences = sentenceRegex.numberOfMatches(in: definition, range: range)
+            guard words <= 35, sentences <= 1 else { return nil }
+            let escaped = NSRegularExpression.escapedPattern(for: term)
+            guard let termRegex = try? NSRegularExpression(pattern: #"(?<![\p{L}\p{N}])"# + escaped + #"(?![\p{L}\p{N}])"#, options: [.caseInsensitive]),
+                  termRegex.firstMatch(in: visibleText, range: NSRange(visibleText.startIndex..<visibleText.endIndex, in: visibleText)) != nil else { return nil }
+            let key = term.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            guard seen.insert(key).inserted else { return nil }
+            let citationIndexes = Array(Set((raw.citationIndexes ?? []).filter { $0 >= 0 && $0 < sources.count })).sorted().prefix(3)
+            guard !citationIndexes.isEmpty else { return nil }
+            return ["term": term, "definition": definition, "sourceIndexes": Array(citationIndexes)]
+        }.prefix(3).map { $0 }
+        return ["glossary": ["entries": entries, "sources": sources], "modelOutcomes": result.outcomes]
+    }
+
     func learn(key: String, action: String, card: [String: Any], question: String?, detailed: Bool, history: [[String: Any]], mode: String? = nil) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using this feature.") }
+        if action == "glossary" { return try await glossary(key: key, card: card) }
         if action == "adapt" && mode != "simpler" && mode != "deeper" { throw NativeError(message: "Choose a simpler or deeper explanation.", retryable: false) }
         let sourceTitles = (card["sources"] as? [[String: Any]] ?? []).prefix(3).compactMap { $0["title"] as? String }
         let cachedSources = (card["sources"] as? [[String: Any]] ?? []).filter { !($0["extract"] as? String ?? "").isEmpty }

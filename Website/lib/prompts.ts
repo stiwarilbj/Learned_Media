@@ -2,7 +2,7 @@ import { annotateEvidenceDates } from "./evidence-dates";
 import instructions from "./prompt-instructions.json";
 import { factWritingRules, difficultyRubric } from "./fact-quality";
 
-export type PromptOperation = "connection" | "candidate" | "combined" | "grounding" | "learn" | "adapt" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
+export type PromptOperation = "connection" | "candidate" | "combined" | "grounding" | "learn" | "adapt" | "glossary" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
 export type PromptField = { label: string; value: unknown; multiline?: boolean; reference?: boolean };
 export type QuestionType = "when" | "why" | "difference";
 
@@ -158,7 +158,7 @@ export function buildQuestionPrompt({ card, question, detailed, history, evidenc
 }
 
 export function buildLearningPrompt(options: {
-  action: "learn" | "adapt" | "question";
+  action: "learn" | "adapt" | "glossary" | "question";
   mode?: "simpler" | "deeper";
   card: unknown;
   question?: string;
@@ -173,6 +173,12 @@ export function buildLearningPrompt(options: {
     // Reuse the card context and shared reference-data guard without also
     // appending the longer learn-mode instructions.
     return buildPrompt("adapt", instructions[mode === "deeper" ? "adaptDeeper" : "adaptSimpler"], [
+      { label: "Original fact card", value: supportingCard(options.card), reference: true },
+      { label: "Wikipedia evidence", value: options.evidence, reference: true }
+    ]);
+  }
+  if (options.action === "glossary") {
+    return buildPrompt("glossary", [], [
       { label: "Original fact card", value: supportingCard(options.card), reference: true },
       { label: "Wikipedia evidence", value: options.evidence, reference: true }
     ]);

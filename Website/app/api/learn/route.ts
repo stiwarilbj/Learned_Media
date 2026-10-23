@@ -5,7 +5,7 @@ import type { FactCard, LearningMessage } from "@/lib/types";
 export async function POST(request: Request) {
   try {
     const body = await request.json() as {
-      action?: "learn" | "adapt" | "question";
+      action?: "learn" | "adapt" | "glossary" | "question";
       mode?: "simpler" | "deeper";
       card?: FactCard;
       question?: string;
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     const apiKey = request.headers.get("x-gemini-api-key")?.trim() ?? "";
     const sessionId = request.headers.get("x-learned-media-session")?.trim() || "browser-session";
     if (!apiKey) return NextResponse.json({ error: "Add your Gemini API key in Settings before asking for more detail." }, { status: 400 });
-    if (!body.card || (body.action !== "learn" && body.action !== "adapt" && body.action !== "question")) {
+    if (!body.card || (body.action !== "learn" && body.action !== "adapt" && body.action !== "glossary" && body.action !== "question")) {
       return NextResponse.json({ error: "A fact and learning action are required." }, { status: 400 });
     }
     if (body.action === "adapt" && body.mode !== "simpler" && body.mode !== "deeper") {
@@ -23,6 +23,16 @@ export async function POST(request: Request) {
     }
     if (body.action === "question" && !body.question?.trim()) {
       return NextResponse.json({ error: "Type a question about this fact first." }, { status: 400 });
+    }
+    if (body.action === "glossary") {
+      const result = await generateLearningResponse({
+        apiKey,
+        sessionId,
+        action: "glossary",
+        card: body.card,
+        signal: request.signal
+      });
+      return NextResponse.json(result);
     }
     const result = await generateLearningResponse({
       apiKey,

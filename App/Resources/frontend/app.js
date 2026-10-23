@@ -19,16 +19,22 @@
   const sourceSpotlight = window.LEARNED_MEDIA_SOURCE_SPOTLIGHT;
   const cardReveal = window.LEARNED_MEDIA_CARD_REVEAL;
   const cardExplanations = window.LEARNED_MEDIA_CARD_EXPLANATIONS;
+  const cardGlossary = window.LEARNED_MEDIA_CARD_GLOSSARY;
   const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
   const sourceSpotlightStates = new Map();
   const sourceSpotlightRequests = new Map();
   let adaptationRequest = null;
+  let glossaryRequest = null;
   let focusedSpotlightTrigger = null;
   let focusedSpotlightContext = null;
   let focusedDifficultyCardId = null;
   let focusDifficultyMenuAfterRender = false;
   let focusedMoreCardId = null;
   let focusMoreMenuAfterRender = false;
+  let focusedLearnCardId = null;
+  let focusLearnMenuAfterRender = false;
+  let focusedGlossaryHeadingCardId = null;
+  let focusedGlossaryTriggerCardId = null;
   const BEST_SELLING_BOOK_ORDER = [
     "A Tale of Two Cities", "The Little Prince", "The Alchemist", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber", "The Hobbit", "Alice's Adventures in Wonderland",
     "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World", "The Bridges of Madison County", "One Hundred Years of Solitude", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose", "The Eagle Has Landed", "Watership Down", "The Hite Report", "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life",
@@ -86,7 +92,10 @@
     loadingCard: null,
     adaptationLoading: null,
     adaptationErrorByCard: {},
+    glossaryLoading: null,
+    glossaryErrorByCard: {},
     difficultyMenuCardId: null,
+    learnMenuCardId: null,
     moreMenuCardId: null,
     errorByCard: {},
     generationError: "",
@@ -839,6 +848,7 @@
       createdAt: new Date().toISOString()
     }, card, { sources: references.sources, evidence: references.evidence, image: image, hook: hook });
     normalized.explanations = cardExplanations.normalizeCardExplanations(normalized);
+    normalized.glossary = cardGlossary.normalizeCardGlossary(normalized);
     normalized.followUpQuestions = Array.isArray(card.followUpQuestions)
       ? cardFollowUps.createSavedFollowUpQuestions(card.followUpQuestions, normalized)
       : cardFollowUps.normalizeSavedFollowUpQuestions(card.followUpQuestions, normalized);
@@ -914,6 +924,102 @@
     adaptationRequest = null;
     active.request.cancel();
     state.adaptationLoading = null;
+  }
+  function cancelCardGlossary(cardID) {
+    const active = glossaryRequest;
+    if (!active || cardID && active.cardID !== cardID) return;
+    glossaryRequest = null;
+    active.request.cancel();
+    state.glossaryLoading = null;
+  }
+  async function explainCardTerms(cardID) {
+    const card = state.cards.find(function (item) { return item.id === cardID; });
+    if (!card) return;
+    const fingerprint = cardGlossary.cardGlossaryFingerprint(card);
+    const saved = cardGlossary.normalizeCardGlossary(card);
+    if (saved) { card.glossary = saved; return; }
+    if (!state.key.trim()) return;
+    const requestKey = state.workspaceId + "\u0000" + cardID + "\u0000" + fingerprint;
+    if (glossaryRequest && glossaryRequest.key === requestKey) return;
+    cancelCardGlossary();
+    const workspaceID = state.workspaceId;
+    const activeGeneration = generationToken;
+    const request = bridge("learn", { action: "glossary", card: card });
+    const active = { key: requestKey, cardID: cardID, workspaceID: workspaceID, request: request };
+    glossaryRequest = active;
+    state.glossaryLoading = cardID;
+    state.glossaryErrorByCard[cardID] = "";
+    render();
+    try {
+      const result = await request;
+      if (glossaryRequest !== active || workspaceID !== state.workspaceId || activeGeneration !== generationToken) return;
+      const currentCard = state.cards.find(function (item) { return item.id === cardID; });
+      if (!currentCard || cardGlossary.cardGlossaryFingerprint(currentCard) !== fingerprint) return;
+      const received = result.glossary || result;
+      const normalized = cardGlossary.normalizeCardGlossary(Object.assign({}, currentCard, { glossary: Object.assign({}, received, { fingerprint: fingerprint }) }));
+      if (!normalized) throw new Error("The glossary could not be checked against this fact and its sources.");
+      mergeGeminiModelOutcomes(result.modelOutcomes || []);
+      currentCard.glossary = normalized;
+      saveState();
+    } catch (error) {
+      if (glossaryRequest !== active || workspaceID !== state.workspaceId || activeGeneration !== generationToken) return;
+      state.glossaryErrorByCard[cardID] = error.message || "Gemini could not explain the terms in this fact.";
+    } finally {
+      if (glossaryRequest === active) {
+        glossaryRequest = null;
+        state.glossaryLoading = null;
+        render();
+      }
+    }
+  }
+  function closeLearnMenu(restoreFocus) {
+    const cardID = state.learnMenuCardId;
+    if (!cardID) return;
+    state.learnMenuCardId = null;
+    const trigger = Array.from(document.querySelectorAll("[data-learn-trigger-card]")).find(function (element) { return element.dataset.learnTriggerCard === cardID; });
+    const wrapper = trigger && trigger.closest(".learn-more-menu");
+    const menu = wrapper && wrapper.querySelector(".learn-more-popover");
+    if (menu) menu.remove();
+    if (trigger) {
+      trigger.setAttribute("aria-expanded", "false");
+      if (restoreFocus) trigger.focus();
+    } else if (restoreFocus) focusedLearnCardId = cardID;
+  }
+  function openNativeGlossary(card) {
+    closeLearnMenu(false);
+    const fingerprint = cardGlossary.cardGlossaryFingerprint(card);
+    cardGlossary.setCardGlossaryPanelOpen(state.workspaceId, card.id, fingerprint, true);
+    focusedLearnCardId = null;
+    focusLearnMenuAfterRender = false;
+    focusedGlossaryHeadingCardId = card.id;
+    const saved = cardGlossary.normalizeCardGlossary(card);
+    if (saved) {
+      card.glossary = saved;
+      render();
+      return;
+    }
+    if (!state.key.trim()) {
+      render();
+      return;
+    }
+    void explainCardTerms(card.id);
+  }
+  function closeNativeGlossary(card) {
+    cardGlossary.setCardGlossaryPanelOpen(state.workspaceId, card.id, cardGlossary.cardGlossaryFingerprint(card), false);
+    cancelCardGlossary(card.id);
+    focusedGlossaryTriggerCardId = card.id;
+    render();
+  }
+  function handleLearnMenuKeydown(event) {
+    const options = Array.from(event.currentTarget.querySelectorAll("[role='menuitem']"));
+    const activeIndex = options.indexOf(document.activeElement);
+    let nextIndex = null;
+    if (event.key === "ArrowDown") nextIndex = (activeIndex + 1 + options.length) % options.length;
+    else if (event.key === "ArrowUp") nextIndex = (activeIndex - 1 + options.length) % options.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else if (event.key === "Escape") { event.preventDefault(); closeLearnMenu(true); return; }
+    if (nextIndex !== null) { event.preventDefault(); if (options[nextIndex]) options[nextIndex].focus(); }
   }
   function chooseCardExplanation(card, mode) {
     const validMode = mode === "simpler" || mode === "deeper" ? mode : undefined;
@@ -1194,6 +1300,54 @@
     }
     reading.appendChild(node("span", { className: "sr-only", "aria-live": "polite", "aria-atomic": "true", text: revealProgress && revealProgress.visibleCount > 0 ? "Revealed: " + (revealModel.sentences[revealProgress.visibleCount - 1] || "") : "" }));
     return reading;
+  }
+  function nativeGlossaryPanel(card) {
+    const fingerprint = cardGlossary.cardGlossaryFingerprint(card);
+    if (!cardGlossary.getCardGlossaryPanelOpen(state.workspaceId, card.id, fingerprint)) return null;
+    const saved = cardGlossary.normalizeCardGlossary(card);
+    const models = nativeCardRevealModel(card);
+    const progress = cardReveal.getCardRevealProgress(state.workspaceId, card.id, models.revealModel);
+    const graduallyRevealing = !progress?.complete && (Boolean(progress) || state.revealGradually);
+    const visibleCount = graduallyRevealing ? progress?.visibleCount || 0 : models.revealModel.sentences.length;
+    const visibleText = (card.hook || "") + " " + (card.title || "") + " " + (graduallyRevealing ? models.revealModel.sentences.slice(0, visibleCount).join(" ") : card.body || "");
+    const visibleEntries = cardGlossary.getVisibleCardGlossaryEntries(saved, visibleText);
+    const panelID = "card-glossary-" + safeCardElementId(card.id);
+    const panel = node("section", { className: "learning-answer card-glossary", role: "region", ariaLabel: "Term glossary", ariaLabelledby: panelID, onKeydown: function (event) { if (event.key === "Escape") { event.preventDefault(); closeNativeGlossary(card); } } });
+    const heading = node("div", { className: "card-explanation-heading" });
+    heading.appendChild(node("span", { id: panelID, className: "answer-label", tabIndex: -1, dataset: { glossaryHeadingCard: card.id } }, svg("sparkles", 14), " Explain the terms"));
+    heading.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { closeNativeGlossary(card); } }, "Close"));
+    panel.appendChild(heading);
+    if (state.glossaryLoading === card.id) {
+      panel.appendChild(node("div", { className: "learning-loading", role: "status" }, node("span", { className: "loading-dot" }), " Finding the terms that may be unfamiliar…"));
+    } else if (!state.key.trim() && !saved) {
+      const settings = node("div", { className: "card-explanation-settings" }, node("span", { text: "Add a Gemini key to explain these terms." }));
+      settings.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { state.view = "settings"; render(); } }, "Open Settings"));
+      panel.appendChild(settings);
+    } else if (saved && saved.entries.length === 0) {
+      panel.appendChild(node("p", { className: "card-glossary-empty", text: "No difficult terms need explaining." }));
+    } else if (saved && visibleEntries.length === 0) {
+      panel.appendChild(node("p", { className: "card-glossary-empty", text: "Keep reading to reveal the terms explained later in this fact." }));
+    } else if (saved) {
+      const list = node("dl", { className: "card-glossary-list" });
+      visibleEntries.forEach(function (entry) {
+        const item = node("div", { className: "card-glossary-entry" });
+        item.appendChild(node("dt", { text: entry.term }));
+        item.appendChild(node("dd", { text: entry.definition }));
+        const links = node("div", { className: "answer-sources" });
+        entry.sourceIndexes.forEach(function (sourceIndex) {
+          const source = saved.sources[sourceIndex];
+          if (source) links.appendChild(externalLink(source.canonicalUrl || source.url, source.title));
+        });
+        item.appendChild(links);
+        list.appendChild(item);
+      });
+      panel.appendChild(list);
+    } else {
+      const retry = node("div", { className: "card-explanation-settings" }, node("span", { text: state.glossaryErrorByCard[card.id] || "The glossary could not be created." }));
+      retry.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { void explainCardTerms(card.id); } }, "Retry"));
+      panel.appendChild(retry);
+    }
+    return panel;
   }
   function sourceList(card, answer) {
     const sources = (answer ? card.answerSources : card.sources) || [];
@@ -1552,6 +1706,8 @@
   }
   function cancelWorkspaceOperations() {
     cancelCardAdaptation();
+    cancelCardGlossary();
+    closeLearnMenu(false);
     closeDifficultyMenu(false);
     generationToken += 1;
     state.connectionToken += 1;
@@ -1944,6 +2100,7 @@
       const target = event.target;
       if (state.difficultyMenuCardId && !(target && target.closest && target.closest(".difficulty-picker"))) closeDifficultyMenu(false);
       if (state.moreMenuCardId && !(target && target.closest && target.closest(".fact-more-menu"))) closeMoreMenu(false);
+      if (state.learnMenuCardId && !(target && target.closest && target.closest(".learn-more-menu"))) closeLearnMenu(false);
       if (target && target.closest && (target.closest(".workspace-switcher") || target.closest(".global-search-wrap"))) return;
       clearWorkspaceRename();
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
@@ -1954,6 +2111,10 @@
         const moreMenu = target && target.closest && target.closest(".fact-more-menu");
         if (!moreMenu || moreMenu.dataset.moreCard !== state.moreMenuCardId) closeMoreMenu(false);
       }
+      if (state.learnMenuCardId) {
+        const learnMenu = target && target.closest && target.closest(".learn-more-menu");
+        if (!learnMenu || learnMenu.dataset.learnCard !== state.learnMenuCardId) closeLearnMenu(false);
+      }
       if (!state.difficultyMenuCardId) return;
       const picker = target && target.closest && target.closest(".difficulty-picker");
       if (!picker || picker.dataset.difficultyCard !== state.difficultyMenuCardId) closeDifficultyMenu(false);
@@ -1963,6 +2124,11 @@
       if (state.moreMenuCardId) {
         event.preventDefault();
         closeMoreMenu(true);
+        return;
+      }
+      if (state.learnMenuCardId) {
+        event.preventDefault();
+        closeLearnMenu(true);
         return;
       }
       if (state.difficultyMenuCardId) {
@@ -2210,6 +2376,8 @@
     content.appendChild(node("p", { className: "fact-hook", text: card.hook }));
     content.appendChild(node("h3", { text: card.title }));
     content.appendChild(cardBody(card));
+    const glossaryPanel = nativeGlossaryPanel(card);
+    if (glossaryPanel) content.appendChild(glossaryPanel);
     if (explanationMode) {
       const currentFingerprint = cardExplanations.cardExplanationFingerprint(card);
       const savedExplanation = explanation && explanation.fingerprint === currentFingerprint && explanation.text && explanation.sources && explanation.sources.length ? explanation : null;
@@ -2243,7 +2411,22 @@
     content.appendChild(questionArea(card));
     article.appendChild(content);
     const actions = node("div", { className: "fact-actions" });
-    actions.appendChild(node("button", { className: "learn-more-button", disabled: Boolean(card.learnMore || state.loadingCard === card.id), onClick: function () { learnMore(card.id); } }, svg("sparkles", 16), node("span", { text: state.loadingCard === card.id ? "Reading" : card.learnMore ? "Learned" : "Learn more" })));
+    const learnMenu = node("div", { className: "learn-more-menu", dataset: { learnCard: card.id } });
+    const learnMenuID = "learn-more-menu-" + safeCardElementId(card.id);
+    learnMenu.appendChild(node("button", { type: "button", className: "learn-more-button", disabled: Boolean(card.learnMore || state.loadingCard === card.id), onClick: function () { learnMore(card.id); } }, svg("sparkles", 16), node("span", { text: state.loadingCard === card.id ? "Reading" : card.learnMore ? "Learned" : "Learn more" })));
+    learnMenu.appendChild(node("button", { type: "button", className: "learn-more-menu-trigger", ariaLabel: "More learning tools", ariaHaspopup: "menu", ariaExpanded: state.learnMenuCardId === card.id, ariaControls: learnMenuID, dataset: { learnTriggerCard: card.id }, onClick: function () {
+      const open = state.learnMenuCardId !== card.id;
+      state.learnMenuCardId = open ? card.id : null;
+      focusedLearnCardId = card.id;
+      focusLearnMenuAfterRender = open;
+      render();
+    } }, svg("chevronDown", 14)));
+    if (state.learnMenuCardId === card.id) {
+      const menu = node("div", { id: learnMenuID, className: "learn-more-popover", role: "menu", ariaLabel: "Learning tools", onKeydown: handleLearnMenuKeydown });
+      menu.appendChild(node("button", { type: "button", role: "menuitem", dataset: { learnMenuCard: card.id }, onClick: function () { openNativeGlossary(card); } }, svg("sparkles", 14), " ", "Explain the terms"));
+      learnMenu.appendChild(menu);
+    }
+    actions.appendChild(learnMenu);
     actions.appendChild(node("button", { className: "feedback-button heard" + (card.feedback === "heard" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "heard"); } }, svg("check", 15), node("span", { text: "Heard" })));
     actions.appendChild(node("button", { className: "feedback-button unknown" + (card.feedback === "unknown" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "unknown"); } }, svg("help", 15), node("span", { text: "Unknown" })));
     actions.appendChild(node("button", { className: card.liked ? "active-like" : "", onClick: function () { toggleCard(card.id, "liked"); } }, svg("heart", 16), node("span", { text: "Like" })));
@@ -2299,10 +2482,10 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { cancelCardAdaptation(); state.adaptationLoading = null; closeDifficultyMenu(false); state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", state.key); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { cancelCardAdaptation(); cancelCardGlossary(); state.adaptationLoading = null; closeDifficultyMenu(false); state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", state.key); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { cancelCardAdaptation(); state.adaptationLoading = null; closeDifficultyMenu(false); state.key = ""; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", ""); showToast("Remembered key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { cancelCardAdaptation(); cancelCardGlossary(); state.adaptationLoading = null; closeDifficultyMenu(false); state.key = ""; clearSessionSearchCaches(); state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", ""); showToast("Remembered key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain and privately synced when you sign in with Google. Remove also clears it from your account." })));
@@ -2436,6 +2619,8 @@
     if (activeElement && activeElement.dataset && activeElement.dataset.difficultyCard) focusedDifficultyCardId = activeElement.dataset.difficultyCard;
     if (activeElement && activeElement.dataset && activeElement.dataset.moreTriggerCard) focusedMoreCardId = activeElement.dataset.moreTriggerCard;
     if (activeElement && activeElement.dataset && activeElement.dataset.moreMenuCard) focusedMoreCardId = activeElement.dataset.moreMenuCard;
+    if (activeElement && activeElement.dataset && activeElement.dataset.learnTriggerCard) focusedLearnCardId = activeElement.dataset.learnTriggerCard;
+    if (activeElement && activeElement.dataset && activeElement.dataset.learnMenuCard) focusedLearnCardId = activeElement.dataset.learnMenuCard;
     const activeField = activeElement && ["gemini-key", "youtube-key", "youtube-search", "global-search", "topic-search"].includes(activeElement.id) ? activeElement : null;
     if (activeField) { focusedFieldId = activeField.id; focusedSelection = typeof activeField.selectionStart === "number" ? [activeField.selectionStart, activeField.selectionEnd] : null; }
     else if (activeElement && activeElement !== document.body) { focusedFieldId = null; focusedSelection = null; }
@@ -2464,6 +2649,14 @@
     focusedMoreCardId = null;
     const focusMoreMenu = focusMoreMenuAfterRender;
     focusMoreMenuAfterRender = false;
+    const restoreLearnCardId = focusedLearnCardId;
+    focusedLearnCardId = null;
+    const focusLearnMenu = focusLearnMenuAfterRender;
+    focusLearnMenuAfterRender = false;
+    const restoreGlossaryHeadingCardId = focusedGlossaryHeadingCardId;
+    focusedGlossaryHeadingCardId = null;
+    const restoreGlossaryTriggerCardId = focusedGlossaryTriggerCardId;
+    focusedGlossaryTriggerCardId = null;
     window.requestAnimationFrame(function () {
       const nextTopicTree = document.querySelector(".topic-tree");
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
@@ -2518,6 +2711,24 @@
             (item || trigger).focus();
           } else trigger.focus();
         }
+      }
+      if (restoreLearnCardId) {
+        const trigger = Array.from(document.querySelectorAll("[data-learn-trigger-card]")).find(function (element) { return element.dataset.learnTriggerCard === restoreLearnCardId; });
+        if (trigger) {
+          if (focusLearnMenu && state.learnMenuCardId === restoreLearnCardId) {
+            const wrapper = trigger.closest(".learn-more-menu");
+            const item = wrapper && wrapper.querySelector("[role='menuitem']");
+            (item || trigger).focus();
+          } else trigger.focus();
+        }
+      }
+      if (restoreGlossaryHeadingCardId) {
+        const heading = Array.from(document.querySelectorAll("[data-glossary-heading-card]")).find(function (element) { return element.dataset.glossaryHeadingCard === restoreGlossaryHeadingCardId; });
+        if (heading) heading.focus();
+      }
+      if (restoreGlossaryTriggerCardId) {
+        const trigger = Array.from(document.querySelectorAll("[data-learn-trigger-card]")).find(function (element) { return element.dataset.learnTriggerCard === restoreGlossaryTriggerCardId; });
+        if (trigger) trigger.focus();
       }
     });
   }
@@ -2621,6 +2832,7 @@
     generateBatch(generationToken, 7);
   }
   function resetFeed() {
+    cancelCardGlossary();
     generationToken += 1;
     state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
@@ -2651,6 +2863,7 @@
     showToast("Topics reset. Choose a topic to start again.");
   }
   function performResetAll() {
+    cancelCardGlossary();
     generationToken += 1;
     state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
@@ -2670,6 +2883,7 @@
     requestConfirmation("Reset all preferences?", "Your topic mix, feed, and learning preferences will return to their starting values.", "Confirm", performResetAll);
   }
   function performDeleteData() {
+    cancelCardGlossary();
     generationToken += 1;
     state.generationRequestToken += 1;
     bridge("cancelAll", {}).catch(function () {});
