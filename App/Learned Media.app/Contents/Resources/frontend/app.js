@@ -17,6 +17,7 @@
   const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const sourceSpotlight = window.LEARNED_MEDIA_SOURCE_SPOTLIGHT;
+  const cardReveal = window.LEARNED_MEDIA_CARD_REVEAL;
   const cardExplanations = window.LEARNED_MEDIA_CARD_EXPLANATIONS;
   const sourceSpotlightStates = new Map();
   const sourceSpotlightRequests = new Map();
@@ -25,6 +26,8 @@
   let focusedSpotlightContext = null;
   let focusedDifficultyCardId = null;
   let focusDifficultyMenuAfterRender = false;
+  let focusedMoreCardId = null;
+  let focusMoreMenuAfterRender = false;
   const BEST_SELLING_BOOK_ORDER = [
     "A Tale of Two Cities", "The Little Prince", "The Alchemist", "Harry Potter and the Philosopher's Stone", "And Then There Were None", "Dream of the Red Chamber", "The Hobbit", "Alice's Adventures in Wonderland",
     "She: A History of Adventure", "The Da Vinci Code", "Harry Potter and the Chamber of Secrets", "The Catcher in the Rye", "Sophie's World", "The Bridges of Madison County", "One Hundred Years of Solitude", "Lolita", "Heidi", "The Common Sense Book of Baby and Child Care", "Anne of Green Gables", "Black Beauty", "The Name of the Rose", "The Eagle Has Landed", "Watership Down", "The Hite Report", "Charlotte's Web", "The Ginger Man", "The Purpose Driven Life",
@@ -55,6 +58,7 @@
     started: false,
     topics: makeTopics(),
     settings: Object.assign({}, DEFAULT_SETTINGS),
+    revealGradually: false,
     cards: [],
     profile: {},
     query: "",
@@ -82,6 +86,7 @@
     adaptationLoading: null,
     adaptationErrorByCard: {},
     difficultyMenuCardId: null,
+    moreMenuCardId: null,
     errorByCard: {},
     generationError: "",
     pendingSlots: 7,
@@ -879,6 +884,24 @@
       if (restoreFocus && trigger) trigger.focus();
     } else if (restoreFocus) focusedDifficultyCardId = cardID;
   }
+  function closeMoreMenu(restoreFocus) {
+    const cardID = state.moreMenuCardId;
+    if (!cardID) return;
+    state.moreMenuCardId = null;
+    const trigger = Array.from(document.querySelectorAll("[data-more-trigger-card]")).find(function (element) { return element.dataset.moreTriggerCard === cardID; });
+    const wrapper = trigger && trigger.closest(".fact-more-menu");
+    const menu = wrapper && wrapper.querySelector(".fact-more-popover");
+    if (menu) menu.remove();
+    if (trigger) {
+      trigger.setAttribute("aria-expanded", "false");
+      if (restoreFocus) trigger.focus();
+    } else if (restoreFocus) focusedMoreCardId = cardID;
+  }
+  function setRevealGraduallyPreference(enabled) {
+    state.revealGradually = enabled === true;
+    cardReveal.clearCardRevealProgress();
+    bridge("saveRevealGraduallyPreference", { enabled: state.revealGradually }).catch(function () {});
+  }
   function cancelCardAdaptation(cardID) {
     const active = adaptationRequest;
     if (!active || cardID && active.cardID !== cardID) return;
@@ -906,6 +929,35 @@
     else if (event.key === "End") nextIndex = options.length - 1;
     else if (event.key === "Escape") { event.preventDefault(); closeDifficultyMenu(true); return; }
     if (nextIndex !== null) { event.preventDefault(); if (options[nextIndex]) options[nextIndex].focus(); }
+  }
+  function handleMoreMenuKeydown(event) {
+    const options = Array.from(event.currentTarget.querySelectorAll("[role='menuitem']"));
+    const activeIndex = options.indexOf(document.activeElement);
+    let nextIndex = null;
+    if (event.key === "ArrowDown") nextIndex = (activeIndex + 1 + options.length) % options.length;
+    else if (event.key === "ArrowUp") nextIndex = (activeIndex - 1 + options.length) % options.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else if (event.key === "Escape") { event.preventDefault(); closeMoreMenu(true); return; }
+    if (nextIndex !== null) { event.preventDefault(); if (options[nextIndex]) options[nextIndex].focus(); }
+  }
+  function runMoreCardAction(card, action) {
+    state.moreMenuCardId = null;
+    focusedMoreCardId = card.id;
+    if (action === "reveal") cardReveal.startCardReveal(state.workspaceId, card.id, cardReveal.buildCardRevealModel(card.body, sourceSpotlight.buildSourceSpotlightModel(card).mapped ? sourceSpotlight.buildSourceSpotlightModel(card).sentences : undefined));
+    else if (action === "more") { card.moreLike = true; card.liked = true; showToast("Your mix will lean a little closer to this thread."); saveState(); }
+    else if (action === "less") { card.lessLike = true; showToast("We’ll keep this thread quieter for a while."); saveState(); }
+    else {
+      const label = (card.topicPath || []).slice(-1)[0];
+      let target = null;
+      function findByLabel(topics) { for (const topic of topics || []) { if (String(topic.label).toLocaleLowerCase() === String(label).toLocaleLowerCase()) return topic; const nested = findByLabel(topic.children); if (nested) return nested; } return null; }
+      target = findByLabel(state.topics);
+      if (target && selectionState(target) !== "selected") toggleTopicSelection(target.id);
+      state.view = "feed";
+      showToast("Following " + (label || "this topic") + " into a new batch.");
+    }
+    render();
+    if (action === "rabbit") startFeed();
   }
   async function adaptCardExplanation(cardID, mode) {
     if (mode !== "simpler" && mode !== "deeper") { cancelCardAdaptation(cardID); return; }
@@ -998,6 +1050,10 @@
     }).finally(function () { if (sourceSpotlightRequests.get(requestKey) === request) sourceSpotlightRequests.delete(requestKey); });
   }
   function openNativeSpotlight(card, sentenceIndex, triggerId) {
+    const reveal = nativeCardRevealModel(card);
+    const revealProgress = cardReveal.getCardRevealProgress(state.workspaceId, card.id, reveal.revealModel);
+    const graduallyRevealing = !revealProgress?.complete && (Boolean(revealProgress) || state.revealGradually);
+    if (graduallyRevealing && sentenceIndex >= (revealProgress?.visibleCount || 0)) cardReveal.revealCardThroughSentence(state.workspaceId, card.id, reveal.revealModel, sentenceIndex);
     const key = nativeSpotlightKey(card);
     const current = sourceSpotlightStates.get(key);
     nativeCancelSpotlightRequests(state.workspaceId, card.id, sentenceIndex);
@@ -1087,12 +1143,22 @@
     panel.addEventListener("keydown", function (event) { if (event.key === "Escape") { event.preventDefault(); closeNativeSpotlight(card); } });
     return panel;
   }
+  function nativeCardRevealModel(card) {
+    const spotlightModel = sourceSpotlight.buildSourceSpotlightModel(card);
+    return { spotlightModel: spotlightModel, revealModel: cardReveal.buildCardRevealModel(card.body || "", spotlightModel.mapped ? spotlightModel.sentences : undefined) };
+  }
   function cardBody(card) {
-    const model = sourceSpotlight.buildSourceSpotlightModel(card);
+    const revealModels = nativeCardRevealModel(card);
+    const model = revealModels.spotlightModel;
+    const revealModel = revealModels.revealModel;
+    const revealProgress = cardReveal.getCardRevealProgress(state.workspaceId, card.id, revealModel);
+    const graduallyRevealing = !revealProgress?.complete && (Boolean(revealProgress) || state.revealGradually);
+    const visibleCount = graduallyRevealing ? revealProgress?.visibleCount || 0 : revealModel.sentences.length;
     const current = sourceSpotlightStates.get(nativeSpotlightKey(card));
     const body = node("p", { className: "fact-body" });
+    const reading = node("div", { className: "card-reading-body" });
     if (model.mapped) {
-      model.sentences.forEach(function (sentence, sentenceIndex) {
+      model.sentences.slice(0, visibleCount).forEach(function (sentence, sentenceIndex) {
         if (sentenceIndex) body.appendChild(document.createTextNode(" "));
         body.appendChild(document.createTextNode(sentence));
         const groups = model.groups[sentenceIndex] || [];
@@ -1104,16 +1170,24 @@
         body.appendChild(nativeSpotlightPanel(card, model, sentenceIndex, groups));
       });
     } else {
-      body.appendChild(document.createTextNode(card.body || ""));
+      if (visibleCount > 0) body.appendChild(document.createTextNode(card.body || ""));
       const groups = model.groups[0] || [];
-      if (groups.length) {
+      if (visibleCount > 0 && groups.length) {
         body.appendChild(document.createTextNode(" "));
         const triggerId = "whole-body";
         body.appendChild(node("button", { type: "button", className: "source-citation-marker", ariaLabel: "Open saved sources for this fact", ariaExpanded: Boolean(current && current.sentenceIndex === 0), ariaControls: nativeSpotlightPanelId(card, model, 0), dataset: { spotlightCard: card.id, spotlightTrigger: triggerId }, text: "1", onClick: function () { openNativeSpotlight(card, 0, triggerId); }, onKeydown: function (event) { handleNativeSpotlightEscape(event, card); } }));
         body.appendChild(nativeSpotlightPanel(card, model, 0, groups));
       }
     }
-    return body;
+    reading.appendChild(body);
+    if (graduallyRevealing) {
+      const controls = node("div", { className: "card-reveal-controls" });
+      controls.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { cardReveal.revealNextCardSentence(state.workspaceId, card.id, revealModel); render(); } }, "Keep reading"));
+      controls.appendChild(node("button", { type: "button", className: "text-button", onClick: function () { cardReveal.showAllCardSentences(state.workspaceId, card.id, revealModel); render(); } }, "Show everything"));
+      reading.appendChild(controls);
+    }
+    reading.appendChild(node("span", { className: "sr-only", "aria-live": "polite", "aria-atomic": "true", text: revealProgress && revealProgress.visibleCount > 0 ? "Revealed: " + (revealModel.sentences[revealProgress.visibleCount - 1] || "") : "" }));
+    return reading;
   }
   function sourceList(card, answer) {
     const sources = (answer ? card.answerSources : card.sources) || [];
@@ -1863,18 +1937,28 @@
     document.addEventListener("pointerdown", function (event) {
       const target = event.target;
       if (state.difficultyMenuCardId && !(target && target.closest && target.closest(".difficulty-picker"))) closeDifficultyMenu(false);
+      if (state.moreMenuCardId && !(target && target.closest && target.closest(".fact-more-menu"))) closeMoreMenu(false);
       if (target && target.closest && (target.closest(".workspace-switcher") || target.closest(".global-search-wrap"))) return;
       clearWorkspaceRename();
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
     });
     document.addEventListener("focusin", function (event) {
-      if (!state.difficultyMenuCardId) return;
       const target = event.target;
+      if (state.moreMenuCardId) {
+        const moreMenu = target && target.closest && target.closest(".fact-more-menu");
+        if (!moreMenu || moreMenu.dataset.moreCard !== state.moreMenuCardId) closeMoreMenu(false);
+      }
+      if (!state.difficultyMenuCardId) return;
       const picker = target && target.closest && target.closest(".difficulty-picker");
       if (!picker || picker.dataset.difficultyCard !== state.difficultyMenuCardId) closeDifficultyMenu(false);
     });
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape") return;
+      if (state.moreMenuCardId) {
+        event.preventDefault();
+        closeMoreMenu(true);
+        return;
+      }
       if (state.difficultyMenuCardId) {
         event.preventDefault();
         closeDifficultyMenu(true);
@@ -2096,7 +2180,23 @@
     actions.appendChild(node("button", { className: "feedback-button unknown" + (card.feedback === "unknown" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "unknown"); } }, svg("help", 15), node("span", { text: "Unknown" })));
     actions.appendChild(node("button", { className: card.liked ? "active-like" : "", onClick: function () { toggleCard(card.id, "liked"); } }, svg("heart", 16), node("span", { text: "Like" })));
     actions.appendChild(node("button", { className: card.saved ? "active-save" : "", onClick: function () { toggleCard(card.id, "saved"); } }, svg("bookmark", 16), node("span", { text: "Save" })));
-    actions.appendChild(node("button", { className: "overflow-action", ariaLabel: "More actions", onClick: function () { showToast("More like this will shape a future batch."); } }, svg("more", 17)));
+    const moreMenu = node("div", { className: "fact-more-menu", dataset: { moreCard: card.id } });
+    const moreMenuID = "fact-more-" + safeCardElementId(card.id);
+    moreMenu.appendChild(node("button", { type: "button", className: "fact-more-trigger overflow-action", ariaLabel: "More actions", "aria-haspopup": "menu", ariaExpanded: state.moreMenuCardId === card.id, ariaControls: moreMenuID, dataset: { moreTriggerCard: card.id }, onClick: function () {
+      const open = state.moreMenuCardId !== card.id;
+      state.moreMenuCardId = open ? card.id : null;
+      focusedMoreCardId = card.id;
+      focusMoreMenuAfterRender = open;
+      render();
+    } }, svg("more", 17)));
+    if (state.moreMenuCardId === card.id) {
+      const menu = node("div", { id: moreMenuID, className: "fact-more-popover", role: "menu", ariaLabel: "More fact actions", onKeydown: handleMoreMenuKeydown });
+      [["reveal", "Reveal gradually", "sparkles"], ["more", "More like this", "sparkles"], ["rabbit", "Start rabbit hole", "arrow"], ["less", "Show fewer like this", "minus"]].forEach(function (option) {
+        menu.appendChild(node("button", { type: "button", role: "menuitem", dataset: { moreMenuCard: card.id }, onClick: function () { runMoreCardAction(card, option[0]); } }, svg(option[2], 15), " ", option[1]));
+      });
+      moreMenu.appendChild(menu);
+    }
+    actions.appendChild(moreMenu);
     article.appendChild(actions);
     return article;
   }
@@ -2198,6 +2298,11 @@
     themes.appendChild(node("button", { className: document.body.classList.contains("theme-dark") ? "" : "selected", onClick: function () { document.body.classList.remove("theme-dark"); saveState(); render(); } }, svg("sun", 16), " Light"));
     themes.appendChild(node("button", { className: document.body.classList.contains("theme-dark") ? "selected" : "", onClick: function () { document.body.classList.add("theme-dark"); saveState(); render(); } }, svg("moon", 16), " Dark"));
     appearance.appendChild(themes);
+    const revealPreference = node("label", { className: "reveal-preference-row" }, node("span", {}, node("strong", { text: "Reveal gradually" }), node("small", { text: "Start each fact with its hook and title, then reveal one sentence at a time. This preference applies on this Mac." })));
+    const revealToggle = node("input", { type: "checkbox", checked: state.revealGradually, ariaLabel: "Reveal fact cards gradually" });
+    revealToggle.addEventListener("change", function () { setRevealGraduallyPreference(revealToggle.checked); render(); });
+    revealPreference.appendChild(revealToggle);
+    appearance.appendChild(revealPreference);
     main.appendChild(appearance);
     grid.appendChild(main);
     const side = node("aside", { className: "settings-side" });
@@ -2261,6 +2366,8 @@
     }
     if (activeElement && activeElement.dataset && activeElement.dataset.topicId) focusedTopicId = activeElement.dataset.topicId;
     if (activeElement && activeElement.dataset && activeElement.dataset.difficultyCard) focusedDifficultyCardId = activeElement.dataset.difficultyCard;
+    if (activeElement && activeElement.dataset && activeElement.dataset.moreTriggerCard) focusedMoreCardId = activeElement.dataset.moreTriggerCard;
+    if (activeElement && activeElement.dataset && activeElement.dataset.moreMenuCard) focusedMoreCardId = activeElement.dataset.moreMenuCard;
     const activeField = activeElement && ["gemini-key", "youtube-key", "youtube-search", "global-search", "topic-search"].includes(activeElement.id) ? activeElement : null;
     if (activeField) { focusedFieldId = activeField.id; focusedSelection = typeof activeField.selectionStart === "number" ? [activeField.selectionStart, activeField.selectionEnd] : null; }
     else if (activeElement && activeElement !== document.body) { focusedFieldId = null; focusedSelection = null; }
@@ -2285,6 +2392,10 @@
     focusedDifficultyCardId = null;
     const focusMenuAfterRender = focusDifficultyMenuAfterRender;
     focusDifficultyMenuAfterRender = false;
+    const restoreMoreCardId = focusedMoreCardId;
+    focusedMoreCardId = null;
+    const focusMoreMenu = focusMoreMenuAfterRender;
+    focusMoreMenuAfterRender = false;
     window.requestAnimationFrame(function () {
       const nextTopicTree = document.querySelector(".topic-tree");
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
@@ -2330,6 +2441,16 @@
           } else trigger.focus();
         }
       }
+      if (restoreMoreCardId) {
+        const trigger = Array.from(document.querySelectorAll("[data-more-trigger-card]")).find(function (element) { return element.dataset.moreTriggerCard === restoreMoreCardId; });
+        if (trigger) {
+          if (focusMoreMenu && state.moreMenuCardId === restoreMoreCardId) {
+            const menu = trigger.closest(".fact-more-menu");
+            const item = menu && menu.querySelector("[role='menuitem']");
+            (item || trigger).focus();
+          } else trigger.focus();
+        }
+      }
     });
   }
   function statusLabel() {
@@ -2338,6 +2459,8 @@
   async function hydrate() {
     try {
       const nativeSaved = await bridge("loadState", {});
+      try { state.revealGradually = (await bridge("loadRevealGraduallyPreference", {})) === true; }
+      catch (_) { state.revealGradually = false; }
       let localSaved = null, localBackup = null;
       try {
         localSaved = window.LEARNED_MEDIA_STORAGE.parseSnapshot(window.localStorage.getItem(LOCAL_WORKSPACE_KEY), "native-store", "read");
@@ -2466,6 +2589,7 @@
     state.topics = makeTopics();
     topicResetEpoch++;
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
+    setRevealGraduallyPreference(false);
     state.cards = [];
     state.profile = {};
     state.started = false;

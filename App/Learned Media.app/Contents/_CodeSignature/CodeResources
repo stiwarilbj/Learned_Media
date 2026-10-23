@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		HooUoHOxEnwnNLejn83s3/xGOLU=
+		qD0ucw3XhM4Bl3zt1TLWpZ4pwDA=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -23,6 +23,10 @@
 		<key>Resources/frontend/card-explanations.js</key>
 		<data>
 		8tbV+qrk0XrfIql6ieuc8HcSVto=
+		</data>
+		<key>Resources/frontend/card-reveal.js</key>
+		<data>
+		wU/KJkyWiAzavqrAZ0dvzXf5ZrI=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -50,7 +54,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		t09yuOWknFKZcg/YY9sLYcWpebM=
+		reCmnGhW7xOKAQimpvnvW9qH54k=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -90,7 +94,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		zNsZx9yRyBt9oNmTX4WZB0G1m3w=
+		rOMTsyDCb6+ow3LbGObvcMWEoVg=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -161,7 +165,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			8MoGhcHZYoeYIt7eR8CupUas1SeMDMdIh+AmNP5B9Ow=
+			qtnzXlGWM2rqdQhkOFwzRCJjjQ21exZ9QZmeOAzFF7U=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -176,6 +180,13 @@
 			<key>hash2</key>
 			<data>
 			Sq3SKAC3L3ouVrMb7YF1GpZy+8QPnhMrozycvyUqh0s=
+			</data>
+		</dict>
+		<key>Resources/frontend/card-reveal.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			PNe7Ix46wSMPkACQqStMm+0dVHeLFrFtYwsWf/Ps6Bo=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -224,7 +235,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			YiW47hyUQo0Pkqi/f348nf/0CiKED8HawGiWTCzW9+Q=
+			uaosy48Yp7I6CiaJJYI8kYxBaiRvPrUjjUI7sWh2jZA=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -294,7 +305,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			7ACssSUx5Wi+ykRxpF+Lmqe/dxjJYV5liUmQQZzBgRI=
+			e8c+yAzj1m1nJbdGfZMlWVaKLyDwBO08BH+khRcA5oo=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>

@@ -7,12 +7,14 @@ import { resolveWikipediaArticle } from "@/lib/wikipedia";
 import { buildSourceSpotlightModel, canonicalWikipediaUrl, locatePassageContext, longestSharedPhraseRange, sourceSpotlightContextKey } from "@/lib/source-spotlight";
 import { getSourceSpotlightState, setSourceSpotlightState, subscribeSourceSpotlight, updateSourceSpotlightState, type SpotlightContextState } from "@/lib/source-spotlight-state";
 import { cardExplanationFingerprint, getCardExplanationSelection, setCardExplanationSelection, subscribeCardExplanationSelection } from "@/lib/card-explanations";
+import { buildCardRevealModel, getCardRevealProgress, revealCardThroughSentence, revealNextCardSentence, showAllCardSentences, startCardReveal, subscribeCardRevealProgress } from "@/lib/card-reveal";
 import { Icon } from "./icons";
 
 type FactCardProps = {
   card: FactCardType;
   workspaceId: string;
   displayMode: DisplayMode;
+  revealGradually: boolean;
   learnLoading?: boolean;
   questionLoading?: boolean;
   learnError?: string;
@@ -80,12 +82,16 @@ function EvidenceContextLoader({ workspaceId, cardId, sentenceIndex, expanded, e
   return null;
 }
 
-export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, adaptationLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onOpenSettings }: FactCardProps) {
+export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, adaptationLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onOpenSettings }: FactCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const [difficultyMenuOpen, setDifficultyMenuOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const difficultyPickerRef = useRef<HTMLDivElement>(null);
   const difficultyTriggerRef = useRef<HTMLButtonElement>(null);
   const difficultyMenuRef = useRef<HTMLDivElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
+  const moreMenuItemsRef = useRef<HTMLDivElement>(null);
   const explanationMode = useSyncExternalStore(
     (listener) => subscribeCardExplanationSelection(workspaceId, card.id, listener),
     () => getCardExplanationSelection(workspaceId, card.id),
@@ -98,6 +104,14 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   );
   const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const spotlightModel = useMemo(() => buildSourceSpotlightModel(card), [card]);
+  const revealModel = useMemo(() => buildCardRevealModel(card.body, spotlightModel.mapped ? spotlightModel.sentences : undefined), [card.body, spotlightModel]);
+  const revealProgress = useSyncExternalStore(
+    (listener) => subscribeCardRevealProgress(workspaceId, card.id, listener),
+    () => getCardRevealProgress(workspaceId, card.id, revealModel),
+    () => undefined
+  );
+  const graduallyRevealing = !revealProgress?.complete && (Boolean(revealProgress) || revealGradually);
+  const visibleSentenceCount = graduallyRevealing ? revealProgress?.visibleCount ?? 0 : revealModel.sentences.length;
   const question = questionDraft ?? card.question ?? "";
   const detailed = questionDetailed ?? Boolean(card.questionDetailed);
   const showImage = displayMode === "picture-text";
@@ -113,6 +127,20 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
     window.addEventListener("pointerdown", closeOutside);
     return () => window.removeEventListener("pointerdown", closeOutside);
   }, [difficultyMenuOpen]);
+
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!moreMenuRef.current?.contains(event.target as Node)) setMoreMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOutside);
+    return () => window.removeEventListener("pointerdown", closeOutside);
+  }, [moreMenuOpen]);
+
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    moreMenuItemsRef.current?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+  }, [moreMenuOpen]);
 
   useEffect(() => {
     if (!difficultyMenuOpen) return;
@@ -148,6 +176,36 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
     }
   }
 
+  function closeMoreMenu(restoreFocus = false) {
+    setMoreMenuOpen(false);
+    if (restoreFocus) requestAnimationFrame(() => moreTriggerRef.current?.focus());
+  }
+
+  function handleMoreMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitem']"));
+    const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1 + options.length) % options.length;
+    else if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + options.length) % options.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else if (event.key === "Escape") {
+      event.preventDefault();
+      closeMoreMenu(true);
+      return;
+    }
+    if (nextIndex !== undefined) {
+      event.preventDefault();
+      options[nextIndex]?.focus();
+    }
+  }
+
+  function chooseMoreAction(action: "reveal" | FactCardAction) {
+    closeMoreMenu(true);
+    if (action === "reveal") startCardReveal(workspaceId, card.id, revealModel);
+    else onAction(card.id, action);
+  }
+
   function submitQuestion() {
     const clean = question.trim();
     if (!clean || questionLoading) return;
@@ -155,6 +213,9 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   }
 
   function openSpotlight(sentenceIndex: number, triggerId: string) {
+    if (graduallyRevealing && sentenceIndex >= visibleSentenceCount) {
+      revealCardThroughSentence(workspaceId, card.id, revealModel, sentenceIndex);
+    }
     const current = getSourceSpotlightState(workspaceId, card.id);
     setSourceSpotlightState(workspaceId, card.id, {
       sentenceIndex,
@@ -272,8 +333,9 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
         </div>
         <p className="fact-hook">{card.hook}</p>
         <h3>{card.title}</h3>
+        <div className="card-reading-body">
         <p className="fact-body">
-          {spotlightModel.mapped ? spotlightModel.sentences.map((sentence, sentenceIndex) => {
+          {spotlightModel.mapped ? spotlightModel.sentences.slice(0, visibleSentenceCount).map((sentence, sentenceIndex) => {
             const groups = bodyGroups[sentenceIndex] ?? [];
             const markerId = `sentence-${sentenceIndex}`;
             const panelId = `source-spotlight-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${sentenceIndex}`;
@@ -283,13 +345,19 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
               {groups.length > 0 && spotlightPanel(sentenceIndex, groups, panelId)}
             </Fragment>;
           }) : <>
-            {card.body}
-            {bodyGroups[0]?.length > 0 && <>
+            {visibleSentenceCount > 0 ? card.body : null}
+            {visibleSentenceCount > 0 && bodyGroups[0]?.length > 0 && <>
               {" "}<button type="button" className="source-citation-marker" ref={(element) => { if (element) triggerRefs.current.set("whole-body", element); else triggerRefs.current.delete("whole-body"); }} data-source-spotlight-trigger="true" aria-label="Open saved sources for this fact" aria-expanded={activeSentence === 0} aria-controls={`source-spotlight-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-whole`} onKeyDown={(event) => { if (event.key === "Escape" && spotlight) { event.preventDefault(); closeSpotlight(); } }} onClick={() => openSpotlight(0, "whole-body")}>1</button>
               {spotlightPanel(0, bodyGroups[0], `source-spotlight-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-whole`)}
             </>}
           </>}
         </p>
+        {graduallyRevealing && <div className="card-reveal-controls">
+          <button type="button" className="text-button" onClick={() => revealNextCardSentence(workspaceId, card.id, revealModel)}>Keep reading</button>
+          <button type="button" className="text-button" onClick={() => showAllCardSentences(workspaceId, card.id, revealModel)}>Show everything</button>
+        </div>}
+        <span className="sr-only" aria-live="polite" aria-atomic="true">{revealProgress && revealProgress.visibleCount > 0 ? `Revealed: ${revealModel.sentences[revealProgress.visibleCount - 1] ?? ""}` : ""}</span>
+        </div>
 
         {explanationMode && <div className={`learning-answer card-explanation ${selectedExplanation ? `card-explanation-${explanationMode}` : ""}`} aria-live="polite">
           <div className="card-explanation-heading">
@@ -347,14 +415,15 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
         <button type="button" className={`feedback-button unknown ${card.feedback === "unknown" ? "selected" : ""}`} onClick={() => onAction(card.id, "unknown")} aria-pressed={card.feedback === "unknown"}><Icon name="help" size={15} /> <span>Unknown</span></button>
         <button type="button" className={card.liked ? "active-like" : ""} onClick={() => onAction(card.id, "like")} aria-label={card.liked ? "Unlike fact" : "Like fact"}><Icon name="heart" size={16} fill={card.liked ? "currentColor" : "none"} /> <span>Like</span></button>
         <button type="button" className={card.saved ? "active-save" : ""} onClick={() => onAction(card.id, "save")} aria-label={card.saved ? "Unsave fact" : "Save fact"}><Icon name="bookmark" size={16} fill={card.saved ? "currentColor" : "none"} /> <span>Save</span></button>
-        <details className="fact-more-menu">
-          <summary aria-label="More fact actions"><Icon name="more" size={17} /></summary>
-          <div className="fact-more-popover">
-            <button type="button" onClick={() => onAction(card.id, "more")}><Icon name="sparkles" size={15} /> More like this</button>
-            <button type="button" onClick={() => onAction(card.id, "rabbit")}><Icon name="arrow" size={15} /> Start rabbit hole</button>
-            <button type="button" onClick={() => onAction(card.id, "less")}><Icon name="minus" size={15} /> Show fewer like this</button>
-          </div>
-        </details>
+        <div className="fact-more-menu" ref={moreMenuRef}>
+          <button type="button" ref={moreTriggerRef} className="fact-more-trigger" aria-label="More fact actions" aria-haspopup="menu" aria-expanded={moreMenuOpen} aria-controls={`fact-more-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} onClick={() => setMoreMenuOpen((open) => !open)}><Icon name="more" size={17} /></button>
+          {moreMenuOpen && <div className="fact-more-popover" id={`fact-more-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} ref={moreMenuItemsRef} role="menu" aria-label="More fact actions" onKeyDown={handleMoreMenuKeyDown}>
+            <button type="button" role="menuitem" onClick={() => chooseMoreAction("reveal")}><Icon name="sparkles" size={15} /> Reveal gradually</button>
+            <button type="button" role="menuitem" onClick={() => chooseMoreAction("more")}><Icon name="sparkles" size={15} /> More like this</button>
+            <button type="button" role="menuitem" onClick={() => chooseMoreAction("rabbit")}><Icon name="arrow" size={15} /> Start rabbit hole</button>
+            <button type="button" role="menuitem" onClick={() => chooseMoreAction("less")}><Icon name="minus" size={15} /> Show fewer like this</button>
+          </div>}
+        </div>
       </div>
     </article>
   );

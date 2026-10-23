@@ -19,6 +19,8 @@ type SettingsViewProps = {
   onRemoveKey: () => void;
   theme: "light" | "dark";
   onThemeChange: (theme: "light" | "dark") => void;
+  revealGradually: boolean;
+  onRevealGraduallyChange: (enabled: boolean) => void;
   onResetAll: () => void;
   onDeleteLearningData: () => void;
   onGoogleSignIn: () => void;
@@ -57,7 +59,7 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, onResetAll, onDeleteLearningData, onGoogleSignIn, onGoogleSignOut, account, syncStatus, syncError, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, prioritizeRecentByChannel, onYoutubeKeyChange, onYoutubeRecentBiasChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, revealGradually, onRevealGraduallyChange, onResetAll, onDeleteLearningData, onGoogleSignIn, onGoogleSignOut, account, syncStatus, syncError, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, prioritizeRecentByChannel, onYoutubeKeyChange, onYoutubeRecentBiasChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
   const primaryModels = modelChecks.slice(0, 2);
   const checkedPrimaryCount = primaryModels.filter((model) => model.status !== "unchecked").length;
   const workingPrimaryCount = new Set(primaryModels.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
@@ -174,6 +176,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
           <section className="settings-card">
             <div className="settings-card-heading"><div className="settings-icon mint"><Icon name="sun" size={19} /></div><div><h2>Appearance</h2><p>Choose the atmosphere you want to return to</p></div></div>
             <div className="theme-switcher"><button type="button" className={theme === "light" ? "selected" : ""} onClick={() => onThemeChange("light")}><Icon name="sun" size={16} /> Light</button><button type="button" className={theme === "dark" ? "selected" : ""} onClick={() => onThemeChange("dark")}><Icon name="moon" size={16} /> Dark</button></div>
+            <label className="reveal-preference-row"><span><strong>Reveal gradually</strong><small>Start each fact with its hook and title, then reveal one sentence at a time. This preference applies on this device.</small></span><input type="checkbox" checked={revealGradually} onChange={(event) => onRevealGraduallyChange(event.target.checked)} /></label>
           </section>
         </div>
 

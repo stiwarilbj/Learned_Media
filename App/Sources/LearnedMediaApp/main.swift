@@ -1905,6 +1905,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             catch { respond(id: id, error: "YouTube key could not be remembered in Keychain.") }
         case "loadState":
             respond(id: id, result: loadState())
+        case "loadRevealGraduallyPreference":
+            respond(id: id, result: UserDefaults.standard.object(forKey: "learned-media-reveal-gradually-v1") as? Bool ?? false)
+        case "saveRevealGraduallyPreference":
+            UserDefaults.standard.set(payload["enabled"] as? Bool ?? false, forKey: "learned-media-reveal-gradually-v1")
+            respond(id: id, result: true)
         case "loadVideoCatalog":
             Task { [weak self] in
                 guard let self else { return }
