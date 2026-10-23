@@ -104,6 +104,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const learnMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const learnMenuItemsRef = useRef<HTMLDivElement>(null);
   const glossaryHeadingRef = useRef<HTMLSpanElement>(null);
+  const focusGlossaryHeadingOnOpenRef = useRef(false);
   const questionBoxRef = useRef<HTMLDivElement>(null);
   const questionInputRef = useRef<HTMLInputElement>(null);
   const explanationMode = useSyncExternalStore(
@@ -183,7 +184,9 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   }, [learnMenuOpen]);
 
   useEffect(() => {
-    if (glossaryOpen) glossaryHeadingRef.current?.focus();
+    if (!glossaryOpen || !focusGlossaryHeadingOnOpenRef.current) return;
+    focusGlossaryHeadingOnOpenRef.current = false;
+    glossaryHeadingRef.current?.focus();
   }, [glossaryOpen]);
 
   useEffect(() => {
@@ -251,6 +254,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
 
   function openGlossary() {
     closeLearnMenu();
+    focusGlossaryHeadingOnOpenRef.current = true;
     setCardGlossaryPanelOpen(workspaceId, card.id, glossaryFingerprint, true);
     onExplainTerms(card.id);
   }
