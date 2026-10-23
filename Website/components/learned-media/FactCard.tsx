@@ -377,7 +377,14 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const bodyGroups = spotlightModel.groups;
 
   return (
-    <article className={`fact-card accent-${card.accent} ${card.feedback ? `feedback-${card.feedback}` : ""}`}>
+    <article
+      className={`fact-card accent-${card.accent} ${card.feedback ? `feedback-${card.feedback}` : ""}`}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.defaultPrevented || !glossaryOpen) return;
+        event.preventDefault();
+        closeGlossary();
+      }}
+    >
       {card.surprise && <div className="surprise-banner"><Icon name="sparkles" size={14} /> Surprise topic</div>}
       {showImage && (
         <div className={`fact-image ${card.image && !imageFailed ? "has-image" : "no-image"}`}>

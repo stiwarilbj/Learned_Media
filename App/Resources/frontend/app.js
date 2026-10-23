@@ -2140,6 +2140,16 @@
         closeConfirmation();
         return;
       }
+      if (!event.defaultPrevented) {
+        const focusedCard = event.target && event.target.closest && event.target.closest(".fact-card");
+        const glossaryHeading = focusedCard && focusedCard.querySelector("[data-glossary-heading-card]");
+        const glossaryCard = glossaryHeading && state.cards.find(function (card) { return card.id === glossaryHeading.dataset.glossaryHeadingCard; });
+        if (glossaryCard) {
+          event.preventDefault();
+          closeNativeGlossary(glossaryCard);
+          return;
+        }
+      }
       document.querySelectorAll(".workspace-menu, .search-popover").forEach(function (popover) { popover.remove(); });
       clearWorkspaceRename();
       const active = document.activeElement;
