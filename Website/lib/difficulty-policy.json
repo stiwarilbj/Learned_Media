@@ -1,0 +1,22 @@
+{
+  "version": "difficulty-v2",
+  "windowSize": 5,
+  "heardToRaise": 3,
+  "maxOffset": 2,
+  "innerSectionFrom": 5,
+  "common": "Difficulty comes from rarity and depth, not jargon, obscure names, extra dates, or longer wording. Use clear eighth-grade English and explain necessary terms. Keep the assigned sentence count; exclude definitions, overviews, and familiar facts without a distinctive detail.",
+  "easyEvidence": "Prefer a relevant inner section; an introduction qualifies only for a specific detail. Use at most two adjacent paragraphs; exclude basic topic introductions.",
+  "innerEvidence": "Use one named non-lead section and at most two adjacent paragraphs; exclude the lead and infobox and keep all sentence evidence in that section.",
+  "levels": [
+    "Choose an accessible, specific detail with one straightforward relationship. Require no specialist background and explain necessary terms immediately.",
+    "Choose a less familiar detail about a recognizable subject, requiring little background. Explain its main relationship directly.",
+    "Choose a particular incident or mechanism with a clear explanation of what happened and its distinguishing detail.",
+    "Choose an unfamiliar detail involving an important condition, decision, or consequence; explain how that detail matters to this fact.",
+    "Choose a less commonly discussed event or mechanism whose distinguishing detail requires explanation. Go beyond standard examples and well-known trivia.",
+    "Choose a narrower result, exception, or decision and explain, when supported, why it differs from the usual case. Avoid a familiar fact with extra background.",
+    "Choose a specialist detail involving a particular experiment, document, design choice, or mechanism, not a general description of that subject.",
+    "Choose a niche exception or subtle relationship within specialist material. Center the fact on its specific qualification or mechanism rather than the better-known surrounding story.",
+    "Choose a highly obscure detail distinguished by a specific circumstance, limitation, or documented result. Exclude familiar introductory facts and commonly repeated specialist examples.",
+    "Choose an exceptionally obscure, tightly bounded detail within an already specialized subject. Center a documented circumstance, limitation, exception, or result; exclude famous trivia, standard examples, and whole-section summaries. A rare name or date alone is insufficient."
+  ]
+}

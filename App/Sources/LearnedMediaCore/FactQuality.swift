@@ -39,9 +39,7 @@ public enum FactQuality {
     }
 
     public static func rubric(_ level: Int) -> String {
-        let target = max(1, min(10, level))
-        let key = target >= 10 ? "difficultyMaximum" : target >= 9 ? "difficultyHigh" : target >= 5 ? "difficultyMedium" : "difficultyLow"
-        return "Difficulty \(target)/10: " + (PromptInstructions.rules[key] ?? []).joined(separator: " ")
+        DifficultyPolicy.rubric(level)
     }
     public static func normalized(_ text: String) -> String {
         text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX")).lowercased().replacingOccurrences(of: "[^a-z0-9]+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -283,7 +281,7 @@ public enum FactQuality {
         var passages: [(String, PreparedChunk, Int)] = []
         var position = 0
         for paragraph in preparedPassages(extract) {
-            if paragraph.skipped || (level >= 5 && paragraph.section == "Introduction") { position += 1; continue }
+            if paragraph.skipped || (level >= DifficultyPolicy.innerSectionFrom && paragraph.section == "Introduction") { position += 1; continue }
             for chunk in paragraph.chunks {
                 passages.append((paragraph.section, chunk, position)); position += 1
             }
@@ -292,7 +290,7 @@ public enum FactQuality {
         let candidates = passages.compactMap { passage -> (Int, String, String, Double)? in
             let coverage = overlap(terms, passage.1.terms)
             guard coverage > 0, passage.1.complete else { return nil }
-            return (passage.2, passage.0, passage.1.text, coverage * 5 * (level < 5 && passage.0 != "Introduction" ? 1.05 : 1))
+            return (passage.2, passage.0, passage.1.text, coverage * 5 * (level < DifficultyPolicy.innerSectionFrom && passage.0 != "Introduction" ? 1.05 : 1))
         }.sorted { $0.3 == $1.3 ? $0.0 < $1.0 : $0.3 > $1.3 }
         guard let best = candidates.first else { return "" }
         let neighbor = candidates.dropFirst().first { $0.1 == best.1 && abs($0.0 - best.0) == 1 && $0.3 >= best.3 * 0.5 && $0.2 != best.2 }
@@ -369,7 +367,7 @@ public enum FactQuality {
         guard CausalValidation.unsupported(claim, passages: claimEvidence ?? allQuotes).isEmpty,
               CausalValidation.unsupported(title, passages: allQuotes).isEmpty,
               CausalValidation.unsupported(hook, passages: allQuotes).isEmpty else { return false }
-        if difficulty >= 5 && sections.contains(where: { $0 == "introduction" || $0 == "lead" }) { return false }
+        if difficulty >= DifficultyPolicy.innerSectionFrom && sections.contains(where: { $0 == "introduction" || $0 == "lead" }) { return false }
         if difficulty > 0 && sections.count != 1 { return false }
         return true
     }

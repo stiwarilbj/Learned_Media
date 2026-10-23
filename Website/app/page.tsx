@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Navigation } from "@/components/learned-media/Navigation";
 import { Icon } from "@/components/learned-media/icons";
 import { readCredential, saveCredential } from "@/lib/remembered-keys";
@@ -13,7 +13,7 @@ import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { findTopicById, TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
-import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, recordTopicFeedback } from "@/lib/recommendations";
+import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, normalizeLearningProfile, resetTopicLearningProfiles, recordTopicFeedback } from "@/lib/recommendations";
 import { normalizeSearchText, rankSearchResults } from "@/lib/search";
 import { requestCacheKey, requestCacheScope, SessionCache } from "@/lib/session-cache";
 import { createTopicSuggestionIndex, diffTopicSearchRecords, topicSearchRecords, suggestTopics, shouldEnrichTopics, TOPIC_SEARCH_VERSION, type TopicQueryPlan, type TopicSearchRecord } from "@/lib/topic-suggestions";
@@ -417,7 +417,7 @@ function normalizeSavedState(parsed: Partial<PersistedState> | null, collapseIni
   restoredSettings.sentenceLength = normalizeSentenceLength(parsed?.settings?.sentenceLength);
   const realCards = (parsed?.cards ?? []).filter((card) => !KNOWN_DEMO_IDS.has(card.id));
   const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
-  const restoredProfile = parsed?.learningProfile ? parsed.learningProfile : {};
+  const restoredProfile = normalizeLearningProfile(parsed?.learningProfile ?? {}, normalizeDifficulty(restoredSettings.obscurity));
   const restoredTheme = parsed?.theme === "dark" ? "dark" : "light";
   return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
 }
@@ -451,7 +451,14 @@ export default function HomePage() {
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, { text?: string; detailed?: boolean }>>({});
-  const [learningProfile, setLearningProfile] = useState<LearningProfile>({});
+  const [learningProfile, setLearningProfileState] = useState<LearningProfile>({});
+  const learningProfileRef = useRef(learningProfile);
+  // Keep consecutive event handlers current even before React commits a render.
+  const setLearningProfile = useCallback((update: SetStateAction<LearningProfile>) => {
+    const next = typeof update === "function" ? update(learningProfileRef.current) : update;
+    learningProfileRef.current = next;
+    setLearningProfileState(next);
+  }, []);
   const [feedHasMore, setFeedHasMore] = useState(true);
   const [pendingSlots, setPendingSlots] = useState(DEFAULT_CARD_GENERATION_COUNT);
   const [feedStarted, setFeedStarted] = useState(false);
@@ -1683,7 +1690,7 @@ export default function HomePage() {
     setSettings((current) => ({ ...current, ...next, sentenceLength: nextSentenceLength }));
     if (next.obscurity !== undefined) {
       const difficulty = normalizeDifficulty(next.obscurity);
-      setLearningProfile((current) => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, { ...value, unknownStreak: 0, targetDifficulty: difficulty }])) as LearningProfile);
+      setLearningProfile((current) => resetTopicLearningProfiles(current, difficulty));
     }
   }, [cards, enqueueImageHydration, settings.sentenceLength]);
 
@@ -2203,18 +2210,19 @@ export default function HomePage() {
       return;
     }
     if (action === "heard" || action === "unknown") {
-      const card = cards.find((item) => item.id === id);
+      const card = cardsRef.current.find((item) => item.id === id);
       if (!card || card.feedback === action) return;
-      const result = recordTopicFeedback(learningProfile, card.topicPath, action, normalizeDifficulty(settings.obscurity));
+      const result = recordTopicFeedback(learningProfileRef.current, card.topicPath, action,
+        normalizeDifficulty(settings.obscurity), id, card.feedback);
       setLearningProfile(result.profile);
-      archiveFacts([{ ...card, feedback: action, known: action === "heard" }]);
-      setCards((current) => current.map((item) => item.id === id ? { ...item, feedback: action, known: action === "heard" } : item));
+      const updated = { ...card, feedback: action, known: action === "heard" };
+      cardsRef.current = cardsRef.current.map(item => item.id === id ? updated : item);
+      archiveFacts([updated]);
+      setCards(current => current.map(item => item.id === id ? { ...item, feedback: action, known: action === "heard" } : item));
       const topic = card.topicPath.at(-1) ?? "this topic";
-      if (action === "heard") {
-        setToast(result.adjusted ? `Heard — ${topic} is moving to difficulty ${result.targetDifficulty}/10.` : result.targetDifficulty === 10 ? `Heard — ${topic} is already at the hardest level.` : `Heard — we’ll look for harder ${topic} facts next.`);
-      } else {
-        setToast(result.adjusted ? `Unknown streak reached ${result.threshold}; ${topic} is easing to difficulty ${result.targetDifficulty}/10.` : `Unknown noted — ${topic} will stay here until ${result.threshold} unknowns in a row.`);
-      }
+      setToast(action === "unknown" ? `New discovery noted — ${topic} stays at difficulty ${result.targetDifficulty}/10.`
+        : result.adjusted ? `Heard — ${topic} is moving to difficulty ${result.targetDifficulty}/10.`
+        : `Heard noted — repeated familiar facts can raise ${topic} within two levels of your selection.`);
       return;
     }
     setCards((current) => current.map((card) => {
@@ -2226,7 +2234,7 @@ export default function HomePage() {
     }));
     if (action === "more") setToast("Your mix will lean a little closer to this thread.");
     if (action === "less") setToast("We’ll keep this thread quieter for a while.");
-  }, [archiveFacts, cards, learningProfile, settings.obscurity, startFeed]);
+  }, [archiveFacts, cards, settings.obscurity, setLearningProfile, startFeed]);
 
   const performResetAllPreferences = useCallback(() => {
     cancelGeneration();

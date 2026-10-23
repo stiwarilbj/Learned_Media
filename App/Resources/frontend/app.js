@@ -13,7 +13,8 @@
   const PRIMARY_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
   const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
-  const DIFFICULTY_LABELS = ["", "A Little Hard", "Easy", "Moderate", "Challenging", "Decently Hard", "Hard", "Very Hard", "Extremely Hard", "Nearly Impossible", "Impossible"];
+  const difficultyEngine = window.LEARNED_MEDIA_DIFFICULTY;
+  const DIFFICULTY_LABELS = difficultyEngine.DIFFICULTY_LABELS;
   const PERSISTENCE_VERSION = 2;
   const LOCAL_WORKSPACE_KEY = "learned-media-native-workspace";
   const sourceSpotlight = window.LEARNED_MEDIA_SOURCE_SPOTLIGHT;
@@ -529,7 +530,7 @@
         const parent = flatTopics().find(function (candidate) { return candidate.path.slice(0, index + 1).join("\u0000") === topic.path.slice(0, index + 1).join("\u0000"); });
         return total * ((parent ? parent.weight : 10) / 10);
       }, 10);
-      return { path: topic.path, weight: Math.max(1, Math.round(pathWeight)), difficulty: (state.profile[topic.path.join(" / ")] || {}).targetDifficulty || state.settings.obscurity };
+      return { path: topic.path, weight: Math.max(1, Math.round(pathWeight)), difficulty: difficultyEngine.getTopicLearningProfile(state.profile, topic.path, state.settings.obscurity).targetDifficulty };
     });
     const result = [];
     while (pool.length && result.length < (limit || 10)) {
@@ -1932,7 +1933,7 @@
     topicResetEpoch++;
     state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: normalizeSentenceLength(snapshot.settings && snapshot.settings.sentenceLength) });
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
-    state.profile = snapshot.profile || snapshot.learningProfile || {};
+    state.profile = difficultyEngine.normalizeLearningProfile(snapshot.profile || snapshot.learningProfile || {}, state.settings.obscurity);
     state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.length);
     applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube);
   }
@@ -2413,7 +2414,7 @@
     details.appendChild(node("p", { className: "topic-selection-summary", text: selectedSummary(), ariaLive: "polite" }));
     const difficulty = node("label", { className: "topic-difficulty-control", for: setup ? "setup-difficulty" : "feed-difficulty" });
     difficulty.appendChild(node("span", { className: "control-label" }, node("span", { text: "Fact Difficulty" }), node("strong", { text: state.settings.obscurity + "/10 · " + difficultyLabel(state.settings.obscurity) })));
-    difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; Object.keys(state.profile).forEach(function (key) { state.profile[key].unknownStreak = 0; state.profile[key].targetDifficulty = next; }); saveState(); render(); } }));
+    difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; state.profile = difficultyEngine.resetTopicLearningProfiles(state.profile, next); saveState(); render(); } }));
     difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Impossible" })));
     details.appendChild(difficulty);
     details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { id: "topic-search", value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { cancelPendingSemanticSearch(); state.topicQuery = event.target.value; state.query = ""; topicSearchExpansionSuppressed = false; scheduleTopicSearch(state.topicQuery); render(); } })));
@@ -3357,28 +3358,15 @@
   function recordFeedback(id, kind) {
     const card = state.cards.find(function (item) { return item.id === id; });
     if (!card || card.feedback === kind) return;
-    card.feedback = kind;
-    card.known = kind === "heard";
     const topicPath = card.topicPath || ["this topic"];
     const topic = topicPath.slice(-1)[0];
-    const profileKey = topicPath.map(function (part) { return String(part).toLowerCase(); }).join("::");
-    const profile = state.profile[profileKey] || { heard: 0, unknown: 0, unknownStreak: 0, targetDifficulty: state.settings.obscurity };
-    if (kind === "heard") {
-      profile.heard += 1;
-      profile.unknownStreak = 0;
-      profile.targetDifficulty = Math.min(10, profile.targetDifficulty + 1);
-      showToast("Heard — " + topic + " will get harder next.");
-    } else {
-      profile.unknown += 1;
-      profile.unknownStreak += 1;
-      const threshold = Math.max(10, Math.min(20, 10 + Math.floor(profile.targetDifficulty / 2)));
-      if (profile.unknownStreak >= threshold) {
-        profile.targetDifficulty = Math.max(1, profile.targetDifficulty - 1);
-        profile.unknownStreak = 0;
-        showToast("Unknown streak reached " + threshold + "; easing " + topic + " slightly.");
-      } else showToast("Unknown noted — staying near difficulty " + profile.targetDifficulty + "/10.");
-    }
-    state.profile[profileKey] = profile;
+    const result = difficultyEngine.recordTopicFeedback(state.profile, topicPath, kind, state.settings.obscurity, id, card.feedback);
+    card.feedback = kind;
+    card.known = kind === "heard";
+    state.profile = result.profile;
+    showToast(kind === "unknown" ? "New discovery noted — " + topic + " stays at difficulty " + result.targetDifficulty + "/10."
+      : result.adjusted ? "Heard — " + topic + " is moving to difficulty " + result.targetDifficulty + "/10."
+      : "Heard noted — repeated familiar facts can raise " + topic + " within two levels of your selection.");
     saveState();
     render();
   }

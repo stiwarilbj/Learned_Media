@@ -1,3 +1,4 @@
+import policy from "./difficulty-policy.json";
 import type { Difficulty, FactFeedback, LearningProfile, TopicLearningProfile } from "./types";
 
 export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
@@ -36,53 +37,79 @@ export function defaultTopicLearningProfile(targetDifficulty: Difficulty = DEFAU
   return { heard: 0, unknown: 0, unknownStreak: 0, targetDifficulty };
 }
 
-export function getTopicLearningProfile(profile: LearningProfile, topicPath: string[], fallbackDifficulty: Difficulty = DEFAULT_DIFFICULTY) {
-  return profile[topicKey(topicPath)] ?? defaultTopicLearningProfile(fallbackDifficulty);
+export const DIFFICULTY_POLICY_VERSION = policy.version;
+
+export function difficultyRequiresInnerSection(level: number) {
+  return level >= policy.innerSectionFrom;
 }
 
-/** Harder topics tolerate more consecutive unknown cards before adapting downward. */
-export function unknownThreshold(difficulty: Difficulty) {
-  return Math.round(10 + (difficulty - 1) * (10 / 9));
+export function difficultyRubric(level: number) {
+  const target = normalizeDifficulty(level);
+  return `Difficulty ${target}/10: ${policy.levels[target - 1]} ${policy.common} ${difficultyRequiresInnerSection(target) ? policy.innerEvidence : policy.easyEvidence}`;
 }
 
+function total(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+export function getTopicLearningProfile(profile: LearningProfile, topicPath: string[], fallbackDifficulty: Difficulty = DEFAULT_DIFFICULTY): TopicLearningProfile {
+  return normalizeTopicLearningProfile(profile[topicKey(topicPath)], fallbackDifficulty);
+}
+
+function normalizeTopicLearningProfile(current: TopicLearningProfile | undefined, fallbackDifficulty: Difficulty): TopicLearningProfile {
+  const baseline = normalizeDifficulty(fallbackDifficulty);
+  if (!current || typeof current !== "object") return defaultTopicLearningProfile(baseline);
+  const targetDifficulty = normalizeDifficulty(Math.max(baseline - policy.maxOffset,
+    Math.min(baseline + policy.maxOffset, normalizeDifficulty(current.targetDifficulty, baseline))));
+  const recentFeedback: NonNullable<TopicLearningProfile["recentFeedback"]> = [];
+  for (const item of Array.isArray(current.recentFeedback) ? current.recentFeedback.slice(-policy.windowSize) : []) {
+    if (!item || typeof item.cardId !== "string" || !item.cardId || item.cardId.length > 200
+      || (item.feedback !== "heard" && item.feedback !== "unknown") || recentFeedback.some(entry => entry.cardId === item.cardId)) continue;
+    recentFeedback.push({ cardId: item.cardId, feedback: item.feedback });
+  }
+  return { ...current, heard: total(current.heard), unknown: total(current.unknown), unknownStreak: total(current.unknownStreak),
+    targetDifficulty, recentFeedback: recentFeedback.slice(-policy.windowSize) };
+}
+
+export function normalizeLearningProfile(profile: LearningProfile, difficulty: Difficulty): LearningProfile {
+  return Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, normalizeTopicLearningProfile(value, difficulty)]));
+}
+
+export function resetTopicLearningProfiles(profile: LearningProfile, difficulty: Difficulty): LearningProfile {
+  const targetDifficulty = normalizeDifficulty(difficulty);
+  return Object.fromEntries(Object.entries(profile).map(([key, value]) => [key, { ...value,
+    targetDifficulty, unknownStreak: 0, recentFeedback: [] }]));
+}
+
+/** A distinct card contributes once; edits to consumed feedback affect totals only. */
 export function recordTopicFeedback(
   profile: LearningProfile,
   topicPath: string[],
   feedback: FactFeedback,
-  fallbackDifficulty: Difficulty = DEFAULT_DIFFICULTY
+  fallbackDifficulty: Difficulty,
+  cardId: string,
+  previousFeedback?: FactFeedback
 ) {
   const key = topicKey(topicPath);
-  const current = profile[key] ?? defaultTopicLearningProfile(fallbackDifficulty);
-  const threshold = unknownThreshold(current.targetDifficulty);
-
-  if (feedback === "heard") {
-    const targetDifficulty = normalizeDifficulty(current.targetDifficulty + 1);
-    return {
-      profile: {
-        ...profile,
-        [key]: { ...current, heard: current.heard + 1, unknownStreak: 0, targetDifficulty }
-      },
-      targetDifficulty,
-      threshold,
-      adjusted: targetDifficulty > current.targetDifficulty
-    };
+  const current = getTopicLearningProfile(profile, topicPath, fallbackDifficulty);
+  const recentFeedback = [...(current.recentFeedback ?? [])];
+  const existing = recentFeedback.findIndex(item => item.cardId === cardId);
+  const previous = existing >= 0 ? recentFeedback[existing].feedback : previousFeedback;
+  if (!cardId || cardId.length > 200 || previous === feedback) {
+    return { profile, targetDifficulty: current.targetDifficulty, adjusted: false };
   }
-
-  const nextStreak = current.unknownStreak + 1;
-  const shouldEase = nextStreak >= threshold && current.targetDifficulty > 1;
-  const targetDifficulty = shouldEase ? normalizeDifficulty(current.targetDifficulty - 1) : current.targetDifficulty;
-  return {
-    profile: {
-      ...profile,
-      [key]: {
-        ...current,
-        unknown: current.unknown + 1,
-        unknownStreak: shouldEase ? 0 : nextStreak,
-        targetDifficulty
-      }
-    },
-    targetDifficulty,
-    threshold,
-    adjusted: shouldEase
-  };
+  if (existing >= 0) recentFeedback[existing] = { cardId, feedback };
+  else if (!previous) recentFeedback.push({ cardId, feedback });
+  const window = recentFeedback.slice(-policy.windowSize);
+  const canRaise = feedback === "heard" && (existing >= 0 || !previous)
+    && window.filter(item => item.feedback === "heard").length >= policy.heardToRaise;
+  const upper = Math.min(MAX_DIFFICULTY, normalizeDifficulty(fallbackDifficulty) + policy.maxOffset);
+  const targetDifficulty = normalizeDifficulty(canRaise ? Math.min(upper, current.targetDifficulty + 1) : current.targetDifficulty);
+  const adjusted = targetDifficulty > current.targetDifficulty;
+  const next: TopicLearningProfile = { ...current,
+    heard: Math.max(0, current.heard + Number(feedback === "heard") - Number(previous === "heard")),
+    unknown: Math.max(0, current.unknown + Number(feedback === "unknown") - Number(previous === "unknown")),
+    unknownStreak: feedback === "heard" ? 0 : current.unknownStreak + Number(!previous),
+    targetDifficulty, recentFeedback: adjusted ? [] : window };
+  return { profile: { ...profile, [key]: next }, targetDifficulty, adjusted };
 }

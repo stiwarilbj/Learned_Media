@@ -1,6 +1,8 @@
 import { unsupportedCausality } from "./causal-validation";
 import { factSpecificityReason, FactSpecificityError } from "./fact-specificity";
 import { createQuantityValidator } from "./quantity-validation";
+import { difficultyRequiresInnerSection } from "./recommendations";
+export { difficultyRubric } from "./recommendations";
 import promptInstructions from "./prompt-instructions.json";
 import { SessionCache } from "./session-cache";
 export { isRepeatedFact } from "./fact-novelty";
@@ -80,12 +82,6 @@ export function factWritingRules(sentenceCount: SentenceLength | number = 3, cit
 }
 
 export const FACT_WRITING_RULES = factWritingRules(3);
-
-export function difficultyRubric(level: number) {
-  const target = Math.max(1, Math.min(10, Math.round(level)));
-  const key = target >= 10 ? "difficultyMaximum" : target >= 9 ? "difficultyHigh" : target >= 5 ? "difficultyMedium" : "difficultyLow";
-  return `Difficulty ${target}/10: ${promptInstructions[key].join(" ")}`;
-}
 
 export type FactMemory = Pick<FactCard, "id" | "title" | "hook" | "body" | "topicPath"> & {
   claim?: string;
@@ -194,7 +190,7 @@ export function selectEvidence(extract: string, focus: string, difficulty: numbe
   let position = 0;
   for (const paragraph of preparedPassages(extract)) {
     const { section } = paragraph;
-    if (paragraph.skipped || (difficulty >= 5 && section === "Introduction")) { position++; continue; }
+    if (paragraph.skipped || (difficultyRequiresInnerSection(difficulty) && section === "Introduction")) { position++; continue; }
     for (const { text, terms, eligible } of paragraph.chunks) {
       const index = position++;
       if (!eligible) continue;
@@ -204,7 +200,7 @@ export function selectEvidence(extract: string, focus: string, difficulty: numbe
       if (seenInSection?.has(text)) continue;
       if (!seenInSection) { seenInSection = new Set(); seenPassages.set(section, seenInSection); }
       seenInSection.add(text);
-      passages.push({ text, section, score: coverage * 5 * (difficulty < 5 && section !== "Introduction" ? 1.05 : 1), position: index });
+      passages.push({ text, section, score: coverage * 5 * (!difficultyRequiresInnerSection(difficulty) && section !== "Introduction" ? 1.05 : 1), position: index });
     }
   }
   let best: typeof passages[number] | undefined;
@@ -297,6 +293,6 @@ export function validateDraft(draft: GroundedDraft, sources: WikipediaSource[], 
   const unsupported = [...unsupportedQuantities(draft.claim, draft.claimEvidence ?? allQuotes), ...unsupportedQuantities(draft.title, allQuotes), ...unsupportedQuantities(draft.hook, allQuotes)];
   if (unsupported.length) throw new Error(`The card contains unsupported numbers or units: ${unsupported.join(", ")}.`);
   if ([...unsupportedCausality(draft.claim, draft.claimEvidence ?? allQuotes), ...unsupportedCausality(draft.title, allQuotes), ...unsupportedCausality(draft.hook, allQuotes)].length) throw new Error("The card contains unsupported causal wording; evidence must establish the same cause and outcome.");
-  if (difficulty >= 5 && [...sections].some(section => section === "introduction" || section === "lead")) throw new Error("This difficulty requires an inner Wikipedia section, not the article lead.");
+  if (difficultyRequiresInnerSection(difficulty) && [...sections].some(section => section === "introduction" || section === "lead")) throw new Error("This difficulty requires an inner Wikipedia section, not the article lead.");
   if (difficulty > 0 && sections.size !== 1) throw new Error("Every generated fact must stay inside one narrowly bounded Wikipedia section.");
 }

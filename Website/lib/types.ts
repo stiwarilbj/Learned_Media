@@ -27,6 +27,7 @@ export type TopicLearningProfile = {
   unknown: number;
   unknownStreak: number;
   targetDifficulty: Difficulty;
+  recentFeedback?: Array<{ cardId: string; feedback: FactFeedback }>;
 };
 
 export type LearningProfile = Record<string, TopicLearningProfile>;

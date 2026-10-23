@@ -2180,3 +2180,25 @@ test('persistent overview failure preserves the valid partial batch within exist
   assert.equal(state.candidatePrompts.length,3);assert.equal(state.groundingPrompts.length,1);
   assert.ok(state.candidatePrompts.slice(1).every(p=>JSON.stringify(candidateAssignments(p).map(a=>a.slot))==='[3]'));
 });
+
+
+test('all ten difficulty levels retain ordinary and cached policy with two and one calls', async t => {
+  for (let level = 1; level <= 10; level++) await t.test(`level ${level}`, async () => {
+    const state = installNetworkMock(), sessionId = await connectMock(state);
+    const args = generationArgs(sessionId, { requestedCount: 7, args: {
+      settings: { obscurity: level, displayMode: "text", sentenceLength: 3, surpriseMe: false }
+    }});
+    const ordinary = await generateGeminiFacts(args);
+    assert.equal(ordinary.completedCount, 7);
+    assert.equal(geminiCallCount(state), 2);
+    assert.ok(state.candidatePrompts[0].includes(difficultyRubric(level)));
+    assert.ok(state.groundingPrompts[0].includes(difficultyRubric(level)));
+    assert.ok(ordinary.cards.every(card => card.difficulty === level && card.evidence.length));
+    const calls = geminiCallCount(state);
+    const cached = await generateGeminiFacts(args);
+    assert.equal(cached.completedCount, 7);
+    assert.equal(geminiCallCount(state) - calls, 1);
+    assert.ok(state.groundingPrompts.at(-1).includes(difficultyRubric(level)));
+    assert.ok(cached.cards.every(card => card.difficulty === level && card.evidence.every(e => card.sources[e.sourceIndex].extract.includes(e.quote))));
+  });
+});

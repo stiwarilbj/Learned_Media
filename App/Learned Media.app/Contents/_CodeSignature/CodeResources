@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		j7HJA9ozuhx1zZ2ym5nyivGJ0+Q=
+		8zWU8wnke77VjrYMu8AexUL8HcM=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -56,6 +56,10 @@
 		<data>
 		rw2VONXPKKau4SniQ9faFqexaUY=
 		</data>
+		<key>Resources/frontend/difficulty.js</key>
+		<data>
+		ZAOfNnDqd6lRiXRIjZmuGVNqggs=
+		</data>
 		<key>Resources/frontend/disease-catalog.js</key>
 		<data>
 		cPTTWo3e/gjDUcSRI1vo9EMxH80=
@@ -82,7 +86,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		iGpVNJGWm5nrDGq4hKuAiYQ5DQM=
+		ghWz9Kx1lHIE/Ulic6mDsO2lyus=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -193,7 +197,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			3Kts30AIrVKCqkwbyAJTS1sC7nplhQTPurxJtfV8C3E=
+			9yqNaSKz6wIPItbYrwJ/BDmDWh3AQhnhxA5PNNWbss4=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -266,6 +270,13 @@
 			38mbBgkafw3Sxhv7eA30qh951kyq3ikCpmJ9YY8GHAY=
 			</data>
 		</dict>
+		<key>Resources/frontend/difficulty.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			zilixVw/h172jyHpL1uabbRFJq5FR6UlHgfWDrXhCpk=
+			</data>
+		</dict>
 		<key>Resources/frontend/disease-catalog.js</key>
 		<dict>
 			<key>hash2</key>
@@ -312,7 +323,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			NZCVtZI2KBg0ZO2xyO1f7cfDKjZAyCBGFsilm+vLRd0=
+			Whi7MyHIc7coCGD1INPCXin/ofwIzMyPVdFoVOSPPp0=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>

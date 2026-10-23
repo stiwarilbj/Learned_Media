@@ -28,7 +28,8 @@
     "generate:credentials": "node scripts/build-native-credentials.mjs",
     "test:credentials": "node scripts/build-native-credentials.mjs --check && node scripts/test-account-credentials.mjs",
     "generate:native": "node scripts/build-native-shared.mjs",
-    "check:native-data": "node scripts/build-native-shared.mjs --check"
+    "check:native-data": "node scripts/build-native-shared.mjs --check",
+    "test:difficulty": "node scripts/build-native-difficulty.mjs --check && node scripts/test-difficulty.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.5.2",
