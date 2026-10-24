@@ -1625,3 +1625,9 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
   .card-chronology-list.horizontal .card-chronology-event { position: relative; padding: 0 0 0 15px; border-left: 2px solid var(--border); }
   .card-chronology-list.horizontal .card-chronology-event::before { content: ""; position: absolute; top: 3px; left: -5px; width: 8px; height: 8px; border-radius: 50%; background: var(--primary); }
 }
+
+/* Download options retain the existing settings and button styling. */
+.export-controls { grid-template-columns:minmax(0,1fr); }
+.export-controls select { width:100%; min-width:0; max-width:100%; }
+.export-controls > button { justify-self:start; }
+.download-feedback { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:12px; overflow-wrap:anywhere; }

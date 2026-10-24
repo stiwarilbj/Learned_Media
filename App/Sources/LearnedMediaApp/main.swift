@@ -2254,6 +2254,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             catch { respond(id: id, error: "YouTube key could not be remembered in Keychain.") }
         case "loadState":
             respond(id: id, result: loadState())
+        case "loadDownloadPreference":
+            respond(id: id, result: UserDefaults.standard.string(forKey: "learned-media-download-mode-v1") ?? "pdf-single")
+        case "saveDownloadPreference":
+            let mode = payload["mode"] as? String ?? "pdf-single"
+            UserDefaults.standard.set(["pdf-single", "txt-single", "pdf-folder", "txt-folder"].contains(mode) ? mode : "pdf-single", forKey: "learned-media-download-mode-v1")
+            respond(id: id, result: true)
         case "loadRevealGraduallyPreference":
             respond(id: id, result: UserDefaults.standard.object(forKey: "learned-media-reveal-gradually-v1") as? Bool ?? false)
         case "saveRevealGraduallyPreference":
@@ -2294,7 +2300,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 } catch { respond(id: id, error: "The YouTube catalog could not be saved. Its import checkpoints were retained.") }
             }
         case "exportFacts":
-            exportFacts(id: id, format: payload["format"] as? String ?? "txt", workspaceName: payload["workspaceName"] as? String ?? "Local Workspace", facts: payload["facts"] as? [[String: Any]] ?? [])
+            exportFacts(id: id, payload: payload)
         case "setGeminiKey":
             cancelActiveTasks(preserveCloudSync: true)
             geminiKey = payload["key"] as? String ?? ""
@@ -2812,137 +2818,122 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         respond(id: id, error: userMessage(error))
     }
 
-    private func exportText(workspaceName: String, exportedAt: String, facts: [[String: Any]]) -> String {
-        var lines = ["LEARNED MEDIA", "Workspace: \(workspaceName)", "Exported: \(exportedAt)", ""]
-        for (index, fact) in facts.enumerated() {
-            let title = fact["title"] as? String ?? "Untitled fact"
-            let hook = fact["hook"] as? String ?? ""
-            let body = fact["body"] as? String ?? ""
-            let path = (fact["topicPath"] as? [String] ?? []).joined(separator: " / ")
-            lines += [String(repeating: "=", count: 72), "\(index + 1). \(title)", "Hook: \(hook)", "Fact: \(body)", "Topic path: \(path)", "Wikipedia Sources:"]
-            for source in fact["sources"] as? [[String: Any]] ?? [] {
-                lines += ["- \(source["title"] as? String ?? "Wikipedia")", "  \(source["url"] as? String ?? "")"]
-            }
-            if let image = fact["image"] as? [String: Any] {
-                if let credit = image["credit"] as? String, !credit.isEmpty { lines.append("Image credit: \(credit)") }
-                if let source = image["filePageUrl"] as? String ?? image["sourceUrl"] as? String, !source.isEmpty { lines.append("Image source: \(source)") }
-            }
-            lines.append("")
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    private func exportAttributedString(workspaceName: String, exportedAt: String, facts: [[String: Any]]) -> (NSAttributedString, Int) {
-        let output = NSMutableAttributedString()
-        let titleAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 20), .foregroundColor: NSColor(calibratedRed: 0.08, green: 0.16, blue: 0.30, alpha: 1)]
-        let headingAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor(calibratedRed: 0.08, green: 0.16, blue: 0.30, alpha: 1)]
-        let bodyAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor(calibratedRed: 0.10, green: 0.14, blue: 0.22, alpha: 1)]
-        func append(_ text: String, attributes: [NSAttributedString.Key: Any], spacing: CGFloat = 5) {
-            output.append(NSAttributedString(string: text + "\n", attributes: attributes))
-            output.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: spacing)]))
-        }
-        append("LEARNED MEDIA", attributes: titleAttributes, spacing: 2)
-        append("Workspace: \(workspaceName)", attributes: bodyAttributes, spacing: 0)
-        append("Exported: \(exportedAt)", attributes: bodyAttributes, spacing: 10)
-        var omittedImages = 0
-        var embeddedImageBytes = 0
-        let maxEmbeddedImageBytes = 16 * 1024 * 1024
-        for (index, fact) in facts.enumerated() {
-            append("\(index + 1). \(fact["title"] as? String ?? "Untitled fact")", attributes: headingAttributes, spacing: 4)
-            if let image = fact["image"] as? [String: Any], let imageURL = URL(string: image["url"] as? String ?? ""), let data = try? Data(contentsOf: imageURL), data.count + embeddedImageBytes <= maxEmbeddedImageBytes, let nsImage = croppedExportImage(data: data) {
-                let attachment = NSTextAttachment()
-                attachment.image = nsImage
-                attachment.bounds = NSRect(x: 0, y: 0, width: 512, height: 288)
-                output.append(NSAttributedString(attachment: attachment))
-                output.append(NSAttributedString(string: "\n\n", attributes: bodyAttributes))
-                embeddedImageBytes += data.count
-            } else if fact["image"] != nil { omittedImages += 1 }
-            append(fact["hook"] as? String ?? "", attributes: bodyAttributes, spacing: 1)
-            append(fact["body"] as? String ?? "", attributes: bodyAttributes, spacing: 4)
-            append("Topic path: \((fact["topicPath"] as? [String] ?? []).joined(separator: " / "))", attributes: bodyAttributes, spacing: 4)
-            append("Wikipedia Sources", attributes: bodyAttributes, spacing: 1)
-            for source in fact["sources"] as? [[String: Any]] ?? [] {
-                let title = source["title"] as? String ?? "Wikipedia"
-                let url = source["url"] as? String ?? ""
-                let linkAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor(calibratedRed: 0.10, green: 0.30, blue: 0.70, alpha: 1), .link: url]
-                output.append(NSAttributedString(string: title + "\n", attributes: linkAttributes))
-                output.append(NSAttributedString(string: url + "\n\n", attributes: linkAttributes))
-            }
-            if let image = fact["image"] as? [String: Any] {
-                if let credit = image["credit"] as? String, !credit.isEmpty { append("Image credit: \(credit)", attributes: bodyAttributes, spacing: 1) }
-                if let source = image["filePageUrl"] as? String ?? image["sourceUrl"] as? String, !source.isEmpty {
-                    let linkAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor(calibratedRed: 0.10, green: 0.30, blue: 0.70, alpha: 1), .link: source]
-                    output.append(NSAttributedString(string: source + "\n\n", attributes: linkAttributes))
-                }
-            }
-        }
-        return (output, omittedImages)
-    }
-
-    private func croppedExportImage(data: Data) -> NSImage? {
-        guard let source = NSImage(data: data), let representation = source.bestRepresentation(for: NSRect(origin: .zero, size: source.size), context: nil, hints: nil) else { return nil }
-        let targetSize = NSSize(width: 960, height: 540)
-        let sourceWidth = CGFloat(representation.pixelsWide > 0 ? representation.pixelsWide : Int(source.size.width))
-        let sourceHeight = CGFloat(representation.pixelsHigh > 0 ? representation.pixelsHigh : Int(source.size.height))
-        guard sourceWidth > 0, sourceHeight > 0 else { return nil }
-        let scale = max(targetSize.width / sourceWidth, targetSize.height / sourceHeight)
-        let drawSize = NSSize(width: sourceWidth * scale, height: sourceHeight * scale)
-        let cropped = NSImage(size: targetSize)
-        cropped.lockFocus()
-        NSColor.white.setFill()
-        NSRect(origin: .zero, size: targetSize).fill()
-        representation.draw(in: NSRect(x: (targetSize.width - drawSize.width) / 2, y: (targetSize.height - drawSize.height) / 2, width: drawSize.width, height: drawSize.height), from: NSRect(x: 0, y: 0, width: sourceWidth, height: sourceHeight), operation: .copy, fraction: 1, respectFlipped: false, hints: nil)
-        cropped.unlockFocus()
-        return cropped
-    }
-
-    private func makePDF(data: NSAttributedString) -> Data? {
+    private func factPDF(text: String, facts: [[String: Any]], images: [String: Data]) async throws -> Data {
         let output = NSMutableData()
-        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
-        guard let consumer = CGDataConsumer(data: output as CFMutableData), let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
-        let framesetter = CTFramesetterCreateWithAttributedString(data as CFAttributedString)
-        var location = 0
-        var pageNumber = 1
-        while location < data.length || pageNumber == 1 {
-            context.beginPDFPage(nil)
-            let path = CGPath(rect: CGRect(x: 50, y: 55, width: 512, height: 680), transform: nil)
-            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: location, length: 0), path, nil)
-            CTFrameDraw(frame, context)
-            let visible = CTFrameGetVisibleStringRange(frame)
-            location += visible.length
-            let footer = NSAttributedString(string: "\(pageNumber)", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.gray])
-            let line = CTLineCreateWithAttributedString(footer as CFAttributedString)
-            context.textPosition = CGPoint(x: 50, y: 30)
-            CTLineDraw(line, context)
-            context.endPDFPage()
-            pageNumber += 1
-            if visible.length == 0 { break }
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        guard let consumer = CGDataConsumer(data: output as CFMutableData), let context = CGContext(consumer: consumer, mediaBox: &box, nil) else { throw CocoaError(.fileWriteUnknown) }
+        var y: CGFloat = 742, page = 0
+        func newPage() {
+            if page > 0 { context.endPDFPage() }
+            context.beginPDFPage(nil); page += 1; y = 742
+            context.textPosition = CGPoint(x: 50, y: 24)
+            CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: String(page), attributes: [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.gray])), context)
         }
-        context.closePDF()
+        func draw(_ value: String, size: CGFloat = 11, bold: Bool = false, link: String? = nil) throws {
+            let attributes: [NSAttributedString.Key: Any] = [.font: bold ? NSFont.boldSystemFont(ofSize: size) : NSFont.systemFont(ofSize: size), .foregroundColor: NSColor.black]
+            let attributed = NSAttributedString(string: value.isEmpty ? " " : value, attributes: attributes)
+            let typesetter = CTTypesetterCreateWithAttributedString(attributed)
+            var offset = 0
+            while offset < attributed.length {
+                try Task.checkCancellation()
+                if y < 65 + size * 1.5 { newPage() }
+                let count = CTTypesetterSuggestLineBreak(typesetter, offset, 512)
+                guard count > 0 else { throw CocoaError(.fileWriteUnknown) }
+                let line = CTTypesetterCreateLine(typesetter, CFRange(location: offset, length: count))
+                context.textPosition = CGPoint(x: 50, y: y); CTLineDraw(line, context)
+                if let raw = link, let url = URL(string: raw) { context.setURL(url as CFURL, for: CGRect(x: 50, y: y-size, width: 512, height: size*1.5)) }
+                y -= size * 1.5; offset += count
+            }
+            y -= 6
+        }
+        newPage()
+        let header = text.components(separatedBy: String(repeating: "=", count: 72))[0]
+        try draw(header)
+        for (index, fact) in facts.enumerated() {
+            await Task.yield()
+            try Task.checkCancellation()
+            let title = "\(index + 1). \(fact["title"] as? String ?? "Fact")", hook = fact["hook"] as? String ?? ""
+            let titleHeight = (title as NSString).boundingRect(with: NSSize(width: 512, height: CGFloat.greatestFiniteMagnitude), options: [.usesLineFragmentOrigin], attributes: [.font: NSFont.boldSystemFont(ofSize: 16)]).height
+            let hookHeight = (hook as NSString).boundingRect(with: NSSize(width: 512, height: CGFloat.greatestFiniteMagnitude), options: [.usesLineFragmentOrigin], attributes: [.font: NSFont.boldSystemFont(ofSize: 12)]).height
+            let hasImage = (fact["image"] as? [String: Any])?["url"] as? String
+            let pictureHeight: CGFloat = hasImage.flatMap { images[$0] } != nil ? 300 : 0
+            let requiredHeight: CGFloat = min(680, titleHeight + hookHeight + pictureHeight + 100)
+            if y < requiredHeight { newPage() }
+            try draw("\(index + 1). \(fact["title"] as? String ?? "Fact")", size: 16, bold: true)
+            try draw(fact["hook"] as? String ?? "", size: 12, bold: true)
+            if let image = fact["image"] as? [String: Any], let url = image["url"] as? String {
+                if let bytes = images[url], let source = CGImageSourceCreateWithData(bytes as CFData, nil), let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1200, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) {
+                    let scale = min(512 / CGFloat(cgImage.width), 280 / CGFloat(cgImage.height)), width = CGFloat(cgImage.width) * scale, height = CGFloat(cgImage.height) * scale
+                    if y - height < 60 { newPage() }
+                    context.draw(cgImage, in: CGRect(x: 50, y: y-height, width: width, height: height)); y -= height + 12
+                } else { try draw("Image unavailable in this download.", size: 9) }
+            }
+            try draw(fact["body"] as? String ?? "")
+            try draw("Topic path: \((fact["topicPath"] as? [String] ?? []).joined(separator: " / "))", size: 9)
+            for source in fact["sources"] as? [[String: Any]] ?? [] {
+                let url = source["url"] as? String ?? ""
+                try draw(source["title"] as? String ?? "Wikipedia", size: 10, bold: true, link: url); try draw(url, size: 9, link: url)
+            }
+            if let image = fact["image"] as? [String: Any] {
+                if let credit = image["credit"] as? String { try draw("Image credit: \(credit)", size: 9) }
+                if let url = image["filePageUrl"] as? String ?? image["sourceUrl"] as? String { try draw(url, size: 9, link: url) }
+            }
+            y -= 14
+        }
+        context.endPDFPage(); context.closePDF()
         return output as Data
     }
 
-    private func exportFacts(id: String, format: String, workspaceName: String, facts: [[String: Any]]) {
-        let exportedAt = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
-        let (attributed, omittedImages) = exportAttributedString(workspaceName: workspaceName, exportedAt: exportedAt, facts: facts)
-        let data: Data?
-        let fileExtension: String
-        let contentType: UTType
-        switch format.lowercased() {
-        case "pdf": data = makePDF(data: attributed); fileExtension = "pdf"; contentType = .pdf
-        case "docx": data = try? attributed.data(from: NSRange(location: 0, length: attributed.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.officeOpenXML]); fileExtension = "docx"; contentType = UTType(filenameExtension: "docx") ?? .data
-        default: data = exportText(workspaceName: workspaceName, exportedAt: exportedAt, facts: facts).data(using: .utf8); fileExtension = "txt"; contentType = .plainText
-        }
-        guard let data else { respond(id: id, error: "The \(format.uppercased()) export could not be created."); return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(workspaceName.replacingOccurrences(of: "/", with: "-"))-facts.\(fileExtension)"
-        panel.allowedContentTypes = [contentType]
-        panel.canCreateDirectories = true
-        panel.begin { [weak self] response in
+    private func exportFacts(id: String, payload: [String: Any]) {
+        let format = payload["format"] as? String ?? "txt", folder = payload["folder"] as? Bool ?? false, files = payload["files"] as? [[String: Any]] ?? [], token = payload["token"] as? Int ?? 0
+        guard !files.isEmpty, files.count <= 65535 else { respond(id: id, error: "There are no cards to download."); return }
+        activeTasks[id] = Task { [weak self] in
             guard let self else { return }
-            guard response == .OK, let url = panel.url else { self.respond(id: id, result: ["canceled": true]); return }
-            do { try data.write(to: url, options: .atomic); self.respond(id: id, result: ["canceled": false, "omittedImages": omittedImages]) }
-            catch { self.respond(id: id, error: "The export could not be saved.") }
+            defer { activeTasks[id] = nil }
+            do {
+                var images: [String: Data] = [:], omitted = 0
+                if format == "pdf" {
+                    let urls = Array(Set(files.flatMap { $0["facts"] as? [[String: Any]] ?? [] }.compactMap { ($0["image"] as? [String: Any])?["url"] as? String }))
+                    for start in stride(from: 0, to: urls.count, by: 3) {
+                        try Task.checkCancellation()
+                        let batch = Array(urls[start..<min(start + 3, urls.count)])
+                        let downloaded = await withTaskGroup(of: (String, Data?).self) { group in
+                            for raw in batch { group.addTask {
+                                guard let url = URL(string: raw), ["https", "http"].contains(url.scheme ?? "") else { return (raw, nil) }
+                                var request = URLRequest(url: url); request.timeoutInterval = 12
+                                do { let (data, response) = try await URLSession.shared.data(for: request); guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 30 * 1024 * 1024, CGImageSourceCreateWithData(data as CFData, nil) != nil else { return (raw, nil) }; guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1200, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else { return (raw, nil) }
+                                let compressed = NSMutableData()
+                                guard let destination = CGImageDestinationCreateWithData(compressed, UTType.jpeg.identifier as CFString, 1, nil) else { return (raw, nil) }
+                                CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+                                guard CGImageDestinationFinalize(destination) else { return (raw, nil) }
+                                return (raw, compressed as Data) } catch { return (raw, nil) }
+                            } }
+                            var results: [(String, Data?)] = []; for await result in group { results.append(result) }; return results
+                        }
+                        for (url, data) in downloaded { if let data { images[url] = data } }
+                        respondEvent(id: id, payload: ["type": "exportProgress", "token": token, "message": "Preparing pictures · \(min(start + 3, urls.count)) of \(urls.count)"])
+                    }
+                    omitted = files.flatMap { $0["facts"] as? [[String: Any]] ?? [] }.filter { fact in guard let url = (fact["image"] as? [String: Any])?["url"] as? String else { return false }; return images[url] == nil }.count
+                }
+                var entries: [(name: String, data: Data)] = []
+                for (index, file) in files.enumerated() {
+                    try Task.checkCancellation()
+                    let text = file["text"] as? String ?? "", facts = file["facts"] as? [[String: Any]] ?? []
+                    let data = format == "pdf" ? try await factPDF(text: text, facts: facts, images: images) : Data(text.utf8)
+                    entries.append((file["name"] as? String ?? "Fact.\(format)", data))
+                    respondEvent(id: id, payload: ["type": "exportProgress", "token": token, "message": "Preparing files · \(index + 1) of \(files.count)"])
+                    await Task.yield()
+                }
+                try Task.checkCancellation()
+                let data = folder ? try FactDownloadArchive.build(entries) : entries[0].data
+                let panel = NSSavePanel(); panel.nameFieldStringValue = payload["filename"] as? String ?? "Facts.\(format)"; panel.allowedContentTypes = [folder ? .zip : format == "pdf" ? .pdf : .plainText]; panel.canCreateDirectories = true
+                let response = await withTaskCancellationHandler(operation: { await withCheckedContinuation { continuation in panel.begin { continuation.resume(returning: $0) } } }, onCancel: { DispatchQueue.main.async { panel.cancel(nil) } })
+                try Task.checkCancellation()
+                guard response == .OK, let url = panel.url else { respond(id: id, result: ["canceled": true]); return }
+                try data.write(to: url, options: .atomic)
+                respond(id: id, result: ["canceled": false, "omittedImages": omitted])
+            } catch is CancellationError { respond(id: id, error: "Download canceled.") }
+            catch { respond(id: id, error: "Download could not be saved: \(error.localizedDescription)") }
         }
     }
 

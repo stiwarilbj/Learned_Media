@@ -12,6 +12,8 @@
   const REQUIRED_WORKING_MODELS = 2;
   const PRIMARY_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
   const ALLOWED_GEMINI_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
+  const factDownloads = window.LEARNED_MEDIA_FACT_DOWNLOADS;
+  let downloadMode = "pdf-single", downloadTask = null, downloadStatus = "", downloadJobToken = 0, downloadCollection = "all";
   const TOPICS = window.LEARNED_MEDIA_TOPIC_CATALOG || [];
   const difficultyEngine = window.LEARNED_MEDIA_DIFFICULTY;
   const DIFFICULTY_LABELS = difficultyEngine.DIFFICULTY_LABELS;
@@ -458,6 +460,7 @@
     else item.reject(new Error(message.error || "The request failed."));
   };
   window.__nativeEvent = function (message) {
+    if (message && message.type === "exportProgress" && message.token === downloadJobToken) { downloadStatus = message.message; render(); return; }
     if (!message || (message.token !== undefined && message.type === "modelCheck" && message.token !== state.connectionToken)) return;
     if (message.type === "generationStatus" && message.token === state.generationRequestToken) {
       mergeGeminiModelOutcomes(message.modelOutcomes || []);
@@ -1186,6 +1189,7 @@
   function runMoreCardAction(card, action) {
     state.moreMenuCardId = null;
     focusedMoreCardId = card.id;
+    if (action === "download") { render(); exportFactsNative([card], true); return; }
     if (action === "reveal") cardReveal.startCardReveal(state.workspaceId, card.id, cardReveal.buildCardRevealModel(card.body, sourceSpotlight.buildSourceSpotlightModel(card).mapped ? sourceSpotlight.buildSourceSpotlightModel(card).sentences : undefined));
     else if (action === "more") { card.moreLike = true; card.liked = true; showToast("Your mix will lean a little closer to this thread."); saveState(); }
     else if (action === "topic-detour") { startTopicDetour(card); return; }
@@ -2005,6 +2009,7 @@
     for (const [requestKey, request] of sourceSpotlightRequests) {
       if (request.workspaceId === state.workspaceId) nativeCancelSpotlightRequest(requestKey);
     }
+    cancelNativeDownload();
     bridge("cancelAll", {}).catch(function () {});
   }
   function applyWorkspaceSnapshot(record) {
@@ -2760,8 +2765,8 @@
     } }, svg("more", 17)));
     if (state.moreMenuCardId === card.id) {
       const menu = node("div", { id: moreMenuID, className: "fact-more-popover", role: "menu", ariaLabel: "More fact actions", onKeydown: handleMoreMenuKeydown });
-      [["reveal", "Reveal gradually", "sparkles"], ["topic-detour", "Three more from this topic", "sparkles"], ["rabbit", "Start rabbit hole", "arrow"], ["less", "Show fewer like this", "minus"]].forEach(function (option) {
-        menu.appendChild(node("button", { type: "button", role: "menuitem", dataset: { moreMenuCard: card.id }, onClick: function () { runMoreCardAction(card, option[0]); } }, svg(option[2], 15), " ", option[1]));
+      [["reveal", "Reveal gradually", "sparkles"], ["topic-detour", "Three more from this topic", "sparkles"], ["rabbit", "Start rabbit hole", "arrow"], ["less", "Show fewer like this", "minus"], ["download", "Download card (" + factDownloads.downloadFormat(downloadMode).toUpperCase() + ")", "bookmark"]].forEach(function (option) {
+        menu.appendChild(node("button", { type: "button", role: "menuitem", disabled: option[0] === "download" && Boolean(downloadTask), dataset: { moreMenuCard: card.id }, onClick: function () { runMoreCardAction(card, option[0]); } }, svg(option[2], 15), " ", option[1]));
       });
       moreMenu.appendChild(menu);
     }
@@ -2774,6 +2779,8 @@
     layout.appendChild(topicPanel(false));
     const column = node("section", { className: "feed-content-column" });
     const toolbar = node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" })));
+    toolbar.appendChild(node("button", { className: "ghost-button", disabled: !state.cards.length || Boolean(downloadTask), onClick: function () { exportFactsNative(state.cards, false); } }, "Download session"));
+    toolbar.appendChild(nativeDownloadFeedback());
     if (state.topicDetour || topicDetourCompletionNotice) {
       const detour = state.topicDetour;
       const status = detour ? detour.slotCardIds.some(function (id) { return !id; }) ? "Preparing three cards" : (detour.topicPath[detour.topicPath.length - 1] || "Topic") + " · " + Math.max(1, detour.furthestReached + 1) + " of 3" : topicDetourCompletionNotice;
@@ -2852,13 +2859,17 @@
     const exports = node("section", { className: "settings-card export-settings-card" });
     exports.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("bookmark", 19)), node("div", {}, node("h2", { text: "Download Facts" }), node("p", { text: "Save this workspace with its topic paths and Wikipedia sources." }))));
     const exportRow = node("div", { className: "export-controls" });
-    const exportSelect = node("select", { id: "native-export-collection" });
-    exportSelect.appendChild(node("option", { value: "all", text: "Everything in this workspace (" + state.cards.length + ")" }));
-    exportSelect.appendChild(node("option", { value: "saved", text: "Saved Facts (" + state.cards.filter(function (card) { return card.saved; }).length + ")" }));
-    exportRow.appendChild(exportSelect);
-    const exportButtons = node("div", { className: "export-buttons" });
-    ["pdf", "txt", "docx"].forEach(function (format) { exportButtons.appendChild(node("button", { className: "secondary-button", disabled: !state.cards.length, onClick: function () { exportFactsNative(format, exportSelect.value); } }, format.toUpperCase())); });
-    exportRow.appendChild(exportButtons); exports.appendChild(exportRow); exports.appendChild(node("p", { className: "export-size-note", text: "Everything includes all facts and sources; embedded images are compressed or omitted when needed to keep the download manageable." })); main.appendChild(exports);
+    const exportSelect = node("select", { id: "native-export-collection", value: downloadCollection, onChange: function (event) { downloadCollection = event.target.value; render(); } });
+    exportSelect.appendChild(node("option", { value: "all", text: "All cards (" + state.cards.length + ")" }));
+    exportSelect.appendChild(node("option", { value: "saved", text: "Saved Facts (" + state.cards.filter(function (c) { return c.saved; }).length + ")" }));
+    exportSelect.value = downloadCollection;
+    exportRow.appendChild(node("label", { htmlFor: "native-export-collection", className: "field-label", text: "Collection" })); exportRow.appendChild(exportSelect);
+    const modeSelect = node("select", { id: "native-download-mode", onChange: function (event) { downloadMode = factDownloads.normalizeDownloadMode(event.target.value); bridge("saveDownloadPreference", { mode: downloadMode }).catch(function () {}); render(); } });
+    factDownloads.DOWNLOAD_MODES.forEach(function (mode) { modeSelect.appendChild(node("option", { value: mode.id, text: mode.label })); }); modeSelect.value = downloadMode;
+    exportRow.appendChild(node("label", { htmlFor: "native-download-mode", className: "field-label", text: "Download format" })); exportRow.appendChild(modeSelect);
+    const selected = downloadCollection === "saved" ? state.cards.filter(function (c) { return c.saved; }) : state.cards;
+    exportRow.appendChild(node("button", { className: "secondary-button", disabled: !selected.length || Boolean(downloadTask), onClick: function () { exportFactsNative(selected, false); } }, "Download cards"));
+    exports.appendChild(exportRow); exports.appendChild(nativeDownloadFeedback()); main.appendChild(exports);
     const accountCard = node("section", { className: "settings-card" });
     accountCard.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon lilac" }, svg("user", 19)), node("div", {}, node("h2", { text: "Account" }), node("p", { text: "Google sign-in keeps your account ready on this Mac." }))));
     const syncLabel = state.syncStatus === "syncing" ? "Syncing your workspace" : state.syncStatus === "offline" ? "Offline; local changes are safe" : state.syncStatus === "error" ? "Sync needs attention" : "Synced to your Google account";
@@ -2897,6 +2908,7 @@
     const label = kind.charAt(0).toUpperCase() + kind.slice(1);
     const section = node("section", { className: "content-view" });
     section.appendChild(node("div", { className: "view-heading" }, node("div", {}, node("span", { className: "eyebrow", text: label }), node("h1", { text: "Your " + label.toLowerCase() + " discoveries." }), node("p", { text: "Keep the ideas that made you pause." }))));
+    section.appendChild(nativeDownloadFeedback());
     if (cards.length) {
       const feed = node("div", { className: "collection-feed" });
       cards.forEach(function (card) { feed.appendChild(cardElement(card)); });
@@ -2906,11 +2918,23 @@
     }
     return section;
   }
-  function exportFactsNative(format, collection) {
-    const facts = (collection === "saved" ? state.cards.filter(function (card) { return card.saved; }) : state.cards).map(function (card) { return { id: card.id, hook: card.hook, title: card.title, body: card.body, topicPath: card.topicPath, sources: card.sources, image: card.image || null }; });
-    if (!facts.length) return showToast("There are no facts in that collection yet.");
-    bridge("exportFacts", { format: format, workspaceName: state.workspaceName, facts: facts }).then(function (result) { if (result && result.omittedImages) showToast("Export complete. Images were omitted for " + result.omittedImages + " fact" + (result.omittedImages === 1 ? "" : "s") + " to keep the download manageable; all text and sources were kept."); else showToast("Export complete."); }).catch(function (error) { showToast(error.message || "The facts could not be exported."); });
+  function cancelNativeDownload() {
+    if (downloadTask) downloadTask.cancel(); downloadTask = null; downloadJobToken += 1; downloadStatus = "Download canceled.";
   }
+  function nativeDownloadFeedback() {
+    const element = node("div", { className: "download-feedback", role: "status", ariaLive: "polite" }, downloadStatus);
+    if (downloadTask) element.appendChild(node("button", { className: "ghost-button", onClick: function () { cancelNativeDownload(); render(); } }, "Cancel download"));
+    return element;
+  }
+  function exportFactsNative(input, individual) {
+    if (downloadTask || !input.length) return;
+    const facts = factDownloads.snapshotDownloadCards(input), date = new Date().toISOString(), format = factDownloads.downloadFormat(downloadMode), folder = !individual && downloadMode.endsWith("folder"), base = factDownloads.downloadBaseName(state.workspaceName, date), token = ++downloadJobToken;
+    const files = folder ? facts.map(function (card, index) { return { name: base + "/" + factDownloads.cardDownloadName(card, index, facts.length, format), text: factDownloads.exportText(state.workspaceName, date, [card]), facts: [card] }; }) : [{ name: individual ? factDownloads.cardDownloadName(facts[0], 0, 1, format) : base + "." + format, text: factDownloads.exportText(state.workspaceName, date, facts), facts: facts }];
+    downloadStatus = "Preparing download…";
+    downloadTask = bridge("exportFacts", { format: format, folder: folder, filename: folder ? base + ".zip" : files[0].name, files: files, token: token }); render();
+    downloadTask.then(function (result) { if (token !== downloadJobToken) return; downloadStatus = result.canceled ? "Download canceled." : "Download saved." + (result.omittedImages ? " " + result.omittedImages + " picture(s) unavailable; all text retained." : ""); }).catch(function (error) { if (token === downloadJobToken) downloadStatus = error.message || "Download failed."; }).finally(function () { if (token === downloadJobToken) { downloadTask = null; render(); } });
+  }
+
   function confirmationOverlay() {
     const request = state.confirmation;
     if (!request) return null;
@@ -3103,6 +3127,7 @@
   async function hydrate() {
     try {
       const nativeSaved = await bridge("loadState", {});
+      try { downloadMode = factDownloads.normalizeDownloadMode(await bridge("loadDownloadPreference", {})); } catch (_) {}
       try { state.revealGradually = (await bridge("loadRevealGraduallyPreference", {})) === true; }
       catch (_) { state.revealGradually = false; }
       let localSaved = null, localBackup = null;
@@ -3288,6 +3313,7 @@
     showToast("Topics reset. Choose a topic to start again.");
   }
   function performResetAll() {
+    cancelNativeDownload(); downloadMode = "pdf-single"; bridge("saveDownloadPreference", { mode: downloadMode }).catch(function () {});
     clearTopicDetourCompletionNotice();
     cancelCardGlossary();
     generationToken += 1;
@@ -3565,6 +3591,7 @@
   async function signIn() {
     try {
       const result = await bridge("signIn", {});
+      if (state.account?.id !== result.account?.id) cancelNativeDownload();
       const previousOwner = state.cloudOwnerId;
       state.account = result.account;
       nativeAccountRestored = false;
@@ -3588,6 +3615,7 @@
     }
   }
   async function signOut() {
+    cancelNativeDownload();
     try {
       cancelWorkspaceOperations();
       cloudSyncToken += 1;

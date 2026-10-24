@@ -4,6 +4,7 @@ const repositoryBasePath = "/Learned_Media";
 
 const nextConfig = {
   reactStrictMode: true,
+  env: { NEXT_PUBLIC_BASE_PATH: isGitHubPages ? repositoryBasePath : "" },
   ...(isGitHubPages ? {
     output: "export",
     basePath: repositoryBasePath,

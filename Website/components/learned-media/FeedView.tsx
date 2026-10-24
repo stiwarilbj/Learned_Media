@@ -1,4 +1,5 @@
 "use client";
+import { DownloadSession } from "./CardDownloads";
 
 import { useCallback, useEffect, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
@@ -130,6 +131,7 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
         <section className="feed-content-column">
           <div className="feed-toolbar">
             <div className="active-topics"><span className="toolbar-label">Your feed</span></div>
+            <DownloadSession />
             {(topicDetour || topicDetourStatusNotice) && <div className="topic-detour-status" role="status" aria-live="polite"><span>{topicDetour ? topicDetour.slotCardIds.some(id => !id) ? "Preparing three cards" : `${topicDetour.topicPath.at(-1) ?? "Topic"} · ${Math.max(1, topicDetour.furthestReached + 1)} of 3` : topicDetourStatusNotice}</span>{topicDetour && <button type="button" onClick={onEndTopicDetour}>End early</button>}</div>}
           </div>
           <div className="feed-intro"><div><h1>Keep going</h1><p>One small idea at a time. Every card has a place to look next</p></div><span className="feed-count">{cards.length} cards in this session</span></div>

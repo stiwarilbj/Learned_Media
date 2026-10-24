@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import type { FactCard, GeminiModelCheck, GeminiStatus } from "@/lib/types";
-import { buildFactExport, downloadBlob, type FactExportFormat } from "@/lib/exports";
+import { DownloadSettings } from "./CardDownloads";
 import { APPROVED_YOUTUBE_CHANNELS, type YouTubeImportProgress } from "@/lib/youtube";
 import { Icon } from "./icons";
 
@@ -63,23 +62,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
   const primaryModels = modelChecks.slice(0, 2);
   const checkedPrimaryCount = primaryModels.filter((model) => model.status !== "unchecked").length;
   const workingPrimaryCount = new Set(primaryModels.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
-  const [exportCollection, setExportCollection] = useState<"all" | "saved">("all");
-  const [exporting, setExporting] = useState<FactExportFormat | null>(null);
-  const [exportFeedback, setExportFeedback] = useState("");
   const prioritizedChannelCount = APPROVED_YOUTUBE_CHANNELS.filter(({ name }) => prioritizeRecentByChannel[name]).length;
-  const exportCards = exportCollection === "saved" ? cards.filter((card) => card.saved) : cards;
-  async function exportFacts(format: FactExportFormat) {
-    if (!exportCards.length || exporting) return;
-    setExportFeedback("");
-    setExporting(format);
-    try {
-      const result = await buildFactExport(format, workspaceName, exportCards);
-      downloadBlob(result.blob, result.filename);
-      setExportFeedback(result.omittedImages.length ? `Export complete. Images were omitted for ${result.omittedImages.length} fact${result.omittedImages.length === 1 ? "" : "s"} to keep the file manageable; all text and sources were kept.` : "Export complete.");
-    } catch (error) {
-      setExportFeedback(error instanceof Error ? error.message : "The facts could not be exported.");
-    } finally { setExporting(null); }
-  }
   return (
     <section className="content-view settings-view">
       <div className="view-heading">
@@ -160,9 +143,8 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
 
           <section className="settings-card export-settings-card">
             <div className="settings-card-heading"><div className="settings-icon lilac"><Icon name="bookmark" size={19} /></div><div><h2>Download Facts</h2><p>Save this workspace with its topic paths and Wikipedia sources</p></div></div>
-            <div className="export-controls"><label className="field-label" htmlFor="export-collection">Collection</label><select id="export-collection" value={exportCollection} onChange={(event) => setExportCollection(event.target.value as "all" | "saved")}><option value="all">Everything in this workspace ({cards.length})</option><option value="saved">Saved Facts ({cards.filter((card) => card.saved).length})</option></select><div className="export-buttons"><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("pdf")}>{exporting === "pdf" ? "Preparing PDF" : "PDF"}</button><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("txt")}>{exporting === "txt" ? "Preparing TXT" : "TXT"}</button><button type="button" className="secondary-button" disabled={!exportCards.length || Boolean(exporting)} onClick={() => void exportFacts("docx")}>{exporting === "docx" ? "Preparing DOCX" : "DOCX"}</button></div></div>
-            {exportFeedback && <p className="settings-feedback" role="status">{exportFeedback}</p>}
-            <p className="export-size-note">Everything includes all facts and sources; embedded images are compressed or omitted when needed to keep the download manageable.</p>
+            <DownloadSettings cards={cards} />
+            <p className="export-size-note">Downloads include complete original cards and Wikipedia sources. Separate files arrive in one ZIP folder.</p>
             {!cards.length && <p className="youtube-restriction-note">Generate or save a fact before downloading it</p>}
           </section>
 

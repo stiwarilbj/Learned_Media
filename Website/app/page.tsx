@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { CardDownloadsProvider } from "@/components/learned-media/CardDownloads";
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Navigation } from "@/components/learned-media/Navigation";
 import { Icon } from "@/components/learned-media/icons";
@@ -2454,6 +2455,7 @@ export default function HomePage() {
     setGenerationError("");
     setTheme("light");
     setRevealGraduallyPreference(false);
+    window.dispatchEvent(new Event("learned-media-reset-downloads"));
     setView("feed");
     setToast("Preferences restored to the starting mix.");
   }, [cancelGeneration, clearTopicDetourStatusNotice, setRevealGraduallyPreference, updateTopicDetour]);
@@ -3096,7 +3098,7 @@ export default function HomePage() {
   const topicSuggestions = localTopicSuggestions;
 
   return (
-    <div
+    <CardDownloadsProvider workspaceId={workspaceId} accountId={account?.id} workspaceName={workspaceName} cards={cards}><div
       className={`app-frame theme-${theme}`}
       onPointerDownCapture={() => { document.documentElement.dataset.inputModality = "pointer"; }}
       onKeyDownCapture={() => { document.documentElement.dataset.inputModality = "keyboard"; }}
@@ -3141,6 +3143,6 @@ export default function HomePage() {
           </div>
         </section>
       </div>}
-    </div>
+    </div></CardDownloadsProvider>
   );
 }

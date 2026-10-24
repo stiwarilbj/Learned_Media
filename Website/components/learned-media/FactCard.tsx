@@ -1,4 +1,5 @@
 "use client";
+import { DownloadCardMenuItem } from "./CardDownloads";
 
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { DIFFICULTY_LABELS } from "@/lib/recommendations";
@@ -773,6 +774,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
             <button type="button" role="menuitem" onClick={() => { setMoreMenuOpen(false); moreTriggerRef.current?.focus(); onThreeMore(card.id); }}><Icon name="sparkles" size={15} /> Three more from this topic</button>
             <button type="button" role="menuitem" onClick={() => chooseMoreAction("rabbit")}><Icon name="arrow" size={15} /> Start rabbit hole</button>
             <button type="button" role="menuitem" onClick={() => chooseMoreAction("less")}><Icon name="minus" size={15} /> Show fewer like this</button>
+            <DownloadCardMenuItem card={card} close={() => { setMoreMenuOpen(false); moreTriggerRef.current?.focus(); }} />
           </div>}
         </div>
       </div>

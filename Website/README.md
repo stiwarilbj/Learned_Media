@@ -114,3 +114,11 @@ Run `npm run test:credentials` for the shared web/native sync state machine and
 `supabase/test-account-credentials.sql` verifies owner and anonymous isolation
 without retaining its fixture users or keys. Normal runtime sync never requires
 service-role credentials.
+
+### Card downloads
+
+Settings → Download Facts offers one PDF (default), one TXT, or individual PDF/TXT files in a ZIP containing one named folder. The device remembers this choice. Download session always captures the entire active feed in its current order, including restored/offscreen cards regardless of search. A card’s More menu offers a single-file download in the chosen format.
+
+Downloads retain the complete original wording, topic path, Wikipedia links, and image credits. PDF images are prepared from saved URLs with three concurrent downloads and a 12-second timeout; unavailable pictures are reported without losing text. TXT never requests pictures. PDF code and bundled OFL-licensed Noto Sans fonts load on demand. Preparation can be canceled; workspace/account changes discard obsolete jobs. ZIP exports are limited to 512 MiB and use UTF-8 numbered filenames. No Gemini or source-discovery requests are made.
+
+Run `npm run test:exports` for shared naming, snapshot, ZIP, cancellation, and text-only behavior checks.

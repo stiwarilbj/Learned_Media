@@ -1,289 +1,308 @@
 import type { FactCard } from "./types";
-
-export type FactExportFormat = "pdf" | "txt" | "docx";
-export type FactExportCollection = "all" | "saved";
-
+import {
+  buildZip,
+  cardDownloadName,
+  downloadBaseName,
+  downloadFormat,
+  exportText,
+  snapshotDownloadCards,
+  type DownloadMode,
+} from "./fact-downloads";
+import type { jsPDF } from "jspdf";
+export type FactExportFormat = "pdf" | "txt";
 export type FactExportResult = {
   blob: Blob;
   filename: string;
   omittedImages: string[];
 };
-
-type ImageAsset = { id: string; bytes: Uint8Array; width: number; height: number };
-type PreparedFact = FactCard & { exportImage?: ImageAsset };
-const EXPORT_IMAGE_WIDTH = 960;
-const EXPORT_IMAGE_HEIGHT = 540;
-const MAX_EMBEDDED_IMAGE_BYTES = 16 * 1024 * 1024;
-
-function xmlEscape(value: string) {
-  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[character] ?? character));
+type ImageAsset = { bytes: Uint8Array; width: number; height: number };
+type Options = {
+  signal?: AbortSignal;
+  onProgress?: (message: string) => void;
+  individual?: boolean;
+  date?: Date;
+};
+let fonts: Promise<string[]> | undefined;
+function fontData() {
+  if (!fonts)
+    fonts = Promise.all(
+      ["Regular", "Bold"].map(async (weight) => {
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/fonts/NotoSans-${weight}.ttf`,
+          { signal: AbortSignal.timeout(20000) },
+        );
+        if (!response.ok)
+          throw new Error(
+            "PDF fonts could not be loaded. Reconnect and retry.",
+          );
+        const data = new Uint8Array(await response.arrayBuffer());
+        let text = "";
+        for (let i = 0; i < data.length; i += 8192)
+          text += String.fromCharCode(...data.subarray(i, i + 8192));
+        return btoa(text);
+      }),
+    ).catch((error) => {
+      fonts = undefined;
+      throw error;
+    });
+  return fonts;
 }
-
-function pdfString(value: string) {
-  const codeUnits = Array.from(value).map((character) => character.charCodeAt(0));
-  return `<FEFF${codeUnits.map((code) => code.toString(16).padStart(4, "0")).join("")}>`;
+function check(signal?: AbortSignal) {
+  signal?.throwIfAborted();
 }
-
-function pdfLiteral(value: string) {
-  return `(${value.replace(/[\\()]/g, "\\$&")})`;
-}
-
-function wrapText(value: string, maxCharacters: number) {
-  const words = value.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
-  const lines: string[] = [];
-  let line = "";
-  words.forEach((word) => {
-    if (word.length > maxCharacters) {
-      if (line) { lines.push(line); line = ""; }
-      for (let index = 0; index < word.length; index += maxCharacters) lines.push(word.slice(index, index + maxCharacters));
-      return;
-    }
-    const candidate = line ? `${line} ${word}` : word;
-    if (candidate.length > maxCharacters && line) { lines.push(line); line = word; }
-    else line = candidate;
-  });
-  if (line) lines.push(line);
-  return lines.length ? lines : [""];
-}
-
-function exportText(workspaceName: string, exportedAt: string, cards: FactCard[]) {
-  const lines = [`LEARNED MEDIA`, `Workspace: ${workspaceName}`, `Exported: ${exportedAt}`, ""];
-  cards.forEach((card, index) => {
-    lines.push("=".repeat(72), `${index + 1}. ${card.title}`, `Hook: ${card.hook}`, `Fact: ${card.body}`, `Topic path: ${card.topicPath.join(" / ")}`, "Wikipedia Sources:");
-    (card.sources ?? []).forEach((source) => lines.push(`- ${source.title}`, `  ${source.url}`));
-    if (card.image?.credit) lines.push(`Image credit: ${card.image.credit}`);
-    if (card.image?.filePageUrl ?? card.image?.sourceUrl) lines.push(`Image source: ${card.image.filePageUrl ?? card.image.sourceUrl}`);
-    lines.push("");
-  });
-  return lines.join("\n");
-}
-
-function canvasImage(url: string) {
-  return new Promise<ImageAsset>((resolve, reject) => {
+const yieldTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+export function canvasImage(
+  url: string,
+  signal?: AbortSignal,
+): Promise<ImageAsset> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
     const image = new Image();
     image.crossOrigin = "anonymous";
+    const finish = (error?: unknown, result?: ImageAsset) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      image.onload = image.onerror = null;
+      if (error) {
+        image.src = "";
+        reject(error);
+      } else resolve(result!);
+    };
+    const abort = () =>
+      finish(new DOMException("Download canceled", "AbortError"));
+    const timer = setTimeout(() => finish(new Error("Image timed out")), 12000);
     image.onload = () => {
       try {
-        const width = EXPORT_IMAGE_WIDTH;
-        const height = EXPORT_IMAGE_HEIGHT;
+        check(signal);
+        if (!image.naturalWidth || !image.naturalHeight)
+          throw new Error("Invalid image");
+        const scale = Math.min(
+          1,
+          1200 / image.naturalWidth,
+          1000 / image.naturalHeight,
+        );
         const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
         const context = canvas.getContext("2d");
         if (!context) throw new Error("Canvas unavailable");
-        const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
-        const drawnWidth = image.naturalWidth * scale;
-        const drawnHeight = image.naturalHeight * scale;
-        context.drawImage(image, (width - drawnWidth) / 2, (height - drawnHeight) / 2, drawnWidth, drawnHeight);
-        canvas.toBlob(async (blob) => {
-          if (!blob) { reject(new Error("Image could not be exported")); return; }
-          resolve({ id: "", bytes: new Uint8Array(await blob.arrayBuffer()), width, height });
-        }, "image/jpeg", 0.76);
-      } catch (error) { reject(error); }
-    };
-    image.onerror = () => reject(new Error("Image could not be loaded"));
-    image.src = url;
-  });
-}
-
-async function prepareFacts(cards: FactCard[]) {
-  const omittedImages: string[] = [];
-  const facts: PreparedFact[] = [];
-  let embeddedImageBytes = 0;
-  for (const card of cards) {
-    if (!card.image?.url) { facts.push(card); continue; }
-    try {
-      const image = await canvasImage(card.image.url);
-      if (embeddedImageBytes + image.bytes.length > MAX_EMBEDDED_IMAGE_BYTES) {
-        omittedImages.push(card.title);
-        facts.push(card);
-        continue;
+        context.fillStyle = "white";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(
+          async (blob) => {
+            try {
+              if (!blob) throw new Error("Image unavailable");
+              check(signal);
+              finish(undefined, {
+                bytes: new Uint8Array(await blob.arrayBuffer()),
+                width: canvas.width,
+                height: canvas.height,
+              });
+            } catch (error) {
+              finish(error);
+            }
+          },
+          "image/jpeg",
+          0.8,
+        );
+      } catch (error) {
+        finish(error);
       }
-      image.id = `image-${facts.length + 1}`;
-      embeddedImageBytes += image.bytes.length;
-      facts.push({ ...card, exportImage: image });
-    } catch {
-      omittedImages.push(card.title);
-      facts.push(card);
+    };
+    image.onerror = () => finish(new Error("Image unavailable"));
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    else image.src = url;
+  });
+}
+export async function buildPdf(
+  workspace: string,
+  date: string,
+  cards: FactCard[],
+  images: Map<string, ImageAsset>,
+  options: Options = {},
+): Promise<Uint8Array> {
+  const [{ jsPDF: PDF }, font] = await Promise.all([
+    import("jspdf"),
+    fontData(),
+  ]);
+  check(options.signal);
+  const pdf: jsPDF = new PDF({ unit: "pt", format: "letter", compress: true });
+  ["normal", "bold"].forEach((style, i) => {
+    pdf.addFileToVFS(`NotoSans-${style}.ttf`, font[i]);
+    pdf.addFont(`NotoSans-${style}.ttf`, "NotoSans", style);
+  });
+  pdf.setProperties({
+    title: `${workspace} — Learned Media`,
+    creator: "Learned Media",
+  });
+  pdf.setFont("NotoSans");
+  let y = 50;
+  const room = (height: number) => {
+    if (y + height > 740) {
+      pdf.addPage();
+      y = 50;
     }
-  }
-  return { facts, omittedImages };
-}
-
-type PdfAnnotation = { x: number; y: number; width: number; height: number; url: string };
-type PdfPage = { commands: string[]; annotations: PdfAnnotation[]; images: ImageAsset[]; y: number };
-
-function concatBytes(parts: Uint8Array[]) {
-  const total = parts.reduce((sum, part) => sum + part.length, 0);
-  const output = new Uint8Array(total);
-  let offset = 0;
-  parts.forEach((part) => { output.set(part, offset); offset += part.length; });
-  return output;
-}
-
-function buildPdf(workspaceName: string, exportedAt: string, facts: PreparedFact[]) {
-  const pages: PdfPage[] = [{ commands: [], annotations: [], images: [], y: 742 }];
-  const margin = 50;
-  const lineHeight = (size: number) => size * 1.35;
-  const current = () => pages[pages.length - 1];
-  const ensure = (height: number) => { if (current().y - height < 55) pages.push({ commands: [], annotations: [], images: [], y: 742 }); };
-  const addLine = (text: string, size: 11 | 14 | 20, link?: string) => {
-    ensure(lineHeight(size));
-    const page = current();
-    const y = page.y;
-    page.commands.push(`BT /F1 ${size} Tf 0.08 0.16 0.30 rg 1 0 0 1 ${margin} ${y} Tm ${pdfString(text)} Tj ET`);
-    if (link) page.annotations.push({ x: margin, y: y - 2, width: Math.min(512, Math.max(20, text.length * 5.4)), height: size + 3, url: link });
-    page.y -= lineHeight(size);
   };
-  const addBlock = (text: string, size: 11 | 14 | 20, link?: string) => wrapText(text, size === 20 ? 42 : size === 14 ? 58 : 78).forEach((line) => addLine(line, size, link));
-  addBlock("LEARNED MEDIA", 20);
-  addLine(`Workspace: ${workspaceName}`, 11);
-  addLine(`Exported: ${exportedAt}`, 11);
-  pages[0].y -= 12;
-  facts.forEach((card, index) => {
-    ensure(50);
-    if (current().commands.length) current().y -= 8;
-    addBlock(`${index + 1}. ${card.title}`, 14);
-    if (card.exportImage) {
-      ensure(178);
-      const page = current();
-      const height = 150;
-      const y = page.y - height;
-      const asset = card.exportImage;
-      page.images.push(asset);
-      page.commands.push(`q 512 ${height} ${margin} ${y} cm /${asset.id} Do Q`);
-      page.y = y - 12;
-    }
-    addBlock(card.hook, 11);
-    addBlock(card.body, 11);
-    addBlock(`Topic path: ${card.topicPath.join(" / ")}`, 11);
-    addLine("Wikipedia Sources", 11);
-    card.sources.forEach((source) => { addBlock(source.title, 11, source.url); addBlock(source.url, 11, source.url); });
-    if (card.image?.credit) addBlock(`Image credit: ${card.image.credit}`, 11);
-    if (card.image?.filePageUrl ?? card.image?.sourceUrl) addBlock(card.image.filePageUrl ?? card.image.sourceUrl, 11, card.image.filePageUrl ?? card.image.sourceUrl);
-  });
-  pages.forEach((page, index) => page.commands.push(`BT /F1 11 Tf 0.35 0.42 0.55 rg 1 0 0 1 50 30 Tm ${pdfString(`${index + 1} / ${pages.length}`)} Tj ET`));
-
-  let nextObject = 4;
-  const imageObjectIds = new Map<ImageAsset, number>();
-  pages.flatMap((page) => page.images).forEach((image) => { if (!imageObjectIds.has(image)) imageObjectIds.set(image, nextObject++); });
-  const contentIds = pages.map(() => nextObject++);
-  const pageIds = pages.map(() => nextObject++);
-  const annotationIds = pages.map((page) => page.annotations.map(() => nextObject++));
-  const objects = new Map<number, Uint8Array>();
-  const encoder = new TextEncoder();
-  const textObject = (value: string) => encoder.encode(value);
-  pages.forEach((page, index) => {
-    const content = `${page.commands.join("\n")}\n`;
-    objects.set(contentIds[index], textObject(`<< /Length ${content.length} >>\nstream\n${content}endstream`));
-    page.annotations.forEach((annotation, annotationIndex) => objects.set(annotationIds[index][annotationIndex], textObject(`<< /Type /Annot /Subtype /Link /Rect [${annotation.x} ${annotation.y} ${annotation.x + annotation.width} ${annotation.y + annotation.height}] /Border [0 0 0] /A << /S /URI /URI ${pdfLiteral(annotation.url)} >> >>`)));
-    const xObjects = Array.from(new Set(page.images)).map((image) => `/${image.id} ${imageObjectIds.get(image)} 0 R`).join(" ");
-    const annotations = annotationIds[index].length ? ` /Annots [${annotationIds[index].map((id) => `${id} 0 R`).join(" ")}]` : "";
-    objects.set(pageIds[index], textObject(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >>${xObjects ? ` /XObject << ${xObjects} >>` : ""} >> /Contents ${contentIds[index]} 0 R${annotations} >>`));
-  });
-  imageObjectIds.forEach((objectId, image) => objects.set(objectId, concatBytes([encoder.encode(`<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.bytes.length} >>\nstream\n`), image.bytes, encoder.encode("\nendstream")])));
-  objects.set(3, textObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"));
-  objects.set(2, textObject(`<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`));
-  objects.set(1, textObject("<< /Type /Catalog /Pages 2 0 R >>"));
-  const parts: Uint8Array[] = [encoder.encode("%PDF-1.4\n%âãÏÓ\n")];
-  const offsets: number[] = [0];
-  for (let id = 1; id < nextObject; id += 1) {
-    offsets[id] = parts.reduce((sum, part) => sum + part.length, 0);
-    parts.push(encoder.encode(`${id} 0 obj\n`), objects.get(id) ?? encoder.encode("<<>>"), encoder.encode("\nendobj\n"));
-  }
-  const xrefOffset = parts.reduce((sum, part) => sum + part.length, 0);
-  parts.push(encoder.encode(`xref\n0 ${nextObject}\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${nextObject} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`));
-  return concatBytes(parts);
-}
-
-function crc32(bytes: Uint8Array) {
-  let crc = 0xffffffff;
-  for (let index = 0; index < bytes.length; index += 1) {
-    const byte = bytes[index];
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function littleEndian(value: number) { return new Uint8Array([value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255]); }
-function shortEndian(value: number) { return new Uint8Array([value & 255, (value >>> 8) & 255]); }
-
-function buildZip(entries: Array<{ name: string; data: Uint8Array }>) {
-  const local: Uint8Array[] = [];
-  const central: Uint8Array[] = [];
-  let offset = 0;
-  entries.forEach((entry) => {
-    const name = new TextEncoder().encode(entry.name);
-    const crc = crc32(entry.data);
-    const header = concatBytes([new Uint8Array([0x50, 0x4b, 3, 4]), shortEndian(20), shortEndian(0), shortEndian(0), shortEndian(0), shortEndian(0), littleEndian(crc), littleEndian(entry.data.length), littleEndian(entry.data.length), shortEndian(name.length), shortEndian(0), name]);
-    local.push(header, entry.data);
-    central.push(concatBytes([new Uint8Array([0x50, 0x4b, 1, 2]), shortEndian(20), shortEndian(20), shortEndian(0), shortEndian(0), shortEndian(0), shortEndian(0), littleEndian(crc), littleEndian(entry.data.length), littleEndian(entry.data.length), shortEndian(name.length), shortEndian(0), shortEndian(0), shortEndian(0), shortEndian(0), littleEndian(0), littleEndian(offset), name]));
-    offset += header.length + entry.data.length;
-  });
-  const centralBytes = central.reduce((sum, item) => sum + item.length, 0);
-  const localBytes = local.reduce((sum, item) => sum + item.length, 0);
-  const end = concatBytes([new Uint8Array([0x50, 0x4b, 5, 6]), shortEndian(0), shortEndian(0), shortEndian(entries.length), shortEndian(entries.length), littleEndian(centralBytes), littleEndian(localBytes), shortEndian(0)]);
-  return concatBytes([...local, ...central, end]);
-}
-
-function docxRun(text: string, size: number) {
-  return `<w:r><w:rPr><w:sz w:val="${size * 2}"/><w:szCs w:val="${size * 2}"/></w:rPr><w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r>`;
-}
-
-function docxParagraph(text: string, size: number, keepNext = false) {
-  return `<w:p>${keepNext ? "<w:pPr><w:keepNext/></w:pPr>" : ""}${docxRun(text, size)}</w:p>`;
-}
-
-function buildDocx(workspaceName: string, exportedAt: string, facts: PreparedFact[]) {
-  const relationships: string[] = [];
-  const mediaEntries: Array<{ name: string; data: Uint8Array }> = [];
-  let relationshipId = 1;
-  const hyperlink = (label: string, url: string) => {
-    const id = `rId${relationshipId++}`;
-    relationships.push(`<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${xmlEscape(url)}" TargetMode="External"/>`);
-    return `<w:hyperlink r:id="${id}">${docxRun(label, 11)}</w:hyperlink>`;
+  const text = (value: string, size = 11, bold = false, url?: string) => {
+    pdf.setFont("NotoSans", bold ? "bold" : "normal");
+    pdf.setFontSize(size);
+    for (const paragraph of value.split("\n"))
+      for (const line of pdf.splitTextToSize(
+        paragraph || " ",
+        512,
+      ) as string[]) {
+        room(size * 1.5);
+        pdf.text(line, 50, y);
+        if (url)
+          pdf.link(
+            50,
+            y - size,
+            Math.min(512, pdf.getTextWidth(line)),
+            size * 1.4,
+            { url },
+          );
+        y += size * 1.5;
+      }
+    y += 6;
   };
-  const paragraphs: string[] = [docxParagraph("LEARNED MEDIA", 20, true), docxParagraph(`Workspace: ${workspaceName}`, 11), docxParagraph(`Exported: ${exportedAt}`, 11)];
-  facts.forEach((card, index) => {
-    if (index) paragraphs.push("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
-    paragraphs.push(docxParagraph(`${index + 1}. ${card.title}`, 14, true));
-    if (card.exportImage) {
-      const id = `rId${relationshipId++}`;
-      relationships.push(`<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${card.exportImage.id}.jpg"/>`);
-      mediaEntries.push({ name: `word/media/${card.exportImage.id}.jpg`, data: card.exportImage.bytes });
-      paragraphs.push(`<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="5486400" cy="3086100"/><wp:docPr id="${index + 1}" name="Fact image"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${index + 1}" name="${xmlEscape(card.title)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="5486400" cy="3086100"/></a:xfrm><a:prstGeom prst="rect"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`);
+  text("LEARNED MEDIA", 20, true);
+  text(`Workspace: ${workspace}`);
+  text(`Exported: ${date}`);
+  for (let i = 0; i < cards.length; i++) {
+    check(options.signal);
+    const card = cards[i];
+    const image = card.image?.url ? images.get(card.image.url) : undefined;
+    pdf.setFont("NotoSans", "bold");
+    pdf.setFontSize(16);
+    const titleHeight =
+      pdf.splitTextToSize(`${i + 1}. ${card.title}`, 512).length * 24;
+    pdf.setFontSize(12);
+    const hookHeight = pdf.splitTextToSize(card.hook, 512).length * 18;
+    const pictureHeight = image
+      ? Math.min(512 / image.width, 280 / image.height) * image.height + 12
+      : 0;
+    room(Math.min(650, titleHeight + hookHeight + pictureHeight + 50));
+    text(`${i + 1}. ${card.title}`, 16, true);
+    text(card.hook, 12, true);
+    if (image) {
+      const scale = Math.min(512 / image.width, 280 / image.height);
+      const width = image.width * scale,
+        height = image.height * scale;
+      room(height + 12);
+      pdf.addImage(image.bytes, "JPEG", 50, y, width, height);
+      y += height + 12;
+    } else if (card.image?.url) text("Image unavailable in this download.", 9);
+    text(card.body);
+    text(`Topic path: ${card.topicPath.join(" / ")}`, 9);
+    for (const source of card.sources) {
+      text(source.title, 10, true, source.url);
+      text(source.url, 9, false, source.url);
     }
-    paragraphs.push(docxParagraph(card.hook, 11), docxParagraph(card.body, 11), docxParagraph(`Topic path: ${card.topicPath.join(" / ")}`, 11), docxParagraph("Wikipedia Sources", 11, true));
-    card.sources.forEach((source) => { paragraphs.push(`<w:p>${hyperlink(source.title, source.url)}</w:p>`, `<w:p>${hyperlink(source.url, source.url)}</w:p>`); });
-    if (card.image?.credit) paragraphs.push(docxParagraph(`Image credit: ${card.image.credit}`, 11));
-    if (card.image?.filePageUrl ?? card.image?.sourceUrl) paragraphs.push(`<w:p>${hyperlink(card.image.filePageUrl ?? card.image.sourceUrl, card.image.filePageUrl ?? card.image.sourceUrl)}</w:p>`);
-  });
-  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${paragraphs.join("")}<w:sectPr><w:pgMar w:top="1080" w:right="1080" w:bottom="1080" w:left="1080"/></w:sectPr></w:body></w:document>`;
-  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style></w:styles>`;
-  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships.join("")}</Relationships>`;
-  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
-  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpg" ContentType="image/jpeg"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`;
-  const utf8 = (text: string) => new TextEncoder().encode(text);
-  return buildZip([{ name: "[Content_Types].xml", data: utf8(contentTypes) }, { name: "_rels/.rels", data: utf8(rootRels) }, { name: "word/document.xml", data: utf8(documentXml) }, { name: "word/styles.xml", data: utf8(stylesXml) }, { name: "word/_rels/document.xml.rels", data: utf8(relsXml) }, ...mediaEntries]);
+    if (card.image?.credit) text(`Image credit: ${card.image.credit}`, 9);
+    const sourceUrl = card.image?.filePageUrl ?? card.image?.sourceUrl;
+    if (sourceUrl) text(sourceUrl, 9, false, sourceUrl);
+    y += 14;
+    if (i % 4 === 0) await yieldTask();
+  }
+  for (let page = 1; page <= pdf.getNumberOfPages(); page++) {
+    pdf.setPage(page);
+    pdf.setFontSize(9);
+    pdf.text(String(page), 50, 770);
+  }
+  return new Uint8Array(pdf.output("arraybuffer"));
 }
-
-export async function buildFactExport(format: FactExportFormat, workspaceName: string, cards: FactCard[]): Promise<FactExportResult> {
-  const exportedAt = new Date().toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-  const { facts, omittedImages } = await prepareFacts(cards);
-  const safeName = workspaceName.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "workspace";
-  if (format === "txt") return { blob: new Blob([exportText(workspaceName, exportedAt, facts)], { type: "text/plain;charset=utf-8" }), filename: `${safeName}-facts.txt`, omittedImages };
-  if (format === "pdf") return { blob: new Blob([buildPdf(workspaceName, exportedAt, facts)], { type: "application/pdf" }), filename: `${safeName}-facts.pdf`, omittedImages };
-  return { blob: new Blob([buildDocx(workspaceName, exportedAt, facts)], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), filename: `${safeName}-facts.docx`, omittedImages };
+export async function buildFactExport(
+  mode: DownloadMode,
+  workspace: string,
+  input: FactCard[],
+  options: Options = {},
+): Promise<FactExportResult> {
+  const cards = snapshotDownloadCards(input);
+  if (!cards.length) throw new Error("There are no cards to download.");
+  const date = (options.date ?? new Date()).toISOString(),
+    format = downloadFormat(mode),
+    folder = mode.endsWith("folder") && !options.individual;
+  const base = downloadBaseName(workspace, date),
+    images = new Map<string, ImageAsset>(),
+    omittedImages: string[] = [];
+  if (format === "pdf") {
+    const urls = [
+      ...new Set(
+        cards.map((c) => c.image?.url).filter((v): v is string => Boolean(v)),
+      ),
+    ];
+    let next = 0,
+      done = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(3, urls.length) }, async () => {
+        while (next < urls.length) {
+          check(options.signal);
+          const url = urls[next++];
+          try {
+            images.set(url, await canvasImage(url, options.signal));
+          } catch (error) {
+            check(options.signal);
+          }
+          options.onProgress?.(
+            `Preparing pictures · ${++done} of ${urls.length}`,
+          );
+        }
+      }),
+    );
+    cards.forEach((c) => {
+      if (c.image?.url && !images.has(c.image.url)) omittedImages.push(c.title);
+    });
+  }
+  const encode = async (items: FactCard[]) =>
+    format === "txt"
+      ? new TextEncoder().encode(exportText(workspace, date, items))
+      : buildPdf(workspace, date, items, images, options);
+  let bytes: Uint8Array;
+  if (folder) {
+    const entries = [];
+    for (let i = 0; i < cards.length; i++) {
+      check(options.signal);
+      options.onProgress?.(`Preparing cards · ${i + 1} of ${cards.length}`);
+      entries.push({
+        name: `${base}/${cardDownloadName(cards[i], i, cards.length, format)}`,
+        data: await encode([cards[i]]),
+      });
+      await yieldTask();
+    }
+    check(options.signal);
+    bytes = buildZip(entries);
+  } else {
+    options.onProgress?.(
+      `Preparing ${cards.length} card${cards.length === 1 ? "" : "s"}`,
+    );
+    bytes = await encode(cards);
+  }
+  check(options.signal);
+  return {
+    blob: new Blob([bytes as BlobPart], {
+      type: folder
+        ? "application/zip"
+        : format === "pdf"
+          ? "application/pdf"
+          : "text/plain;charset=utf-8",
+    }),
+    filename: options.individual
+      ? cardDownloadName(cards[0], 0, 1, format)
+      : `${base}.${folder ? "zip" : format}`,
+    omittedImages,
+  };
 }
-
 export function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
+  const url = URL.createObjectURL(blob),
+    anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
