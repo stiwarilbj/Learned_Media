@@ -24,6 +24,21 @@ export type TopicQueryPlan = {
 export type TopicSearchRecord = Pick<TopicNode, "id" | "label" | "aliases"> & {
     path: string[];
 };
+
+/** Compare user-created topic labels without turning punctuation into collisions. */
+export function normalizeCustomTopicLabel(label: string): string {
+    return label.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase();
+}
+
+/** Make a readable custom-topic ID, adding a suffix when punctuation shares a slug. */
+export function createCustomTopicId(label: string, existingIds: Iterable<string>): string {
+    const base = `custom-${label.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase().trim().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "") || "topic"}`;
+    const ids = new Set(existingIds);
+    if (!ids.has(base)) return base;
+    let suffix = 2;
+    while (ids.has(`${base}-${suffix}`)) suffix += 1;
+    return `${base}-${suffix}`;
+}
 type Entry = {
     topic: TopicSearchRecord;
     fields: string[];

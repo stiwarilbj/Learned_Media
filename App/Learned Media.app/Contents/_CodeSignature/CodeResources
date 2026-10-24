@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		61VBKZwWFznVNWrjyPzgne6ixjE=
+		T8TFGII8pgcK0Qp5898Fk8pbKKc=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -122,7 +122,7 @@
 		</data>
 		<key>Resources/frontend/snapshot-validation.js</key>
 		<data>
-		dadHYxIHAnQfIRh9WoSmIo4Vkac=
+		voSQjt75lVUhyVmKyoIALnHwX1U=
 		</data>
 		<key>Resources/frontend/source-spotlight.js</key>
 		<data>
@@ -150,7 +150,7 @@
 		</data>
 		<key>Resources/frontend/topic-semantic.js</key>
 		<data>
-		1J94jFaJ6vIYYdC7SBkYGtx1EIE=
+		tlIFd2e69AlYAudil9HPPI8XQwE=
 		</data>
 		<key>Resources/frontend/video-metadata.js</key>
 		<data>
@@ -170,7 +170,7 @@
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
-		b4eB0I85fbAOe1EDtldZIQ/ffRc=
+		/sQRuc0Vh70+YvE6pOrJpyZhJhA=
 		</data>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<data>
@@ -205,7 +205,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			mCNpA/aYCViXrstVsfmISohOmhYfMJgDUjjcIUtIK00=
+			qv2kUAjel2P0bvVZJQKZCGdhzmollxFNnYaVI/oGXKU=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -394,7 +394,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ZCA2wiKRp52cbbUjk3K+L17etoOjMaIzELzrSHUzIBo=
+			BH1P/rZyrDXVZpdrwW9UPWn18Y4eugun4DhhomKwCEY=
 			</data>
 		</dict>
 		<key>Resources/frontend/source-spotlight.js</key>
@@ -443,7 +443,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			xLM7+xGFYXXgPPvpEcjpaoCUauNmGGwnsEnUCgsYOJE=
+			9m3T/ZqjtfWVp0j/DX6yb6GVEI7gC7m/fGU97hel6MA=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-metadata.js</key>
@@ -478,7 +478,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			K8hUuybETeRMfjzfJTJMPx47gNF61YRH73CgN6STP9Y=
+			L5I1aHuvx2gXqY85P3PFA5ZCb75J9BwDZZTBYhduC5o=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>

@@ -15,6 +15,10 @@ public enum SnapshotValidation {
         guard let value = value as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else { return false }
         return value.doubleValue.isFinite
     }
+    private static func integer(_ value: Any?) -> Bool {
+        guard number(value), let value = value as? NSNumber else { return false }
+        return value.doubleValue.rounded(.towardZero) == value.doubleValue
+    }
     private static func boolean(_ value: Any?) -> Bool {
         guard let value = value as? NSNumber else { return false }
         return CFGetTypeID(value) == CFBooleanGetTypeID()
@@ -67,6 +71,17 @@ public enum SnapshotValidation {
                   ["liked", "saved", "known", "moreLike", "lessLike", "surprise", "questionDetailed", "answerDetailed"].allSatisfy({ optional(card[$0], boolean) }),
                   ["sentenceCount", "difficulty", "obscurity"].allSatisfy({ optional(card[$0], number) }), optional(card["createdAt"], { $0 is String }),
                   optional(card["answerSources"], { ($0 as? [Any])?.allSatisfy(source) == true }),
+                  optional(card["learnMoreSources"], { ($0 as? [Any])?.allSatisfy(source) == true }),
+                  optional(card["chronology"], { raw in
+                      guard let chronology = object(raw), let fingerprint = chronology["fingerprint"] as? String,
+                            fingerprint.range(of: "^[a-f0-9]{16}$", options: .regularExpression) != nil,
+                            let events = chronology["events"] as? [[String: Any]], events.count <= 12 else { return false }
+                      return events.allSatisfy { event in
+                          guard text(event["dateText"]), text(event["eventText"]), let anchor = object(event["anchor"]),
+                                ["title", "hook", "body"].contains(anchor["field"] as? String ?? "") else { return false }
+                          return optional(anchor["sentenceIndex"], integer)
+                      }
+                  }),
                   optional(card["questionHistory"], { raw in
                       (raw as? [[String: Any]])?.allSatisfy { ["user", "assistant"].contains($0["role"] as? String ?? "") && $0["content"] is String } == true
                   }), optional(card["evidence"], { raw in

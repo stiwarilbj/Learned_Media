@@ -5,7 +5,7 @@ import {test} from 'node:test';
 import vm from 'node:vm';
 const require=createRequire(import.meta.url),Module=require('node:module'),ts=require('typescript');
 Module._extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,f);
-const engine=require('../lib/topic-suggestions.ts'),{createDefaultTopics}=require('../lib/demo-data.ts'),{flattenTopics}=require('../lib/topic-catalog.ts');
+const engine=require('../lib/topic-suggestions.ts'),{createDefaultTopics}=require('../lib/demo-data.ts'),{flattenTopics,migrateTopicTree}=require('../lib/topic-catalog.ts');
 const topics=flattenTopics(createDefaultTopics()),index=engine.createTopicSuggestionIndex(topics);
 const labels=r=>r.suggestions.map(s=>s.label),matched=r=>r.matchedIds.map(id=>index.byId.get(id).topic.label);
 test('paraphrases match meaning in dropdown and tree without original words',()=>{const r=engine.searchTopicIndex(index,'why does the ground shake');assert.ok(r.completeCoverage);assert.ok(matched(r).includes('Earthquakes'));assert.equal(r.suggestions.length,100);assert.equal(new Set(r.suggestions.map(s=>s.id)).size,100);assert.ok(r.suggestions.every(s=>s.group!=='keyword'));assert.ok(r.visibleIds.length>r.matchedIds.length);});
@@ -14,6 +14,36 @@ test('AND coverage, partial recommendations and whole either/or clauses are dist
 test('unrelated input uses Explore more and cannot appear in tree',()=>{const r=engine.searchTopicIndex(index,'zzzyxq');assert.equal(r.suggestions.length,100);assert.ok(r.suggestions.every(s=>s.group==='explore'));assert.equal(r.visibleIds.length,0);assert.equal(r.completeCoverage,false);assert.equal(engine.shouldEnrichTopics('zzzyxq',false),false);assert.equal(engine.shouldEnrichTopics('unknown meaningful phrase',false),true);assert.equal(engine.shouldEnrichTopics('ground shaking',true),false);});
 test('keywords remain first and accents/capitalization/whitespace retain ordering',()=>{const a=engine.searchTopicIndex(index,'earthquake');assert.ok(a.suggestions[0].group==='keyword');const firstRelated=a.suggestions.findIndex(s=>s.group==='related');assert.ok(firstRelated<=10);assert.deepEqual(engine.searchTopicIndex(index,'  EARTHQUAKE  ').suggestions,a.suggestions);assert.deepEqual(engine.searchTopicIndex(index,'Tohoku').suggestions,engine.searchTopicIndex(index,'Tōhoku').suggestions);assert.ok(engine.searchTopicIndex(index,'tectonic').completeCoverage);});
 test('custom topics and parent paths share the same index and contain no fact slots',()=>{const custom={id:'custom',label:'Quantum Gardens',path:['Custom','Quantum Gardens'],aliases:['imaginary horticulture'],custom:true};const r=engine.searchTopicIndex(engine.createTopicSuggestionIndex([...topics,custom]),'imaginary horticulture');assert.equal(r.suggestions[0].id,'custom');assert.ok(r.matchedIds.includes('custom'));assert.equal(r.suggestions.length,100);});
+test('custom topic IDs preserve punctuation-distinct labels and normalized duplicates',()=>{
+ const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ for(const search of [engine,scope.LEARNED_MEDIA_TOPIC_SEARCH]) {
+  const ids=[];
+  const plus=search.createCustomTopicId('C++',ids);ids.push(plus);
+  const hash=search.createCustomTopicId('C#',ids);ids.push(hash);
+  assert.notEqual(plus,hash);
+  const labels=[{id:plus,label:'C++',custom:true},{id:hash,label:'C#',custom:true}];
+  assert.equal(new Set(labels.map(topic=>search.normalizeCustomTopicLabel(topic.label))).size,2);
+  assert.equal(search.normalizeCustomTopicLabel('  Ｃ++  '),search.normalizeCustomTopicLabel('c++'));
+  assert.equal(search.normalizeCustomTopicLabel('Topic   Name'),search.normalizeCustomTopicLabel('topic name'));
+  const next=search.createCustomTopicId('C#',ids);
+  assert.notEqual(next,plus);
+  assert.notEqual(next,hash);
+ }
+});
+test('legacy custom-topic migration preserves available IDs and repairs slug collisions',()=>{
+ const migrated=migrateTopicTree([
+  {id:'custom-probe-pair',label:'Probe+Pair',selected:true,expanded:false,weight:10,custom:true},
+  {id:'custom-probe-pair',label:'Probe Pair',selected:true,expanded:false,weight:10,custom:true},
+  {id:'custom-unicode',label:'  Ｆull Width  ',selected:false,expanded:false,weight:10,custom:true},
+  {id:'custom-lower',label:'full width',selected:true,expanded:false,weight:10,custom:true}
+ ]);
+ const custom=flattenTopics(migrated).filter(topic=>topic.custom);
+ assert.deepEqual(custom.slice(-3).map(topic=>topic.label),['Probe+Pair','Probe Pair','  Ｆull Width  ']);
+ assert.equal(custom.at(-3).id,'custom-probe-pair');
+ assert.notEqual(custom.at(-3).id,custom.at(-2).id);
+ assert.equal(custom.at(-2).id,'custom-probe-pair-2');
+ assert.equal(custom.filter(topic=>engine.normalizeCustomTopicLabel(topic.label)==='full width').length,1);
+});
 test('structured interpretations preserve each required idea and bound malformed output',()=>{const plan=engine.validateTopicPlan({groups:[{label:'quakes',equivalents:['earthquakes'],related:['volcanoes']},{label:'Japan',equivalents:['Japan'],related:[]}],alternatives:false});const r=engine.searchTopicIndex(index,'unrecognized wording',plan);assert.ok(matched(r).includes('2011 Tōhoku Earthquake'));assert.ok(!matched(r).includes('Japan'));assert.deepEqual(engine.validateTopicPlan({groups:[null,{equivalents:[1,'', 'x'.repeat(121)]}]}).groups,[]);assert.equal(engine.validateTopicPlan({groups:Array(20).fill({equivalents:Array(30).fill('earthquake'),related:[]})}).groups.length,8);});
 test('shared generated Mac engine has identical matching, ordering and visibility',()=>{const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);const native=scope.LEARNED_MEDIA_TOPIC_SEARCH,nativeIndex=native.createTopicSuggestionIndex(topics);for(const q of ['why does the ground shake','earthquakes in Japan','how people think','zzzyxq'])assert.deepEqual(JSON.parse(JSON.stringify(native.searchTopicIndex(nativeIndex,q))),engine.searchTopicIndex(index,q));});
 test('yielding fallback cancels stale work and agrees with synchronous ranking',async()=>{let current=true;const pending=engine.searchTopicIndexYielding(index,'ground shaking',[],()=>current);current=false;assert.equal(await pending,null);const r=await engine.searchTopicIndexYielding(index,'ground shaking');assert.deepEqual(r,engine.searchTopicIndex(index,'ground shaking'));});

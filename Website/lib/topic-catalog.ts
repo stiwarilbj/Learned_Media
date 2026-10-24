@@ -9,6 +9,7 @@ import { buildCompaniesTopic } from "./company-history-catalog";
 import { buildMoviesTopic } from "./movie-catalog";
 import { buildTelevisionMusicSportsTopics } from "./television-music-sports-catalog";
 import { buildGeologyTopic, buildHumanOriginsTopic, buildOrganismsTopic } from "./history-science-taxonomy-catalog";
+import { createCustomTopicId, normalizeCustomTopicLabel } from "./topic-suggestions";
 
 export const TOPIC_CATALOG_VERSION = 28;
 
@@ -696,8 +697,12 @@ export function migrateTopicTree(saved: TopicNode[] | undefined, collapseInitial
     if (seriesParentPath && !legacySeriesParents.has(seriesParentPath)) legacySeriesParents.set(seriesParentPath, { selected: Boolean(oldTopic.selected), weight: oldTopic.weight });
     if (migratedPath) return;
     if (oldTopic.custom || oldTopic.selected) {
-      const customKey = oldTopic.label.toLowerCase();
-      if (!missingCustom.has(customKey)) missingCustom.set(customKey, { id: `custom-${slug(oldTopic.label)}`, label: oldTopic.label, selected: oldTopic.selected, expanded: false, weight: oldTopic.weight || 10, custom: true });
+      const customKey = normalizeCustomTopicLabel(oldTopic.label);
+      if (!missingCustom.has(customKey)) {
+        const occupiedIds = new Set([...byId.keys(), ...Array.from(missingCustom.values(), (topic) => topic.id)]);
+        const preservedId = oldTopic.custom && oldTopic.id && !occupiedIds.has(oldTopic.id) ? oldTopic.id : undefined;
+        missingCustom.set(customKey, { id: preservedId ?? createCustomTopicId(oldTopic.label, occupiedIds), label: oldTopic.label, selected: oldTopic.selected, expanded: false, weight: oldTopic.weight || 10, custom: true });
+      }
     }
   });
   legacySeriesParents.forEach((legacy, path) => {

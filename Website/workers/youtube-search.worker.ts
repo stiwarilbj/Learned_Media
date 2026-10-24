@@ -102,6 +102,10 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
   } else if (request.type === "update") {
     indexEpoch++;
     if (revision < 0 || request.baseRevision !== revision) {
+      const staleRequestId = activeRequestId;
+      activeRequestId = 0;
+      latestRequestId += 1;
+      if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision: request.revision } satisfies Reply);
       workerScope.postMessage({ type: "rebuild", revision: request.revision } satisfies Reply);
       return;
     }

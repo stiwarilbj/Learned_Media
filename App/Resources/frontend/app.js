@@ -26,6 +26,7 @@
   const factNovelty = window.LEARNED_MEDIA_FACT_NOVELTY;
   let factNoveltyIndex = null;
   let factNoveltyIndexSource = null;
+  let legacyYoutubeRecencyPreferences = Object.assign({}, window.LEARNED_MEDIA_YOUTUBE.DEFAULT_RECENCY_PREFERENCES || {});
   const cardChronology = window.LEARNED_MEDIA_CARD_CHRONOLOGY;
   const cardLocations = window.LEARNED_MEDIA_CARD_LOCATIONS;
   const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
@@ -246,6 +247,7 @@
   let setupCustomizeOpen = false;
   let feedCustomizeOpen = false;
   let topicSearchExpansionSuppressed = false;
+  const topicSearchExpansionOverrides = new Map();
   let youtubeSyncActive = false;
   let youtubeSearchToken = 0;
   let searchInterpretToken = 0;
@@ -607,8 +609,13 @@
         }
         if (migratedPath) return;
         if (!(oldTopic.custom || oldTopic.selected)) return;
-        const key = oldTopic.label.toLowerCase();
-        if (!customs.has(key)) customs.set(key, { id: "custom-" + slug(oldTopic.label), label: oldTopic.label, selected: Boolean(oldTopic.selected), expanded: false, weight: oldTopic.weight || 10, custom: true });
+        const key = topicSemantic.normalizeCustomTopicLabel(oldTopic.label);
+        if (!customs.has(key)) {
+          const occupiedIds = new Set(Array.from(byId.keys()).concat(Array.from(customs.values(), function (topic) { return topic.id; })));
+          const preservedId = oldTopic.custom && oldTopic.id && oldTopic.id.indexOf("custom-") === 0 && !occupiedIds.has(oldTopic.id) ? oldTopic.id : null;
+          const id = preservedId || topicSemantic.createCustomTopicId(oldTopic.label, occupiedIds);
+          customs.set(key, { id: id, label: oldTopic.label, selected: Boolean(oldTopic.selected), expanded: false, weight: oldTopic.weight || 10, custom: true });
+        }
       }
     });
     legacySeriesParents.forEach(function (legacy, path) {
@@ -649,12 +656,20 @@
   }
   function youtubeActivity(workspace) {
     const source = workspace || state.youtube;
-    return { savedIds: source.savedIds || [], history: source.history || [], playbackPositions: source.playbackPositions || {}, searchText: source.searchText || "", smartIds: source.smartIds || null, smartReasons: source.smartReasons || {}, smartRan: Boolean(source.smartRan), topic: source.topic || "All", tab: source.tab || "discover", selectedChannelId: source.selectedChannelId || null, selectedVideoId: source.selectedVideoId || null, discoverIds: source.discoverIds || [], order: source.order || "newest" };
+    return { savedIds: source.savedIds || [], history: source.history || [], playbackPositions: source.playbackPositions || {}, searchText: source.searchText || "", smartIds: source.smartIds || null, smartReasons: source.smartReasons || {}, smartRan: Boolean(source.smartRan), topic: source.topic || "All", tab: source.tab || "discover", selectedChannelId: source.selectedChannelId || null, selectedVideoId: source.selectedVideoId || null, discoverIds: source.discoverIds || [], order: source.order || "newest", prioritizeRecentByChannel: Object.assign({}, window.LEARNED_MEDIA_YOUTUBE.DEFAULT_RECENCY_PREFERENCES || {}, source.prioritizeRecentByChannel || {}) };
   }
-  function applyYoutubeActivity(activity) {
-    if (!activity) return;
-    const mapped = Object.assign({}, activity, { topic: activity.topic || activity.selectedTopic || "All", tab: activity.tab || activity.activeTab || "discover", order: activity.order || activity.channelOrder || "newest" });
-    state.youtube = Object.assign({}, state.youtube, mapped, { savedIds: mapped.savedIds || [], history: mapped.history || [], playbackPositions: mapped.playbackPositions || {} });
+  function applyYoutubeActivity(activity, legacyPreferences) {
+    const source = activity || {};
+    const mapped = Object.assign({}, source, {
+      topic: source.topic || source.selectedTopic || "All",
+      tab: source.tab || source.activeTab || "discover",
+      order: source.order || source.channelOrder || "newest",
+      savedIds: source.savedIds || [], history: source.history || [], playbackPositions: source.playbackPositions || {},
+      searchText: source.searchText || "", smartIds: source.smartIds || null, smartReasons: source.smartReasons || {}, smartRan: Boolean(source.smartRan),
+      selectedChannelId: source.selectedChannelId || null, selectedVideoId: source.selectedVideoId || null, discoverIds: source.discoverIds || [],
+      prioritizeRecentByChannel: Object.assign({}, window.LEARNED_MEDIA_YOUTUBE.DEFAULT_RECENCY_PREFERENCES || {}, legacyYoutubeRecencyPreferences, legacyPreferences || {}, source.prioritizeRecentByChannel || {})
+    });
+    state.youtube = Object.assign({}, state.youtube, mapped);
   }
   function currentWorkspaceSnapshot() {
     return { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), topics: state.topics, settings: Object.assign({}, state.settings, { sentenceLength: normalizeSentenceLength(state.settings.sentenceLength) }), cards: state.cards, profile: state.profile, started: state.started, youtubeActivity: youtubeActivity() };
@@ -897,6 +912,7 @@
     normalized.followUpQuestions = Array.isArray(card.followUpQuestions)
       ? cardFollowUps.createSavedFollowUpQuestions(card.followUpQuestions, normalized)
       : cardFollowUps.normalizeSavedFollowUpQuestions(card.followUpQuestions, normalized);
+    normalized.learnMoreSources = Array.isArray(card.learnMoreSources) ? card.learnMoreSources : card.learnMore && !card.answer ? (card.answerSources || undefined) : undefined;
     return normalized;
   }
   function wikipediaEvidenceLink(url, quote) {
@@ -1622,12 +1638,15 @@
     return panel;
   }
   function sourceList(card, answer) {
-    const sources = (answer ? card.answerSources : card.sources) || [];
-    const list = node("div", { className: answer ? "answer-sources" : "fact-sources" });
-    list.appendChild(node("span", { text: answer ? "Sources" : "Wikipedia sources" }));
+    const isAnswer = answer === true;
+    const isLearnMore = answer === "learnMore";
+    const hasAnswerStyle = isAnswer || isLearnMore;
+    const sources = (isLearnMore ? card.learnMoreSources : isAnswer ? card.answerSources : card.sources) || [];
+    const list = node("div", { className: hasAnswerStyle ? "answer-sources" : "fact-sources" });
+    list.appendChild(node("span", { text: hasAnswerStyle ? "Sources" : "Wikipedia sources" }));
     const links = node("div", { className: "source-links" });
     sources.slice(0, 3).forEach(function (source, sourceIndex) {
-      if (answer) { links.appendChild(externalLink(source.url || wikiURL(source.title), source.title || "Wikipedia")); return; }
+      if (hasAnswerStyle) { links.appendChild(externalLink(source.url || wikiURL(source.title), source.title || "Wikipedia")); return; }
       const sourceControl = node("span", { className: "source-link-controls" });
       const model = sourceSpotlight.buildSourceSpotlightModel(card);
       const hasEvidence = model.groups.some(function (groups) { return groups.some(function (group) { return group.sourceIndex === sourceIndex; }); });
@@ -1671,7 +1690,18 @@
     return card;
   }
   function youtubeList(videos) {
-    if (!videos.length) return node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("search", 24)), node("h2", { text: "No approved videos match that yet" }), node("p", { text: "Try another phrase, topic, or channel. Search stays inside the approved collection." }));
+    if (!videos.length) {
+      const empty = state.youtube.tab === "saved"
+        ? ["No saved videos yet", "Save a video from Discover or a channel and it will appear here.", "bookmark"]
+        : state.youtube.tab === "history"
+          ? ["No watch history yet", "Videos you open will appear here so you can pick up where you left off.", "history"]
+          : state.youtube.smartRan
+            ? ["No relevant approved videos found", "No match is supported by the approved catalog metadata. Try another phrase or remove a conflicting filter.", "search"]
+            : state.youtube.searchText.trim()
+              ? ["No videos match this search", "Try another phrase or adjust the topic and channel filters.", "search"]
+              : ["No approved videos match that yet", "Try another phrase, topic, or channel. Search stays inside the approved collection.", "search"];
+      return node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg(empty[2], 24)), node("h2", { text: empty[0] }), node("p", { text: empty[1] }));
+    }
     const strong = videos.filter(function(video){return !(state.youtube.smartReasons[video.id] && state.youtube.smartReasons[video.id].relevance === "broader");});
     const broader = videos.filter(function(video){return state.youtube.smartReasons[video.id] && state.youtube.smartReasons[video.id].relevance === "broader";});
     function grid(items){const result=node("div",{className:"video-grid"});items.forEach(function(video){result.appendChild(youtubeVideoCard(video));});return result;}
@@ -1884,13 +1914,40 @@
     setTimeout(automaticYoutubeSearch,0);
     const section = node("section", { className: "content-view video-workspace" });
     if (state.youtube.selectedVideoId) { const selected = state.youtube.videos.find(function (video) { return video.id === state.youtube.selectedVideoId; }); if (selected) return youtubeDetail(selected); }
-    if (state.youtube.selectedChannelId) { const channel = state.youtube.channels.find(function (item) { return item.id === state.youtube.selectedChannelId; }); section.appendChild(node("button", { className: "text-button video-back-button", onClick: function () { cancelYoutubeSearch(); state.youtube.selectedChannelId = null; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; render(); } }, svg("chevronRight", 15), " All channels")); section.appendChild(node("div", { className: "view-heading video-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Channel catalog" }), node("h1", { text: channel ? channel.name : "Channel" }), node("p", { text: channel ? channel.videoCount.toLocaleString() + " imported videos from this approved channel" : "" })))); const controls = node("div", { className: "video-controls" }); controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { id: "youtube-search", value: state.youtube.searchText, placeholder: "Search this channel", ariaLabel: "Search this channel", onKeydown: function(event){if(event.key==="Enter"){event.preventDefault();void youtubeSmartSearch(false);}}, onInput: function (event) { changeVideoSearch(event.target.value); } }))); controls.appendChild(node("button", { className: "ghost-button", disabled: Boolean(state.youtubeSmartLoading) || !state.youtube.searchText.trim(), onClick: function(){void youtubeSmartSearch(false);} }, state.youtubeSmartLoading ? "Searching" : "Smart search")); controls.appendChild(node("select", { value: state.youtube.order, ariaLabel: "Sort channel videos", onChange: function (event) { state.youtube.order = event.target.value; render(); } }, node("option", { value: "relevance", text: "Relevance" }), node("option", { value: "newest", text: "Newest" }), node("option", { value: "oldest", text: "Oldest" }), node("option", { value: "random", text: "Random" }))); section.appendChild(controls); if (state.youtubeSmartLoading) section.appendChild(node("div", { className: "video-search-progress", role: "status" }, node("span", { text: state.youtubeSearchPhase === "interpreting" ? "Understanding your search" : state.youtubeSearchPhase === "expanding" ? "Looking more broadly" : "Checking matches" }), node("button", { className: "text-button", onClick: function(){cancelYoutubeSearch();render();} }, "Cancel"))); if (state.youtubeSearchPhase === "error" && state.youtubeSearchError) section.appendChild(node("p", { className: "video-search-error", text: state.youtubeSearchError })); section.appendChild(youtubeList(youtubeFilteredVideos())); return section; }
-    section.appendChild(node("div", { className: "view-heading video-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Learned Media Videos" }), node("h1", { text: state.youtube.tab === "saved" ? "Saved videos" : state.youtube.tab === "history" ? "Watch history" : "A calmer way to find something good." }), node("p", { text: "Discover approved creators, search their imported catalogs, and watch without leaving your workspace." })), node("div", { className: "video-heading-actions" }, node("button", { className: "secondary-button", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: function () { youtubeConnect(true); } }, svg("reset", 15), " Refresh videos"), node("button", { className: "secondary-button", disabled: !state.youtube.videos.length, onClick: function () { state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; }); state.youtube.tab = "discover"; render(); } }, svg("reset", 15), " Shuffle"), node("button", { className: "primary-button small", disabled: !state.youtube.videos.length || Boolean(state.youtube.searchText.trim() && !youtubeSearchHasMore), onClick: showMoreYoutube }, svg("plus", 15), " Show more"))));
+    if (state.youtube.selectedChannelId) {
+      const channel = state.youtube.channels.find(function (item) { return item.id === state.youtube.selectedChannelId; });
+      section.appendChild(node("button", { className: "text-button video-back-button", onClick: function () { cancelYoutubeSearch(); state.youtube.selectedChannelId = null; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; render(); } }, svg("chevronRight", 15), " All channels"));
+      section.appendChild(node("div", { className: "view-heading video-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Channel catalog" }), node("h1", { text: channel ? channel.name : "Channel" }), node("p", { text: channel ? channel.videoCount.toLocaleString() + " imported videos from this approved channel" : "" }))));
+      const controls = node("div", { className: "video-controls" });
+      controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { id: "youtube-search", value: state.youtube.searchText, placeholder: "Search this channel", ariaLabel: "Search this channel", onKeydown: function(event){if(event.key==="Enter"){event.preventDefault();void youtubeSmartSearch(false);}}, onInput: function (event) { changeVideoSearch(event.target.value); } })));
+      controls.appendChild(node("button", { className: "ghost-button", disabled: Boolean(state.youtubeSmartLoading) || !state.youtube.searchText.trim(), onClick: function(){void youtubeSmartSearch(false);} }, state.youtubeSmartLoading ? "Searching" : "Smart search"));
+      controls.appendChild(node("select", { value: state.youtube.order, ariaLabel: "Sort channel videos", onChange: function (event) { state.youtube.order = event.target.value; render(); } }, node("option", { value: "relevance", text: "Relevance" }), node("option", { value: "newest", text: "Newest" }), node("option", { value: "oldest", text: "Oldest" }), node("option", { value: "random", text: "Random" })));
+      section.appendChild(controls);
+      if (state.youtubeSmartLoading) section.appendChild(node("div", { className: "video-search-progress", role: "status" }, node("span", { text: state.youtubeSearchPhase === "interpreting" ? "Understanding your search" : state.youtubeSearchPhase === "expanding" ? "Looking more broadly" : "Checking matches" }), node("button", { className: "text-button", onClick: function(){cancelYoutubeSearch();render();} }, "Cancel")));
+      if (state.youtubeSearchPhase === "error" && state.youtubeSearchError) section.appendChild(node("p", { className: "video-search-error", text: state.youtubeSearchError }));
+      section.appendChild(youtubeList(youtubeFilteredVideos()));
+      if (state.youtube.searchText.trim() && youtubeSearchHasMore) section.appendChild(node("div", { className: "video-show-more" }, node("button", { className: "small-load-button", disabled: youtubeSearchPaging || state.youtubeSmartLoading, onClick: showMoreYoutube }, "Show more matching videos")));
+      return section;
+    }
+    const videoHeading = node("div", { className: "view-heading video-heading" });
+    const videoHeadingCopy = node("div", {});
+    videoHeadingCopy.appendChild(node("span", { className: "eyebrow", text: "Learned Media Videos" }));
+    videoHeadingCopy.appendChild(node("h1", { text: state.youtube.tab === "saved" ? "Saved videos" : state.youtube.tab === "history" ? "Watch history" : "A calmer way to find something good." }));
+    videoHeadingCopy.appendChild(node("p", { text: state.youtube.tab === "saved" ? "The videos you saved for another time." : state.youtube.tab === "history" ? "Videos you have opened in this workspace." : "Discover approved creators, search their imported catalogs, and watch without leaving your workspace." }));
+    videoHeading.appendChild(videoHeadingCopy);
+    if (state.youtube.tab === "discover") {
+      const headingActions = node("div", { className: "video-heading-actions" });
+      headingActions.appendChild(node("button", { className: "secondary-button", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: function () { youtubeConnect(true); } }, svg("reset", 15), " Refresh videos"));
+      headingActions.appendChild(node("button", { className: "secondary-button", disabled: !state.youtube.videos.length, onClick: function () { state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; }); state.youtube.tab = "discover"; render(); } }, svg("reset", 15), " Shuffle"));
+      headingActions.appendChild(node("button", { className: "primary-button small", disabled: !state.youtube.videos.length || Boolean(state.youtube.searchText.trim() && !youtubeSearchHasMore), onClick: showMoreYoutube }, svg("plus", 15), " Show more"));
+      videoHeading.appendChild(headingActions);
+    }
+    section.appendChild(videoHeading);
     if ((state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing" || state.youtubeStatus === "error" || state.youtube.incomplete) && state.youtubeProgress.phase !== "idle") section.appendChild(youtubeImportNotice());
     const tabs = node("div", { className: "video-tabs", role: "tablist" }); [["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]].forEach(function (item) { tabs.appendChild(node("button", { className: state.youtube.tab === item[0] ? "active" : "", role: "tab", ariaSelected: state.youtube.tab === item[0], onClick: function () { state.youtube.tab = item[0]; state.youtube.selectedChannelId = null; state.youtube.selectedVideoId = null; render(); } }, item[1], item[0] === "saved" && state.youtube.savedIds.length ? " " + state.youtube.savedIds.length : "")); }); section.appendChild(tabs);
     if (state.youtube.tab === "discover") { const controls = node("div", { className: "video-controls" }); controls.appendChild(node("label", { className: "video-search" }, svg("search", 16), node("input", { id: "youtube-search", value: state.youtube.searchText, placeholder: "Search approved videos", ariaLabel: "Search approved videos", onKeydown: function(event){if(event.key==="Enter"){event.preventDefault();void youtubeSmartSearch(false);}}, onInput: function (event) { changeVideoSearch(event.target.value); } }))); controls.appendChild(node("button", { className: "ghost-button", disabled: Boolean(state.youtubeSmartLoading) || !state.youtube.searchText.trim(), onClick: function(){void youtubeSmartSearch(false);} }, state.youtubeSmartLoading ? "Searching" : "Smart search")); if (state.youtubeSmartLoading) controls.appendChild(node("button", { className: "text-button", onClick: function(){cancelYoutubeSearch();render();} }, "Cancel")); section.appendChild(controls); if (state.youtubeSearchPhase === "error" && state.youtubeSearchError) section.appendChild(node("p", { className: "video-search-error", text: state.youtubeSearchError })); const filters = node("div", { className: "video-topic-filters" }); ["All"].concat(window.LEARNED_MEDIA_YOUTUBE.TOPICS).forEach(function (topic) { filters.appendChild(node("button", { className: state.youtube.topic === topic ? "active" : "", onClick: function () { if (state.youtubeSmartLoading) cancelYoutubeSearch(); state.youtube.topic = topic; state.youtube.smartRan = false; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtubeSearchError = ""; state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; }); render(); } }, topic === "All" ? "All topics" : topic)); }); section.appendChild(filters); }
     if (state.youtube.tab === "channels") { if (state.youtube.channels.length) { const channels = node("div", { className: "channel-grid" }); state.youtube.channels.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (channel) { channels.appendChild(node("button", { className: "channel-card", onClick: function () { youtubeOpenChannel(channel.id); } }, channel.thumbnailUrl ? node("img", { src: channel.thumbnailUrl, alt: "" }) : node("span", { className: "channel-avatar", text: channel.name.slice(0, 1) }), node("span", {}, node("strong", { text: channel.name }), node("small", { text: channel.videoCount.toLocaleString() + " videos" })), svg("chevronRight", 17))); }); section.appendChild(channels); } else section.appendChild(node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("image", 24)), node("h2", { text: "Connect YouTube to start discovering" }), node("p", { text: "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos." }), node("button", { className: "primary-button", onClick: function () { state.view = "settings"; render(); } }, "Open video settings"))); }
-    else if (state.youtube.videos.length) section.appendChild(youtubeList(youtubeFilteredVideos()));
+    else if (state.youtube.videos.length || state.youtube.tab === "saved" || state.youtube.tab === "history") section.appendChild(youtubeList(youtubeFilteredVideos()));
     else section.appendChild(node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg("image", 24)), node("h2", { text: "Connect YouTube to start discovering" }), node("p", { text: "Paste your own YouTube Data API key in Settings. The catalog stays limited to approved creators and videos." }), node("button", { className: "primary-button", onClick: function () { state.view = "settings"; render(); } }, "Open video settings")));
     return section;
   }
@@ -1927,15 +1984,16 @@
     const hasChildren = Boolean(topic.children && topic.children.length);
     const selection = selectionState(topic);
     const searchExpanded = Boolean(query && topicTreeAncestors.has(topic.id));
-    const childrenVisible = hasChildren && (topic.expanded || (searchExpanded && !topicSearchExpansionSuppressed));
+    const searchOverride = topicSearchExpansionOverrides.get(topic.id);
+    const childrenVisible = hasChildren && (query ? searchOverride === undefined ? (!topicSearchExpansionSuppressed && (topic.expanded || searchExpanded)) : searchOverride : topic.expanded);
     const branchWrap = node("div", { className: "topic-branch" });
     const row = node("div", { className: "topic-row" + (depth === 0 ? " root-row" : "") + (!hasChildren ? " leaf-row" : "") + (topic.custom ? " custom-row" : "") + " selection-" + selection, dataset: { topicId: topic.id }, onClick: function (event) { if (event.target.closest && event.target.closest("button")) return; toggleTopicSelection(topic.id); saveState(); render(); } });
     row.style.paddingLeft = Math.min(depth, 5) * 20 + 4 + "px";
-    row.appendChild(node("button", { className: "topic-expand", disabled: !hasChildren, ariaLabel: (childrenVisible ? "Hide" : "Show") + " subtopics for " + topic.label, ariaExpanded: hasChildren ? childrenVisible : undefined, dataset: { topicId: topic.id }, onClick: function () { if (!hasChildren) return; topic.expanded = !topic.expanded; saveState(); render(); } }, hasChildren ? svg(childrenVisible ? "chevronDown" : "chevronRight", 15) : null));
+    row.appendChild(node("button", { className: "topic-expand", disabled: !hasChildren, ariaLabel: (childrenVisible ? "Hide" : "Show") + " subtopics for " + topic.label, ariaExpanded: hasChildren ? childrenVisible : undefined, dataset: { topicId: topic.id }, onClick: function () { if (!hasChildren) return; setTopicBranchExpanded(topic, query, !childrenVisible); } }, hasChildren ? svg(childrenVisible ? "chevronDown" : "chevronRight", 15) : null));
     row.appendChild(node("button", { className: "topic-check" + (selection === "selected" ? " checked" : "") + (selection === "mixed" ? " mixed" : ""), ariaLabel: (selection === "selected" ? "Deselect " : "Select ") + topic.label, ariaPressed: selection === "selected", dataset: { topicId: topic.id }, onClick: function () { toggleTopicSelection(topic.id); saveState(); render(); } }, selection === "selected" ? svg("check", 14) : selection === "mixed" ? node("span", { className: "topic-check-dash" }) : null));
     const nameWrap = node("div", { className: "topic-name-wrap" + (selection === "none" ? " unselected" : "") });
     nameWrap.appendChild(node("span", { className: "topic-name" + (selection === "selected" ? " selected" : ""), text: topic.label }));
-    if (hasChildren) nameWrap.appendChild(node("button", { className: "topic-subtopics-toggle", ariaExpanded: childrenVisible, dataset: { topicId: topic.id }, onClick: function () { topic.expanded = !topic.expanded; saveState(); render(); } }, childrenVisible ? "Hide Subtopics" : "Show Subtopics"));
+    if (hasChildren) nameWrap.appendChild(node("button", { className: "topic-subtopics-toggle", ariaExpanded: childrenVisible, dataset: { topicId: topic.id }, onClick: function () { setTopicBranchExpanded(topic, query, !childrenVisible); } }, childrenVisible ? "Hide Subtopics" : "Show Subtopics"));
     row.appendChild(nameWrap);
     if (topic.custom) {
       const customActions = node("span", { className: "custom-topic-actions" });
@@ -1957,10 +2015,16 @@
     }
     return branchWrap;
   }
+  function setTopicBranchExpanded(topic, query, expanded) {
+    if (query) topicSearchExpansionOverrides.set(topic.id, Boolean(expanded));
+    else topic.expanded = Boolean(expanded);
+    saveState();
+    render();
+  }
   function topicTree() {
     const picker = node("div", { className: "topic-tree-picker" });
     const actions = node("div", { className: "topic-tree-actions" });
-    actions.appendChild(node("button", { className: "topic-tree-collapse-button", ariaLabel: "Collapse all topic branches", onClick: function () { topicSearchExpansionSuppressed = true; state.topics = collapseTopicBranches(state.topics); saveState(); render(); } }, "Collapse all"));
+    actions.appendChild(node("button", { className: "topic-tree-collapse-button", ariaLabel: "Collapse all topic branches", onClick: function () { topicSearchExpansionSuppressed = true; topicSearchExpansionOverrides.clear(); state.topics = collapseTopicBranches(state.topics); saveState(); render(); } }, "Collapse all"));
     picker.appendChild(actions);
     const tree = node("div", { className: "topic-tree", role: "tree", ariaLabel: "Topic browser" });
     const query = state.topicQuery.trim();
@@ -2025,7 +2089,7 @@
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
     state.profile = difficultyEngine.normalizeLearningProfile(snapshot.profile || snapshot.learningProfile || {}, state.settings.obscurity);
     state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.length);
-    applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube);
+    applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube, snapshot.youtube && snapshot.youtube.prioritizeRecentByChannel);
   }
   function workspaceMenu() {
     const menu = node("div", { className: "workspace-menu", role: "menu" });
@@ -2354,7 +2418,7 @@
               continue;
           popover.appendChild(node("span", { className: "search-group-label", text: group === "keyword" ? "Keyword matches" : group === "related" ? "Related topics" : group === "broader" ? "Broader recommendations" : "Explore more" }));
           for (const entry of entries)
-              popover.appendChild(node("button", { type: "button", title: [entry.explanation].concat(entry.support || []).join("\n"), ariaLabel: entry.path.join(" → "), onClick: function () { state.view = "feed"; state.started = false; state.topicQuery = entry.label; state.query = ""; topicSearchExpansionSuppressed = false; scheduleTopicSearch(state.topicQuery); render(); } }, node("span", { text: entry.path.join(" → ") }), svg("arrow", 14)));
+              popover.appendChild(node("button", { type: "button", title: [entry.explanation].concat(entry.support || []).join("\n"), ariaLabel: entry.path.join(" → "), onClick: function () { const selected = findTopic(entry.id); if (selected && selectionState(selected) !== "selected") toggleTopicSelection(selected.id); state.view = "feed"; state.started = false; state.topicQuery = entry.label; state.query = ""; topicSearchExpansionSuppressed = false; topicSearchExpansionOverrides.clear(); scheduleTopicSearch(state.topicQuery); saveState(); render(); } }, node("span", { text: entry.path.join(" → ") }), svg("arrow", 14)));
       }
       searchWrap.appendChild(popover);
   }
@@ -2507,7 +2571,7 @@
     difficulty.appendChild(node("input", { id: setup ? "setup-difficulty" : "feed-difficulty", type: "range", min: "1", max: "10", step: "1", value: state.settings.obscurity, onInput: function (event) { const next = Number(event.target.value); state.settings.obscurity = next; state.profile = difficultyEngine.resetTopicLearningProfiles(state.profile, next); saveState(); render(); } }));
     difficulty.appendChild(node("span", { className: "range-ends" }, node("span", { text: "A Little Hard" }), node("span", { text: "Impossible" })));
     details.appendChild(difficulty);
-    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { id: "topic-search", value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { cancelPendingSemanticSearch(); state.topicQuery = event.target.value; state.query = ""; topicSearchExpansionSuppressed = false; scheduleTopicSearch(state.topicQuery); render(); } })));
+    details.appendChild(node("div", { className: "topic-list-search" }, svg("search", 14), node("input", { id: "topic-search", value: state.topicQuery, placeholder: "Search topics", ariaLabel: "Search topics", onInput: function (event) { cancelPendingSemanticSearch(); state.topicQuery = event.target.value; state.query = ""; topicSearchExpansionSuppressed = false; topicSearchExpansionOverrides.clear(); scheduleTopicSearch(state.topicQuery); render(); } })));
     details.appendChild(topicTree());
     details.appendChild(customTopicForm(setup ? "custom-topic-form" : "feed-custom-topic"));
     details.appendChild(feedCustomize(setup));
@@ -2728,7 +2792,11 @@
       content.appendChild(panel);
     }
     content.appendChild(sourceList(card, false));
-    if (card.learnMore) content.appendChild(node("div", { className: "learning-answer learn-more-answer" }, node("span", { className: "answer-label" }, svg("sparkles", 14), " Learn more"), node("p", { text: card.learnMore })));
+    if (card.learnMore) {
+      const learnMorePanel = node("div", { className: "learning-answer learn-more-answer" }, node("span", { className: "answer-label" }, svg("sparkles", 14), " Learn more"), node("p", { text: card.learnMore }));
+      if (card.learnMoreSources && card.learnMoreSources.length) learnMorePanel.appendChild(sourceList(card, "learnMore"));
+      content.appendChild(learnMorePanel);
+    }
     if (state.errorByCard[card.id]) content.appendChild(node("p", { className: "learning-error", text: state.errorByCard[card.id] }));
     content.appendChild(questionArea(card));
     article.appendChild(content);
@@ -3170,10 +3238,12 @@
       checkRestoredNativeKey(state.key);
       const catalog = await bridge("loadVideoCatalog", {});
       if (catalog && catalog.videos) {
-        const activity = youtubeActivity();
+        const activeRecord = state.workspaces.find(function (workspace) { return workspace.id === state.workspaceId; });
+        const activity = activeRecord && activeRecord.state && (activeRecord.state.youtubeActivity || activeRecord.state.youtube) || youtubeActivity();
+        legacyYoutubeRecencyPreferences = Object.assign({}, window.LEARNED_MEDIA_YOUTUBE.DEFAULT_RECENCY_PREFERENCES || {}, catalog.prioritizeRecentByChannel || {});
         state.youtube = Object.assign({}, state.youtube, catalog, { catalogVersion: 3, sourceStates: Object.assign({}, catalog.sourceStates || {}) });
         state.youtube.videos = window.LEARNED_MEDIA_YOUTUBE.filter(state.youtube.videos || [], "", "All");
-        applyYoutubeActivity(activity);
+        applyYoutubeActivity(activity, legacyYoutubeRecencyPreferences);
         if (state.youtube.videos.length && !state.youtube.discoverIds.length) {
           state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(state.youtube.videos, 24, []).map(function (video) { return video.id; });
           saveState();
@@ -3193,8 +3263,11 @@
   function addCustomTopic() {
     const label = state.customTopic.trim();
     if (!label) return;
-    const id = "custom-" + slug(label);
-    if (!findTopic(id)) state.topics.push({ id: id, label: label, selected: true, expanded: false, weight: 10, custom: true });
+    const existing = flatTopics();
+    const normalizedLabel = topicSemantic.normalizeCustomTopicLabel(label);
+    if (existing.some(function (topic) { return topicSemantic.normalizeCustomTopicLabel(topic.label) === normalizedLabel; })) { state.toast = "That topic is already in your mix."; render(); return; }
+    const id = topicSemantic.createCustomTopicId(label, existing.map(function (topic) { return topic.id; }));
+    state.topics.push({ id: id, label: label, selected: true, expanded: false, weight: 10, custom: true });
     state.customTopic = "";
     saveState();
     render();
@@ -3514,7 +3587,7 @@
     if (!card || card.learnMore || state.loadingCard) return;
     const learningKey = scopedCacheKey(state.key, ["learn", card.topicPath, card.hook, card.title, card.body, card.claim, (card.sources || []).map(function (source) { return [source.canonicalUrl || source.url, source.extract || ""]; })]);
     const cached = learningResponseCache.get(learningKey);
-    if (cached) { card.learnMore = cached.answer; card.answerSources = cached.citations || []; saveState(); render(); return; }
+    if (cached) { card.learnMore = cached.answer; card.learnMoreSources = cached.citations || []; saveState(); render(); return; }
     const activeToken = generationToken;
     state.loadingCard = id;
     state.errorByCard[id] = "";
@@ -3524,8 +3597,8 @@
       if (activeToken === generationToken) {
         mergeGeminiModelOutcomes(result.modelOutcomes || []);
         card.learnMore = result.answer;
-        card.answerSources = result.citations || [];
-        learningResponseCache.set(learningKey, { answer: card.learnMore, citations: card.answerSources });
+        card.learnMoreSources = result.citations || [];
+        learningResponseCache.set(learningKey, { answer: card.learnMore, citations: card.learnMoreSources });
       }
     } catch (error) {
       state.errorByCard[id] = error.message;

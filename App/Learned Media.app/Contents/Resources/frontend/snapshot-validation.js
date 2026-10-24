@@ -54,6 +54,11 @@ function cardsValid(value) {
             // Older cards use display labels such as "Just now" here.
             || !optional(card.createdAt, v => typeof v === "string")
             || !optional(card.answerSources, v => Array.isArray(v) && v.every(sourceValid))
+            || !optional(card.learnMoreSources, v => Array.isArray(v) && v.every(sourceValid))
+            || !optional(card.chronology, v => object(v) && /^[a-f0-9]{16}$/.test(v.fingerprint) && Array.isArray(v.events) && v.events.length <= 12
+                && v.events.every(item => object(item) && text(item.dateText) && text(item.eventText) && object(item.anchor)
+                    && ["title", "hook", "body"].includes(item.anchor.field)
+                    && optional(item.anchor.sentenceIndex, value => number(value) && Number.isInteger(value))))
             || !optional(card.explanations, v => object(v) && ["simpler", "deeper"].every(mode => optional(v[mode], item => object(item)
                 && text(item.text) && /^[a-f0-9]{16}$/.test(item.fingerprint) && Array.isArray(item.sources) && item.sources.length > 0 && item.sources.every(sourceValid))))
             || !optional(card.glossary, v => object(v) && /^[a-f0-9]{16}$/.test(v.fingerprint) && Array.isArray(v.entries) && v.entries.length <= 3

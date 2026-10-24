@@ -17,7 +17,7 @@ import { findTopicById, TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib
 import { DEFAULT_DIFFICULTY, getTopicLearningProfile, migrateLegacyDifficulty, normalizeDifficulty, normalizeLearningProfile, resetTopicLearningProfiles, recordTopicFeedback } from "@/lib/recommendations";
 import { normalizeSearchText, rankSearchResults } from "@/lib/search";
 import { requestCacheKey, requestCacheScope, SessionCache } from "@/lib/session-cache";
-import { createTopicSuggestionIndex, diffTopicSearchRecords, topicSearchRecords, suggestTopics, shouldEnrichTopics, TOPIC_SEARCH_VERSION, type TopicQueryPlan, type TopicSearchRecord } from "@/lib/topic-suggestions";
+import { createCustomTopicId, normalizeCustomTopicLabel, createTopicSuggestionIndex, diffTopicSearchRecords, topicSearchRecords, suggestTopics, shouldEnrichTopics, TOPIC_SEARCH_VERSION, type TopicQueryPlan, type TopicSearchRecord } from "@/lib/topic-suggestions";
 import { searchTopicsWithYieldingFallback } from "@/lib/topic-search-fallback";
 import type { TopicSearchIndex, TopicSearchWorkerReply } from "@/lib/topic-search-types";
 import { isGitHubPagesRuntime } from "@/lib/runtime";
@@ -26,7 +26,7 @@ import { parseSnapshot, validateSnapshot, writeRecoverySnapshot } from "@/lib/sn
 import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-preferences";
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys, saveAccountKey, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
-import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, importCoordinatedYouTubeCatalog, hasPendingYouTubeImport, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
+import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, isApprovedYouTubeVideo, importCoordinatedYouTubeCatalog, hasPendingYouTubeImport, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, mergeYouTubeRecencyPreferences, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeImportProgress, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
 import { diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVideoRecordsYielding } from "@/lib/video-metadata";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
@@ -34,6 +34,7 @@ import { normalizeSpotlightSources } from "@/lib/source-spotlight";
 import { cardExplanationFingerprint, getCardExplanationSelection, normalizeCardExplanations } from "@/lib/card-explanations";
 import { cardGlossaryFingerprint, normalizeCardGlossary } from "@/lib/card-glossary";
 import { createSavedCardLocations, cardLocationsFingerprint } from "@/lib/card-locations";
+import { createSavedCardChronology, normalizeSavedCardChronology } from "@/lib/card-chronology";
 import { createSavedFollowUpQuestions, normalizeSavedFollowUpQuestions } from "@/lib/card-follow-ups";
 import { clearCardRevealProgress } from "@/lib/card-reveal";
 import { acceptTopicDetourCard, createTopicDetour, markTopicDetourProgress, missingTopicDetourSlots, orderTopicDetourCards, type TopicDetour, type TopicDetourProgress } from "@/lib/topic-detours";
@@ -271,19 +272,25 @@ function youtubeActivityOf(workspace: YouTubeWorkspaceState): YouTubeWorkspaceAc
 }
 
 function applyYouTubeActivity(workspace: YouTubeWorkspaceState, activity?: Partial<YouTubeWorkspaceActivity>): YouTubeWorkspaceState {
-  if (!activity) return workspace;
-  const restored = { ...workspace, ...activity };
+  const restored = { ...workspace, ...(activity ?? {}) };
   const videoIds = new Set(workspace.videos.map((video) => video.id));
   const channelIds = new Set(workspace.channels.map((channel) => channel.id));
   return {
     ...restored,
-    savedIds: (activity.savedIds ?? workspace.savedIds).filter((id) => videoIds.has(id)),
-    history: (activity.history ?? workspace.history).filter((item) => videoIds.has(item.videoId)),
-    playbackPositions: Object.fromEntries(Object.entries(activity.playbackPositions ?? workspace.playbackPositions).filter(([id]) => videoIds.has(id))),
-    discoverIds: (activity.discoverIds ?? workspace.discoverIds).filter((id) => videoIds.has(id)),
-    prioritizeRecentByChannel: activity.prioritizeRecentByChannel ?? workspace.prioritizeRecentByChannel,
-    selectedVideoId: restored.selectedVideoId && videoIds.has(restored.selectedVideoId) ? restored.selectedVideoId : undefined,
-    selectedChannelId: restored.selectedChannelId && channelIds.has(restored.selectedChannelId) ? restored.selectedChannelId : undefined
+    savedIds: (activity?.savedIds ?? []).filter((id) => videoIds.has(id)),
+    history: (activity?.history ?? []).filter((item) => videoIds.has(item.videoId)),
+    playbackPositions: Object.fromEntries(Object.entries(activity?.playbackPositions ?? {}).filter(([id]) => videoIds.has(id))),
+    searchText: activity?.searchText ?? "",
+    selectedTopic: activity?.selectedTopic ?? "All",
+    activeTab: activity?.activeTab ?? "discover",
+    discoverIds: (activity?.discoverIds ?? []).filter((id) => videoIds.has(id)),
+    channelOrder: activity?.channelOrder ?? DEFAULT_YOUTUBE_WORKSPACE.channelOrder,
+    prioritizeRecentByChannel: mergeYouTubeRecencyPreferences(
+      workspace.legacyPrioritizeRecentByChannel ?? {},
+      activity?.prioritizeRecentByChannel ?? {}
+    ),
+    selectedVideoId: activity?.selectedVideoId && videoIds.has(activity.selectedVideoId) ? activity.selectedVideoId : undefined,
+    selectedChannelId: activity?.selectedChannelId && channelIds.has(activity.selectedChannelId) ? activity.selectedChannelId : undefined,
   };
 }
 
@@ -342,10 +349,6 @@ function normalizeHook(value: string) {
   return titleCaseTopicLabel(clean);
 }
 
-function slugify(value: string) {
-  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-}
-
 function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUrl?: string }, index: number, legacyDifficulty = false): FactCard {
   const sourceTitle = raw.sourceTitle ?? raw.topicPath?.at(-1) ?? "Wikipedia";
   const sourceUrl = raw.sourceUrl ?? `https://en.wikipedia.org/wiki/${encodeURIComponent(sourceTitle.replace(/\s+/g, "_"))}`;
@@ -385,8 +388,11 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     createdAt: raw.createdAt ?? "Just now",
     explanations: raw.explanations,
     glossary: raw.glossary,
+    chronology: raw.chronology,
     learnMore: raw.learnMore,
+    learnMoreSources: raw.learnMoreSources ? uniqueSources(raw.learnMoreSources) : raw.learnMore && !raw.answer ? (raw.answerSources ? uniqueSources(raw.answerSources) : undefined) : undefined,
     question: raw.question,
+    questionDetailed: raw.questionDetailed,
     answer: raw.answer,
     answerDetailed: raw.answerDetailed,
     answerSources: raw.answerSources ? uniqueSources(raw.answerSources) : undefined,
@@ -395,6 +401,7 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
   };
   normalized.explanations = normalizeCardExplanations(normalized);
   normalized.glossary = normalizeCardGlossary(normalized);
+  normalized.chronology = createSavedCardChronology(raw.chronology, normalized) ?? normalizeSavedCardChronology(normalized);
   normalized.followUpQuestions = Array.isArray(raw.followUpQuestions)
     ? createSavedFollowUpQuestions(raw.followUpQuestions, normalized)
     : normalizeSavedFollowUpQuestions(raw.followUpQuestions, normalized);
@@ -448,6 +455,14 @@ export default function HomePage() {
     initialTopicCatalog.current = catalog;
     return catalog;
   });
+  const pendingCustomTopicIds = useRef(new Set<string>());
+  const pendingCustomTopicLabels = useRef(new Map<string, string>());
+  const pendingCustomTopicWorkspace = useRef("local-workspace");
+  const resetCustomTopicReservations = useCallback((nextWorkspaceId: string) => {
+    pendingCustomTopicIds.current.clear();
+    pendingCustomTopicLabels.current.clear();
+    pendingCustomTopicWorkspace.current = nextWorkspaceId;
+  }, []);
   const [settings, setSettings] = useState<FeedSettings>(DEFAULT_SETTINGS);
   const [cards, setCards] = useState<FactCard[]>([]);
   const cardsRef = useRef(cards);
@@ -857,6 +872,7 @@ export default function HomePage() {
     const target = workspaceStoreRef.current.records.find((record) => record.id === targetId);
     if (!target) return;
     workspaceStoreRef.current.activeId = target.id;
+    resetCustomTopicReservations(target.id);
     workspaceIdRef.current = target.id;
     workspaceNameRef.current = target.name;
     setWorkspaceId(target.id);
@@ -883,7 +899,7 @@ export default function HomePage() {
     setYoutubeWorkspace((current) => applyYouTubeActivity(current, target.state.youtubeActivity));
     persistedStateRef.current = targetState;
     await writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The workspace changed, but the active workspace could not be saved."));
-  }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow]);
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow]);
 
   const createWorkspace = useCallback(async () => {
     if (!workspaceStoreRef.current) return;
@@ -896,6 +912,7 @@ export default function HomePage() {
     const record: AppWorkspaceRecord = { id: makeWorkspaceId(), name: requestedName, createdAt: now, updatedAt: now, state: { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: createDefaultTopics(), settings: { ...DEFAULT_SETTINGS, obscurity: 5 }, cards: [], learningProfile: {}, feedStarted: false, theme } };
     workspaceStoreRef.current.records.push(record);
     workspaceStoreRef.current.activeId = record.id;
+    resetCustomTopicReservations(record.id);
     workspaceIdRef.current = record.id;
     workspaceNameRef.current = record.name;
     setWorkspaceId(record.id);
@@ -916,7 +933,7 @@ export default function HomePage() {
     setYoutubeWorkspace((current) => ({ ...current, savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", selectedChannelId: undefined, selectedVideoId: undefined, discoverIds: [], channelOrder: "newest" }));
     await writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The new workspace could not be saved. A local recovery copy was kept."));
     setToast(`${record.name} created.`);
-  }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow, theme]);
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow, theme]);
 
   const renameWorkspace = useCallback((targetId: string, requestedName: string) => {
     const target = workspaceStoreRef.current?.records.find((record) => record.id === targetId);
@@ -971,6 +988,7 @@ export default function HomePage() {
     const replacement = store.records.find((record) => record.id === store.activeId) ?? store.records[0];
     store.activeId = replacement.id;
     if (targetId === workspaceIdRef.current) {
+      resetCustomTopicReservations(replacement.id);
       workspaceIdRef.current = replacement.id;
       workspaceNameRef.current = replacement.name;
       setWorkspaceId(replacement.id);
@@ -999,7 +1017,7 @@ export default function HomePage() {
     setWorkspaceSummaries(store.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
     await writeWorkspaceStore(store).catch(() => setToast("The workspace was removed locally, but the new order could not be saved."));
     setToast(`${target.name} deleted.`);
-  }, [cancelWorkspaceRequests, makeCurrentSnapshot, saveWorkspaceRecordNow]);
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow]);
 
   const requestDeleteWorkspace = useCallback((targetId: string) => {
     const store = workspaceStoreRef.current;
@@ -1119,6 +1137,7 @@ export default function HomePage() {
       factNoveltyIndexRef.current = new FactNoveltyIndex(factMemoryRef.current);
       store.factMemory = factMemoryRef.current;
       workspaceStoreRef.current = store;
+      resetCustomTopicReservations(activeRecord.id);
       workspaceIdRef.current = activeRecord.id;
       workspaceNameRef.current = activeRecord.name;
       setWorkspaceId(activeRecord.id);
@@ -1149,7 +1168,7 @@ export default function HomePage() {
     void restore();
     setSupabaseConfigured(Boolean(CLOUD_URL && CLOUD_PUBLIC_KEY));
     return () => { active = false; };
-  }, []);
+  }, [resetCustomTopicReservations]);
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
@@ -1283,6 +1302,7 @@ export default function HomePage() {
         factMemoryRef.current = mergedStore.factMemory ?? [];
         factNoveltyIndexRef.current = new FactNoveltyIndex(factMemoryRef.current);
         const target = records.find((record) => record.id === preferredId) ?? records[0];
+        resetCustomTopicReservations(target.id);
         workspaceIdRef.current = target.id;
         workspaceNameRef.current = target.name;
         setWorkspaceId(target.id);
@@ -1336,7 +1356,7 @@ export default function HomePage() {
     };
     window.addEventListener("online", retry); window.addEventListener("focus", retry);
     return () => { active = false; listener.subscription.unsubscribe(); cloudAbortController.current?.abort(); window.removeEventListener("online", retry); window.removeEventListener("focus", retry); };
-  }, [hydrated, keysHydrated, scheduleCloudSave]);
+  }, [hydrated, keysHydrated, resetCustomTopicReservations, scheduleCloudSave]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1811,20 +1831,64 @@ export default function HomePage() {
     setTopics((current) => updateTopicTree(current, id, (node) => ({ ...node, weight: Math.max(5, Math.min(100, node.weight + delta)) })));
   }, []);
 
+  useEffect(() => {
+    const currentTopics = flattenTopics(topics);
+    const currentIds = new Set(currentTopics.map((topic) => topic.id));
+    const currentLabels = new Set(currentTopics.map((topic) => normalizeCustomTopicLabel(topic.label)));
+    for (const id of pendingCustomTopicIds.current) if (currentIds.has(id)) pendingCustomTopicIds.current.delete(id);
+    for (const [label, id] of pendingCustomTopicLabels.current) {
+      if (currentLabels.has(label)) {
+        pendingCustomTopicIds.current.delete(id);
+        pendingCustomTopicLabels.current.delete(label);
+      } else if (!pendingCustomTopicIds.current.has(id)) pendingCustomTopicLabels.current.delete(label);
+    }
+  }, [topics]);
+
+  const queueCustomTopic = useCallback((rawLabel: string): boolean => {
+    const label = rawLabel.trim();
+    if (!label) return false;
+    const reservationWorkspaceId = workspaceIdRef.current;
+    if (pendingCustomTopicWorkspace.current !== reservationWorkspaceId) {
+      pendingCustomTopicIds.current.clear();
+      pendingCustomTopicLabels.current.clear();
+      pendingCustomTopicWorkspace.current = reservationWorkspaceId;
+    }
+    const normalizedLabel = normalizeCustomTopicLabel(label);
+    const existingTopics = flattenTopics(topics);
+    if (existingTopics.some((topic) => normalizeCustomTopicLabel(topic.label) === normalizedLabel)
+      || pendingCustomTopicLabels.current.has(normalizedLabel)) return false;
+
+    const id = createCustomTopicId(label, [
+      ...existingTopics.map((topic) => topic.id),
+      ...pendingCustomTopicIds.current,
+    ]);
+    pendingCustomTopicIds.current.add(id);
+    pendingCustomTopicLabels.current.set(normalizedLabel, id);
+    setTopics((current) => {
+      if (workspaceIdRef.current !== reservationWorkspaceId) return current;
+      const currentTopics = flattenTopics(current);
+      if (currentTopics.some((topic) => normalizeCustomTopicLabel(topic.label) === normalizedLabel)) return current;
+      const currentIds = new Set(currentTopics.map((topic) => topic.id));
+      const safeId = currentIds.has(id)
+        ? createCustomTopicId(label, [...currentIds, ...pendingCustomTopicIds.current].filter((candidate) => candidate !== id))
+        : id;
+      return [...current, { id: safeId, label, selected: true, expanded: false, weight: 10, custom: true }];
+    });
+    topicCatalogRevision.current += 1;
+    setFeedHasMore(true);
+    return true;
+  }, [topics]);
+
   const addCustomTopic = useCallback(() => {
     const label = customTopic.trim();
     if (!label) return;
-    const id = `custom-${slugify(label)}`;
-    if (flattenTopics(topics).some((topic) => topic.id === id)) {
+    if (!queueCustomTopic(label)) {
       setToast("That topic is already in your mix.");
       return;
     }
-    setTopics((current) => [...current, { id, label, selected: true, expanded: false, weight: 10, custom: true }]);
-    topicCatalogRevision.current += 1;
-    setFeedHasMore(true);
     setCustomTopic("");
     setToast(`${label} added to your topic tree.`);
-  }, [customTopic, topics]);
+  }, [customTopic, queueCustomTopic]);
 
   const removeCustomTopic = useCallback((id: string) => {
     const topic = flattenTopics(topics).find((candidate) => candidate.id === id);
@@ -2160,7 +2224,7 @@ export default function HomePage() {
     const cacheKey = learningResponseCacheKey(sessionIdRef.current, apiKey.trim(), "learn", card);
     const cached = learningResponseCache.current.get(cacheKey);
     if (cached) {
-      setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: cached.answer, answerSources: cached.citations } : item));
+      setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: cached.answer, learnMoreSources: cached.citations } : item));
       return;
     }
     const requestId = requestGeneration.current;
@@ -2175,7 +2239,7 @@ export default function HomePage() {
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
         recordGeminiOutcomes(payload.modelOutcomes);
         learningResponseCache.current.set(cacheKey, { answer: payload.answer, citations: payload.citations });
-        setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer, answerSources: payload.citations } : item));
+        setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer, learnMoreSources: payload.citations } : item));
         return;
       }
       const response = await fetch("/api/learn", {
@@ -2192,7 +2256,7 @@ export default function HomePage() {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       recordGeminiOutcomes(payload.modelOutcomes ?? []);
       learningResponseCache.current.set(cacheKey, { answer: payload.answer ?? "", citations: payload.citations ?? [] });
-      setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer, answerSources: payload.citations } : item));
+      setCards((current) => current.map((item) => item.id === id ? { ...item, learnMore: payload.answer, learnMoreSources: payload.citations } : item));
     } catch (error) {
       recordGeminiFailure(error);
       if (!controller.signal.aborted && requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [`${id}:learn`]: error instanceof Error ? error.message : "Gemini could not expand this fact." }));
@@ -3065,18 +3129,23 @@ export default function HomePage() {
     const label = selectedTopic?.label ?? titleCaseTopicLabel(requestedTopic);
 
     if (selectedTopic) {
+      const selectedTopicId = selectedTopic.id;
       setTopics((current) => {
-        const topic = findTopicById(current, selectedTopic.id);
-        return !topic || selectionState(topic) === "selected" ? current : toggleTopicSelection(current, topic.id);
+        const topic = findTopicById(current, selectedTopicId);
+        return !topic || selectionState(topic) === "selected" ? current : toggleTopicSelection(current, selectedTopicId);
       });
     } else {
-      const id = `custom-${slugify(label)}`;
-      if (!findTopicById(topics, id)) topicCatalogRevision.current += 1;
-      setTopics((current) => {
-        const existing = findTopicById(current, id);
-        if (existing) return selectionState(existing) === "selected" ? current : toggleTopicSelection(current, id);
-        return [...current, { id, label, selected: true, expanded: false, weight: 10, custom: true }];
-      });
+      const existingTopics = flattenTopics(topics);
+      const existingLabel = existingTopics.find((topic) => normalizeCustomTopicLabel(topic.label) === normalizeCustomTopicLabel(label));
+      if (existingLabel) {
+        selectedTopic = existingLabel;
+        setTopics((current) => {
+          const topic = findTopicById(current, existingLabel.id);
+          return !topic || selectionState(topic) === "selected" ? current : toggleTopicSelection(current, topic.id);
+        });
+      } else {
+        queueCustomTopic(label);
+      }
     }
 
     setFeedHasMore(true);
@@ -3084,7 +3153,7 @@ export default function HomePage() {
     setQuery(label);
     setView("feed");
     setToast(`Ready to explore ${label}. Start learning when you're ready.`);
-  }, [getCatalogSuggestionIndex, getCatalogTopicList, catalogRevision, topics]);
+  }, [getCatalogSuggestionIndex, getCatalogTopicList, catalogRevision, queueCustomTopic, topics]);
 
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={chooseExploreTopic} />;
@@ -3111,7 +3180,7 @@ export default function HomePage() {
         query={query}
         onQueryChange={setQuery}
         topicSuggestions={topicSuggestions}
-        onChooseTopic={(label) => { setView("feed"); setFeedStarted(false); setQuery(label); }}
+        onChooseTopic={(label, id) => chooseExploreTopic(label, id)}
         workspaceId={workspaceId}
         workspaceName={workspaceName}
         workspaces={workspaceSummaries}

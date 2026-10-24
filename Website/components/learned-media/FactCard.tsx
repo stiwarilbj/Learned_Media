@@ -714,7 +714,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
           </div>
         </div>
 
-        {card.learnMore && <div className="learning-answer learn-more-answer"><span className="answer-label"><Icon name="sparkles" size={14} /> Learn more</span><p>{card.learnMore}</p></div>}
+        {card.learnMore && <div className="learning-answer learn-more-answer"><span className="answer-label"><Icon name="sparkles" size={14} /> Learn more</span><p>{card.learnMore}</p>{Boolean(card.learnMoreSources?.length) && <div className="answer-sources">{card.learnMoreSources!.slice(0, 3).map((source, index) => <a href={canonicalWikipediaUrl(source)} key={`${source.canonicalUrl ?? source.url}-${index}`} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={11} /></a>)}</div>}</div>}
         {learnError && <p className="learning-error">{learnError}</p>}
 
         <div className="question-box" ref={questionBoxRef} onFocusCapture={() => { setQuestionFocused(true); if (!question.trim()) setFollowUpDismissed(false); }} onBlur={(event) => {

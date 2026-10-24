@@ -31,10 +31,9 @@ function lowerBound(offsets: number[], target: number) {
   return low;
 }
 
-const MeasuredRow = memo(function MeasuredRow({ row, top, height, columns, gap, onMeasure, renderItem, getItemKey, onPin }: {
+const MeasuredRow = memo(function MeasuredRow({ row, top, columns, gap, onMeasure, renderItem, getItemKey, onPin }: {
   row: VirtualRow<unknown>;
   top: number;
-  height: number;
   columns: number;
   gap: number;
   onMeasure: (key: string, height: number) => void;
@@ -55,7 +54,7 @@ const MeasuredRow = memo(function MeasuredRow({ row, top, height, columns, gap, 
     return () => observer.disconnect();
   }, [gap, onMeasure, row.key]);
 
-  return <div ref={rowRef} className="virtualized-row" data-virtualized-row-key={row.key} onFocusCapture={() => onPin(row.key)} style={{ top, minHeight: Math.max(1, height - gap), gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+  return <div ref={rowRef} className="virtualized-row" data-virtualized-row-key={row.key} onFocusCapture={() => onPin(row.key)} style={{ top, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
     {row.items.map((item) => <Fragment key={getItemKey(item)}>{renderItem(item)}</Fragment>)}
   </div>;
 });
@@ -209,7 +208,7 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
   return <div ref={contentRef} className={`${className} virtualized-rows`} style={{ height: offsets.at(-1) ?? 0 }}>
     {visibleIndexes.map((index) => {
       const row = rows[index];
-      return <MeasuredRow key={row.key} row={row as VirtualRow<unknown>} top={offsets[index]} height={measured.get(row.key) ?? estimatedHeight + gap} columns={columns} gap={gap} onMeasure={onMeasure} renderItem={renderItem as (item: unknown) => ReactNode} getItemKey={getKey as (item: unknown) => string} onPin={setPinnedRowKey} />;
+      return <MeasuredRow key={row.key} row={row as VirtualRow<unknown>} top={offsets[index]} columns={columns} gap={gap} onMeasure={onMeasure} renderItem={renderItem as (item: unknown) => ReactNode} getItemKey={getKey as (item: unknown) => string} onPin={setPinnedRowKey} />;
     })}
   </div>;
 }

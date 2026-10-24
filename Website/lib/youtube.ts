@@ -82,6 +82,8 @@ export type YouTubeWorkspaceState = {
   discoverIds: string[];
   channelOrder: "relevance" | "newest" | "oldest" | "random";
   prioritizeRecentByChannel: Record<string, boolean>;
+  /** Catalog-wide legacy defaults retained only in memory when switching workspace activity. */
+  legacyPrioritizeRecentByChannel?: Record<string, boolean>;
   libraryIncomplete: boolean;
   lastSyncAt?: string;
   catalogVersion: number;
@@ -207,6 +209,17 @@ export const APPROVED_YOUTUBE_CHANNELS: ApprovedChannelSeed[] = [
 export const DEFAULT_YOUTUBE_RECENCY_PREFERENCES: Record<string, boolean> = Object.fromEntries(
   APPROVED_YOUTUBE_CHANNELS.map(({ name }) => [name, name === "Crash Course" || name === "Mental Floss"])
 );
+
+export function mergeYouTubeRecencyPreferences(
+  legacy: Partial<Record<string, boolean>> = {},
+  activeWorkspace: Partial<Record<string, boolean>> = {}
+): Record<string, boolean> {
+  const merged = { ...DEFAULT_YOUTUBE_RECENCY_PREFERENCES };
+  for (const preferences of [legacy, activeWorkspace]) {
+    for (const [channel, enabled] of Object.entries(preferences)) if (typeof enabled === "boolean") merged[channel] = enabled;
+  }
+  return merged;
+}
 
 // Individual videos are intentionally separate from the channel catalog.
 // Unknown IDs are resolved by an exact title + creator search and never by a
@@ -923,10 +936,14 @@ export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fall
     // IndexedDB transaction could close it before its requests are finished.
     const raw = await restoreStoredCatalog(saved.catalog, saved.records, signal) ?? saved.legacy ?? {};
     const savedActivity = saved.activity ?? fallbackActivity ?? saved.legacy as Partial<YouTubeActivityState> | undefined;
+    const legacyRecencyPreferences = mergeYouTubeRecencyPreferences(
+      (saved.legacy?.prioritizeRecentByChannel as Record<string, boolean> | undefined) ?? {},
+      (raw.prioritizeRecentByChannel as Record<string, boolean> | undefined) ?? {}
+    );
     const savedCatalogVersion = typeof raw.catalogVersion === "number" && Number.isInteger(raw.catalogVersion) ? raw.catalogVersion : undefined;
     const catalogWasValidatedAtCurrentVersion = Boolean(saved.catalog) && savedCatalogVersion !== undefined && savedCatalogVersion >= YOUTUBE_CATALOG_VERSION;
     const inferredCatalogVersion = (Array.isArray(raw.channels) && raw.channels.length || Array.isArray(raw.videos) && raw.videos.length) ? 0 : YOUTUBE_CATALOG_VERSION;
-    const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, ...(savedActivity ?? {}), catalogVersion: savedCatalogVersion ?? inferredCatalogVersion, sourceStates: { ...(raw.sourceStates ?? {}) }, prioritizeRecentByChannel: { ...DEFAULT_YOUTUBE_RECENCY_PREFERENCES, ...(raw.prioritizeRecentByChannel ?? {}) } } as YouTubeWorkspaceState;
+    const workspace = { ...DEFAULT_YOUTUBE_WORKSPACE, ...raw, ...(savedActivity ?? {}), catalogVersion: savedCatalogVersion ?? inferredCatalogVersion, sourceStates: { ...(raw.sourceStates ?? {}) }, legacyPrioritizeRecentByChannel: legacyRecencyPreferences, prioritizeRecentByChannel: mergeYouTubeRecencyPreferences(legacyRecencyPreferences, savedActivity?.prioritizeRecentByChannel ?? {}) } as YouTubeWorkspaceState;
     if (!catalogWasValidatedAtCurrentVersion) {
       const videos: YouTubeVideo[] = [];
       await forEachBackground(workspace.videos ?? [], video => {
@@ -944,7 +961,7 @@ export async function loadYouTubeWorkspace(workspaceId = "local-workspace", fall
     Object.assign(workspace, { savedIds, history, playbackPositions, discoverIds });
     if (workspace.selectedVideoId && !availableVideoIds.has(workspace.selectedVideoId)) workspace.selectedVideoId = undefined;
     if (!saved.catalog && saved.legacy && workspace.videos.length) void saveYouTubeWorkspace(workspace, { activity: true, workspaceId });
-    if (!raw.prioritizeRecentByChannel && !saved.catalog && workspace.videos.length) {
+    if (!raw.prioritizeRecentByChannel && !saved.catalog && workspace.videos.length && !workspace.discoverIds.length) {
       workspace.discoverIds = selectRandomVideos(filterYouTubeVideos(workspace.videos, "", workspace.selectedTopic), 24, [], DEFAULT_YOUTUBE_RECENCY_PREFERENCES).map((video) => video.id);
     }
     return workspace;

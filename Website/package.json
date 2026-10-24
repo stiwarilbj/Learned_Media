@@ -8,6 +8,8 @@
     "build:github-pages": "node scripts/build-github-pages.mjs",
     "test:generation": "node scripts/build-native-prompts.mjs --check && node scripts/test-generation.mjs",
     "test:source-spotlight": "node scripts/test-source-spotlight.mjs",
+    "test:saved-card-fidelity": "node scripts/test-saved-card-fidelity.mjs",
+    "test:youtube-restoration": "node scripts/test-youtube-restoration.mjs",
     "test:card-reveal": "node scripts/build-native-card-reveal.mjs --check && node scripts/test-card-reveal.mjs",
     "test:card-follow-ups": "node scripts/build-native-follow-ups.mjs --check && node scripts/test-card-follow-ups.mjs",
     "test:card-explanations": "node scripts/build-native-card-explanations.mjs --check && node scripts/test-card-explanations.mjs",

@@ -6,6 +6,7 @@
     ["History Matters"], ["Election History"], ["Secret Base"], ["Geo History"], ["Great Books Explained"], ["BooneU"], ["Joon Lee"], ["TLDR News Global"], ["Mr. Beat"], ["The Generalist Papers"], ["CGP Grey", "@CGPGrey"], ["Power Politics"], ["Half as Interesting"], ["Hoser"], ["The History Guy: History Deserves to Be Remembered"], ["History Buffs Hub"], ["Ceramic", "@ceramic01"], ["Reading Through History"], ["Atlas Pro"], ["African Biographics"], ["Phil Edwards"], ["Tor’s Cabinet of Curiosities"], ["Extra History"], ["Justin Portela"], ["Patrick Kelly"], ["Historically"], ["Mental Floss"], ["Crash Course"], ["SciShow"], ["OverSimplified"], ["vlogbrothers"], ["Sam O’Nella Academy"], ["3Blue1Brown", null, "UCYO_jab_esuFRV4b17AJtAw", ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi", "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"]], ["Shawn Grows"], ["General Knowledge"], ["Jay Hona"], ["Veritasium"], ["theweeklyjack", "@theweeklyjack1"], ["Jackdaw"], ["Grist"], ["Bizarre Beasts"], ["Ze Frank"], ["Make Thing With Hand"], ["Be Smart"], ["PBS Eons"], ["Deep Look"], ["MinuteEarth"], ["minutephysics"], ["Brailor"], ["hydn"], ["ExtinctZoo", "@ExtinctZoo"],
     ["PBS Terra", "@pbsterra", "UCpxYSWgxVt3Pyn1ovXsGQ0g"], ["PolyMatter", "@PolyMatter", "UCgNg3vwj3xt7QOrcIDaHdDQ"], ["AlternateHistoryHub", "@AlternateHistoryHub", "UClfEht64_NrzHf8Y0slKEjw"], ["J.J. McCullough", "@JJMcCullough", "UCyhOl6uRlxryALlT5yifldw"], ["Primer", "@primerlearning", "UCKzJFdi57J53Vr_BkTfN3uQ"], ["Primal Space", "@primalspace", "UClZbmi9JzfnB2CEb0fG8iew"], ["Mitsi Studio", "@mitsistudio", "UCuXCgyOCMXic7j0_wghXnRA"], ["Jabroni Baseball", "@JabroniBaseball", "UCfBXZotQqPlpDWXTbRbi2qA"]
   ];
+  const DEFAULT_RECENCY_PREFERENCES = Object.fromEntries(CHANNELS.map(function (entry) { return [entry[0], entry[0] === "Crash Course" || entry[0] === "Mental Floss"]; }));
   const INDIVIDUALS = [
     ["melodysheep", "TIMELAPSE OF THE ENTIRE UNIVERSE", "TBikbn5XJhg"],
     ["Ollie Bye", "The History of the World: Every Year", "-6Wu0Q7x5D0"],
@@ -235,5 +236,5 @@
     while (result.length < count && list.length) { let added = false; list.forEach(function (group) { if (result.length < count && group.length) { result.push(group.shift()); added = true; } }); if (!added) break; }
     return result;
   }
-  window.LEARNED_MEDIA_YOUTUBE = { CHANNELS: CHANNELS, TOPICS: TOPICS, sync: sync, filter: filter, searchCandidates: searchCandidates, shuffle: shuffle };
+  window.LEARNED_MEDIA_YOUTUBE = { CHANNELS: CHANNELS, TOPICS: TOPICS, DEFAULT_RECENCY_PREFERENCES: DEFAULT_RECENCY_PREFERENCES, sync: sync, filter: filter, searchCandidates: searchCandidates, shuffle: shuffle };
 })();

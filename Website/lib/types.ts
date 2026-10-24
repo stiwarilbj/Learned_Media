@@ -132,6 +132,7 @@ export type FactCard = {
   chronology?: SavedCardChronology;
   locations?: SavedCardLocations;
   learnMore?: string;
+  learnMoreSources?: WikipediaSource[];
   question?: string;
   questionDetailed?: boolean;
   answer?: string;

@@ -72,7 +72,7 @@ function makeFallbackIndex(nodes: TopicNode[], query: string, catalogRevision: n
   return { query: activeQuery, catalogRevision, directScores, visibleIds, matchingDescendants };
 }
 
-function visibleTopics(nodes: TopicNode[], query: string, searchIndex: TopicSearchIndex, searchExpansionSuppressed: boolean) {
+function visibleTopics(nodes: TopicNode[], query: string, searchIndex: TopicSearchIndex, searchExpansionSuppressed: boolean, expansionOverrides: Map<string, boolean>) {
   const rows: VisibleTopic[] = [];
   const activeQuery = query.trim();
   const stack = nodes.slice().reverse().map((node) => ({ node, depth: 0, root: true }));
@@ -80,8 +80,12 @@ function visibleTopics(nodes: TopicNode[], query: string, searchIndex: TopicSear
     const row = stack.pop()!;
     if (activeQuery && !searchIndex.visibleIds.has(row.node.id)) continue;
     rows.push(row);
-    const searchExpanded = activeQuery && searchIndex.matchingDescendants.has(row.node.id) && !searchExpansionSuppressed;
-    if (row.node.children?.length && (row.node.expanded || searchExpanded)) {
+    const searchExpanded = activeQuery && searchIndex.matchingDescendants.has(row.node.id);
+    const override = expansionOverrides.get(row.node.id);
+    const expanded = activeQuery
+      ? override ?? (!searchExpansionSuppressed && (row.node.expanded || searchExpanded))
+      : row.node.expanded;
+    if (row.node.children?.length && expanded) {
       for (let index = row.node.children.length - 1; index >= 0; index -= 1) {
         stack.push({ node: row.node.children[index], depth: row.depth + 1, root: false });
       }
@@ -96,18 +100,18 @@ type RowProps = Pick<TopicTreeProps, "onToggle" | "onExpand" | "onWeight" | "onR
   root: boolean;
   query: string;
   searchIndex: TopicSearchIndex;
+  childrenVisible: boolean;
   top: number;
-  height: number;
   onFocusTopic: (id: string) => void;
   onMeasure: (id: string, height: number) => void;
 };
 
-const TopicRow = memo(function TopicRow({ node, depth, root, query, searchIndex, top, height, onFocusTopic, onMeasure, onToggle, onExpand, onWeight, onRemoveCustomTopic }: RowProps) {
+const TopicRow = memo(function TopicRow({ node, depth, root, query, searchIndex, childrenVisible, top, onFocusTopic, onMeasure, onToggle, onExpand, onWeight, onRemoveCustomTopic }: RowProps) {
   const activeQuery = query.trim();
   const directSearchScore = searchIndex.directScores.get(node.id) ?? 0;
   const hasChildren = Boolean(node.children?.length);
   const state = selectionState(node);
-  const childrenVisible = hasChildren && (node.expanded || Boolean(activeQuery && searchIndex.matchingDescendants.has(node.id)));
+  const isExpanded = hasChildren && childrenVisible;
   const setMeasureRef = useCallback<RefCallback<HTMLDivElement>>((element) => {
     if (!element || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
@@ -118,7 +122,7 @@ const TopicRow = memo(function TopicRow({ node, depth, root, query, searchIndex,
     return () => observer.disconnect();
   }, [node.id, onMeasure]);
 
-  return <div ref={setMeasureRef} className="topic-virtual-row" style={{ top, minHeight: height }}>
+  return <div ref={setMeasureRef} className="topic-virtual-row" style={{ top }}>
     <div
       data-topic-search-score={directSearchScore || undefined}
       className={`topic-row ${root ? "root-row" : "leaf-row"} ${node.custom ? "custom-row" : ""} selection-${state}`}
@@ -130,8 +134,8 @@ const TopicRow = memo(function TopicRow({ node, depth, root, query, searchIndex,
       onFocus={() => onFocusTopic(node.id)}
       onClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; onToggle(node.id); }}
     >
-      <button type="button" className="topic-expand" onClick={() => hasChildren && onExpand(node.id)} aria-label={`${node.expanded ? "Hide" : "Show"} Subtopics for ${node.label}`} aria-expanded={hasChildren ? childrenVisible : undefined} disabled={!hasChildren}>
-        {hasChildren ? <Icon name={childrenVisible ? "chevronDown" : "chevronRight"} size={16} /> : <span className="topic-spacer" />}
+      <button type="button" className="topic-expand" onClick={() => hasChildren && onExpand(node.id)} aria-label={`${isExpanded ? "Hide" : "Show"} Subtopics for ${node.label}`} aria-expanded={hasChildren ? isExpanded : undefined} disabled={!hasChildren}>
+        {hasChildren ? <Icon name={isExpanded ? "chevronDown" : "chevronRight"} size={16} /> : <span className="topic-spacer" />}
       </button>
       <button type="button" className={`topic-check ${state === "selected" ? "checked" : ""} ${state === "mixed" ? "mixed" : ""}`} onClick={() => onToggle(node.id)} aria-pressed={state === "selected"} aria-label={`${state === "selected" ? "Deselect" : "Select"} ${node.label}`}>
         {state === "selected" && <Icon name="check" size={13} strokeWidth={3} />}
@@ -139,7 +143,7 @@ const TopicRow = memo(function TopicRow({ node, depth, root, query, searchIndex,
       </button>
       <div className={`topic-name-wrap ${state === "none" ? "unselected" : ""}`}>
         <span className={`topic-name ${state === "selected" ? "selected" : ""}`}>{node.label}</span>
-        {hasChildren && <button type="button" className="topic-subtopics-toggle" onClick={() => onExpand(node.id)} aria-expanded={childrenVisible}>{childrenVisible ? "Hide Subtopics" : "Show Subtopics"}</button>}
+        {hasChildren && <button type="button" className="topic-subtopics-toggle" onClick={() => onExpand(node.id)} aria-expanded={isExpanded}>{isExpanded ? "Hide Subtopics" : "Show Subtopics"}</button>}
       </div>
       {node.custom && <span className="custom-topic-actions"><span className="custom-mark">Custom</span><button type="button" className="topic-remove" onClick={() => onRemoveCustomTopic(node.id)} aria-label={`Delete custom topic ${node.label}`} title="Delete custom topic"><Icon name="trash" size={13} /></button></span>}
       <div className={`topic-weight ${state === "none" ? "disabled" : ""}`} aria-label={`${node.weight} weighting`}>
@@ -166,6 +170,7 @@ export function TopicTree({ nodes, query = "", catalogRevision, searchIndex: wor
   const treeRef = useRef<HTMLDivElement>(null);
   const lastAutoScrollQuery = useRef<string | null>(null);
   const [searchExpansionSuppressed, setSearchExpansionSuppressed] = useState(false);
+  const [searchExpansionOverrides, setSearchExpansionOverrides] = useState<Map<string, boolean>>(() => new Map());
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(430);
   const [focusedTopicId, setFocusedTopicId] = useState<string | null>(null);
@@ -176,7 +181,7 @@ export function TopicTree({ nodes, query = "", catalogRevision, searchIndex: wor
   const fallbackSearchIndex = useMemo(() => workerSearchIndex ? null : makeFallbackIndex(nodes, query, catalogRevision), [catalogRevision, nodes, query, workerSearchIndex]);
   const searchIndex = workerSearchIndex ?? fallbackSearchIndex ?? makeFallbackIndex([], "", catalogRevision);
   const isSearchReady = !query.trim() || searchIndex.ready !== false && searchIndex.query === query.trim() && searchIndex.catalogRevision === catalogRevision;
-  const rows = useMemo(() => visibleTopics(nodes, query, searchIndex, searchExpansionSuppressed), [nodes, query, searchIndex, searchExpansionSuppressed]);
+  const rows = useMemo(() => visibleTopics(nodes, query, searchIndex, searchExpansionSuppressed, searchExpansionOverrides), [nodes, query, searchIndex, searchExpansionOverrides, searchExpansionSuppressed]);
   const rowIndex = useMemo(() => new Map(rows.map((row, index) => [row.node.id, index])), [rows]);
   const offsets = useMemo(() => {
     const result = new Array<number>(rows.length + 1);
@@ -239,8 +244,25 @@ export function TopicTree({ nodes, query = "", catalogRevision, searchIndex: wor
 
   useEffect(() => {
     setSearchExpansionSuppressed(false);
+    setSearchExpansionOverrides(new Map());
     lastAutoScrollQuery.current = null;
   }, [query]);
+
+  const toggleExpansion = useCallback((id: string, currentlyExpanded: boolean) => {
+    if (!query.trim()) {
+      onExpand(id);
+      return;
+    }
+    setSearchExpansionOverrides((current) => new Map(current).set(id, !currentlyExpanded));
+  }, [onExpand, query]);
+
+  const childrenVisible = useCallback((node: TopicNode) => {
+    if (!node.children?.length) return false;
+    if (!query.trim()) return node.expanded;
+    const override = searchExpansionOverrides.get(node.id);
+    if (override !== undefined) return override;
+    return !searchExpansionSuppressed && (node.expanded || searchIndex.matchingDescendants.has(node.id));
+  }, [query, searchExpansionOverrides, searchExpansionSuppressed, searchIndex.matchingDescendants]);
 
   useEffect(() => {
     const tree = treeRef.current;
@@ -255,14 +277,14 @@ export function TopicTree({ nodes, query = "", catalogRevision, searchIndex: wor
   const hasMatches = !query.trim() || rows.length > 0;
 
   return <div className="topic-tree-picker">
-    <div className="topic-tree-actions"><button type="button" className="topic-tree-collapse-button" onClick={() => { setSearchExpansionSuppressed(true); onCollapseAll(); }} aria-label="Collapse all topic branches">Collapse all</button></div>
+    <div className="topic-tree-actions"><button type="button" className="topic-tree-collapse-button" onClick={() => { setSearchExpansionSuppressed(true); setSearchExpansionOverrides(new Map()); onCollapseAll(); }} aria-label="Collapse all topic branches">Collapse all</button></div>
     <div className="topic-tree" role="tree" aria-label="Topic browser" ref={treeRef} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
       {query.trim() && !isSearchReady ? <p className="topic-tree-empty" role="status">Searching topics…</p>
         : query.trim() && !hasMatches ? <p className="topic-tree-empty" role="status">No topics found for “{query.trim()}”.</p>
           : <div className="topic-virtual-content" style={{ height: offsets.at(-1) ?? 0 }}>
             {renderIndexes.map((index) => {
               const entry = rows[index];
-              return <TopicRow key={entry.node.id} node={entry.node} depth={entry.depth} root={entry.root} query={query} searchIndex={searchIndex} top={offsets[index]} height={measuredHeights.get(entry.node.id) ?? (entry.root ? 47 : 42)} onFocusTopic={setFocusedTopicId} onMeasure={onMeasure} onToggle={onToggle} onExpand={onExpand} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />;
+              return <TopicRow key={entry.node.id} node={entry.node} depth={entry.depth} root={entry.root} query={query} searchIndex={searchIndex} childrenVisible={childrenVisible(entry.node)} top={offsets[index]} onFocusTopic={setFocusedTopicId} onMeasure={onMeasure} onToggle={onToggle} onExpand={(id) => toggleExpansion(id, childrenVisible(entry.node))} onWeight={onWeight} onRemoveCustomTopic={onRemoveCustomTopic} />;
             })}
           </div>}
     </div>

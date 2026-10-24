@@ -137,6 +137,8 @@ function rankSearchResults(query, items, getText, limit = items.length) {
 })(search);const exports={};const require=()=>search;"use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TOPIC_SEARCH_VERSION = void 0;
+exports.normalizeCustomTopicLabel = normalizeCustomTopicLabel;
+exports.createCustomTopicId = createCustomTopicId;
 exports.validateTopicPlan = validateTopicPlan;
 exports.localTopicPlan = localTopicPlan;
 exports.shouldEnrichTopics = shouldEnrichTopics;
@@ -149,6 +151,21 @@ exports.suggestTopics = suggestTopics;
 exports.searchTopicIndexYielding = searchTopicIndexYielding;
 const search_1 = require("./search");
 exports.TOPIC_SEARCH_VERSION = 8;
+/** Compare user-created topic labels without turning punctuation into collisions. */
+function normalizeCustomTopicLabel(label) {
+    return label.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase();
+}
+/** Make a readable custom-topic ID, adding a suffix when punctuation shares a slug. */
+function createCustomTopicId(label, existingIds) {
+    const base = `custom-${label.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase().trim().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "") || "topic"}`;
+    const ids = new Set(existingIds);
+    if (!ids.has(base))
+        return base;
+    let suffix = 2;
+    while (ids.has(`${base}-${suffix}`))
+        suffix += 1;
+    return `${base}-${suffix}`;
+}
 const STOP = new Set("a about an and are as at be by can did do does explain find for from how i in into is it me of on or our please show some that the their them there these this to was were what when where which who why with would tell topics learn learning want know".split(" "));
 const CONCEPTS = [
     { label: "information technology", equivalents: ["information technology", "computer technology"], related: ["computer science"] },

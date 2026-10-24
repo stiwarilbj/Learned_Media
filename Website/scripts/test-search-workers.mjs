@@ -153,11 +153,39 @@ test("YouTube worker settles a search when the catalog changes mid-scan", async 
   }));
   scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
   scope.onmessage({ data: { type: "search", requestId: 35, revision: 0, query: "history science", plan: { terms: ["history science"] }, topic: "All", limit: 80 } });
-  scope.onmessage({ data: { type: "update", revision: 1, upserts: [], removeIds: [] } });
+  scope.onmessage({ data: { type: "update", baseRevision: 0, revision: 1, upserts: [], removeIds: [] } });
   const stale = await waitForMessage(messages, (message) => message.type === "stale" && message.requestId === 35);
   assert.equal(stale.revision, 1);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(messages.some((message) => message.type === "results" && message.requestId === 35), false);
+});
+
+test("YouTube worker settles obsolete searches and requests a rebuild on revision mismatch", async () => {
+  const { scope, messages } = loadWorker("workers/youtube-search.worker.ts");
+  const videos = Array.from({ length: 1800 }, (_, index) => ({
+    id: `revision-video-${index}`,
+    channelId: "channel-a",
+    channelName: "Approved Channel",
+    title: `History of science ${index}`,
+    description: "A long-form approved documentary.",
+    tags: ["history"],
+    publishedAt: "2024-01-01T00:00:00.000Z",
+    durationSeconds: 600,
+    durationLabel: "10:00",
+    embedAvailable: true,
+    topics: ["History"],
+    approved: true
+  }));
+  scope.onmessage({ data: { type: "initialize", revision: 4, videos } });
+  scope.onmessage({ data: { type: "search", requestId: 51, revision: 4, query: "history", plan: { terms: ["history"] }, topic: "All", limit: 80 } });
+  scope.onmessage({ data: { type: "update", baseRevision: 2, revision: 5, upserts: [], removeIds: [] } });
+
+  const stale = await waitForMessage(messages, message => message.type === "stale" && message.requestId === 51);
+  const rebuild = await waitForMessage(messages, message => message.type === "rebuild" && message.revision === 5);
+  assert.equal(stale.revision, 5);
+  assert.equal(rebuild.revision, 5);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(messages.some(message => message.type === "results" && message.requestId === 51), false);
 });
 
 test("YouTube worker yields while ranking 30,000 videos and preserves the top results", async () => {

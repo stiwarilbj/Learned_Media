@@ -95,7 +95,7 @@ const VideoCard = memo(function VideoCard({ video, saved, reason, onOpenVideo, o
   </article>;
 });
 
-function VideoList({ videos, savedIds, reasons, smartSearchRan, onOpenVideo, onSaveVideo }: { videos: YouTubeVideo[]; savedIds: ReadonlySet<string>; reasons?: Record<string, RankedVideoSearchResult>; smartSearchRan?: boolean; onOpenVideo: (id: string) => void; onSaveVideo: (id: string) => void }) {
+function VideoList({ videos, savedIds, reasons, smartSearchRan, emptyState = "search", onOpenVideo, onSaveVideo }: { videos: YouTubeVideo[]; savedIds: ReadonlySet<string>; reasons?: Record<string, RankedVideoSearchResult>; smartSearchRan?: boolean; emptyState?: "search" | "channel" | "saved" | "history"; onOpenVideo: (id: string) => void; onSaveVideo: (id: string) => void }) {
   const [viewportWidth, setViewportWidth] = useState(1200);
   useEffect(() => {
     const update = () => setViewportWidth(window.innerWidth);
@@ -104,7 +104,18 @@ function VideoList({ videos, savedIds, reasons, smartSearchRan, onOpenVideo, onS
     return () => window.removeEventListener("resize", update);
   }, []);
   const renderVideo = useCallback((video: YouTubeVideo) => <VideoCard video={video} saved={savedIds.has(video.id)} reason={reasons?.[video.id]} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} />, [onOpenVideo, onSaveVideo, reasons, savedIds]);
-  if (!videos.length) return <div className="video-empty"><div className="empty-orbit"><Icon name="search" size={24} /></div><h2>{smartSearchRan ? "No relevant approved videos found" : "No approved videos match that yet"}</h2><p>{smartSearchRan ? "No match is supported by the approved catalog metadata. Try another phrase or remove a conflicting filter" : "Try another phrase, topic, or channel. The search stays inside the approved collection"}</p></div>;
+  if (!videos.length) {
+    const emptyCopy = emptyState === "saved"
+      ? ["No saved videos yet", "Save a video from Discover or a channel and it will appear here."]
+      : emptyState === "history"
+        ? ["No watch history yet", "Videos you open will appear here so you can pick up where you left off."]
+        : emptyState === "channel"
+          ? ["No videos match this search", "Try another phrase or adjust the topic and channel filters."]
+          : smartSearchRan
+            ? ["No relevant approved videos found", "No match is supported by the approved catalog metadata. Try another phrase or remove a conflicting filter."]
+            : ["No approved videos match that yet", "Try another phrase, topic, or channel. The search stays inside the approved collection."];
+    return <div className="video-empty"><div className="empty-orbit"><Icon name={emptyState === "saved" ? "bookmark" : emptyState === "history" ? "history" : "search"} size={24} /></div><h2>{emptyCopy[0]}</h2><p>{emptyCopy[1]}</p></div>;
+  }
   const columns = viewportWidth > 900 ? 3 : viewportWidth > 620 ? 2 : 1;
   const strong = videos.filter(video => reasons?.[video.id]?.relevance !== "broader");
   const broader = videos.filter(video => reasons?.[video.id]?.relevance === "broader");
@@ -177,7 +188,8 @@ export function VideoWorkspace({ workspaceId, workspace, videoById, channelById,
     <div className="video-controls"><label className="video-search"><Icon name="search" size={16} /><input type="search" value={workspace.searchText} onChange={(event) => onSearchChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onSmartSearch(); } }} placeholder="Search this channel" aria-label="Search this channel" enterKeyHint="search" /></label><button type="button" className="ghost-button" onClick={onSmartSearch} disabled={smartSearchLoading || !workspace.searchText.trim()} title="Search by meaning in the approved catalog">{smartSearchLoading ? "Searching" : "Smart search"}</button><select value={workspace.channelOrder} onChange={(event) => onChannelOrder(event.target.value as YouTubeWorkspaceState["channelOrder"])} aria-label="Sort channel videos"><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="random">Random</option></select></div>
     <SearchProgress loading={smartSearchLoading} phase={searchPhase} onCancel={onCancelSearch} />
     {searchPhase === "error" && error && <p className="video-search-error" role="alert">{error}</p>}
-    <VideoList videos={channelVideos} savedIds={savedIds} reasons={searchReasons} smartSearchRan={smartSearchRan} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} />
+    <VideoList videos={channelVideos} savedIds={savedIds} reasons={searchReasons} smartSearchRan={smartSearchRan} emptyState={deferredSearchText.trim() ? "channel" : "search"} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} />
+    {deferredSearchText.trim() && searchHasMore && <div className="video-show-more"><button type="button" className="small-load-button" onClick={onShowMore} disabled={smartSearchLoading}>Show more matching videos</button></div>}
   </section>;
 
   const sortedChannels = [...workspace.channels].sort((a, b) => a.name.localeCompare(b.name));
@@ -188,7 +200,7 @@ export function VideoWorkspace({ workspaceId, workspace, videoById, channelById,
   if (workspace.activeTab === "history") videos = historyVideos;
   const title = workspace.activeTab === "saved" ? "Saved videos" : workspace.activeTab === "history" ? "Watch history" : "A calmer way to find something good";
   return <section className="content-view video-workspace">
-    <div className="view-heading video-heading"><div><span className="eyebrow">Learned Media Videos</span><h1>{title}</h1><p>Discover approved creators, search their full imported catalogs, and watch without leaving your workspace</p></div><div className="video-heading-actions"><button type="button" className="secondary-button" onClick={onRefreshVideos} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}><Icon name="reset" size={15} /> Refresh videos</button><button type="button" className="secondary-button" onClick={onShuffle} disabled={!workspace.videos.length}><Icon name="reset" size={15} /> Shuffle</button><button type="button" className="primary-button small" onClick={onShowMore} disabled={!workspace.videos.length || Boolean(workspace.searchText.trim() && !searchHasMore)}><Icon name="plus" size={15} /> Show more</button></div></div>
+    <div className="view-heading video-heading"><div><span className="eyebrow">Learned Media Videos</span><h1>{title}</h1><p>{workspace.activeTab === "saved" ? "The videos you saved for another time" : workspace.activeTab === "history" ? "Videos you have opened in this workspace" : "Discover approved creators, search their full imported catalogs, and watch without leaving your workspace"}</p></div>{workspace.activeTab === "discover" && <div className="video-heading-actions"><button type="button" className="secondary-button" onClick={onRefreshVideos} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}><Icon name="reset" size={15} /> Refresh videos</button><button type="button" className="secondary-button" onClick={onShuffle} disabled={!workspace.videos.length}><Icon name="reset" size={15} /> Shuffle</button><button type="button" className="primary-button small" onClick={onShowMore} disabled={!workspace.videos.length || Boolean(workspace.searchText.trim() && !searchHasMore)}><Icon name="plus" size={15} /> Show more</button></div>}</div>
     {(youtubeStatus === "connecting" || youtubeStatus === "refreshing") && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
     {youtubeStatus === "error" && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
     {workspace.libraryIncomplete && youtubeStatus !== "connecting" && youtubeStatus !== "refreshing" && <div className="video-incomplete"><Icon name="help" size={15} /> This library is still incomplete. You can browse now and resume importing from Settings</div>}
@@ -199,7 +211,7 @@ export function VideoWorkspace({ workspaceId, workspace, videoById, channelById,
       {searchPhase === "error" && error && <p className="video-search-error" role="alert">{error}</p>}
       <div className="video-topic-filters" aria-label="Video topics"><button type="button" className={workspace.selectedTopic === "All" ? "active" : ""} onClick={() => onTopicChange("All")}>All topics</button>{YOUTUBE_TOPICS.map((topic) => <button type="button" key={topic} className={workspace.selectedTopic === topic ? "active" : ""} onClick={() => onTopicChange(topic)}>{topic}</button>)}</div>
     </>}
-    {workspace.videos.length ? <VideoList videos={videos} savedIds={savedIds} reasons={searchReasons} smartSearchRan={smartSearchRan} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /> : <EmptyVideoSetup onOpenSettings={onOpenSettings} />}
+    {workspace.videos.length || workspace.activeTab !== "discover" ? <VideoList videos={videos} savedIds={savedIds} reasons={searchReasons} smartSearchRan={smartSearchRan} emptyState={workspace.activeTab === "saved" ? "saved" : workspace.activeTab === "history" ? "history" : "search"} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} /> : <EmptyVideoSetup onOpenSettings={onOpenSettings} />}
     {workspace.activeTab === "discover" && workspace.videos.length > 0 && <div className="video-show-more" ref={showMoreRef}><button type="button" className="small-load-button" onClick={onShowMore} disabled={Boolean(workspace.searchText.trim() && !searchHasMore)}>Show more approved videos</button></div>}
     {workspace.videos.length > 0 && <p className="video-library-note">{workspace.videos.length.toLocaleString()} approved videos available · No view, like, or comment counts are shown{workspace.lastSyncAt ? ` · Last refresh ${new Date(workspace.lastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : ""}</p>}
     {void onPlaybackPosition}
