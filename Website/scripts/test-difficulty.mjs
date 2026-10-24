@@ -103,7 +103,7 @@ test('actual Mac feedback handler and generation lookup use the shared topic key
   const code=source.slice(source.indexOf('  function weightedTopicPaths('),source.indexOf('  function updateTopicById('))
     +source.slice(source.indexOf('  function recordFeedback('),source.indexOf('  async function signIn('));
   const state={settings:{obscurity:5},profile:{},cards:['a','b','c'].map(id=>({id,topicPath:topic}))};
-  const context={state,difficultyEngine:mac,selectedTopics:()=>[{path:topic}],flatTopics:()=>[],showToast:()=>{},saveState:()=>{},render:()=>{}};
+  const context={state,shared:{selectWeightedTopicPaths:()=>[{path:topic,weight:10}]},difficultyEngine:mac,selectedTopics:()=>[{path:topic}],flatTopics:()=>[],showToast:()=>{},saveState:()=>{},render:()=>{}};
   runInNewContext(code+'; recordFeedback("a","heard");recordFeedback("b","heard");recordFeedback("c","heard");result=weightedTopicPaths(1);',context);
   assert.equal(context.result[0].difficulty,6);
   assert.equal(state.profile[key].targetDifficulty,6);

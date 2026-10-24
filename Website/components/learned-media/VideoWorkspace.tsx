@@ -124,7 +124,12 @@ function VideoList({ videos, savedIds, reasons, smartSearchRan, emptyState = "se
 }
 
 function VideoTabs({ activeTab, savedCount, onTabChange }: { activeTab: YouTubeWorkspaceState["activeTab"]; savedCount: number; onTabChange: (tab: YouTubeWorkspaceState["activeTab"]) => void }) {
-  return <div className="video-tabs" role="tablist" aria-label="Video views">{([["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]] as const).map(([tab, label]) => <button type="button" role="tab" aria-selected={activeTab === tab} className={activeTab === tab ? "active" : ""} key={tab} onClick={() => onTabChange(tab)}>{label}{tab === "saved" && savedCount ? <small>{savedCount}</small> : null}</button>)}</div>;
+  return <div className="video-tabs" role="tablist" aria-label="Video views" onKeyDown={event => {
+    const buttons=Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button'));
+    const current=buttons.indexOf(document.activeElement as HTMLButtonElement);let next:number;
+    if(event.key==='ArrowRight')next=(current+1)%buttons.length;else if(event.key==='ArrowLeft')next=(current+buttons.length-1)%buttons.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=buttons.length-1;else return;
+    event.preventDefault();buttons[next]?.focus();buttons[next]?.click();
+  }}>{([["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]] as const).map(([tab, label]) => <button type="button" role="tab" aria-selected={activeTab === tab} tabIndex={activeTab === tab ? 0 : -1} className={activeTab === tab ? "active" : ""} key={tab} onClick={() => onTabChange(tab)}>{label}{tab === "saved" && savedCount ? <small>{savedCount}</small> : null}</button>)}</div>;
 }
 
 export function VideoWorkspace({ workspaceId, workspace, videoById, channelById, videosByChannel, youtubeStatus, progress, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, searchHasMore, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, playbackFlushRef, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
@@ -204,7 +209,7 @@ export function VideoWorkspace({ workspaceId, workspace, videoById, channelById,
     {(youtubeStatus === "connecting" || youtubeStatus === "refreshing") && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
     {youtubeStatus === "error" && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
     {workspace.libraryIncomplete && youtubeStatus !== "connecting" && youtubeStatus !== "refreshing" && <div className="video-incomplete"><Icon name="help" size={15} /> This library is still incomplete. You can browse now and resume importing from Settings</div>}
-    <div className="video-tabs" role="tablist" aria-label="Video views">{([["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]] as const).map(([tab, label]) => <button type="button" role="tab" aria-selected={workspace.activeTab === tab} className={workspace.activeTab === tab ? "active" : ""} key={tab} onClick={() => onTabChange(tab)}>{label}{tab === "saved" && workspace.savedIds.length ? <small>{workspace.savedIds.length}</small> : null}</button>)}</div>
+    <VideoTabs activeTab={workspace.activeTab} savedCount={workspace.savedIds.length} onTabChange={onTabChange} />
     {workspace.activeTab === "discover" && <>
       <div className="video-controls"><label className="video-search"><Icon name="search" size={16} /><input type="search" value={workspace.searchText} onChange={(event) => onSearchChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onSmartSearch(); } }} placeholder="Search approved videos" aria-label="Search approved videos" enterKeyHint="search" /></label><button type="button" className="ghost-button" onClick={onSmartSearch} disabled={smartSearchLoading || !workspace.searchText.trim()} title="Search by meaning in the approved catalog">{smartSearchLoading ? "Searching" : "Smart search"}</button></div>
       <SearchProgress loading={smartSearchLoading} phase={searchPhase} onCancel={onCancelSearch} />

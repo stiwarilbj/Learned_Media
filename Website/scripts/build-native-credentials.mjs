@@ -1,4 +1,5 @@
-import {readFileSync, writeFileSync} from 'node:fs';
+import {readFileSync} from 'node:fs';
+import { writeFileSync } from "./generated-output.mjs";
 import ts from 'typescript';
 const source=readFileSync(new URL('../lib/account-credentials.ts',import.meta.url),'utf8');
 const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText;

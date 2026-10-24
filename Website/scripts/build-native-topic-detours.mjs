@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { writeFileSync } from "./generated-output.mjs";
 import ts from 'typescript';
 
 const compiled = ts.transpileModule(readFileSync(new URL('../lib/topic-detours.ts', import.meta.url), 'utf8'), {

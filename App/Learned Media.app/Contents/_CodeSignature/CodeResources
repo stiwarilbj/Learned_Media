@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		T8TFGII8pgcK0Qp5898Fk8pbKKc=
+		XlrHH5Ro63rYDy5TvSsBhGVrFgE=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -43,6 +43,10 @@
 		<key>Resources/frontend/card-reveal.js</key>
 		<data>
 		wU/KJkyWiAzavqrAZ0dvzXf5ZrI=
+		</data>
+		<key>Resources/frontend/card-search.worker.js</key>
+		<data>
+		2qligeyL5fqmWRkBiXqdYcuzPA0=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -90,7 +94,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		D7Yg2wxK8kTJsxe6UdAsp8wmxcI=
+		67nkd68ew0asIMV9Hh+QZmUXoQg=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -116,9 +120,17 @@
 		<data>
 		ySB25SCJh069uTgY0aOb4dgSq2g=
 		</data>
+		<key>Resources/frontend/release.json</key>
+		<data>
+		4TWuVq/0TPdlXdfXjOYqldMLHVA=
+		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
 		w3GJIKbediFtD8+kJZtic9O8h3g=
+		</data>
+		<key>Resources/frontend/shared-policy.js</key>
+		<data>
+		9OuWR+Vt7FyPuQTlsu4qa8A9ab4=
 		</data>
 		<key>Resources/frontend/snapshot-validation.js</key>
 		<data>
@@ -130,7 +142,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		/l6A8tMlDBkVHki7j1RwavbJGQ8=
+		Vah9SRnZ/nmvw37bHobVvi9GI6A=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -164,13 +176,17 @@
 		<data>
 		R0Rf0SIHPKEz/c4HPeuSP0amers=
 		</data>
+		<key>Resources/frontend/windowed-list.js</key>
+		<data>
+		7TDCAHrzzf9W5J9RQ87c+XMCNEM=
+		</data>
 		<key>Resources/frontend/writers-catalog.js</key>
 		<data>
 		sxblcZT1t8kt5waMcL8vhUUJlNg=
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
-		/sQRuc0Vh70+YvE6pOrJpyZhJhA=
+		+b0M9M/8XGYdNCQe8sKNUclmv9g=
 		</data>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<data>
@@ -205,7 +221,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			qv2kUAjel2P0bvVZJQKZCGdhzmollxFNnYaVI/oGXKU=
+			tnVwnXpmiP+QKxcl8IkzZPipZlSSgGjgklTbu0KK9Yw=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -255,6 +271,13 @@
 			<key>hash2</key>
 			<data>
 			PNe7Ix46wSMPkACQqStMm+0dVHeLFrFtYwsWf/Ps6Bo=
+			</data>
+		</dict>
+		<key>Resources/frontend/card-search.worker.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			3kh2bpngYxtT0pFx6eb6sByiLXTwMqs5c5Hlosxph7Y=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -338,7 +361,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ts5RqnXi7edYEOYJsoHkBuoDJ5Z1p4ZD6coAcvLBk70=
+			kjxlY9SunajRkNXWioN2ibUY5ga4/2Dox7vBSFet7uk=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -383,11 +406,25 @@
 			+lltZLhBYbLQdSFnk59RTrodN3mTk4qzUpAPznPzpzI=
 			</data>
 		</dict>
+		<key>Resources/frontend/release.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			C1f6rmegQNCxI3heM+bFgdTW8jzPZ+E4IhfCRkDAtxk=
+			</data>
+		</dict>
 		<key>Resources/frontend/session-cache.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			lJ7U/En8EI8EITmDHqD3kSLjrOrvdEA3TBUblfx5oDk=
+			</data>
+		</dict>
+		<key>Resources/frontend/shared-policy.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			HYOZoRlQ7LJsjrbHwM4QVD35rJLhKKQRAWmvQlutOUc=
 			</data>
 		</dict>
 		<key>Resources/frontend/snapshot-validation.js</key>
@@ -408,7 +445,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			T8CZ286V1Rzxqi1iCk8XIWkLelyd2calcBazrQepW5I=
+			h1cButQ9+ab5PpTNSPsOEZiSHzEp9zQPl2BqrEzqJGY=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
@@ -467,6 +504,13 @@
 			8inwrHAkWsVd9K4cq8hax4I2CmR1j9o4RZ+AAiqEXD4=
 			</data>
 		</dict>
+		<key>Resources/frontend/windowed-list.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			GoiVIpSRrsHqD0bWcubjP2ib+A/j0dUDjx+F3REHeHA=
+			</data>
+		</dict>
 		<key>Resources/frontend/writers-catalog.js</key>
 		<dict>
 			<key>hash2</key>
@@ -478,7 +522,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			L5I1aHuvx2gXqY85P3PFA5ZCb75J9BwDZZTBYhduC5o=
+			bN6cSWbMu3YF0C+TDwGVBOhAexyNJ29E9YycOUoHACM=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>

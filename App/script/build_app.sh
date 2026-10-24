@@ -12,6 +12,7 @@ case "$MODE" in
   native) ARCH="$(uname -m)"; [[ "$ARCH" == "arm64" || "$ARCH" == "x86_64" ]] || { echo "Unsupported Mac architecture: $ARCH" >&2; exit 2; } ;;
   *) echo "Usage: $0 [native|arm64|x86_64]" >&2; exit 2 ;;
 esac
+node "$ROOT_DIR/../Website/scripts/build-native-shared.mjs" --check
 swift build -c release --arch "$ARCH"
 BIN_DIR="$(swift build -c release --arch "$ARCH" --show-bin-path)"
 APP_DIR="$ROOT_DIR/Learned Media.app"
@@ -24,6 +25,8 @@ cp "$BIN_DIR/LearnedMediaApp" "$MACOS_DIR/LearnedMediaApp"
 chmod +x "$MACOS_DIR/LearnedMediaApp"
 cp -R "$ROOT_DIR/Resources/frontend" "$RESOURCES_DIR/frontend"
 cp "$ROOT_DIR/Resources/Config.plist" "$RESOURCES_DIR/Config.plist"
+BUILD_NUMBER="$(date -u +%Y%m%d%H%M%S)"
+RELEASE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["releaseId"])' "$ROOT_DIR/Resources/frontend/release.json")"
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -35,7 +38,9 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Learned Media</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
+  <key>LMReleaseIdentifier</key><string>$RELEASE_ID</string>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleURLTypes</key>
@@ -44,4 +49,5 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 codesign --force --deep --sign - "$APP_DIR" >/dev/null
+codesign --verify --deep --strict "$APP_DIR"
 echo "Built $APP_DIR ($ARCH, ad-hoc signed)"

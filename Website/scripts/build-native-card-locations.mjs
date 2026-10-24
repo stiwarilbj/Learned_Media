@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, copyFileSync, mkdirSync } from "node:fs";
+import { readFileSync,  copyFileSync, mkdirSync } from "node:fs";
+import { writeFileSync } from "./generated-output.mjs";
 import ts from "typescript";
 
 const source = new URL("../lib/card-locations.ts", import.meta.url);

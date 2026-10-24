@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeFileSync } from "./generated-output.mjs";
 import ts from "typescript";
 const source = new URL("../lib/video-semantic.ts", import.meta.url);
 const target = new URL("../../App/Resources/frontend/video-semantic.js", import.meta.url);

@@ -1,0 +1,5 @@
+version = 1
+[[actions]]
+name = "Run"
+icon = "run"
+command = "./App/script/build_and_run.sh --verify"

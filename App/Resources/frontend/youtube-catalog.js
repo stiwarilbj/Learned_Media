@@ -2,20 +2,11 @@
   "use strict";
   const background = window.LEARNED_MEDIA_BACKGROUND;
 
-  const CHANNELS = [
-    ["History Matters"], ["Election History"], ["Secret Base"], ["Geo History"], ["Great Books Explained"], ["BooneU"], ["Joon Lee"], ["TLDR News Global"], ["Mr. Beat"], ["The Generalist Papers"], ["CGP Grey", "@CGPGrey"], ["Power Politics"], ["Half as Interesting"], ["Hoser"], ["The History Guy: History Deserves to Be Remembered"], ["History Buffs Hub"], ["Ceramic", "@ceramic01"], ["Reading Through History"], ["Atlas Pro"], ["African Biographics"], ["Phil Edwards"], ["Tor’s Cabinet of Curiosities"], ["Extra History"], ["Justin Portela"], ["Patrick Kelly"], ["Historically"], ["Mental Floss"], ["Crash Course"], ["SciShow"], ["OverSimplified"], ["vlogbrothers"], ["Sam O’Nella Academy"], ["3Blue1Brown", null, "UCYO_jab_esuFRV4b17AJtAw", ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi", "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"]], ["Shawn Grows"], ["General Knowledge"], ["Jay Hona"], ["Veritasium"], ["theweeklyjack", "@theweeklyjack1"], ["Jackdaw"], ["Grist"], ["Bizarre Beasts"], ["Ze Frank"], ["Make Thing With Hand"], ["Be Smart"], ["PBS Eons"], ["Deep Look"], ["MinuteEarth"], ["minutephysics"], ["Brailor"], ["hydn"], ["ExtinctZoo", "@ExtinctZoo"],
-    ["PBS Terra", "@pbsterra", "UCpxYSWgxVt3Pyn1ovXsGQ0g"], ["PolyMatter", "@PolyMatter", "UCgNg3vwj3xt7QOrcIDaHdDQ"], ["AlternateHistoryHub", "@AlternateHistoryHub", "UClfEht64_NrzHf8Y0slKEjw"], ["J.J. McCullough", "@JJMcCullough", "UCyhOl6uRlxryALlT5yifldw"], ["Primer", "@primerlearning", "UCKzJFdi57J53Vr_BkTfN3uQ"], ["Primal Space", "@primalspace", "UClZbmi9JzfnB2CEb0fG8iew"], ["Mitsi Studio", "@mitsistudio", "UCuXCgyOCMXic7j0_wghXnRA"], ["Jabroni Baseball", "@JabroniBaseball", "UCfBXZotQqPlpDWXTbRbi2qA"]
-  ];
-  const DEFAULT_RECENCY_PREFERENCES = Object.fromEntries(CHANNELS.map(function (entry) { return [entry[0], entry[0] === "Crash Course" || entry[0] === "Mental Floss"]; }));
-  const INDIVIDUALS = [
-    ["melodysheep", "TIMELAPSE OF THE ENTIRE UNIVERSE", "TBikbn5XJhg"],
-    ["Ollie Bye", "The History of the World: Every Year", "-6Wu0Q7x5D0"],
-    ["Ollie Bye", "Top 5 Tallest Buildings Throughout History", "0MobSmVpvTM"],
-    ["Ollie Bye", "The Largest Cities Throughout History: Every Year", "kptMVQRud5c"],
-    ["Ollie Bye", "The Spread of Writing: Every Year", "eUpJ4yVCNrI"],
-    ["American Museum of Natural History", "Human Population Through Time (Updated in 2023)", "vJ5p3pZlBi4"]
-  ];
-  const TOPICS = ["History", "Politics", "Geography", "Science", "Nature", "Mathematics", "Literature", "Sports", "Culture", "Technology"];
+  const policy = window.LEARNED_MEDIA_SHARED.youtube;
+  const CHANNELS = policy.APPROVED_YOUTUBE_CHANNELS.map(function(seed){return [seed.name,seed.handle,seed.channelId,seed.playlistIds,seed.titleAliases];});
+  const DEFAULT_RECENCY_PREFERENCES = policy.DEFAULT_YOUTUBE_RECENCY_PREFERENCES;
+  const INDIVIDUALS = policy.APPROVED_INDIVIDUAL_VIDEOS.map(function(seed){return [seed.creator,seed.title,seed.videoId];});
+  const TOPICS = policy.YOUTUBE_TOPICS;
   const THREE_BLUE = "UCYO_jab_esuFRV4b17AJtAw";
   const THREE_BLUE_PLAYLISTS = ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi", "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"];
 
@@ -45,11 +36,7 @@
     return Promise.all(Array.from({ length: Math.min(limit, items.length) }, run)).then(function () { return results; });
   }
   function sourceIdFor(seed) { return "individual:" + (seed[2] || norm(seed[1])); }
-  function isAllowed(video) {
-    if (!video || !video.approved || /#shorts?\b|\byoutube shorts?\b|\bshorts video\b/i.test(video.title || "") || /#shorts?\b/i.test(video.description || "") || (video.tags || []).some(function(tag){return ["shorts","youtube short","youtube shorts"].includes(norm(tag));})) return false;
-    if (video.channelId === THREE_BLUE || norm(video.channelName) === "3blue1brown") return video.special === true || (video.sourceIds || []).some(function (sourceId) { return THREE_BLUE_PLAYLISTS.indexOf(String(sourceId).replace(/^playlist:/, "")) >= 0; });
-    return true;
-  }
+  function isAllowed(video) { return policy.isApprovedYouTubeVideo(video); }
   async function resolveChannel(seed, key) {
     let payload;
     if (seed[2]) payload = await request("channels", { part: "snippet,contentDetails", id: seed[2] }, key);
@@ -61,7 +48,7 @@
       payload = await request("channels", { part: "snippet,contentDetails", id: match.id.channelId }, key);
     }
     const item = payload.items && payload.items[0];
-    if (!item || !item.id || (seed[2] && item.id !== seed[2]) || norm(item.snippet && item.snippet.title) !== norm(seed[0])) throw new Error("YouTube returned a different channel for “" + seed[0] + "”.");
+    if (!item || !item.id || (seed[2] && item.id !== seed[2]) || ![seed[0]].concat(seed[4] || []).some(function(title){return norm(item.snippet && item.snippet.title) === norm(title);})) throw new Error("YouTube returned a different channel for “" + seed[0] + "”.");
     return { id: item.id, name: item.snippet.title || seed[0], handle: item.snippet.customUrl || seed[1], thumbnailUrl: item.snippet.thumbnails && item.snippet.thumbnails.default && item.snippet.thumbnails.default.url, uploadsPlaylistId: item.contentDetails && item.contentDetails.relatedPlaylists && item.contentDetails.relatedPlaylists.uploads, videoCount: 0, approved: true, sourceKind: seed[3] && seed[3].length ? "playlists" : "uploads", approvedPlaylistIds: seed[3] || [] };
   }
   function createMetadataLoader(key, assertCurrent) {
@@ -84,7 +71,7 @@
   }
   async function importPlaylist(channel, playlistId, sourceId, key, metadata, pages, committedAt, assertCurrent) {
     const checkpoints = window.LEARNED_MEDIA_YOUTUBE_CHECKPOINTS;
-    const identity = checkpoints.importPageIdentity(3, channel.id, playlistId);
+    const identity = checkpoints.importPageIdentity(policy.YOUTUBE_CATALOG_VERSION, channel.id, playlistId);
     let checkpoint = await checkpoints.openImportCheckpoint(pages, sourceId, identity, committedAt, assertCurrent), restarted = false;
     while (checkpoint.nextPageToken !== null) {
       assertCurrent();
@@ -112,6 +99,7 @@
       if (!item.id || item.status && item.status.privacyStatus && item.status.privacyStatus !== "public" || item.snippet && item.snippet.channelId && item.snippet.channelId !== channel.id) return;
       const snippet = item.snippet || {}; const title = String(snippet.title || "").trim(); if (!title || !snippet.publishedAt) return;
       const seconds = duration(item.contentDetails && item.contentDetails.duration);
+      if(policy.isYouTubeShortMetadata({title:title,description:snippet.description||"",tags:snippet.tags||[],publishedAt:snippet.publishedAt,durationSeconds:seconds,thumbnails:Object.values(snippet.thumbnails||{})}))return;
       videos.push({ id: item.id, channelId: channel.id, channelName: snippet.channelTitle || channel.name, title: title, description: snippet.description || "", tags: snippet.tags || [], publishedAt: snippet.publishedAt, durationSeconds: seconds, durationLabel: durationLabel(seconds), thumbnailUrl: snippet.thumbnails && ((snippet.thumbnails.high || snippet.thumbnails.medium || snippet.thumbnails.default) || {}).url, embedAvailable: !(item.status && item.status.embeddable === false), topics: topics(channel.name, title, snippet.description || "", snippet.tags || []), approved: true, sourceIds: [sourceId], metadataRefreshedAt: new Date().toISOString() });
     });
     return videos;
@@ -171,7 +159,7 @@
         else if (job.kind === "playlist") videos = await importPlaylist(job.channel, job.playlistId, job.sourceId, key, metadata, pages, committedAt, assertCurrent);
         else {
           const checkpoints = window.LEARNED_MEDIA_YOUTUBE_CHECKPOINTS;
-          const checkpoint = await checkpoints.openImportCheckpoint(pages, job.sourceId, checkpoints.importPageIdentity(3, job.seed[0], job.seed[2] || job.seed[1]), committedAt, assertCurrent);
+          const checkpoint = await checkpoints.openImportCheckpoint(pages, job.sourceId, checkpoints.importPageIdentity(policy.YOUTUBE_CATALOG_VERSION, job.seed[0], job.seed[2] || job.seed[1]), committedAt, assertCurrent);
           if (checkpoint.nextPageToken !== null) {
             const video = await resolveIndividual(job.seed, verified.map(function (entry) { return entry.channel; }), key, metadata);
             assertCurrent(); await checkpoint.append(isAllowed(video) ? [video] : [], null);
@@ -231,10 +219,8 @@
     return matched.length / wanted.length;
   }
   function searchCandidates(videos, plan, topic, channelId, limit, excludedIds) { return window.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(videos, plan, topic, channelId, limit || 80, excludedIds || []); }
-  function shuffle(videos, count, exclude) {
-    const skip = {}; (exclude || []).forEach(function (id) { skip[id] = true; }); const groups = {}; (videos || []).forEach(function (video) { if (isAllowed(video) && !skip[video.id]) (groups[video.channelId] = groups[video.channelId] || []).push(video); }); const list = Object.keys(groups).map(function (key) { const group = groups[key].slice(); group.sort(function () { return Math.random() - .5; }); return group; }).sort(function () { return Math.random() - .5; }); const result = [];
-    while (result.length < count && list.length) { let added = false; list.forEach(function (group) { if (result.length < count && group.length) { result.push(group.shift()); added = true; } }); if (!added) break; }
-    return result;
+  function shuffle(videos, count, exclude, preferences) {
+    return policy.selectRandomVideos((videos || []).filter(isAllowed),count,exclude || [],preferences || DEFAULT_RECENCY_PREFERENCES);
   }
   window.LEARNED_MEDIA_YOUTUBE = { CHANNELS: CHANNELS, TOPICS: TOPICS, DEFAULT_RECENCY_PREFERENCES: DEFAULT_RECENCY_PREFERENCES, sync: sync, filter: filter, searchCandidates: searchCandidates, shuffle: shuffle };
 })();

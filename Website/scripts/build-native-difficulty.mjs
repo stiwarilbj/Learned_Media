@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeFileSync } from "./generated-output.mjs";
 import ts from "typescript";
 const policy = JSON.parse(readFileSync(new URL("../lib/difficulty-policy.json", import.meta.url), "utf8"));
 const quote = JSON.stringify;

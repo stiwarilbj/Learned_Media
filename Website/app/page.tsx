@@ -1,5 +1,7 @@
 "use client";
 
+import { cardSearchText } from "@/lib/card-search-text";
+
 import dynamic from "next/dynamic";
 import { CardDownloadsProvider } from "@/components/learned-media/CardDownloads";
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
@@ -101,9 +103,7 @@ function compactStateForLocalStorage(state: PersistedState) {
 }
 
 
-function cardSearchText(card: FactCard) {
-  return `${card.hook} ${card.title} ${card.body} ${card.topicPath.join(" ")} ${card.sources.map((source) => source.title).join(" ")}`;
-}
+
 
 function compactWorkspaceStoreForLocalStorage(store: AppWorkspaceStore): WorkspaceStore<PersistedState> {
   const compact: WorkspaceStore<PersistedState> = {
@@ -2452,6 +2452,7 @@ export default function HomePage() {
 
   const updateQuestionDetailPreference = useCallback((id: string, detailed: boolean) => {
     setQuestionDrafts((current) => current[id]?.detailed === detailed ? current : { ...current, [id]: { ...current[id], detailed } });
+    setCards((current) => current.map((card) => card.id === id && card.questionDetailed !== detailed ? { ...card, questionDetailed: detailed } : card));
   }, []);
 
   const handleCardAction = useCallback((id: string, action: FactCardAction) => {

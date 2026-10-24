@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { writeFileSync } from "./generated-output.mjs";
 import ts from 'typescript';
 const code = ts.transpileModule(readFileSync(new URL('../lib/snapshot-validation.ts', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }

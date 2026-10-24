@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "releaseId": "9337ed4da394d0eea6b797ec6f8c90a78550c7e87f0bf108b37c8f672cdb0b04",
+  "catalogVersion": 28,
+  "youtubeCatalogVersion": 5,
+  "generationDefault": 7,
+  "policies": {
+    "difficulty": "difficulty-v2",
+    "topicSearch": 8,
+    "videoSearch": 9,
+    "evidence": "wikipedia-passages-v1"
+  },
+  "sharedPolicy": "shared-policy.js",
+  "platforms": [
+    "web",
+    "macOS"
+  ]
+}

@@ -139,7 +139,7 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
             <VirtualizedRows items={cards} columns={1} estimatedHeight={settings.displayMode === "text" ? 490 : 660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} onViewportRangeChange={handleViewportRangeChange} />
             {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> {topicDetour?.phase === "generating" ? "Gemini is building your topic detour" : "Gemini is building the next facts"}</div>}
             {generationError && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry} disabled={loading} aria-busy={loading}>Retry missing facts</button></div>}
-            {canLoadMore && !topicDetour && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 10 more</button></div>}
+            {canLoadMore && !topicDetour && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 7 more</button></div>}
           </div>
         </section>
       </div>

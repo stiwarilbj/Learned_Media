@@ -1631,3 +1631,6 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
 .export-controls select { width:100%; min-width:0; max-width:100%; }
 .export-controls > button { justify-self:start; }
 .download-feedback { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:12px; overflow-wrap:anywhere; }
+
+/* Native icons use a span wrapper; compact labels must not hide the icons. */
+.top-nav-link > .icon { display: inline-flex; flex: 0 0 auto; }

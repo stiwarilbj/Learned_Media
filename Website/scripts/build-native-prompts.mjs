@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeFileSync } from "./generated-output.mjs";
 const rules = JSON.parse(readFileSync(new URL("../lib/prompt-instructions.json", import.meta.url), "utf8"));
 const quote = value => JSON.stringify(value);
 const entries = Object.entries(rules).map(([key, values]) => `        ${quote(key)}: [${values.map(quote).join(", ")}]`).join(",\n");
