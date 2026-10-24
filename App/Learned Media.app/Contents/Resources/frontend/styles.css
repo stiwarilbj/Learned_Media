@@ -446,6 +446,9 @@ a { color: inherit; }
 .small-load-button { border: 1px solid #b9dcf7; border-radius: 999px; background: #dff1ff; color: #2d6ea7; padding: 8px 13px; font-size: 10px; font-weight: 850; box-shadow: none; }
 .small-load-button:hover { background: #cbe9fc; border-color: #9ec9ee; transform: none; }
 .feed-progress { display: flex; align-items: center; gap: 8px; min-height: 50px; margin: 12px 0 20px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: rgba(239, 248, 255, .68); color: var(--muted); font-size: 11px; }
+.topic-detour-status { display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; max-width: 100%; padding: 7px 10px; border: 1px solid #d4c8f0; border-radius: 999px; background: #f4efff; color: #675293; font-size: 10px; font-weight: 800; }
+.topic-detour-status button { flex: 0 0 auto; border: 0; border-radius: 999px; padding: 4px 7px; background: transparent; color: #675293; font-size: 9px; font-weight: 850; text-decoration: underline; text-underline-offset: 2px; }
+.topic-detour-status button:focus-visible { outline: 2px solid #7662a6; outline-offset: 2px; }
 .custom-topic-input-wrap button, .feed-custom-topic button { background: #d9efff !important; border-color: #b6d9f4 !important; color: #2f72ab !important; }
 .custom-topic-input-wrap button:hover, .feed-custom-topic button:hover { background: #c9e8fb !important; border-color: #9fc9ec !important; }
 

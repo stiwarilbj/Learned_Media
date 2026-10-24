@@ -27,6 +27,7 @@
   const cardChronology = window.LEARNED_MEDIA_CARD_CHRONOLOGY;
   const cardLocations = window.LEARNED_MEDIA_CARD_LOCATIONS;
   const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
+  const topicDetours = window.LEARNED_MEDIA_TOPIC_DETOURS;
   const sourceSpotlightStates = new Map();
   const sourceSpotlightRequests = new Map();
   let adaptationRequest = null;
@@ -112,6 +113,7 @@
     errorByCard: {},
     generationError: "",
     pendingSlots: 7,
+    topicDetour: null,
     youtubeSearchPhase: "idle",
     youtubeSearchError: "",
     connectionToken: 0,
@@ -212,6 +214,13 @@
   const pending = new Map();
   let requestID = 0;
   let generationToken = 0;
+  let activeGenerationTask = null;
+  let activeGenerationDetourId = null;
+  let suppressTopicDetourScroll = false;
+  let topicDetourProgressFrame = 0;
+  let pendingTopicDetourAnchor = null;
+  let topicDetourCompletionNotice = "";
+  let topicDetourCompletionTimer = null;
   let topicTreeScrollTop = 0;
   let mainScrollTop = 0;
   let focusedTopicId = null;
@@ -357,6 +366,7 @@
       else if (key === "onClick") element.addEventListener("click", value);
       else if (key === "onInput") element.addEventListener("input", value);
       else if (key === "onFocus") element.addEventListener("focus", value);
+      else if (key === "onFocusCapture") element.addEventListener("focusin", value);
       else if (key === "onBlur") element.addEventListener("blur", value);
       else if (key === "onChange") element.addEventListener("change", value);
       else if (key === "onKeydown") element.addEventListener("keydown", value);
@@ -475,9 +485,13 @@
     }
     if (message.type === "generationCard" && message.token === state.generationRequestToken && state.started) {
       const raw = message.card;
-      if (!acceptNewFact(raw, state.activeGenerationSentenceLength)) return;
+      const assignment = message.detourId && Number.isInteger(message.detourSlot) ? { id: message.detourId, slot: message.detourSlot } : undefined;
+      if (!acceptNewFact(raw, state.activeGenerationSentenceLength, assignment)) return;
       saveState();
       render();
+      if (assignment) requestAnimationFrame(function () {
+        if (state.topicDetour && state.topicDetour.id === assignment.id) checkNativeTopicDetourProgress();
+      });
     }
   };
   function flatTopics(nodes, parentPath) {
@@ -605,6 +619,11 @@
   }
   function difficultyLabel(value) { return DIFFICULTY_LABELS[Math.max(1, Math.min(10, Number(value) || 5))]; }
   function wikiURL(title) { return "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(title).replace(/\s+/g, "_")); }
+  function clearTopicDetourCompletionNotice() {
+    if (topicDetourCompletionTimer !== null) window.clearTimeout(topicDetourCompletionTimer);
+    topicDetourCompletionTimer = null;
+    topicDetourCompletionNotice = "";
+  }
   function showToast(message) {
     state.toast = message || "";
     render();
@@ -681,11 +700,24 @@
     const item = memoryOf(card);
     return Boolean(factNoveltyIndex.findDuplicate(item));
   }
-  function acceptNewFact(raw, expectedSentenceLength) {
+  function acceptNewFact(raw, expectedSentenceLength, detourAcceptance) {
     if (!raw || !raw.id || !raw.body || !hasExactSentenceCount(raw.body, expectedSentenceLength === undefined ? state.settings.sentenceLength : expectedSentenceLength) || repeatedFact(raw)) return false;
     const card = normalizeCard(raw);
-    archiveFacts([card]);
-    state.cards.push(card);
+    const detour = detourAcceptance && state.topicDetour && state.topicDetour.id === detourAcceptance.id ? state.topicDetour : null;
+    if (detour) {
+      const acceptedDetour = topicDetours.acceptTopicDetourCard(detour, detourAcceptance.slot, card.id);
+      if (acceptedDetour === detour) return false;
+      if (!pendingTopicDetourAnchor) {
+        const root = document.querySelector(".main-scroll");
+        const rootTop = root ? root.getBoundingClientRect().top : 0;
+        const rootBottom = root ? root.getBoundingClientRect().bottom : window.innerHeight;
+        const visibleCard = root && Array.from(root.querySelectorAll("[data-card-id]")).find(function (element) { var bounds = element.getBoundingClientRect(); return bounds.bottom > rootTop && bounds.top < rootBottom; });
+        if (visibleCard && visibleCard.dataset.cardId) pendingTopicDetourAnchor = { workspaceId: detour.workspaceId, cardId: visibleCard.dataset.cardId, top: visibleCard.getBoundingClientRect().top };
+      }
+      archiveFacts([card]);
+      state.topicDetour = acceptedDetour;
+      state.cards = topicDetours.orderTopicDetourCards(state.cards, state.topicDetour, card);
+    } else { archiveFacts([card]); state.cards.push(card); }
     state.batchAccepted += 1;
     return true;
   }
@@ -1156,6 +1188,7 @@
     focusedMoreCardId = card.id;
     if (action === "reveal") cardReveal.startCardReveal(state.workspaceId, card.id, cardReveal.buildCardRevealModel(card.body, sourceSpotlight.buildSourceSpotlightModel(card).mapped ? sourceSpotlight.buildSourceSpotlightModel(card).sentences : undefined));
     else if (action === "more") { card.moreLike = true; card.liked = true; showToast("Your mix will lean a little closer to this thread."); saveState(); }
+    else if (action === "topic-detour") { startTopicDetour(card); return; }
     else if (action === "less") { card.lessLike = true; showToast("We’ll keep this thread quieter for a while."); saveState(); }
     else {
       const label = (card.topicPath || []).slice(-1)[0];
@@ -1168,6 +1201,51 @@
     }
     render();
     if (action === "rabbit") startFeed();
+  }
+  function recordNativeTopicDetourProgress(cardId, phase) {
+    const detour = state.topicDetour;
+    if (!detour || detour.workspaceId !== state.workspaceId) return;
+    const result = topicDetours.markTopicDetourProgress(detour, cardId, phase);
+    if (result.completed) {
+      clearTopicDetourCompletionNotice();
+      topicDetourCompletionNotice = (detour.topicPath[detour.topicPath.length - 1] || "Topic") + " · 3 of 3";
+      topicDetourCompletionTimer = window.setTimeout(function () {
+        topicDetourCompletionTimer = null;
+        topicDetourCompletionNotice = "";
+        render();
+      }, 1400);
+      state.topicDetour = null;
+      state.pendingSlots = 7;
+      render();
+    } else if (result.detour !== detour) {
+      state.topicDetour = result.detour;
+      render();
+    }
+  }
+  function measureTopicDetourCard(cardId) {
+    const article = document.querySelector('article[data-card-id="' + CSS.escape(cardId) + '"]');
+    const root = document.querySelector(".main-scroll");
+    if (!article || !root || !state.topicDetour) return;
+    const bounds = article.getBoundingClientRect();
+    const rootBounds = root.getBoundingClientRect();
+    const phase = bounds.bottom <= rootBounds.top ? "passed" : bounds.top < rootBounds.bottom && bounds.bottom > rootBounds.top ? bounds.bottom <= rootBounds.bottom ? "bottom" : "visible" : null;
+    if (phase) recordNativeTopicDetourProgress(cardId, phase);
+  }
+  function checkNativeTopicDetourProgress() {
+    if (suppressTopicDetourScroll || !state.topicDetour) return;
+    const activeDetourId = state.topicDetour.id;
+    const ids = state.topicDetour.slotCardIds.filter(Boolean);
+    for (const id of ids) {
+      measureTopicDetourCard(id);
+      if (!state.topicDetour || state.topicDetour.id !== activeDetourId) return;
+    }
+  }
+  function handleNativeTopicDetourScroll() {
+    if (topicDetourProgressFrame) cancelAnimationFrame(topicDetourProgressFrame);
+    topicDetourProgressFrame = requestAnimationFrame(function () {
+      topicDetourProgressFrame = 0;
+      checkNativeTopicDetourProgress();
+    });
   }
   async function adaptCardExplanation(cardID, mode) {
     if (mode !== "simpler" && mode !== "deeper") { cancelCardAdaptation(cardID); return; }
@@ -1895,6 +1973,11 @@
     });
   }
   function cancelWorkspaceOperations() {
+    clearTopicDetourCompletionNotice();
+    if (activeGenerationTask && typeof activeGenerationTask.cancel === "function") activeGenerationTask.cancel();
+    activeGenerationTask = null;
+    activeGenerationDetourId = null;
+    state.topicDetour = null;
     cancelCardAdaptation();
     cancelCardGlossary();
     focusedLocationHeadingCardId = null;
@@ -1926,7 +2009,9 @@
   }
   function applyWorkspaceSnapshot(record) {
     const snapshot = record.state || record;
+    clearTopicDetourCompletionNotice();
     state.workspaceId = record.id || "local-workspace";
+    state.topicDetour = null;
     state.workspaceName = record.name || "Local Workspace";
     const catalogVersion = Number(snapshot.catalogVersion || snapshot.topicCatalogVersion || 0);
     state.topics = migrateTopics(snapshot.topics || makeTopics(), catalogVersion < 11, catalogVersion < 11);
@@ -2565,7 +2650,7 @@
     return box;
   }
   function cardElement(card) {
-    const article = node("article", { className: "fact-card accent-" + (card.accent || "blue") + (card.feedback ? " feedback-" + card.feedback : "") });
+    const article = node("article", { className: "fact-card accent-" + (card.accent || "blue") + (card.feedback ? " feedback-" + card.feedback : ""), dataset: { cardId: card.id }, onFocusCapture: function () { recordNativeTopicDetourProgress(card.id, "focus"); measureTopicDetourCard(card.id); } });
     const image = imageBlock(card);
     if (image) article.appendChild(image);
     const content = node("div", { className: "fact-content" });
@@ -2675,7 +2760,7 @@
     } }, svg("more", 17)));
     if (state.moreMenuCardId === card.id) {
       const menu = node("div", { id: moreMenuID, className: "fact-more-popover", role: "menu", ariaLabel: "More fact actions", onKeydown: handleMoreMenuKeydown });
-      [["reveal", "Reveal gradually", "sparkles"], ["more", "More like this", "sparkles"], ["rabbit", "Start rabbit hole", "arrow"], ["less", "Show fewer like this", "minus"]].forEach(function (option) {
+      [["reveal", "Reveal gradually", "sparkles"], ["topic-detour", "Three more from this topic", "sparkles"], ["rabbit", "Start rabbit hole", "arrow"], ["less", "Show fewer like this", "minus"]].forEach(function (option) {
         menu.appendChild(node("button", { type: "button", role: "menuitem", dataset: { moreMenuCard: card.id }, onClick: function () { runMoreCardAction(card, option[0]); } }, svg(option[2], 15), " ", option[1]));
       });
       moreMenu.appendChild(menu);
@@ -2688,21 +2773,28 @@
     const layout = node("div", { className: "feed-layout" });
     layout.appendChild(topicPanel(false));
     const column = node("section", { className: "feed-content-column" });
-    column.appendChild(node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" }))));
+    const toolbar = node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" })));
+    if (state.topicDetour || topicDetourCompletionNotice) {
+      const detour = state.topicDetour;
+      const status = detour ? detour.slotCardIds.some(function (id) { return !id; }) ? "Preparing three cards" : (detour.topicPath[detour.topicPath.length - 1] || "Topic") + " · " + Math.max(1, detour.furthestReached + 1) + " of 3" : topicDetourCompletionNotice;
+      toolbar.appendChild(node("div", { className: "topic-detour-status", role: "status", "aria-live": "polite" }, node("span", { text: status }), detour ? node("button", { type: "button", onClick: endTopicDetour }, "End early") : null));
+    }
+    column.appendChild(toolbar);
     const feedCards = state.cards;
     column.appendChild(node("div", { className: "feed-intro" }, node("div", {}, node("h1", { text: "Keep going." }), node("p", { text: "One small idea at a time. Every card has a place to look next." })), node("span", { className: "feed-count", text: feedCards.length + " cards in this session" })));
     const list = node("div", { className: "fact-feed" });
     feedCards.forEach(function (card, index) {
-      if (state.query && !(card.title + " " + card.body).toLowerCase().includes(state.query)) return;
-      if (!state.loading && !state.generationError && index === Math.max(feedCards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 7); } }, "Generate 7 more")));
+      const pinnedDetourCard = state.topicDetour && (card.id === state.topicDetour.sourceCardId || state.topicDetour.slotCardIds.includes(card.id));
+      if (state.query && !pinnedDetourCard && !(card.title + " " + card.body).toLowerCase().includes(state.query)) return;
+      if (!state.topicDetour && !state.loading && !state.generationError && index === Math.max(feedCards.length - 3, 0)) list.appendChild(node("div", { className: "feed-load-more-nearby" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 7); } }, "Generate 7 more")));
       list.appendChild(cardElement(card));
     });
-    if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), " Gemini is building the next facts"));
-    if (!state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 7); } }, "Generate 7 more")));
+    if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), state.topicDetour && activeGenerationDetourId === state.topicDetour.id ? " Gemini is building your topic detour" : " Gemini is building the next facts"));
+    if (!state.topicDetour && !state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 7); } }, "Generate 7 more")));
     column.appendChild(list);
     layout.appendChild(column);
     if (state.generationError && !state.loading) {
-      list.appendChild(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { type: "button", className: "secondary-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); state.generationError = ""; generateBatch(generationToken, state.pendingSlots); } }, "Retry missing facts")));
+      list.appendChild(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { type: "button", className: "secondary-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); state.generationError = ""; if (state.topicDetour) beginTopicDetourGeneration(state.topicDetour); else generateBatch(generationToken, state.pendingSlots); } }, "Retry missing facts")));
     }
     return node("div", { className: "feed-workspace" }, state.toast ? node("div", { className: "feed-toast" }, svg("check", 15), " ", state.toast) : null, layout);
   }
@@ -2861,11 +2953,13 @@
     else if (activeElement && activeElement !== document.body) { focusedFieldId = null; focusedSelection = null; }
     focusedQuestionCardId = activeElement && activeElement.dataset ? activeElement.dataset.cardId || null : null;
     focusedQuestionSelection = focusedQuestionCardId && typeof activeElement.selectionStart === "number" ? [activeElement.selectionStart, activeElement.selectionEnd] : null;
+    suppressTopicDetourScroll = true;
     document.body.classList.add("native-shell");
     app.replaceChildren();
     app.appendChild(navigation());
     const main = node("main", { className: "main-column" });
     const scroll = node("div", { className: "main-scroll" });
+    scroll.addEventListener("scroll", handleNativeTopicDetourScroll, { passive: true });
     scroll.appendChild(state.view === "settings" ? settingsView() : state.view === "videos" ? videosView() : state.view === "feed" && !state.started ? setupView() : state.view === "feed" ? feedView() : collectionView(state.view));
     scroll.appendChild(node("button", { type: "button", className: "go-to-top", onClick: function () { window.scrollTo({ top: 0, behavior: "smooth" }); const target = document.querySelector(".main-scroll"); if (target) target.scrollTo({ top: 0, behavior: "smooth" }); } }, "Go to top"));
     main.appendChild(scroll);
@@ -2905,6 +2999,12 @@
       if (nextTopicTree) nextTopicTree.scrollTop = topicTreeScrollTop;
       const nextMainScroll = document.querySelector(".main-scroll");
       if (nextMainScroll) nextMainScroll.scrollTop = mainScrollTop;
+      const detourAnchor = pendingTopicDetourAnchor;
+      pendingTopicDetourAnchor = null;
+      if (detourAnchor && detourAnchor.workspaceId === state.workspaceId && nextMainScroll) {
+        const anchor = Array.from(nextMainScroll.querySelectorAll("[data-card-id]")).find(function (element) { return element.dataset.cardId === detourAnchor.cardId; });
+        if (anchor) nextMainScroll.scrollTop += anchor.getBoundingClientRect().top - detourAnchor.top;
+      }
       if (focusedTopicId) {
         const focusTarget = Array.from(document.querySelectorAll("[data-topic-id]")).find(function (element) { return element.dataset.topicId === focusedTopicId; });
         if (focusTarget && typeof focusTarget.focus === "function") focusTarget.focus();
@@ -2994,6 +3094,7 @@
           if (title) title.focus();
         }
       }
+      suppressTopicDetourScroll = false;
     });
   }
   function statusLabel() {
@@ -3081,13 +3182,68 @@
     showToast(topic.label + " removed from your topic tree.");
     render();
   }
+  function beginTopicDetourGeneration(detour) {
+    if (!detour || !state.topicDetour || state.topicDetour.id !== detour.id) return;
+    const slotIndexes = topicDetours.missingTopicDetourSlots(detour);
+    if (!slotIndexes.length) return;
+    const request = { id: detour.id, topicPath: detour.topicPath.slice(), slotIndexes: slotIndexes };
+    state.topicDetour = Object.assign({}, detour, { phase: "generating" });
+    state.pendingSlots = slotIndexes.length;
+    state.generationError = "";
+    render();
+    generateBatch(generationToken, slotIndexes.length, request);
+  }
+  function startTopicDetour(card) {
+    if (!card || !Array.isArray(card.topicPath) || !card.topicPath.length) return;
+    clearTopicDetourCompletionNotice();
+    state.moreMenuCardId = null;
+    focusedMoreCardId = card.id;
+    if (!state.key.trim() || state.geminiStatus !== "connected") {
+      state.view = "settings";
+      showToast("Connect Gemini in Settings before creating three topic cards.");
+      return;
+    }
+    const next = topicDetours.createTopicDetour(state.workspaceId, card.id, card.topicPath);
+    if (state.loading && activeGenerationDetourId) {
+      if (activeGenerationTask && typeof activeGenerationTask.cancel === "function") activeGenerationTask.cancel();
+      generationToken += 1;
+      state.generationRequestToken += 1;
+      activeGenerationTask = null;
+      activeGenerationDetourId = null;
+      state.loading = false;
+    }
+    state.topicDetour = next;
+    state.view = "feed";
+    state.started = true;
+    state.generationError = "";
+    render();
+    if (!state.loading) beginTopicDetourGeneration(next);
+  }
+  function endTopicDetour() {
+    const detour = state.topicDetour;
+    if (!detour) return;
+    if (state.loading && activeGenerationDetourId === detour.id) {
+      if (activeGenerationTask && typeof activeGenerationTask.cancel === "function") activeGenerationTask.cancel();
+      generationToken += 1;
+      state.generationRequestToken += 1;
+      activeGenerationTask = null;
+      activeGenerationDetourId = null;
+      state.loading = false;
+    }
+    state.topicDetour = null;
+    state.pendingSlots = 7;
+    state.generationError = "";
+    render();
+  }
   function startFeed() {
     if (!selectedCount()) return showToast("Choose at least one topic before starting.");
     if (!state.key.trim() || state.geminiStatus !== "connected") { state.view = "settings"; return showToast("Add your Gemini API key in Settings and connect it before starting."); }
+    clearTopicDetourCompletionNotice();
     const wasStarted = state.started;
     state.started = true;
     if (!wasStarted) state.cards = [];
     state.pendingSlots = 7;
+    state.topicDetour = null;
     state.generationError = "";
     generationToken += 1;
     state.generationRequestToken += 1;
@@ -3096,9 +3252,14 @@
     generateBatch(generationToken, 7);
   }
   function resetFeed() {
+    clearTopicDetourCompletionNotice();
     cancelCardGlossary();
     generationToken += 1;
     state.generationRequestToken += 1;
+    if (activeGenerationTask && typeof activeGenerationTask.cancel === "function") activeGenerationTask.cancel();
+    activeGenerationTask = null;
+    activeGenerationDetourId = null;
+    state.topicDetour = null;
     bridge("cancelAll", {}).catch(function () {});
     state.started = false;
     state.cards = [];
@@ -3127,9 +3288,14 @@
     showToast("Topics reset. Choose a topic to start again.");
   }
   function performResetAll() {
+    clearTopicDetourCompletionNotice();
     cancelCardGlossary();
     generationToken += 1;
     state.generationRequestToken += 1;
+    if (activeGenerationTask && typeof activeGenerationTask.cancel === "function") activeGenerationTask.cancel();
+    activeGenerationTask = null;
+    activeGenerationDetourId = null;
+    state.topicDetour = null;
     bridge("cancelAll", {}).catch(function () {});
     state.topics = makeTopics();
     topicResetEpoch++;
@@ -3147,9 +3313,14 @@
     requestConfirmation("Reset all preferences?", "Your topic mix, feed, and learning preferences will return to their starting values.", "Confirm", performResetAll);
   }
   function performDeleteData() {
+    clearTopicDetourCompletionNotice();
     cancelCardGlossary();
     generationToken += 1;
     state.generationRequestToken += 1;
+    if (activeGenerationTask && typeof activeGenerationTask.cancel === "function") activeGenerationTask.cancel();
+    activeGenerationTask = null;
+    activeGenerationDetourId = null;
+    state.topicDetour = null;
     bridge("cancelAll", {}).catch(function () {});
     state.cards = [];
     state.profile = {};
@@ -3212,13 +3383,17 @@
       if (imageHydrationQueue.length) void drainImageHydrationQueue();
     }
   }
-  async function generateBatch(token, requestedCount) {
-    if (state.loading || !selectedCount()) return;
+  async function generateBatch(token, requestedCount, detourRequest) {
+    if (state.loading || !detourRequest && !selectedCount()) return;
     const activeToken = token || generationToken;
     if (!state.key.trim() || state.geminiStatus !== "connected") { state.generationError = "Connect Gemini in Settings before generating facts."; state.loading = false; render(); return; }
     state.loading = true;
     state.generationError = "";
     const count = Math.max(1, Math.min(10, Number(requestedCount) || 7));
+    activeGenerationDetourId = detourRequest ? detourRequest.id : null;
+    const assignedTopics = detourRequest
+      ? detourRequest.slotIndexes.map(function () { return { path: detourRequest.topicPath.slice(), weight: 10, difficulty: difficultyEngine.getTopicLearningProfile(state.profile, detourRequest.topicPath, state.settings.obscurity).targetDifficulty }; })
+      : weightedTopicPaths(count);
     const existingCardIds = new Set(state.cards.map(function (card) { return card.id; }));
     const generationSentenceLength = normalizeSentenceLength(state.settings.sentenceLength);
     state.activeGenerationSentenceLength = generationSentenceLength;
@@ -3226,26 +3401,43 @@
     render();
     try {
       const generationSettings = Object.assign({}, state.settings, { sentenceLength: generationSentenceLength });
-      const result = await bridge("generate", { topics: weightedTopicPaths(count), requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], token: state.generationRequestToken });
+      const task = bridge("generate", { topics: assignedTopics, requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], token: state.generationRequestToken, detourId: detourRequest && detourRequest.id, detourSlots: detourRequest && detourRequest.slotIndexes });
+      activeGenerationTask = task;
+      const result = await task;
       if (activeToken !== generationToken) return;
       mergeGeminiModelOutcomes(result.modelOutcomes);
       if (result.modelStatus) state.geminiStatus = result.modelStatus;
-      (result.cards || []).forEach(function (card) { acceptNewFact(card, generationSentenceLength); });
+      (result.cards || []).forEach(function (card, index) {
+        const slot = detourRequest && detourRequest.slotIndexes[index];
+        acceptNewFact(card, generationSentenceLength, detourRequest && Number.isInteger(slot) ? { id: detourRequest.id, slot: slot } : undefined);
+      });
       const completed = state.batchAccepted;
-      state.pendingSlots = Math.max(0, count - completed);
-      if (state.pendingSlots) { state.generationError = completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."; }
-      else state.pendingSlots = 7;
+      if (detourRequest && state.topicDetour && state.topicDetour.id === detourRequest.id) {
+        const missing = topicDetours.missingTopicDetourSlots(state.topicDetour);
+        state.pendingSlots = missing.length || 7;
+        state.generationError = missing.length ? (result.retryGuidance || "Some topic cards could not be verified. Retry to fill the remaining facts.") : "";
+      } else {
+        state.pendingSlots = Math.max(0, count - completed);
+        if (state.pendingSlots) { state.generationError = completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."; }
+        else state.pendingSlots = 7;
+      }
     } catch (error) {
       if (activeToken !== generationToken) return;
-      state.pendingSlots = Math.max(1, count - state.batchAccepted);
+      state.pendingSlots = detourRequest && state.topicDetour && state.topicDetour.id === detourRequest.id
+        ? Math.max(1, topicDetours.missingTopicDetourSlots(state.topicDetour).length)
+        : Math.max(1, count - state.batchAccepted);
       state.generationError = error.message || "Could not generate a new batch.";
       showToast(state.generationError);
     } finally {
       if (activeToken === generationToken) {
         hydrateCardImages(state.cards.filter(function (card) { return !existingCardIds.has(card.id); }), activeToken);
+        activeGenerationTask = null;
+        activeGenerationDetourId = null;
         state.loading = false;
         saveState();
         render();
+        const queued = state.topicDetour;
+        if (!detourRequest && queued && queued.phase === "queued" && queued.workspaceId === state.workspaceId) beginTopicDetourGeneration(queued);
       }
     }
   }

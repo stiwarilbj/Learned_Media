@@ -5,6 +5,7 @@ import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
 import type { CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, SavedCardLocations, TopicNode } from "@/lib/types";
 import type { TopicSearchIndex } from "@/lib/topic-search-types";
+import type { TopicDetour, TopicDetourProgress } from "@/lib/topic-detours";
 import { selectedLeafCount } from "@/lib/topic-tree";
 import { FactCard } from "./FactCard";
 import { Icon } from "./icons";
@@ -26,6 +27,8 @@ type FeedViewProps = {
   canLoadMore: boolean;
   generationError: string;
   rabbitHole: string | null;
+  topicDetour: TopicDetour | null;
+  topicDetourStatusNotice?: string | null;
   toast?: string;
   learnLoading: string | null;
   questionLoading: string | null;
@@ -47,6 +50,9 @@ type FeedViewProps = {
   onReset: () => void;
   onRetry: () => void;
   onLoadMore: () => void;
+  onThreeMore: (id: string) => void;
+  onEndTopicDetour: () => void;
+  onTopicDetourProgress: (id: string, progress: TopicDetourProgress) => void;
   onSettingsChange: (next: Partial<FeedSettings>) => void;
   onCustomTopicChange: (value: string) => void;
   onAddCustomTopic: () => void;
@@ -104,8 +110,17 @@ function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, c
   );
 }
 
-export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onLoadMore, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
-  const renderCard = useCallback((card: FactCardType) => <FactCard card={card} workspaceId={workspaceId} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} adaptationLoading={adaptationLoading === `${card.id}:simpler` || adaptationLoading === `${card.id}:deeper`} glossaryLoading={glossaryLoading === card.id} adaptationErrors={learningErrors} hasGeminiKey={hasGeminiKey} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} onAdaptExplanation={onAdaptExplanation} onExplainTerms={onExplainTerms} onCancelGlossary={onCancelGlossary} onLocationsResolved={onLocationsResolved} onOpenSettings={onOpenSettings} />, [adaptationLoading, glossaryLoading, hasGeminiKey, learnLoading, learningErrors, onAction, onAdaptExplanation, onAskQuestion, onCancelGlossary, onExplainTerms, onLearnMore, onLocationsResolved, onOpenSettings, onQuestionDetailed, onQuestionDraft, questionDrafts, questionLoading, revealGradually, settings.displayMode, workspaceId]);
+export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+  const handleViewportRangeChange = useCallback((start: number) => {
+    const lastDetourCardId = topicDetour?.slotCardIds[2];
+    if (!topicDetour || !lastDetourCardId) return;
+    const lastDetourIndex = cards.findIndex(card => card.id === lastDetourCardId);
+    if (lastDetourIndex >= 0 && lastDetourIndex < start) onTopicDetourProgress(lastDetourCardId, "passed");
+  }, [cards, onTopicDetourProgress, topicDetour]);
+  const renderCard = useCallback((card: FactCardType) => {
+    const slot = topicDetour?.workspaceId === workspaceId ? topicDetour.slotCardIds.indexOf(card.id) : -1;
+    return <FactCard card={card} workspaceId={workspaceId} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} adaptationLoading={adaptationLoading === `${card.id}:simpler` || adaptationLoading === `${card.id}:deeper`} glossaryLoading={glossaryLoading === card.id} adaptationErrors={learningErrors} hasGeminiKey={hasGeminiKey} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} onAdaptExplanation={onAdaptExplanation} onExplainTerms={onExplainTerms} onCancelGlossary={onCancelGlossary} onLocationsResolved={onLocationsResolved} onOpenSettings={onOpenSettings} onThreeMore={onThreeMore} detourSlot={slot >= 0 ? slot : undefined} onDetourProgress={onTopicDetourProgress} />;
+  }, [adaptationLoading, glossaryLoading, hasGeminiKey, learnLoading, learningErrors, onAction, onAdaptExplanation, onAskQuestion, onCancelGlossary, onExplainTerms, onLearnMore, onLocationsResolved, onOpenSettings, onQuestionDetailed, onQuestionDraft, onThreeMore, onTopicDetourProgress, questionDrafts, questionLoading, revealGradually, settings.displayMode, topicDetour, workspaceId]);
   return (
     <div className="feed-workspace">
       {rabbitHole && <div className="rabbit-banner"><div><Icon name="arrow" size={16} /><span>Rabbit Hole Mode <strong>→ {rabbitHole}</strong></span></div><button type="button" onClick={onReset}>Exit rabbit hole</button></div>}
@@ -115,13 +130,14 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
         <section className="feed-content-column">
           <div className="feed-toolbar">
             <div className="active-topics"><span className="toolbar-label">Your feed</span></div>
+            {(topicDetour || topicDetourStatusNotice) && <div className="topic-detour-status" role="status" aria-live="polite"><span>{topicDetour ? topicDetour.slotCardIds.some(id => !id) ? "Preparing three cards" : `${topicDetour.topicPath.at(-1) ?? "Topic"} · ${Math.max(1, topicDetour.furthestReached + 1)} of 3` : topicDetourStatusNotice}</span>{topicDetour && <button type="button" onClick={onEndTopicDetour}>End early</button>}</div>}
           </div>
           <div className="feed-intro"><div><h1>Keep going</h1><p>One small idea at a time. Every card has a place to look next</p></div><span className="feed-count">{cards.length} cards in this session</span></div>
           <div className="fact-feed">
-            <VirtualizedRows items={cards} columns={1} estimatedHeight={settings.displayMode === "text" ? 490 : 660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} />
-            {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> Gemini is building the next facts</div>}
+            <VirtualizedRows items={cards} columns={1} estimatedHeight={settings.displayMode === "text" ? 490 : 660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} onViewportRangeChange={handleViewportRangeChange} />
+            {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> {topicDetour?.phase === "generating" ? "Gemini is building your topic detour" : "Gemini is building the next facts"}</div>}
             {generationError && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry} disabled={loading} aria-busy={loading}>Retry missing facts</button></div>}
-            {canLoadMore && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 10 more</button></div>}
+            {canLoadMore && !topicDetour && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 10 more</button></div>}
           </div>
         </section>
       </div>

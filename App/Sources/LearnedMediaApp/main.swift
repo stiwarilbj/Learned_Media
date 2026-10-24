@@ -1785,7 +1785,7 @@ private final class GeminiClient {
         return card
     }
 
-    func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [[String: Any]], requestedCount: Int = 7, onCard: @escaping ([String: Any], Int, Int) -> Void) async throws -> [String: Any] {
+    func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [[String: Any]], requestedCount: Int = 7, onCard: @escaping ([String: Any], Int, Int, Int) -> Void) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings to generate a fresh batch.", retryable: false) }
         guard !topics.isEmpty else { throw NativeError(message: "Choose a topic first.", retryable: false) }
         let targetCount = max(1, min(10, requestedCount))
@@ -1930,7 +1930,7 @@ private final class GeminiClient {
                             await validatedEvidence.record(slots[slotIndex])
                             accepted[index] = card
                             completed += 1
-                            onCard(card, completed, targetCount)
+                            onCard(card, slotIndex, completed, targetCount)
                         } catch {
                             if Task.isCancelled { group.cancelAll(); break }
                             let reason = (error as? NativeError)?.message ?? "The fact failed local citation validation."
@@ -2318,11 +2318,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let avoid = payload["avoid"] as? [[String: Any]] ?? []
             let requestedCount = payload["requestedCount"] as? Int ?? 7
             let token = payload["token"] as? Int ?? 0
+            let detourID = payload["detourId"] as? String
+            let detourSlots = payload["detourSlots"] as? [Int] ?? []
             let task = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let result = try await gemini.generate(key: geminiKey, topics: topics, settings: settings, avoid: avoid, requestedCount: requestedCount) { [weak self] card, completed, requested in
-                        self?.respondEvent(id: id, payload: ["type": "generationCard", "token": token, "card": card, "completed": completed, "requested": requested])
+                    let result = try await gemini.generate(key: geminiKey, topics: topics, settings: settings, avoid: avoid, requestedCount: requestedCount) { [weak self] card, slot, completed, requested in
+                        var event: [String: Any] = ["type": "generationCard", "token": token, "card": card, "completed": completed, "requested": requested]
+                        if let detourID, detourSlots.indices.contains(slot) {
+                            event["detourId"] = detourID
+                            event["detourSlot"] = detourSlots[slot]
+                        }
+                        self?.respondEvent(id: id, payload: event)
                     }
                     respond(id: id, result: result)
                 }

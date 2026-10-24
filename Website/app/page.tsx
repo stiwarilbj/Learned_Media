@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Navigation } from "@/components/learned-media/Navigation";
 import { Icon } from "@/components/learned-media/icons";
 import { readCredential, saveCredential } from "@/lib/remembered-keys";
@@ -13,7 +13,7 @@ import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
 import { findTopicById, TOPIC_CATALOG_VERSION, titleCaseTopicLabel } from "@/lib/topic-catalog";
-import { DEFAULT_DIFFICULTY, migrateLegacyDifficulty, normalizeDifficulty, normalizeLearningProfile, resetTopicLearningProfiles, recordTopicFeedback } from "@/lib/recommendations";
+import { DEFAULT_DIFFICULTY, getTopicLearningProfile, migrateLegacyDifficulty, normalizeDifficulty, normalizeLearningProfile, resetTopicLearningProfiles, recordTopicFeedback } from "@/lib/recommendations";
 import { normalizeSearchText, rankSearchResults } from "@/lib/search";
 import { requestCacheKey, requestCacheScope, SessionCache } from "@/lib/session-cache";
 import { createTopicSuggestionIndex, diffTopicSearchRecords, topicSearchRecords, suggestTopics, shouldEnrichTopics, TOPIC_SEARCH_VERSION, type TopicQueryPlan, type TopicSearchRecord } from "@/lib/topic-suggestions";
@@ -35,6 +35,7 @@ import { cardGlossaryFingerprint, normalizeCardGlossary } from "@/lib/card-gloss
 import { createSavedCardLocations, cardLocationsFingerprint } from "@/lib/card-locations";
 import { createSavedFollowUpQuestions, normalizeSavedFollowUpQuestions } from "@/lib/card-follow-ups";
 import { clearCardRevealProgress } from "@/lib/card-reveal";
+import { acceptTopicDetourCard, createTopicDetour, markTopicDetourProgress, missingTopicDetourSlots, orderTopicDetourCards, type TopicDetour, type TopicDetourProgress } from "@/lib/topic-detours";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, SavedCardGlossary, SavedCardLocations, TopicNode, View, WikipediaSource } from "@/lib/types";
 
 const CollectionView = dynamic(() => import("@/components/learned-media/CollectionView").then((module) => module.CollectionView), { loading: () => null });
@@ -467,6 +468,33 @@ export default function HomePage() {
   const [semanticSearch, setSemanticSearch] = useState<{ query: string; terms: string[]; plan?: TopicQueryPlan }>({ query: "", terms: [] });
   const [customTopic, setCustomTopic] = useState("");
   const [rabbitHole, setRabbitHole] = useState<string | null>(null);
+  const [topicDetour, setTopicDetourState] = useState<TopicDetour | null>(null);
+  const [topicDetourStatusNotice, setTopicDetourStatusNotice] = useState<string | null>(null);
+  const topicDetourRef = useRef<TopicDetour | null>(null);
+  const topicDetourNoticeTimer = useRef<number | null>(null);
+  const activeGenerationDetourId = useRef<string | null>(null);
+  const startFeedRef = useRef<((rabbitHoleOverride?: string | null, requestedCount?: number, detourRequest?: { id: string; topicPath: string[]; slotIndexes: number[] }) => Promise<void>) | null>(null);
+  const updateTopicDetour = useCallback((next: TopicDetour | null) => {
+    if (next && topicDetourNoticeTimer.current !== null) {
+      window.clearTimeout(topicDetourNoticeTimer.current);
+      topicDetourNoticeTimer.current = null;
+      setTopicDetourStatusNotice(null);
+    }
+    topicDetourRef.current = next;
+    setTopicDetourState(next);
+  }, []);
+  const clearTopicDetourStatusNotice = useCallback(() => {
+    if (topicDetourNoticeTimer.current !== null) window.clearTimeout(topicDetourNoticeTimer.current);
+    topicDetourNoticeTimer.current = null;
+    setTopicDetourStatusNotice(null);
+  }, []);
+  useEffect(() => {
+    clearTopicDetourStatusNotice();
+    return () => {
+      if (topicDetourNoticeTimer.current !== null) window.clearTimeout(topicDetourNoticeTimer.current);
+      topicDetourNoticeTimer.current = null;
+    };
+  }, [clearTopicDetourStatusNotice, workspaceId]);
   const [toast, setToast] = useState("");
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -621,6 +649,7 @@ export default function HomePage() {
   const cloudLoaded = useRef(false);
   const cloudLoadingUser = useRef<string | null>(null);
   const mainScrollRef = useRef<HTMLDivElement>(null);
+  const pendingDetourScrollAnchor = useRef<{ workspaceId: string; cardId: string; top: number } | null>(null);
   const displayModeRef = useRef(settings.displayMode);
   const recordGeminiOutcomes = useCallback((outcomes: GeminiModelOutcome[], finalStatus?: GeminiStatus) => {
     if (outcomes.length) setModelChecks((current) => outcomes.reduce(mergeGeminiModelOutcome, current));
@@ -640,14 +669,45 @@ export default function HomePage() {
     for (const card of incoming) factNoveltyIndexRef.current.add(rememberFact(card));
     if (workspaceStoreRef.current) workspaceStoreRef.current.factMemory = factMemoryRef.current;
   }, []);
-  const acceptFact = useCallback((card: FactCard) => {
+  const acceptFact = useCallback((card: FactCard, detour?: { id: string; slot: number }) => {
     if (!hasExactSentenceCount(card.body, settings.sentenceLength)) return false;
     const next = rememberFact(card);
     if (factNoveltyIndexRef.current.findDuplicate(next)) return false;
-    archiveFacts([card]);
-    setCards(current => appendUniqueCards(current, [card]));
+    const activeDetour = detour && topicDetourRef.current?.id === detour.id ? topicDetourRef.current : null;
+    if (activeDetour && detour) {
+      const acceptedDetour = acceptTopicDetourCard(activeDetour, detour.slot, card.id);
+      if (acceptedDetour === activeDetour) return false;
+      if (!pendingDetourScrollAnchor.current) {
+        const root = mainScrollRef.current;
+        const rootTop = root?.getBoundingClientRect().top ?? 0;
+        const rootBottom = root?.getBoundingClientRect().bottom ?? window.innerHeight;
+        const visibleCard = root ? Array.from(root.querySelectorAll<HTMLElement>("[data-fact-card-id]")).find(element => {
+          const bounds = element.getBoundingClientRect();
+          return bounds.bottom > rootTop && bounds.top < rootBottom;
+        }) : undefined;
+        if (visibleCard?.dataset.factCardId) pendingDetourScrollAnchor.current = { workspaceId: activeDetour.workspaceId, cardId: visibleCard.dataset.factCardId, top: visibleCard.getBoundingClientRect().top };
+      }
+      archiveFacts([card]);
+      updateTopicDetour(acceptedDetour);
+      setCards(current => orderTopicDetourCards(current, acceptedDetour, card));
+    } else {
+      archiveFacts([card]);
+      setCards(current => appendUniqueCards(current, [card]));
+    }
     return true;
-  }, [archiveFacts, settings.sentenceLength]);
+  }, [archiveFacts, settings.sentenceLength, updateTopicDetour]);
+
+  useLayoutEffect(() => {
+    const anchor = pendingDetourScrollAnchor.current;
+    if (!anchor) return;
+    pendingDetourScrollAnchor.current = null;
+    if (anchor.workspaceId !== workspaceId) return;
+    const root = mainScrollRef.current;
+    const element = root?.querySelector<HTMLElement>(`[data-fact-card-id="${CSS.escape(anchor.cardId)}"]`);
+    if (!root || !element) return;
+    const delta = element.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) > 1) root.scrollTop += delta;
+  }, [cards, workspaceId]);
 
   const enqueueImageHydration = useCallback((incoming: FactCard[], requestId: number, workspaceId: string) => {
     if (displayModeRef.current !== "picture-text") return;
@@ -685,12 +745,16 @@ export default function HomePage() {
   const cancelGeneration = useCallback(() => {
     generationAbortController.current?.abort();
     generationAbortController.current = null;
+    activeGenerationDetourId.current = null;
     setLoading(false);
   }, []);
 
   const cancelWorkspaceRequests = useCallback(() => {
     youtubePlaybackFlushRef.current?.();
     generationAbortController.current?.abort();
+    generationAbortController.current = null;
+    activeGenerationDetourId.current = null;
+    updateTopicDetour(null);
     connectionAbortController.current?.abort();
     learningAbortController.current?.abort();
     questionAbortController.current?.abort();
@@ -713,7 +777,7 @@ export default function HomePage() {
     setQuestionLoading(null);
     setAdaptationLoading(null);
     setYoutubeSmartSearchLoading(false);
-  }, []);
+  }, [updateTopicDetour]);
 
   const scheduleCloudSave = useCallback(() => {
     const currentStore = workspaceStoreRef.current;
@@ -1770,9 +1834,9 @@ export default function HomePage() {
     setToast(`${topic.label} removed from your topic tree.`);
   }, [topics]);
 
-  const startFeed = useCallback(async (rabbitHoleOverride?: string | null, requestedCount = pendingSlots) => {
-    if (loading || generationAbortController.current) return;
-    if (!selectedCount) {
+  const startFeed = useCallback(async (rabbitHoleOverride?: string | null, requestedCount = pendingSlots, detourRequest?: { id: string; topicPath: string[]; slotIndexes: number[] }) => {
+    if (generationAbortController.current) return;
+    if (!detourRequest && !selectedCount) {
       setToast("Choose at least one topic before generating more facts.");
       return;
     }
@@ -1785,17 +1849,33 @@ export default function HomePage() {
     const requestId = requestGeneration.current;
     const imageWorkspaceId = workspaceIdRef.current;
     generationAbortController.current = controller;
+    activeGenerationDetourId.current = detourRequest?.id ?? null;
+    if (detourRequest && topicDetourRef.current?.id === detourRequest.id) updateTopicDetour({ ...topicDetourRef.current, phase: "generating" });
     setView("feed");
     setFeedStarted(true);
     setLoading(true);
     setToast("");
     setGenerationError("");
-    const activeRabbitHole = rabbitHoleOverride ?? rabbitHole;
+    const activeRabbitHole = detourRequest ? null : rabbitHoleOverride !== undefined ? rabbitHoleOverride : rabbitHole;
     const count = Math.max(1, Math.min(10, Math.round(requestedCount || 10)));
+    const detourSlots = detourRequest?.slotIndexes ?? [];
+    const assignedTopics = detourRequest
+      ? detourSlots.map(() => ({ path: [...detourRequest.topicPath], weight: 10, difficulty: getTopicLearningProfile(learningProfile, detourRequest.topicPath, normalizeDifficulty(settings.obscurity)).targetDifficulty }))
+      : selectWeightedTopicPaths(topics, count);
     const receivedIds = new Set<string>();
     const receivedCards = new Map<string, FactCard>();
-    const acceptGeneratedCard = (card: FactCard) => {
-      if (!acceptFact(card)) return false;
+    const acceptGeneratedCard = (card: FactCard, eventSlot?: number) => {
+      if (controller.signal.aborted || requestGeneration.current !== requestId) return false;
+      let detourAcceptance: { id: string; slot: number } | undefined;
+      if (detourRequest) {
+        const activeDetour = topicDetourRef.current;
+        if (!activeDetour || activeDetour.id !== detourRequest.id) return false;
+        const fallbackSlot = Number.isInteger(eventSlot) ? undefined : detourSlots.find(slot => activeDetour.slotCardIds[slot] == null);
+        const slot = Number.isInteger(eventSlot) ? detourSlots[eventSlot!] : fallbackSlot;
+        if (slot === undefined || !detourSlots.includes(slot) || activeDetour.slotCardIds[slot] != null) return false;
+        detourAcceptance = { id: detourRequest.id, slot };
+      }
+      if (!acceptFact(card, detourAcceptance)) return false;
       receivedIds.add(card.id);
       receivedCards.set(card.id, card);
       return true;
@@ -1807,7 +1887,7 @@ export default function HomePage() {
         const result = await generateGeminiFacts({
           apiKey: apiKey.trim(),
           sessionId: sessionIdRef.current,
-          topicPaths: selectWeightedTopicPaths(topics, count),
+          topicPaths: assignedTopics,
           requestedCount: count,
           settings,
           learningProfile,
@@ -1827,11 +1907,18 @@ export default function HomePage() {
             }
             if (event.type !== "card") return;
             const card = normalizeFact(event.card, receivedIds.size);
-            acceptGeneratedCard(card);
+            acceptGeneratedCard(card, event.slot);
           }
         });
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-        result.cards.forEach((card, index) => { const normalized = normalizeFact(card, index); if (!receivedIds.has(normalized.id)) acceptGeneratedCard(normalized); });
+        result.cards.forEach((card, index) => { const normalized = normalizeFact(card, index); if (!receivedIds.has(normalized.id)) acceptGeneratedCard(normalized, index); });
+        if (detourRequest) {
+          const missing = topicDetourRef.current?.id === detourRequest.id ? missingTopicDetourSlots(topicDetourRef.current) : [];
+          setFeedHasMore(missing.length === 0);
+          setPendingSlots(missing.length || DEFAULT_CARD_GENERATION_COUNT);
+          setGenerationError(missing.length ? result.retryGuidance ?? "Some topic cards could not be verified. Retry to fill the remaining facts." : "");
+          return;
+        }
         if (!receivedIds.size) {
           setFeedHasMore(false);
           setPendingSlots(count);
@@ -1852,7 +1939,7 @@ export default function HomePage() {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
-        body: JSON.stringify({ topics: selectWeightedTopicPaths(topics, count), requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: factNoveltySignatures(factMemoryRef.current) }),
+        body: JSON.stringify({ topics: assignedTopics, requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: factNoveltySignatures(factMemoryRef.current) }),
         signal: controller.signal
       });
       if (!response.ok) {
@@ -1862,7 +1949,7 @@ export default function HomePage() {
       await readNdjson(response, (message) => {
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
         if (message.type === "progress") {
-          const event = message.event as { type?: string; card?: Partial<FactCard>; outcome?: GeminiModelOutcome; status?: GeminiStatus };
+          const event = message.event as { type?: string; slot?: number; card?: Partial<FactCard>; outcome?: GeminiModelOutcome; status?: GeminiStatus };
           if (event.type === "model" && event.outcome) {
             setModelChecks((current) => mergeGeminiModelOutcome(current, event.outcome!));
             if (event.outcome.status === "success") setGeminiStatus("connected");
@@ -1870,7 +1957,7 @@ export default function HomePage() {
           if (event.type === "status" && event.status) setGeminiStatus(event.status);
           if (event.type === "card" && event.card?.id && event.card.title && event.card.body && event.card.hook && event.card.topicPath?.length && event.card.sources?.length) {
             const card = normalizeFact(event.card, receivedIds.size);
-            acceptGeneratedCard(card);
+            acceptGeneratedCard(card, event.slot);
           }
         } else if (message.type === "complete") {
           finalPayload = message as typeof finalPayload;
@@ -1886,7 +1973,14 @@ export default function HomePage() {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       if (streamError) throw new Error(streamError);
       const generated = (finalPayload?.cards ?? []).filter((card) => Boolean(card.id && card.title?.trim() && card.body?.trim() && card.hook?.trim() && card.topicPath?.length && card.sources?.length)).map((card, index) => normalizeFact(card, index));
-      generated.forEach((card) => { if (!receivedIds.has(card.id)) acceptGeneratedCard(card); });
+      generated.forEach((card, index) => { if (!receivedIds.has(card.id)) acceptGeneratedCard(card, index); });
+      if (detourRequest) {
+        const missing = topicDetourRef.current?.id === detourRequest.id ? missingTopicDetourSlots(topicDetourRef.current) : [];
+        setFeedHasMore(missing.length === 0);
+        setPendingSlots(missing.length || DEFAULT_CARD_GENERATION_COUNT);
+        setGenerationError(missing.length ? finalPayload?.retryGuidance ?? "Some topic cards could not be verified. Retry to fill the remaining facts." : "");
+        return;
+      }
       if (!receivedIds.size) {
         setFeedHasMore(false);
         setPendingSlots(count);
@@ -1905,7 +1999,7 @@ export default function HomePage() {
     } catch (error) {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       setFeedHasMore(false);
-      setPendingSlots(Math.max(1, count - receivedIds.size));
+      setPendingSlots(detourRequest && topicDetourRef.current?.id === detourRequest.id ? Math.max(1, missingTopicDetourSlots(topicDetourRef.current).length) : Math.max(1, count - receivedIds.size));
       const message = error instanceof Error ? error.message : "Gemini could not generate this batch. Check the key in Settings and try again.";
       setGenerationError(message);
       setToast(message);
@@ -1913,12 +2007,106 @@ export default function HomePage() {
       if (!controller.signal.aborted && requestGeneration.current === requestId && displayModeRef.current === "picture-text") enqueueImageHydration(Array.from(receivedCards.values()), requestId, imageWorkspaceId);
       if (generationAbortController.current === controller) {
         generationAbortController.current = null;
+        activeGenerationDetourId.current = null;
         setLoading(false);
+        const queued = topicDetourRef.current;
+        if (!controller.signal.aborted && !detourRequest && queued?.phase === "queued" && queued.workspaceId === workspaceIdRef.current) {
+          const slots = missingTopicDetourSlots(queued);
+          const request = { id: queued.id, topicPath: [...queued.topicPath], slotIndexes: slots };
+          updateTopicDetour({ ...queued, phase: "generating" });
+          queueMicrotask(() => {
+            if (topicDetourRef.current?.id === request.id && !generationAbortController.current) void startFeedRef.current?.(null, request.slotIndexes.length, request);
+          });
+        }
       }
     }
-  }, [apiKey, cards, enqueueImageHydration, geminiStatus, learningProfile, loading, pendingSlots, rabbitHole, selectedCount, settings, topics]);
+  }, [apiKey, enqueueImageHydration, geminiStatus, learningProfile, pendingSlots, rabbitHole, selectedCount, settings, topics, updateTopicDetour]);
+  startFeedRef.current = startFeed;
+
+  const startTopicDetour = useCallback((sourceCardId: string) => {
+    const source = cardsRef.current.find(card => card.id === sourceCardId);
+    if (!source?.topicPath.length) return;
+    if (!apiKey.trim() || geminiStatus !== "connected") {
+      setToast("Connect Gemini in Settings before creating three topic cards.");
+      setView("settings");
+      return;
+    }
+    const next = createTopicDetour(workspaceIdRef.current, source.id, source.topicPath);
+    if (generationAbortController.current && activeGenerationDetourId.current) {
+      requestGeneration.current += 1;
+      generationAbortController.current.abort();
+      generationAbortController.current = null;
+      activeGenerationDetourId.current = null;
+      setLoading(false);
+    }
+    updateTopicDetour(next);
+    setRabbitHole(null);
+    setView("feed");
+    if (generationAbortController.current) return;
+    const request = { id: next.id, topicPath: [...next.topicPath], slotIndexes: [0, 1, 2] };
+    updateTopicDetour({ ...next, phase: "generating" });
+    void startFeedRef.current?.(null, 3, request);
+  }, [apiKey, geminiStatus, updateTopicDetour]);
+
+  const endTopicDetour = useCallback(() => {
+    const current = topicDetourRef.current;
+    if (!current) return;
+    if (generationAbortController.current && activeGenerationDetourId.current === current.id) {
+      requestGeneration.current += 1;
+      generationAbortController.current.abort();
+      generationAbortController.current = null;
+      activeGenerationDetourId.current = null;
+      setLoading(false);
+    }
+    updateTopicDetour(null);
+    setFeedHasMore(true);
+    setGenerationError("");
+  }, [updateTopicDetour]);
+
+  const handleTopicDetourProgress = useCallback((cardId: string, progress: TopicDetourProgress) => {
+    const current = topicDetourRef.current;
+    if (!current || current.workspaceId !== workspaceIdRef.current) return;
+    const result = markTopicDetourProgress(current, cardId, progress);
+    if (result.completed) {
+      const notice = `${current.topicPath.at(-1) ?? "Topic"} · 3 of 3`;
+      if (topicDetourNoticeTimer.current !== null) window.clearTimeout(topicDetourNoticeTimer.current);
+      setTopicDetourStatusNotice(notice);
+      topicDetourNoticeTimer.current = window.setTimeout(() => {
+        topicDetourNoticeTimer.current = null;
+        setTopicDetourStatusNotice(null);
+      }, 1400);
+      updateTopicDetour(null);
+      setFeedHasMore(true);
+      return;
+    }
+    if (result.detour !== current) updateTopicDetour(result.detour);
+  }, [updateTopicDetour]);
+
+  const retryGeneration = useCallback(() => {
+    const current = topicDetourRef.current;
+    if (!current) { void startFeed(null, pendingSlots); return; }
+    const slotIndexes = missingTopicDetourSlots(current);
+    if (!slotIndexes.length) return;
+    const request = { id: current.id, topicPath: [...current.topicPath], slotIndexes };
+    updateTopicDetour({ ...current, phase: "generating" });
+    void startFeedRef.current?.(null, slotIndexes.length, request);
+  }, [pendingSlots, startFeed, updateTopicDetour]);
+
+  const loadMoreGeneration = useCallback(() => {
+    const current = topicDetourRef.current;
+    if (current) {
+      const slotIndexes = missingTopicDetourSlots(current);
+      if (!slotIndexes.length) return;
+      const request = { id: current.id, topicPath: [...current.topicPath], slotIndexes };
+      updateTopicDetour({ ...current, phase: "generating" });
+      void startFeedRef.current?.(null, slotIndexes.length, request);
+      return;
+    }
+    void startFeed(null, DEFAULT_CARD_GENERATION_COUNT);
+  }, [startFeed, updateTopicDetour]);
 
   const resetFeed = useCallback(() => {
+    clearTopicDetourStatusNotice();
     archiveFacts(cards);
     cancelGeneration();
     learningAbortController.current?.abort();
@@ -1937,6 +2125,7 @@ export default function HomePage() {
     setQuestionDrafts({});
     setLoading(false);
     setRabbitHole(null);
+    updateTopicDetour(null);
     setLearnLoading(null);
     setQuestionLoading(null);
     setAdaptationLoading(null);
@@ -1952,7 +2141,7 @@ export default function HomePage() {
       window.scrollTo({ top: 0, behavior: "smooth" });
       mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     });
-  }, [cancelGeneration, hydrated, learningProfile, settings, theme, topics]);
+  }, [cancelGeneration, clearTopicDetourStatusNotice, hydrated, learningProfile, settings, theme, topics, updateTopicDetour]);
 
   const resetTopics = useCallback(() => {
     const blankTopics = clearTopicSelections(topics);
@@ -2237,6 +2426,7 @@ export default function HomePage() {
   }, [archiveFacts, cards, settings.obscurity, setLearningProfile, startFeed]);
 
   const performResetAllPreferences = useCallback(() => {
+    clearTopicDetourStatusNotice();
     cancelGeneration();
     requestGeneration.current += 1;
     setTopics(createDefaultTopics());
@@ -2260,12 +2450,13 @@ export default function HomePage() {
     setFeedStarted(false);
     setGenerationError("");
     setRabbitHole(null);
+    updateTopicDetour(null);
     setGenerationError("");
     setTheme("light");
     setRevealGraduallyPreference(false);
     setView("feed");
     setToast("Preferences restored to the starting mix.");
-  }, [cancelGeneration, setRevealGraduallyPreference]);
+  }, [cancelGeneration, clearTopicDetourStatusNotice, setRevealGraduallyPreference, updateTopicDetour]);
 
   const resetAllPreferences = useCallback(() => {
     setConfirmation({
@@ -2277,6 +2468,7 @@ export default function HomePage() {
   }, [performResetAllPreferences]);
 
   const performDeleteLearningData = useCallback(() => {
+    clearTopicDetourStatusNotice();
     cancelGeneration();
     requestGeneration.current += 1;
     setCards([]);
@@ -2289,8 +2481,9 @@ export default function HomePage() {
     setFeedStarted(false);
     setTopics((current) => clearTopicSelections(current));
     setRabbitHole(null);
+    updateTopicDetour(null);
     setToast("Learning data cleared. Your topic library and Gemini key were kept.");
-  }, [cancelGeneration]);
+  }, [cancelGeneration, clearTopicDetourStatusNotice, updateTopicDetour]);
 
   const deleteLearningData = useCallback(() => {
     setConfirmation({
@@ -2823,12 +3016,17 @@ export default function HomePage() {
 
   const filteredCards = useMemo(() => {
     if (!query.trim()) return cards;
+    let matches: FactCard[];
     if (workerCanSearchCards) {
       const ids = matchingCardIds && cardSearchResult?.viewKey === "feed" ? matchingCardIds : null;
-      return ids ? ids.map((id) => cardById.get(id)).filter((card): card is FactCard => Boolean(card)) : cards;
+      matches = ids ? ids.map((id) => cardById.get(id)).filter((card): card is FactCard => Boolean(card)) : cards;
+    } else {
+      matches = rankSearchResults(query, cards, cardSearchText);
     }
-    return rankSearchResults(query, cards, cardSearchText);
-  }, [cardById, cardSearchReply, cards, matchingCardIds, query, workerCanSearchCards]);
+    if (!topicDetour) return matches;
+    const visibleDetourIds = new Set([topicDetour.sourceCardId, ...topicDetour.slotCardIds.filter((id): id is string => Boolean(id))]);
+    return orderTopicDetourCards([...matches, ...cards.filter(card => visibleDetourIds.has(card.id))], topicDetour);
+  }, [cardById, cardSearchReply, cards, matchingCardIds, query, topicDetour, workerCanSearchCards]);
 
   const collectionCards = useMemo(() => {
     if (view !== "saved" && view !== "likes" && view !== "history") return [];
@@ -2889,10 +3087,10 @@ export default function HomePage() {
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={chooseExploreTopic} />;
       if (view === "videos") return <VideoWorkspace workspaceId={workspaceId} playbackFlushRef={youtubePlaybackFlushRef} workspace={youtubeWorkspace} videoById={youtubeIndexes.videoById} channelById={youtubeIndexes.channelById} videosByChannel={youtubeIndexes.videosByChannel} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} searchHasMore={youtubeSearchHasMore} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(youtubeTopicPool(topic), 24, [], current.prioritizeRecentByChannel).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={recordYouTubePlaybackPosition} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
-    if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} />;
+    if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onThreeMore={startTopicDetour} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} revealGradually={revealGradually} onRevealGraduallyChange={setRevealGraduallyPreference} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus === "synced" && keySyncStatus === "syncing" ? "syncing" : syncStatus === "synced" && keySyncStatus === "error" ? "error" : syncStatus} syncError={[syncError, keySyncError].filter(Boolean).join(" ")} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
-    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={() => void startFeed(null, pendingSlots)} onLoadMore={() => void startFeed(null, DEFAULT_CARD_GENERATION_COUNT)} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
+    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
 
   const topicSuggestions = localTopicSuggestions;

@@ -60,7 +60,7 @@ const MeasuredRow = memo(function MeasuredRow({ row, top, height, columns, gap, 
   </div>;
 });
 
-export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, className, getKey, renderItem }: {
+export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, className, getKey, renderItem, onViewportRangeChange }: {
   items: T[];
   columns: number;
   estimatedHeight: number;
@@ -68,6 +68,7 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
   className: string;
   getKey: (item: T) => string;
   renderItem: (item: T) => ReactNode;
+  onViewportRangeChange?: (start: number, end: number) => void;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [scrollPosition, setScrollPosition] = useState({ top: 0, height: 800 });
@@ -97,6 +98,12 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
     const overscan = Math.max(320, scrollPosition.height);
     const start = Math.max(0, lowerBound(offsets, Math.max(0, scrollPosition.top - overscan)));
     const end = Math.min(rows.length, lowerBound(offsets, scrollPosition.top + scrollPosition.height + overscan) + 2);
+    return { start, end };
+  }, [offsets, rows.length, scrollPosition]);
+  const viewportRange = useMemo(() => {
+    if (!rows.length) return { start: 0, end: 0 };
+    const start = Math.min(rows.length - 1, Math.max(0, lowerBound(offsets, scrollPosition.top)));
+    const end = Math.min(rows.length, Math.max(start + 1, lowerBound(offsets, scrollPosition.top + scrollPosition.height) + 1));
     return { start, end };
   }, [offsets, rows.length, scrollPosition]);
   const pinnedRowIndex = pinnedRowKey === null ? -1 : rowIndexes.get(pinnedRowKey) ?? -1;
@@ -193,6 +200,10 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
     window.addEventListener("pointerdown", clearOutsideFocus, { passive: true });
     return () => window.removeEventListener("pointerdown", clearOutsideFocus);
   }, []);
+
+  useEffect(() => {
+    onViewportRangeChange?.(viewportRange.start, viewportRange.end);
+  }, [onViewportRangeChange, viewportRange]);
 
   if (!items.length) return null;
   return <div ref={contentRef} className={`${className} virtualized-rows`} style={{ height: offsets.at(-1) ?? 0 }}>

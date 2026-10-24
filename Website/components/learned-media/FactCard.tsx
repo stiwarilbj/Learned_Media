@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { DIFFICULTY_LABELS } from "@/lib/recommendations";
 import type { CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, SavedCardLocations } from "@/lib/types";
 import { resolveWikipediaArticle, resolveWikipediaCoordinates } from "@/lib/wikipedia";
@@ -13,6 +13,7 @@ import { cardGlossaryFingerprint, getCardGlossaryPanelOpen, getVisibleCardGlossa
 import { cardChronologyFingerprint, getCardChronologyEvents, getCardChronologyPanelOpen, setCardChronologyPanelOpen, subscribeCardChronologyPanel } from "@/lib/card-chronology";
 import { attachVerifiedLocationCoordinates, cardLocationsFingerprint, getCardLocationPanelOpen, getCardLocationPanelState, getVisibleCardLocations, layoutPocketMap, loadCountryOutlines, setCardLocationPanelOpen, setCardLocationPanelState, subscribeCardLocationPanel, wikiArticleUrl, type CountryOutlines } from "@/lib/card-locations";
 import { Icon } from "./icons";
+import type { TopicDetourProgress } from "@/lib/topic-detours";
 
 type FactCardProps = {
   card: FactCardType;
@@ -39,6 +40,9 @@ type FactCardProps = {
   onCancelGlossary: (id: string) => void;
   onLocationsResolved: (id: string, locations: SavedCardLocations) => void;
   onOpenSettings: () => void;
+  detourSlot?: number;
+  onThreeMore: (id: string) => void;
+  onDetourProgress?: (id: string, progress: TopicDetourProgress) => void;
 };
 
 function updateContext(workspaceId: string, cardId: string, sentenceIndex: number, contextKey: string, next: SpotlightContextState) {
@@ -90,7 +94,7 @@ function EvidenceContextLoader({ workspaceId, cardId, sentenceIndex, expanded, e
   return null;
 }
 
-export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, adaptationLoading, glossaryLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings }: FactCardProps) {
+export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, adaptationLoading, glossaryLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, detourSlot, onThreeMore, onDetourProgress }: FactCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const [questionFocused, setQuestionFocused] = useState(false);
   const [followUpDismissed, setFollowUpDismissed] = useState(false);
@@ -116,6 +120,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const focusChronologyHeadingOnOpenRef = useRef(false);
   const questionBoxRef = useRef<HTMLDivElement>(null);
   const questionInputRef = useRef<HTMLInputElement>(null);
+  const articleRef = useRef<HTMLElement>(null);
   const explanationMode = useSyncExternalStore(
     (listener) => subscribeCardExplanationSelection(workspaceId, card.id, listener),
     () => getCardExplanationSelection(workspaceId, card.id),
@@ -141,6 +146,38 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const showFollowUpQuestions = questionFocused && !question.trim() && !followUpDismissed && followUpQuestions.length > 0;
   const detailed = questionDetailed ?? Boolean(card.questionDetailed);
   const showImage = displayMode === "picture-text";
+  const reportDetourProgress = useCallback(() => {
+    if (detourSlot === undefined || !onDetourProgress) return;
+    const article = articleRef.current;
+    if (!article) return;
+    const host = document.querySelector<HTMLElement>(".main-scroll");
+    const overflowY = host ? getComputedStyle(host).overflowY : "";
+    const scrollHost = host && (overflowY === "auto" || overflowY === "scroll") ? host : null;
+    const articleBounds = article.getBoundingClientRect();
+    const rootTop = scrollHost?.getBoundingClientRect().top ?? 0;
+    const rootBottom = scrollHost?.getBoundingClientRect().bottom ?? window.innerHeight;
+    if (articleBounds.bottom <= rootTop) onDetourProgress(card.id, "passed");
+    else if (articleBounds.top < rootBottom && articleBounds.bottom > rootTop) {
+      onDetourProgress(card.id, articleBounds.bottom <= rootBottom ? "bottom" : "visible");
+    }
+  }, [card.id, detourSlot, onDetourProgress]);
+  useEffect(() => {
+    if (detourSlot === undefined || !onDetourProgress) return;
+    const host = document.querySelector<HTMLElement>(".main-scroll");
+    const overflowY = host ? getComputedStyle(host).overflowY : "";
+    const scrollTarget: EventTarget = host && (overflowY === "auto" || overflowY === "scroll") ? host : window;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { frame = 0; reportDetourProgress(); });
+    };
+    scrollTarget.addEventListener("scroll", onScroll, { passive: true });
+    frame = requestAnimationFrame(() => { frame = 0; reportDetourProgress(); });
+    return () => {
+      scrollTarget.removeEventListener("scroll", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [card.id, detourSlot, onDetourProgress, reportDetourProgress]);
   const savedExplanation = explanationMode ? card.explanations?.[explanationMode] : undefined;
   const selectedExplanation = savedExplanation?.fingerprint === cardExplanationFingerprint(card) ? savedExplanation : undefined;
   const adaptationError = explanationMode ? adaptationErrors[`${card.id}:adapt:${explanationMode}`] : undefined;
@@ -497,7 +534,13 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
 
   return (
     <article
+      ref={articleRef}
+      data-fact-card-id={card.id}
       className={`fact-card accent-${card.accent} ${card.feedback ? `feedback-${card.feedback}` : ""}`}
+      onFocusCapture={() => {
+        if (detourSlot !== undefined) onDetourProgress?.(card.id, "focus");
+        reportDetourProgress();
+      }}
       onKeyDown={(event) => {
         if (event.key !== "Escape" || event.defaultPrevented) return;
         if (chronologyPanelOpen) {
@@ -727,7 +770,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
           <button type="button" ref={moreTriggerRef} className="fact-more-trigger" aria-label="More fact actions" aria-haspopup="menu" aria-expanded={moreMenuOpen} aria-controls={`fact-more-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} onClick={() => setMoreMenuOpen((open) => !open)}><Icon name="more" size={17} /></button>
           {moreMenuOpen && <div className="fact-more-popover" id={`fact-more-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} ref={moreMenuItemsRef} role="menu" aria-label="More fact actions" onKeyDown={handleMoreMenuKeyDown}>
             <button type="button" role="menuitem" onClick={() => chooseMoreAction("reveal")}><Icon name="sparkles" size={15} /> Reveal gradually</button>
-            <button type="button" role="menuitem" onClick={() => chooseMoreAction("more")}><Icon name="sparkles" size={15} /> More like this</button>
+            <button type="button" role="menuitem" onClick={() => { setMoreMenuOpen(false); moreTriggerRef.current?.focus(); onThreeMore(card.id); }}><Icon name="sparkles" size={15} /> Three more from this topic</button>
             <button type="button" role="menuitem" onClick={() => chooseMoreAction("rabbit")}><Icon name="arrow" size={15} /> Start rabbit hole</button>
             <button type="button" role="menuitem" onClick={() => chooseMoreAction("less")}><Icon name="minus" size={15} /> Show fewer like this</button>
           </div>}
