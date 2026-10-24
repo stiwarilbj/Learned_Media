@@ -3098,7 +3098,7 @@ export default function HomePage() {
   const topicSuggestions = localTopicSuggestions;
 
   return (
-    <CardDownloadsProvider workspaceId={workspaceId} accountId={account?.id} workspaceName={workspaceName} cards={cards}><div
+    <CardDownloadsProvider workspaceId={workspaceId} accountId={account?.id} workspaceName={workspaceName} cards={cards} topics={topics}><div
       className={`app-frame theme-${theme}`}
       onPointerDownCapture={() => { document.documentElement.dataset.inputModality = "pointer"; }}
       onKeyDownCapture={() => { document.documentElement.dataset.inputModality = "keyboard"; }}

@@ -2928,10 +2928,10 @@
   }
   function exportFactsNative(input, individual) {
     if (downloadTask || !input.length) return;
-    const facts = factDownloads.snapshotDownloadCards(input), date = new Date().toISOString(), format = factDownloads.downloadFormat(downloadMode), folder = !individual && downloadMode.endsWith("folder"), base = factDownloads.downloadBaseName(state.workspaceName, date), token = ++downloadJobToken;
-    const files = folder ? facts.map(function (card, index) { return { name: base + "/" + factDownloads.cardDownloadName(card, index, facts.length, format), text: factDownloads.exportText(state.workspaceName, date, [card]), facts: [card] }; }) : [{ name: individual ? factDownloads.cardDownloadName(facts[0], 0, 1, format) : base + "." + format, text: factDownloads.exportText(state.workspaceName, date, facts), facts: facts }];
+    const facts = factDownloads.snapshotDownloadCards(input), date = new Date().toISOString(), naming = factDownloads.prepareDownloadNames(downloadMode, facts, factDownloads.activeDownloadTags(state.topics), individual), token = ++downloadJobToken;
+    const files = naming.folder ? facts.map(function (card, index) { return { name: naming.entries[index], text: factDownloads.exportText(state.workspaceName, date, [card]), facts: [card] }; }) : [{ name: naming.entries[0], text: factDownloads.exportText(state.workspaceName, date, facts), facts: facts }];
     downloadStatus = "Preparing download…";
-    downloadTask = bridge("exportFacts", { format: format, folder: folder, filename: folder ? base + ".zip" : files[0].name, files: files, token: token }); render();
+    downloadTask = bridge("exportFacts", { format: naming.format, folder: naming.folder, filename: naming.filename, files: files, token: token }); render();
     downloadTask.then(function (result) { if (token !== downloadJobToken) return; downloadStatus = result.canceled ? "Download canceled." : "Download saved." + (result.omittedImages ? " " + result.omittedImages + " picture(s) unavailable; all text retained." : ""); }).catch(function (error) { if (token === downloadJobToken) downloadStatus = error.message || "Download failed."; }).finally(function () { if (token === downloadJobToken) { downloadTask = null; render(); } });
   }
 

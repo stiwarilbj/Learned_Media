@@ -1,9 +1,7 @@
 import type { FactCard } from "./types";
 import {
   buildZip,
-  cardDownloadName,
-  downloadBaseName,
-  downloadFormat,
+  prepareDownloadNames,
   exportText,
   snapshotDownloadCards,
   type DownloadMode,
@@ -21,6 +19,7 @@ type Options = {
   onProgress?: (message: string) => void;
   individual?: boolean;
   date?: Date;
+  tagNames?: readonly string[];
 };
 let fonts: Promise<string[]> | undefined;
 function fontData() {
@@ -224,10 +223,14 @@ export async function buildFactExport(
   const cards = snapshotDownloadCards(input);
   if (!cards.length) throw new Error("There are no cards to download.");
   const date = (options.date ?? new Date()).toISOString(),
-    format = downloadFormat(mode),
-    folder = mode.endsWith("folder") && !options.individual;
-  const base = downloadBaseName(workspace, date),
-    images = new Map<string, ImageAsset>(),
+    naming = prepareDownloadNames(
+      mode,
+      cards,
+      options.tagNames ?? [],
+      options.individual,
+    ),
+    { format, folder } = naming;
+  const images = new Map<string, ImageAsset>(),
     omittedImages: string[] = [];
   if (format === "pdf") {
     const urls = [
@@ -268,7 +271,7 @@ export async function buildFactExport(
       check(options.signal);
       options.onProgress?.(`Preparing cards · ${i + 1} of ${cards.length}`);
       entries.push({
-        name: `${base}/${cardDownloadName(cards[i], i, cards.length, format)}`,
+        name: naming.entries[i],
         data: await encode([cards[i]]),
       });
       await yieldTask();
@@ -290,9 +293,7 @@ export async function buildFactExport(
           ? "application/pdf"
           : "text/plain;charset=utf-8",
     }),
-    filename: options.individual
-      ? cardDownloadName(cards[0], 0, 1, format)
-      : `${base}.${folder ? "zip" : format}`,
+    filename: naming.filename,
     omittedImages,
   };
 }

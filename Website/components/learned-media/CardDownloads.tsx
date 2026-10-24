@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  activeDownloadTags,
   DOWNLOAD_MODES,
   DOWNLOAD_PREFERENCE_KEY,
   downloadFormat,
@@ -16,7 +17,7 @@ import {
   snapshotDownloadCards,
   type DownloadMode,
 } from "@/lib/fact-downloads";
-import type { FactCard } from "@/lib/types";
+import type { FactCard, TopicNode } from "@/lib/types";
 import type { FactExportResult } from "@/lib/exports";
 type Downloads = {
   mode: DownloadMode;
@@ -41,12 +42,14 @@ export function CardDownloadsProvider({
   accountId,
   workspaceName,
   cards,
+  topics,
   children,
 }: {
   workspaceId: string;
   accountId?: string;
   workspaceName: string;
   cards: FactCard[];
+  topics: TopicNode[];
   children: ReactNode;
 }) {
   const [mode, setModeState] = useState<DownloadMode>("pdf-single"),
@@ -101,6 +104,7 @@ export function CardDownloadsProvider({
     async (input: FactCard[], individual = false) => {
       if (controller.current || !input.length) return;
       const snapshot = snapshotDownloadCards(input),
+        tagNames = activeDownloadTags(topics),
         job = new AbortController();
       controller.current = job;
       setBusy(true);
@@ -112,6 +116,7 @@ export function CardDownloadsProvider({
         job.signal.throwIfAborted();
         const result = await buildFactExport(mode, workspaceName, snapshot, {
           individual,
+          tagNames,
           signal: job.signal,
           onProgress: (message) => {
             if (controller.current === job) setStatus(message);
@@ -141,7 +146,7 @@ export function CardDownloadsProvider({
         }
       }
     },
-    [mode, workspaceName],
+    [mode, workspaceName, topics],
   );
   return (
     <Context.Provider

@@ -119,6 +119,9 @@ service-role credentials.
 
 Settings → Download Facts offers one PDF (default), one TXT, or individual PDF/TXT files in a ZIP containing one named folder. The device remembers this choice. Download session always captures the entire active feed in its current order, including restored/offscreen cards regardless of search. A card’s More menu offers a single-file download in the chosen format.
 
+Download names capture the activated tags when preparation starts: fully selected parents and descendants qualify, mixed parents do not. Choose up to ten unique names from shallowest to deepest (alphabetically within each depth), then alphabetize the chosen names and join them with commas. Multi-card combined files use this name; ZIPs use it for both the archive and its single enclosing folder. With no active tags, the name is Cards. Filesystem-unsafe characters are sanitized; overlong names discard lower-priority tags before truncating a single remaining name. ZIP entries use `001 - Card title` numbering. Any one-card download is a plain PDF or TXT named after its title, even with a ZIP preference selected; the preference is preserved.
+
+
 Downloads retain the complete original wording, topic path, Wikipedia links, and image credits. PDF images are prepared from saved URLs with three concurrent downloads and a 12-second timeout; unavailable pictures are reported without losing text. TXT never requests pictures. PDF code and bundled OFL-licensed Noto Sans fonts load on demand. Preparation can be canceled; workspace/account changes discard obsolete jobs. ZIP exports are limited to 512 MiB and use UTF-8 numbered filenames. No Gemini or source-discovery requests are made.
 
 Run `npm run test:exports` for shared naming, snapshot, ZIP, cancellation, and text-only behavior checks.

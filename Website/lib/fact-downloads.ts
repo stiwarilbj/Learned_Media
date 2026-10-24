@@ -1,4 +1,4 @@
-import type { FactCard } from "./types";
+import type { FactCard, TopicNode } from "./types";
 export const DOWNLOAD_MODES = [
   { id: "pdf-single", label: "One PDF file — with pictures" },
   { id: "txt-single", label: "One TXT file — text only" },
@@ -21,20 +21,86 @@ export function normalizeDownloadMode(value: unknown): DownloadMode {
 export function downloadFormat(mode: DownloadMode): "pdf" | "txt" {
   return mode.startsWith("txt") ? "txt" : "pdf";
 }
-export function safeDownloadName(value: string) {
-  return (
-    Array.from(
-      value
-        .normalize("NFC")
-        .replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, "-")
-        .replace(/^[. ]+|[. ]+$/g, ""),
-    )
-      .slice(0, 80)
-      .join("") || "Learned Media"
-  );
+// Leave room for an extension within common 255-byte filesystem components.
+const NAME_BYTE_LIMIT = 240;
+const nameOrder = new Intl.Collator("en", {
+  sensitivity: "base",
+  numeric: false,
+});
+function alphabetical(a: string, b: string) {
+  return nameOrder.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
 }
-export function downloadBaseName(workspace: string, date: string) {
-  return `${safeDownloadName(workspace)}-facts-${date.slice(0, 10)}`;
+function byteLength(text: string) {
+  return new TextEncoder().encode(text).length;
+}
+export function safeDownloadName(value: string, maxBytes = NAME_BYTE_LIMIT) {
+  let name = value
+    .normalize("NFC")
+    .replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, "-")
+    .replace(/^[. ]+|[. ]+$/g, "");
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name))
+    name = "_" + name;
+  let result = "",
+    size = 0;
+  for (const character of name) {
+    const bytes = byteLength(character);
+    if (size + bytes > maxBytes) break;
+    result += character;
+    size += bytes;
+  }
+  return result.replace(/[. ]+$/g, "") || "Cards";
+}
+
+// Calculate full subtree selection once, including fully selected parents but
+// excluding mixed parents. Return priority order so size trimming drops the
+// lowest-priority tags, rather than whichever name happens to sort last.
+export function activeDownloadTags(topics: TopicNode[]): string[] {
+  const candidates: Array<{ label: string; depth: number }> = [];
+  function visit(node: TopicNode, depth: number): boolean {
+    let selected = Boolean(node.selected);
+    if (node.children?.length) {
+      selected = true;
+      for (const child of node.children) {
+        if (!visit(child, depth + 1)) selected = false;
+      }
+    }
+    const label = node.label.normalize("NFC").trim().replace(/\s+/g, " ");
+    if (selected && label) candidates.push({ label, depth });
+    return selected;
+  }
+  topics.forEach((node) => visit(node, 0));
+  candidates.sort(
+    (a, b) => a.depth - b.depth || alphabetical(a.label, b.label),
+  );
+  const seen = new Set<string>(),
+    names: string[] = [];
+  for (const { label } of candidates) {
+    const key = label.toLocaleLowerCase("en");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(label);
+    if (names.length === 10) break;
+  }
+  return names;
+}
+
+export function downloadBaseName(tags: readonly string[]) {
+  const names: string[] = [],
+    seen = new Set<string>();
+  for (const tag of tags) {
+    // Sanitize before joining, without truncating individual names prematurely.
+    const name = safeDownloadName(tag, Number.MAX_SAFE_INTEGER),
+      key = name.toLocaleLowerCase("en");
+    if (!seen.has(key)) {
+      names.push(name);
+      seen.add(key);
+    }
+    if (names.length === 10) break;
+  }
+  const joined = () => [...names].sort(alphabetical).join(", ");
+  while (names.length > 1 && byteLength(joined()) > NAME_BYTE_LIMIT)
+    names.pop();
+  return safeDownloadName(joined());
 }
 export function cardDownloadName(
   card: Pick<FactCard, "title">,
@@ -42,7 +108,35 @@ export function cardDownloadName(
   total: number,
   format: string,
 ) {
-  return `${String(index + 1).padStart(Math.max(3, String(total).length), "0")}-${safeDownloadName(card.title)}.${format}`;
+  const prefix =
+    total > 1
+      ? `${String(index + 1).padStart(Math.max(3, String(total).length), "0")} - `
+      : "";
+  return `${prefix}${safeDownloadName(card.title, NAME_BYTE_LIMIT - byteLength(prefix) - format.length - 1)}.${format}`;
+}
+
+// This manifest is captured before asynchronous preparation on both platforms.
+export function prepareDownloadNames(
+  mode: DownloadMode,
+  cards: Array<Pick<FactCard, "title">>,
+  tags: readonly string[],
+  individual = false,
+) {
+  if (!cards.length) throw new Error("There are no cards to download.");
+  const format = downloadFormat(mode);
+  const folder = cards.length > 1 && !individual && mode.endsWith("folder");
+  const base = downloadBaseName(tags);
+  const filename =
+    cards.length === 1 || individual
+      ? cardDownloadName(cards[0], 0, 1, format)
+      : `${base}.${folder ? "zip" : format}`;
+  const entries = folder
+    ? cards.map(
+        (card, index) =>
+          `${base}/${cardDownloadName(card, index, cards.length, format)}`,
+      )
+    : [filename];
+  return { format, folder, filename, entries };
 }
 export function snapshotDownloadCards(cards: FactCard[]): FactCard[] {
   return cards.map(
