@@ -12,6 +12,7 @@ export type FactExportFormat = "pdf" | "txt";
 export type FactExportResult = {
   blob: Blob;
   filename: string;
+  format: FactExportFormat;
   omittedImages: string[];
   cardCount: number;
 };
@@ -45,15 +46,23 @@ export function* splitPdfText(value: string, chunkSize = 8192) {
     start = end;
   }
 }
+type FontWeight = "Regular" | "Bold";
 type FontFlight = {
   controller: AbortController;
-  promise: Promise<string[]>;
+  promise: Promise<string>;
   subscribers: number;
   settled: boolean;
   timeout: ReturnType<typeof setTimeout>;
 };
-let cachedFonts: string[] | undefined;
-let fontFlight: FontFlight | undefined;
+const FONT_ASSET_VERSION = "noto-sans-v1";
+const FONT_SHA256_BY_VERSION: Record<typeof FONT_ASSET_VERSION, Record<FontWeight, string>> = {
+  "noto-sans-v1": {
+    Regular: "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5",
+    Bold: "c976e4b1b99edc88775377fcc21692ca4bfa46b6d6ca6522bfda505b28ff9d6a",
+  },
+};
+const cachedFonts = new Map<FontWeight, string>();
+const fontFlights = new Map<FontWeight, FontFlight>();
 function check(signal?: AbortSignal) {
   signal?.throwIfAborted();
 }
@@ -84,11 +93,11 @@ function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T
     );
   });
 }
-function createFontFlight(): FontFlight {
+function createFontFlight(weight: FontWeight): FontFlight {
   const controller = new AbortController();
   const flight: FontFlight = {
     controller,
-    promise: Promise.resolve([]),
+    promise: Promise.resolve(""),
     subscribers: 0,
     settled: false,
     timeout: setTimeout(() => {
@@ -97,9 +106,8 @@ function createFontFlight(): FontFlight {
       );
     }, 20000),
   };
-  fontFlight = flight;
-  flight.promise = Promise.all(
-    ["Regular", "Bold"].map(async (weight) => {
+  fontFlights.set(weight, flight);
+  flight.promise = Promise.resolve().then(async () => {
       check(controller.signal);
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/fonts/NotoSans-${weight}.ttf`,
@@ -109,6 +117,13 @@ function createFontFlight(): FontFlight {
         throw new Error("PDF fonts could not be loaded. Reconnect and retry.");
       const data = new Uint8Array(await response.arrayBuffer());
       check(controller.signal);
+      const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
+      check(controller.signal);
+      const actualHash = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+      if (actualHash !== FONT_SHA256_BY_VERSION[FONT_ASSET_VERSION][weight])
+        throw new Error("A PDF font download was incomplete or invalid. Please retry the download.");
       let text = "";
       for (let i = 0; i < data.length; i += 8192) {
         check(controller.signal);
@@ -116,11 +131,10 @@ function createFontFlight(): FontFlight {
         if (i + 8192 < data.length) await yieldTask();
       }
       return btoa(text);
-    }),
-  )
-    .then((values) => {
-      cachedFonts = values;
-      return values;
+    })
+    .then((value) => {
+      if (!controller.signal.aborted) cachedFonts.set(weight, value);
+      return value;
     })
     .catch((error) => {
       if (!controller.signal.aborted) controller.abort(error);
@@ -129,29 +143,37 @@ function createFontFlight(): FontFlight {
     .finally(() => {
       flight.settled = true;
       clearTimeout(flight.timeout);
-      if (fontFlight === flight) fontFlight = undefined;
+      if (fontFlights.get(weight) === flight) fontFlights.delete(weight);
     });
   // A canceled final subscriber can leave the shared fetch settling after its
   // own wait has already ended. Keep that expected abort from becoming unhandled.
   void flight.promise.catch(() => undefined);
   return flight;
 }
-async function fontData(signal?: AbortSignal) {
+async function fontFor(weight: FontWeight, signal?: AbortSignal) {
   check(signal);
-  if (cachedFonts) return cachedFonts;
-  const flight = fontFlight ?? createFontFlight();
+  const cached = cachedFonts.get(weight);
+  if (cached) return cached;
+  const flight = fontFlights.get(weight) ?? createFontFlight(weight);
   flight.subscribers += 1;
   try {
-    const values = await waitWithSignal(flight.promise, signal);
+    const value = await waitWithSignal(flight.promise, signal);
     check(signal);
-    return values;
+    return value;
   } finally {
     flight.subscribers -= 1;
     if (!flight.settled && flight.subscribers === 0) {
-      if (fontFlight === flight) fontFlight = undefined;
+      if (fontFlights.get(weight) === flight) fontFlights.delete(weight);
       flight.controller.abort(new DOMException("Download canceled", "AbortError"));
     }
   }
+}
+async function fontData(signal?: AbortSignal) {
+  check(signal);
+  return Promise.all([
+    fontFor("Regular", signal),
+    fontFor("Bold", signal),
+  ]);
 }
 export function canvasImage(
   url: string,
@@ -425,6 +447,7 @@ export async function buildFactExport(
           : "text/plain;charset=utf-8",
     }),
     filename: naming.filename,
+    format,
     omittedImages,
     cardCount: cards.length,
   };

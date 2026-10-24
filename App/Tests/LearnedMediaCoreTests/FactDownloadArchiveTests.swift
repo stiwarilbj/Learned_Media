@@ -39,4 +39,28 @@ final class FactDownloadArchiveTests: XCTestCase {
             XCTFail("Expected cancellation, got \(error)")
         }
     }
+
+    func testSmallEntryArchiveYieldsForCancellationAndCompletesAllFiles() async throws {
+        let files = (0..<8_000).map { index in
+            (name: "Cards/\(String(format: "%04d", index)).txt", data: index.isMultiple(of: 3) ? Data() : Data("small".utf8))
+        }
+        let task = Task { try await FactDownloadArchive.build(files) }
+        let cancel = Task {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+            task.cancel()
+        }
+        do {
+            _ = try await task.value
+            XCTFail("An archive with many small entries should observe cancellation during assembly")
+        } catch is CancellationError {
+            // The time-budget checkpoint between entries gives the cancellation task a turn.
+        }
+        await cancel.value
+
+        let archive = try await FactDownloadArchive.build(files)
+        XCTAssertEqual(Array(archive.prefix(4)), [0x50, 0x4b, 3, 4])
+        let endRecord = Array(archive.suffix(22))
+        XCTAssertEqual(endRecord[0..<4], [0x50, 0x4b, 5, 6])
+        XCTAssertEqual(UInt16(endRecord[10]) | (UInt16(endRecord[11]) << 8), 8_000)
+    }
 }

@@ -4,6 +4,8 @@ import Foundation
 public enum FactDownloadArchive {
     private static let archiveLimit = 512 * 1024 * 1024
     private static let copyChunkSize = 1024 * 1024
+    private static let checksumChunkSize = 16 * 1024
+    private static let processingBudget: TimeInterval = 0.008
     private static let crcTable: [UInt32] = (0..<256).map { value in
         var crc = UInt32(value)
         for _ in 0..<8 { crc = (crc >> 1) ^ (crc & 1 == 1 ? 0xedb88320 : 0) }
@@ -19,7 +21,7 @@ public enum FactDownloadArchive {
 
     public struct SizeTracker {
         private var count = 0
-        private var total = 22
+        public private(set) var totalBytes = 22
 
         public init() {}
 
@@ -29,12 +31,12 @@ public enum FactDownloadArchive {
             guard validName(name), nameLength <= 65535 else { throw ArchiveError.invalidName }
             guard byteCount >= 0, byteCount <= Int(UInt32.max) else { throw ArchiveError.tooLarge }
             let (entrySize, overflow1) = byteCount.addingReportingOverflow(76 + nameLength * 2)
-            let (next, overflow2) = total.addingReportingOverflow(entrySize)
+            let (next, overflow2) = totalBytes.addingReportingOverflow(entrySize)
             guard !overflow1, !overflow2, next <= archiveLimit, next <= Int(UInt32.max) else {
                 throw ArchiveError.tooLarge
             }
             count += 1
-            total = next
+            totalBytes = next
         }
     }
 
@@ -43,16 +45,28 @@ public enum FactDownloadArchive {
         onProgress: ((String, Int, Int) -> Void)? = nil
     ) async throws -> Data {
         try Task.checkCancellation()
-        try validateSize(files.map { (name: $0.name, byteCount: $0.data.count) })
-        var total = 22
-        for file in files {
-            let nameLength = file.name.utf8.count
-            total += 76 + nameLength * 2 + file.data.count
+        var lastYield = ProcessInfo.processInfo.systemUptime
+        func yieldIfNeeded() async throws {
+            try Task.checkCancellation()
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastYield >= processingBudget {
+                await Task.yield()
+                lastYield = ProcessInfo.processInfo.systemUptime
+                try Task.checkCancellation()
+            }
         }
+        var sizeTracker = SizeTracker()
+        var payloadBytes = 0
+        for file in files {
+            try Task.checkCancellation()
+            try sizeTracker.append(name: file.name, byteCount: file.data.count)
+            payloadBytes += file.data.count
+            try await yieldIfNeeded()
+        }
+        let total = sizeTracker.totalBytes
 
         var prepared: [PreparedFile] = []
         prepared.reserveCapacity(files.count)
-        let payloadBytes = files.reduce(0) { $0 + $1.data.count }
         var checksumProgress = 0, checksumReported = 0
         var localOffset = 0
         for file in files {
@@ -61,7 +75,7 @@ public enum FactDownloadArchive {
             var start = 0
             while start < file.data.count {
                 try Task.checkCancellation()
-                let end = min(start + copyChunkSize, file.data.count)
+                let end = min(start + checksumChunkSize, file.data.count)
                 for index in start..<end {
                     checksum = (checksum >> 8) ^ crcTable[Int((checksum ^ UInt32(file.data[index])) & 0xff)]
                 }
@@ -72,11 +86,12 @@ public enum FactDownloadArchive {
                     checksumReported = checksumProgress
                     onProgress?("Checking archive", checksumProgress, payloadBytes)
                 }
-                if start < file.data.count { await Task.yield() }
+                try await yieldIfNeeded()
             }
             let name = Data(file.name.utf8)
             prepared.append(PreparedFile(name: name, data: file.data, checksum: checksum ^ 0xffffffff, offset: localOffset))
             localOffset += 30 + name.count + file.data.count
+            try await yieldIfNeeded()
         }
 
         try Task.checkCancellation()
@@ -118,13 +133,13 @@ public enum FactDownloadArchive {
                     copiedReported = copiedBytes
                     onProgress?("Assembling archive", copiedBytes, payloadBytes)
                 }
-                if start < entry.data.count { await Task.yield() }
+                try await yieldIfNeeded()
             }
+            try await yieldIfNeeded()
         }
 
         try Task.checkCancellation()
         let directoryStart = cursor
-        var directoryLength = 0
         for entry in prepared {
             try Task.checkCancellation()
             var header = Data([0x50, 0x4b, 1, 2])
@@ -135,11 +150,7 @@ public enum FactDownloadArchive {
             header += word(UInt64(entry.offset), 4); header += entry.name
             write(header, at: cursor)
             cursor += header.count
-            directoryLength += header.count
-            if directoryLength >= copyChunkSize * 4 {
-                directoryLength = 0
-                await Task.yield()
-            }
+            try await yieldIfNeeded()
         }
 
         try Task.checkCancellation()

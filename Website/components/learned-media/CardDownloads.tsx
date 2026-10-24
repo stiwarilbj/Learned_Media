@@ -12,6 +12,7 @@ import {
   activeDownloadTags,
   DOWNLOAD_MODES,
   DOWNLOAD_PREFERENCE_KEY,
+  downloadContentsSummary,
   downloadFormat,
   normalizeDownloadMode,
   prepareDownloadNames,
@@ -144,7 +145,7 @@ export function CardDownloadsProvider({
         setReady({ result, jobId: job.id, scope: job.scope });
         downloadBlob(result.blob, result.filename);
         setStatus(
-          `Ready: ${result.filename} · ${result.cardCount} card${result.cardCount === 1 ? "" : "s"}${result.omittedImages.length ? ` · ${result.omittedImages.length} picture${result.omittedImages.length === 1 ? "" : "s"} unavailable; all text and sources retained` : " · all pictures and sources included"}.`,
+          `Ready: ${result.filename} · ${result.cardCount} card${result.cardCount === 1 ? "" : "s"} · ${downloadContentsSummary(result.format, result.omittedImages.length)}.`,
         );
       } catch (error) {
         if (activeJob.current === job && job.scope === scopeRef.current)

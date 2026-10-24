@@ -5,6 +5,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_DOWNLOAD_ARCHIVE_BYTES = exports.DOWNLOAD_PREFERENCE_KEY = exports.DOWNLOAD_MODES = void 0;
 exports.normalizeDownloadMode = normalizeDownloadMode;
 exports.downloadFormat = downloadFormat;
+exports.downloadContentsSummary = downloadContentsSummary;
 exports.safeDownloadName = safeDownloadName;
 exports.activeDownloadTags = activeDownloadTags;
 exports.downloadBaseName = downloadBaseName;
@@ -35,6 +36,13 @@ function normalizeDownloadMode(value) {
 }
 function downloadFormat(mode) {
     return mode.startsWith("txt") ? "txt" : "pdf";
+}
+function downloadContentsSummary(format, unavailableImages) {
+    if (unavailableImages > 0)
+        return `${unavailableImages} picture${unavailableImages === 1 ? "" : "s"} unavailable; all text and sources retained`;
+    return format === "txt"
+        ? "text and sources included"
+        : "all available pictures and sources included";
 }
 // Leave room for an extension within common 255-byte filesystem components.
 const NAME_BYTE_LIMIT = 240;
@@ -168,6 +176,8 @@ function exportText(workspaceName, exportedAt, cards) {
 exports.MAX_DOWNLOAD_ARCHIVE_BYTES = 512 * 1024 * 1024;
 const ZIP_UINT32_MAX = 0xffffffff;
 const ZIP_CHUNK_BYTES = 256 * 1024;
+const ZIP_CHECKSUM_CHUNK_BYTES = 16 * 1024;
+const ZIP_PROCESSING_BUDGET_MS = 8;
 const yieldTask = () => new Promise((resolve) => setTimeout(resolve, 0));
 const ZIP_CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
     let crc = value;
@@ -238,37 +248,52 @@ function checkAbort(signal) {
             ? signal.reason
             : new DOMException("Download canceled", "AbortError");
 }
-async function checksum(bytes, signal, progress) {
+async function checksum(bytes, signal, progress, checkpoint) {
     let crc = 0xffffffff;
-    for (let start = 0; start < bytes.length; start += ZIP_CHUNK_BYTES) {
+    for (let start = 0; start < bytes.length; start += ZIP_CHECKSUM_CHUNK_BYTES) {
         checkAbort(signal);
-        const end = Math.min(start + ZIP_CHUNK_BYTES, bytes.length);
+        const end = Math.min(start + ZIP_CHECKSUM_CHUNK_BYTES, bytes.length);
         for (let index = start; index < end; index += 1) {
             crc = (crc >>> 8) ^ ZIP_CRC_TABLE[(crc ^ bytes[index]) & 0xff];
         }
         progress(end - start);
-        if (end < bytes.length)
-            await yieldTask();
+        await checkpoint();
     }
     return (crc ^ 0xffffffff) >>> 0;
 }
 async function buildZip(entries, options = {}) {
     checkAbort(options.signal);
-    const total = assertZipArchiveSize(entries.map((entry) => ({ name: entry.name, byteLength: entry.data.length })));
+    let lastYield = performance.now();
+    const checkpoint = async () => {
+        checkAbort(options.signal);
+        if (performance.now() - lastYield >= ZIP_PROCESSING_BUDGET_MS) {
+            await yieldTask();
+            lastYield = performance.now();
+            checkAbort(options.signal);
+        }
+    };
+    const size = createZipArchiveSizeTracker();
+    for (const entry of entries) {
+        checkAbort(options.signal);
+        size.add({ name: entry.name, byteLength: entry.data.length });
+        await checkpoint();
+    }
+    const total = size.totalBytes;
     const metadata = [];
     let processed = 0, offset = 0;
     let lastReported = 0;
     const output = new Uint8Array(total);
+    const encoder = new TextEncoder();
     for (const entry of entries) {
         checkAbort(options.signal);
-        const name = new TextEncoder().encode(entry.name);
+        const name = encoder.encode(entry.name);
         const crc = await checksum(entry.data, options.signal, (count) => {
             processed += count;
             if (processed - lastReported >= 1024 * 1024) {
                 lastReported = processed;
                 options.onProgress?.(processed, total);
             }
-        });
+        }, checkpoint);
         checkAbort(options.signal);
         const start = offset;
         output.set([0x50, 0x4b, 3, 4], offset);
@@ -290,13 +315,12 @@ async function buildZip(entries, options = {}) {
             const end = Math.min(startData + ZIP_CHUNK_BYTES, entry.data.length);
             output.set(entry.data.subarray(startData, end), offset);
             offset += end - startData;
-            if (end < entry.data.length)
-                await yieldTask();
+            await checkpoint();
         }
+        await checkpoint();
     }
     checkAbort(options.signal);
     const centralStart = offset;
-    let centralSinceYield = 0;
     for (const entry of metadata) {
         checkAbort(options.signal);
         output.set([0x50, 0x4b, 1, 2], offset);
@@ -318,11 +342,7 @@ async function buildZip(entries, options = {}) {
         write32(output, offset + 42, entry.offset);
         output.set(entry.name, offset + 46);
         offset += 46 + entry.name.length;
-        centralSinceYield += 46 + entry.name.length;
-        if (centralSinceYield >= ZIP_CHUNK_BYTES * 4) {
-            centralSinceYield = 0;
-            await yieldTask();
-        }
+        await checkpoint();
     }
     checkAbort(options.signal);
     const centralLength = offset - centralStart;

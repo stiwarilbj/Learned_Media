@@ -3009,7 +3009,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 guard response == .OK, let url = panel.url else { respond(id: id, result: ["canceled": true]); return }
                 try Task.checkCancellation()
                 try data.write(to: url, options: .atomic)
-                respond(id: id, result: ["canceled": false, "omittedImages": omitted, "filename": url.lastPathComponent, "cardCount": files.reduce(0) { $0 + (($1["facts"] as? [[String: Any]])?.count ?? 0) }])
+                respond(id: id, result: ["canceled": false, "format": format, "omittedImages": omitted, "filename": url.lastPathComponent, "cardCount": files.reduce(0) { $0 + (($1["facts"] as? [[String: Any]])?.count ?? 0) }])
             } catch is CancellationError { respond(id: id, error: "Download canceled.") }
             catch { respond(id: id, error: "Download could not be saved: \(error.localizedDescription)") }
         }

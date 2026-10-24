@@ -18,6 +18,10 @@ Module._extensions[".ts"] = (module, filename) =>
   );
 const d = require("../lib/fact-downloads.ts"),
   e = require("../lib/exports.ts");
+function freshExports() {
+  delete require.cache[require.resolve("../lib/exports.ts")];
+  return require("../lib/exports.ts");
+}
 const card = {
   id: "one",
   title: "Tōhoku, Gödel and Émilie",
@@ -44,6 +48,12 @@ test("four modes, default and inherited individual formats", () => {
   assert.equal(d.normalizeDownloadMode("docx"), "pdf-single");
   assert.equal(d.downloadFormat("pdf-folder"), "pdf");
   assert.equal(d.downloadFormat("txt-folder"), "txt");
+});
+test("download feedback reflects format and unavailable pictures", () => {
+  assert.equal(d.downloadContentsSummary("txt", 0), "text and sources included");
+  assert.equal(d.downloadContentsSummary("pdf", 0), "all available pictures and sources included");
+  assert.equal(d.downloadContentsSummary("txt", 1), "1 picture unavailable; all text and sources retained");
+  assert.equal(d.downloadContentsSummary("pdf", 3), "3 pictures unavailable; all text and sources retained");
 });
 test("snapshots isolate arriving cards and edits; text keeps full original only", () => {
   const original = structuredClone(card),
@@ -80,6 +90,7 @@ test("TXT paths never request images, including per-card archives", async () => 
   const single = await e.buildFactExport("txt-single", "Session", cards, {
     date: new Date("2026-10-23"),
   });
+  assert.equal(single.format, "txt");
   assert.ok((await single.blob.text()).includes("2. Tōhoku"));
   const zip = await e.buildFactExport("txt-folder", "Session", cards, {
     date: new Date("2026-10-23"),
@@ -250,6 +261,56 @@ test("font waits cancel promptly, coalesce subscribers, and retry after failures
   }
 });
 
+test("PDF fonts reject corrupt successful responses and retry only the missing font", async () => {
+  const regular = readFileSync(new URL("../public/fonts/NotoSans-Regular.ttf", import.meta.url));
+  const bold = readFileSync(new URL("../public/fonts/NotoSans-Bold.ttf", import.meta.url));
+  const previousFetch = globalThis.fetch;
+  const asBuffer = (bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const counts = { regular: 0, bold: 0 };
+  try {
+    let module = freshExports();
+    globalThis.fetch = async (url) => {
+      const isBold = String(url).includes("Bold");
+      counts[isBold ? "bold" : "regular"] += 1;
+      if (isBold && counts.bold === 1)
+        return { ok: true, arrayBuffer: async () => asBuffer(new TextEncoder().encode("<html>proxy error</html>")) };
+      const bytes = isBold ? bold : regular;
+      return { ok: true, arrayBuffer: async () => asBuffer(bytes) };
+    };
+    await assert.rejects(
+      module.buildPdf("Workspace", "2026-10-24", [card], new Map()),
+      /PDF font download was incomplete or invalid/,
+    );
+    assert.deepEqual(counts, { regular: 1, bold: 1 });
+    const recovered = await module.buildPdf("Workspace", "2026-10-24", [card], new Map());
+    assert.ok(recovered.length > 1000);
+    assert.deepEqual(counts, { regular: 1, bold: 2 }, "the already validated font remains cached");
+
+    module = freshExports();
+    counts.regular = 0;
+    counts.bold = 0;
+    globalThis.fetch = async (url) => {
+      const isBold = String(url).includes("Bold");
+      counts[isBold ? "bold" : "regular"] += 1;
+      if (!isBold && counts.regular === 1) {
+        const truncated = regular.subarray(0, 4096);
+        return { ok: true, arrayBuffer: async () => asBuffer(truncated) };
+      }
+      const bytes = isBold ? bold : regular;
+      return { ok: true, arrayBuffer: async () => asBuffer(bytes) };
+    };
+    await assert.rejects(
+      module.buildPdf("Workspace", "2026-10-24", [card], new Map()),
+      /PDF font download was incomplete or invalid/,
+    );
+    const retried = await module.buildPdf("Workspace", "2026-10-24", [card], new Map());
+    assert.ok(retried.length > 1000);
+    assert.deepEqual(counts, { regular: 2, bold: 1 });
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("ZIP assembly yields to cancellation and never returns a partial archive", async () => {
   const controller = new AbortController();
   const timerFired = new Promise((resolve) => setTimeout(() => {
@@ -261,6 +322,26 @@ test("ZIP assembly yields to cancellation and never returns a partial archive", 
   ], { signal: controller.signal });
   await timerFired;
   await assert.rejects(archive, (error) => error.name === "AbortError");
+});
+
+test("ZIP assembly yields and cancels across thousands of tiny and empty files", async () => {
+  const entries = Array.from({ length: 8000 }, (_, index) => ({
+    name: `Cards/${String(index + 1).padStart(4, "0")}.txt`,
+    data: index % 3 === 0 ? new Uint8Array() : new TextEncoder().encode("small"),
+  }));
+  const controller = new AbortController();
+  const timerFired = new Promise((resolve) => setTimeout(() => {
+    controller.abort();
+    resolve(true);
+  }, 0));
+  const canceled = d.buildZip(entries, { signal: controller.signal });
+  await timerFired;
+  await assert.rejects(canceled, (error) => error.name === "AbortError");
+
+  const archive = await d.buildZip(entries);
+  assert.equal(new DataView(archive.buffer, archive.byteOffset + archive.length - 22, 22).getUint16(10, true), 8000);
+  assert.equal(new DataView(archive.buffer, archive.byteOffset, archive.byteLength).getUint32(0, true), 0x04034b50);
+  assert.equal(new DataView(archive.buffer, archive.byteOffset + archive.length - 22, 22).getUint32(0, true), 0x06054b50);
 });
 
 function topic(label, selected = true, children) {
