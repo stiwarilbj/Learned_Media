@@ -2930,9 +2930,10 @@
     if (downloadTask || !input.length) return;
     const facts = factDownloads.snapshotDownloadCards(input), date = new Date().toISOString(), naming = factDownloads.prepareDownloadNames(downloadMode, facts, factDownloads.activeDownloadTags(state.topics), individual), token = ++downloadJobToken;
     const files = naming.folder ? facts.map(function (card, index) { return { name: naming.entries[index], text: factDownloads.exportText(state.workspaceName, date, [card]), facts: [card] }; }) : [{ name: naming.entries[0], text: factDownloads.exportText(state.workspaceName, date, facts), facts: facts }];
-    downloadStatus = "Preparing download…";
+    const cardCount = facts.length;
+    downloadStatus = "Preparing " + naming.filename + " · " + cardCount + " card" + (cardCount === 1 ? "" : "s") + "…";
     downloadTask = bridge("exportFacts", { format: naming.format, folder: naming.folder, filename: naming.filename, files: files, token: token }); render();
-    downloadTask.then(function (result) { if (token !== downloadJobToken) return; downloadStatus = result.canceled ? "Download canceled." : "Download saved." + (result.omittedImages ? " " + result.omittedImages + " picture(s) unavailable; all text retained." : ""); }).catch(function (error) { if (token === downloadJobToken) downloadStatus = error.message || "Download failed."; }).finally(function () { if (token === downloadJobToken) { downloadTask = null; render(); } });
+    downloadTask.then(function (result) { if (token !== downloadJobToken) return; const savedName = result.filename || naming.filename, savedCount = Number.isFinite(result.cardCount) ? result.cardCount : cardCount; downloadStatus = result.canceled ? "Download canceled." : "Saved " + savedName + " · " + savedCount + " card" + (savedCount === 1 ? "" : "s") + (result.omittedImages ? " · " + result.omittedImages + " picture(s) unavailable; all text and sources retained." : " · all pictures and sources included."); }).catch(function (error) { if (token === downloadJobToken) downloadStatus = error.message === "Request canceled." || error.message === "Download canceled." ? "Download canceled." : error.message || "Download failed."; }).finally(function () { if (token === downloadJobToken) { downloadTask = null; render(); } });
   }
 
   function confirmationOverlay() {

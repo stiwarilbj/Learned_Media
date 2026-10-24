@@ -2,7 +2,7 @@
 (function(scope) { const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DOWNLOAD_PREFERENCE_KEY = exports.DOWNLOAD_MODES = void 0;
+exports.MAX_DOWNLOAD_ARCHIVE_BYTES = exports.DOWNLOAD_PREFERENCE_KEY = exports.DOWNLOAD_MODES = void 0;
 exports.normalizeDownloadMode = normalizeDownloadMode;
 exports.downloadFormat = downloadFormat;
 exports.safeDownloadName = safeDownloadName;
@@ -12,6 +12,8 @@ exports.cardDownloadName = cardDownloadName;
 exports.prepareDownloadNames = prepareDownloadNames;
 exports.snapshotDownloadCards = snapshotDownloadCards;
 exports.exportText = exportText;
+exports.createZipArchiveSizeTracker = createZipArchiveSizeTracker;
+exports.assertZipArchiveSize = assertZipArchiveSize;
 exports.buildZip = buildZip;
 exports.DOWNLOAD_MODES = [
     { id: "pdf-single", label: "One PDF file — with pictures" },
@@ -163,102 +165,178 @@ function exportText(workspaceName, exportedAt, cards) {
     });
     return lines.join("\n");
 }
-function concatBytes(parts) {
-    const total = parts.reduce((sum, part) => sum + part.length, 0);
-    const output = new Uint8Array(total);
-    let offset = 0;
-    parts.forEach((part) => {
-        output.set(part, offset);
-        offset += part.length;
-    });
-    return output;
+exports.MAX_DOWNLOAD_ARCHIVE_BYTES = 512 * 1024 * 1024;
+const ZIP_UINT32_MAX = 0xffffffff;
+const ZIP_CHUNK_BYTES = 256 * 1024;
+const yieldTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+const ZIP_CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+    let crc = value;
+    for (let bit = 0; bit < 8; bit += 1)
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    return crc >>> 0;
+});
+function validateZipEntryName(name) {
+    return (!name.startsWith("/") &&
+        !name.includes("\\") &&
+        !name.split("/").includes("..") &&
+        !name.split("/").includes(""));
 }
-function crc32(bytes) {
+/** Incrementally check a running archive total without retaining file bytes. */
+function createZipArchiveSizeTracker() {
+    let count = 0, total = 22, centralBytes = 0, localBytes = 0;
+    return {
+        add(entry) {
+            if (count >= 65535)
+                throw new Error("Too many files for this archive.");
+            if (!Number.isSafeInteger(entry.byteLength) || entry.byteLength < 0) {
+                throw new Error("Archive exceeds the 512 MB download limit. Download a smaller collection.");
+            }
+            const nameLength = new TextEncoder().encode(entry.name).length;
+            if (!validateZipEntryName(entry.name))
+                throw new Error("Invalid download filename.");
+            if (nameLength > 65535) {
+                throw new Error("Archive exceeds the 512 MB download limit. Download a smaller collection.");
+            }
+            const nextLocalBytes = localBytes + 30 + nameLength + entry.byteLength, nextCentralBytes = centralBytes + 46 + nameLength, nextTotal = total + 76 + nameLength * 2 + entry.byteLength;
+            if (nextTotal > exports.MAX_DOWNLOAD_ARCHIVE_BYTES ||
+                nextTotal > ZIP_UINT32_MAX ||
+                nextLocalBytes > ZIP_UINT32_MAX ||
+                nextCentralBytes > ZIP_UINT32_MAX ||
+                entry.byteLength > ZIP_UINT32_MAX)
+                throw new Error("Archive exceeds the 512 MB download limit. Download a smaller collection.");
+            count += 1;
+            localBytes = nextLocalBytes;
+            centralBytes = nextCentralBytes;
+            total = nextTotal;
+            return total;
+        },
+        get totalBytes() {
+            return total;
+        },
+    };
+}
+/** Check an entire archive up front when all entries are already available. */
+function assertZipArchiveSize(entries) {
+    const tracker = createZipArchiveSizeTracker();
+    for (const entry of entries)
+        tracker.add(entry);
+    return tracker.totalBytes;
+}
+function write16(output, offset, value) {
+    output[offset] = value & 255;
+    output[offset + 1] = (value >>> 8) & 255;
+}
+function write32(output, offset, value) {
+    output[offset] = value & 255;
+    output[offset + 1] = (value >>> 8) & 255;
+    output[offset + 2] = (value >>> 16) & 255;
+    output[offset + 3] = (value >>> 24) & 255;
+}
+function checkAbort(signal) {
+    if (signal?.aborted)
+        throw signal.reason instanceof Error
+            ? signal.reason
+            : new DOMException("Download canceled", "AbortError");
+}
+async function checksum(bytes, signal, progress) {
     let crc = 0xffffffff;
-    for (let index = 0; index < bytes.length; index += 1) {
-        const byte = bytes[index];
-        crc ^= byte;
-        for (let bit = 0; bit < 8; bit += 1)
-            crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    for (let start = 0; start < bytes.length; start += ZIP_CHUNK_BYTES) {
+        checkAbort(signal);
+        const end = Math.min(start + ZIP_CHUNK_BYTES, bytes.length);
+        for (let index = start; index < end; index += 1) {
+            crc = (crc >>> 8) ^ ZIP_CRC_TABLE[(crc ^ bytes[index]) & 0xff];
+        }
+        progress(end - start);
+        if (end < bytes.length)
+            await yieldTask();
     }
     return (crc ^ 0xffffffff) >>> 0;
 }
-function littleEndian(value) {
-    return new Uint8Array([
-        value & 255,
-        (value >>> 8) & 255,
-        (value >>> 16) & 255,
-        (value >>> 24) & 255,
-    ]);
-}
-function shortEndian(value) {
-    return new Uint8Array([value & 255, (value >>> 8) & 255]);
-}
-function buildZip(entries) {
-    if (entries.length > 65535)
-        throw new Error("Too many files for this archive.");
-    const total = entries.reduce((sum, e) => sum + e.data.length + new TextEncoder().encode(e.name).length * 2 + 76, 22);
-    if (total > 512 * 1024 * 1024 ||
-        entries.some((e) => new TextEncoder().encode(e.name).length > 65535))
-        throw new Error("Archive exceeds the 512 MB download limit. Download a smaller collection.");
-    if (entries.some((e) => e.name.startsWith("/") || e.name.split("/").includes("..")))
-        throw new Error("Invalid download filename.");
-    const local = [];
-    const central = [];
-    let offset = 0;
-    entries.forEach((entry) => {
+async function buildZip(entries, options = {}) {
+    checkAbort(options.signal);
+    const total = assertZipArchiveSize(entries.map((entry) => ({ name: entry.name, byteLength: entry.data.length })));
+    const metadata = [];
+    let processed = 0, offset = 0;
+    let lastReported = 0;
+    const output = new Uint8Array(total);
+    for (const entry of entries) {
+        checkAbort(options.signal);
         const name = new TextEncoder().encode(entry.name);
-        const crc = crc32(entry.data);
-        const header = concatBytes([
-            new Uint8Array([0x50, 0x4b, 3, 4]),
-            shortEndian(20),
-            shortEndian(0x800),
-            shortEndian(0),
-            shortEndian(0),
-            shortEndian(0),
-            littleEndian(crc),
-            littleEndian(entry.data.length),
-            littleEndian(entry.data.length),
-            shortEndian(name.length),
-            shortEndian(0),
-            name,
-        ]);
-        local.push(header, entry.data);
-        central.push(concatBytes([
-            new Uint8Array([0x50, 0x4b, 1, 2]),
-            shortEndian(20),
-            shortEndian(20),
-            shortEndian(0x800),
-            shortEndian(0),
-            shortEndian(0),
-            shortEndian(0),
-            littleEndian(crc),
-            littleEndian(entry.data.length),
-            littleEndian(entry.data.length),
-            shortEndian(name.length),
-            shortEndian(0),
-            shortEndian(0),
-            shortEndian(0),
-            shortEndian(0),
-            littleEndian(0),
-            littleEndian(offset),
-            name,
-        ]));
-        offset += header.length + entry.data.length;
-    });
-    const centralBytes = central.reduce((sum, item) => sum + item.length, 0);
-    const localBytes = local.reduce((sum, item) => sum + item.length, 0);
-    const end = concatBytes([
-        new Uint8Array([0x50, 0x4b, 5, 6]),
-        shortEndian(0),
-        shortEndian(0),
-        shortEndian(entries.length),
-        shortEndian(entries.length),
-        littleEndian(centralBytes),
-        littleEndian(localBytes),
-        shortEndian(0),
-    ]);
-    return concatBytes([...local, ...central, end]);
+        const crc = await checksum(entry.data, options.signal, (count) => {
+            processed += count;
+            if (processed - lastReported >= 1024 * 1024) {
+                lastReported = processed;
+                options.onProgress?.(processed, total);
+            }
+        });
+        checkAbort(options.signal);
+        const start = offset;
+        output.set([0x50, 0x4b, 3, 4], offset);
+        write16(output, offset + 4, 20);
+        write16(output, offset + 6, 0x800);
+        write16(output, offset + 8, 0);
+        write16(output, offset + 10, 0);
+        write16(output, offset + 12, 0);
+        write32(output, offset + 14, crc);
+        write32(output, offset + 18, entry.data.length);
+        write32(output, offset + 22, entry.data.length);
+        write16(output, offset + 26, name.length);
+        write16(output, offset + 28, 0);
+        output.set(name, offset + 30);
+        offset += 30 + name.length;
+        metadata.push({ name, data: entry.data, crc, offset: start });
+        for (let startData = 0; startData < entry.data.length; startData += ZIP_CHUNK_BYTES) {
+            checkAbort(options.signal);
+            const end = Math.min(startData + ZIP_CHUNK_BYTES, entry.data.length);
+            output.set(entry.data.subarray(startData, end), offset);
+            offset += end - startData;
+            if (end < entry.data.length)
+                await yieldTask();
+        }
+    }
+    checkAbort(options.signal);
+    const centralStart = offset;
+    let centralSinceYield = 0;
+    for (const entry of metadata) {
+        checkAbort(options.signal);
+        output.set([0x50, 0x4b, 1, 2], offset);
+        write16(output, offset + 4, 20);
+        write16(output, offset + 6, 20);
+        write16(output, offset + 8, 0x800);
+        write16(output, offset + 10, 0);
+        write16(output, offset + 12, 0);
+        write16(output, offset + 14, 0);
+        write32(output, offset + 16, entry.crc);
+        write32(output, offset + 20, entry.data.length);
+        write32(output, offset + 24, entry.data.length);
+        write16(output, offset + 28, entry.name.length);
+        write16(output, offset + 30, 0);
+        write16(output, offset + 32, 0);
+        write16(output, offset + 34, 0);
+        write16(output, offset + 36, 0);
+        write32(output, offset + 38, 0);
+        write32(output, offset + 42, entry.offset);
+        output.set(entry.name, offset + 46);
+        offset += 46 + entry.name.length;
+        centralSinceYield += 46 + entry.name.length;
+        if (centralSinceYield >= ZIP_CHUNK_BYTES * 4) {
+            centralSinceYield = 0;
+            await yieldTask();
+        }
+    }
+    checkAbort(options.signal);
+    const centralLength = offset - centralStart;
+    output.set([0x50, 0x4b, 5, 6], offset);
+    write16(output, offset + 4, 0);
+    write16(output, offset + 6, 0);
+    write16(output, offset + 8, entries.length);
+    write16(output, offset + 10, entries.length);
+    write32(output, offset + 12, centralLength);
+    write32(output, offset + 16, centralStart);
+    write16(output, offset + 20, 0);
+    options.onProgress?.(total, total);
+    checkAbort(options.signal);
+    return output;
 }
 
 scope.LEARNED_MEDIA_FACT_DOWNLOADS = exports; })(globalThis);

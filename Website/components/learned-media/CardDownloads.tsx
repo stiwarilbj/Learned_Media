@@ -14,6 +14,7 @@ import {
   DOWNLOAD_PREFERENCE_KEY,
   downloadFormat,
   normalizeDownloadMode,
+  prepareDownloadNames,
   snapshotDownloadCards,
   type DownloadMode,
 } from "@/lib/fact-downloads";
@@ -26,7 +27,8 @@ type Downloads = {
   status: string;
   start: (cards: FactCard[], individual?: boolean) => void;
   cancel: () => void;
-  ready: FactExportResult | null;
+  ready: { result: FactExportResult; jobId: number; scope: string } | null;
+  scope: string;
   save: () => void;
   total: number;
   session: () => void;
@@ -55,9 +57,16 @@ export function CardDownloadsProvider({
   const [mode, setModeState] = useState<DownloadMode>("pdf-single"),
     [busy, setBusy] = useState(false),
     [status, setStatus] = useState(""),
-    [ready, setReady] = useState<FactExportResult | null>(null);
-  const controller = useRef<AbortController | null>(null),
-    resultRef = useRef<FactExportResult | null>(null);
+    [ready, setReady] = useState<Downloads["ready"]>(null);
+  const activeJob = useRef<{
+      controller: AbortController;
+      id: number;
+      scope: string;
+    } | null>(null),
+    jobSequence = useRef(0),
+    scopeRef = useRef("");
+  const scope = `${workspaceId}\u0000${accountId ?? "local"}`;
+  scopeRef.current = scope;
   const setMode = useCallback((value: DownloadMode) => {
     const next = normalizeDownloadMode(value);
     setModeState(next);
@@ -66,11 +75,11 @@ export function CardDownloadsProvider({
     } catch {}
   }, []);
   const cancel = useCallback(() => {
-    controller.current?.abort();
-    controller.current = null;
+    jobSequence.current += 1;
+    activeJob.current?.controller.abort();
+    activeJob.current = null;
     setBusy(false);
     setReady(null);
-    resultRef.current = null;
     setStatus("Download canceled.");
   }, []);
   useEffect(() => {
@@ -88,60 +97,67 @@ export function CardDownloadsProvider({
     cancel();
     setStatus("");
     return () => {
-      controller.current?.abort();
-      controller.current = null;
-      resultRef.current = null;
+      jobSequence.current += 1;
+      activeJob.current?.controller.abort();
+      activeJob.current = null;
     };
   }, [workspaceId, accountId, cancel]);
-  const save = useCallback(() => {
-    const result = resultRef.current;
-    if (result)
-      void import("@/lib/exports").then(({ downloadBlob }) =>
-        downloadBlob(result.blob, result.filename),
-      );
-  }, []);
+  const save = useCallback(async () => {
+    const prepared = ready;
+    if (!prepared || prepared.scope !== scopeRef.current || prepared.jobId !== jobSequence.current) return;
+    try {
+      const { downloadBlob } = await import("@/lib/exports");
+      if (prepared.scope !== scopeRef.current || prepared.jobId !== jobSequence.current) return;
+      downloadBlob(prepared.result.blob, prepared.result.filename);
+    } catch {
+      if (prepared.scope === scopeRef.current && prepared.jobId === jobSequence.current)
+        setStatus("The prepared download could not be opened. Prepare it again.");
+    }
+  }, [ready]);
   const start = useCallback(
     async (input: FactCard[], individual = false) => {
-      if (controller.current || !input.length) return;
+      if (activeJob.current || !input.length) return;
       const snapshot = snapshotDownloadCards(input),
         tagNames = activeDownloadTags(topics),
-        job = new AbortController();
-      controller.current = job;
+        controller = new AbortController(),
+        id = ++jobSequence.current,
+        job = { controller, id, scope: scopeRef.current },
+        naming = prepareDownloadNames(mode, snapshot, tagNames, individual);
+      activeJob.current = job;
       setBusy(true);
       setReady(null);
-      resultRef.current = null;
-      setStatus("Preparing download…");
+      setStatus(`Preparing ${naming.filename} · ${snapshot.length} cards…`);
       try {
         const { buildFactExport, downloadBlob } = await import("@/lib/exports");
-        job.signal.throwIfAborted();
+        job.controller.signal.throwIfAborted();
+        if (activeJob.current !== job || job.scope !== scopeRef.current) return;
         const result = await buildFactExport(mode, workspaceName, snapshot, {
           individual,
           tagNames,
-          signal: job.signal,
+          signal: job.controller.signal,
           onProgress: (message) => {
-            if (controller.current === job) setStatus(message);
+            if (activeJob.current === job && job.scope === scopeRef.current) setStatus(message);
           },
         });
-        job.signal.throwIfAborted();
-        if (controller.current !== job) return;
-        resultRef.current = result;
-        setReady(result);
+        job.controller.signal.throwIfAborted();
+        if (activeJob.current !== job || job.scope !== scopeRef.current || job.id !== jobSequence.current) return;
+        setReady({ result, jobId: job.id, scope: job.scope });
         downloadBlob(result.blob, result.filename);
         setStatus(
-          `File ready. ${result.omittedImages.length ? `${result.omittedImages.length} picture(s) unavailable; all text and sources retained.` : "All cards and sources included."}`,
+          `Ready: ${result.filename} · ${result.cardCount} card${result.cardCount === 1 ? "" : "s"}${result.omittedImages.length ? ` · ${result.omittedImages.length} picture${result.omittedImages.length === 1 ? "" : "s"} unavailable; all text and sources retained` : " · all pictures and sources included"}.`,
         );
       } catch (error) {
-        if (controller.current === job)
+        if (activeJob.current === job && job.scope === scopeRef.current)
           setStatus(
-            job.signal.aborted
+            job.controller.signal.aborted
               ? "Download canceled."
               : error instanceof Error
                 ? error.message
                 : "Download could not be prepared.",
           );
       } finally {
-        if (controller.current === job) {
-          controller.current = null;
+        if (activeJob.current === job) {
+          activeJob.current = null;
           setBusy(false);
         }
       }
@@ -158,6 +174,7 @@ export function CardDownloadsProvider({
         start,
         cancel,
         ready,
+        scope,
         save,
         total: cards.length,
         session: () => start(cards),
@@ -169,6 +186,7 @@ export function CardDownloadsProvider({
 }
 export function DownloadFeedback() {
   const d = useCardDownloads();
+  const ready = d.ready?.scope === d.scope ? d.ready : null;
   return (
     <div className="download-feedback" aria-live="polite">
       {d.status && <span role="status">{d.status}</span>}
@@ -177,7 +195,7 @@ export function DownloadFeedback() {
           Cancel download
         </button>
       )}
-      {d.ready && !d.busy && (
+      {ready && !d.busy && (
         <button type="button" className="ghost-button" onClick={d.save}>
           Download file
         </button>

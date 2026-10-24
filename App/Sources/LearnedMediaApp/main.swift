@@ -36,6 +36,53 @@ private struct CloudSession {
     let userID: String
 }
 
+private final class SavePanelWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<NSApplication.ModalResponse, Never>?
+    private var cancelled = false
+    private var started = false
+    private var completed = false
+
+    func install(_ continuation: CheckedContinuation<NSApplication.ModalResponse, Never>) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelled, !completed else { return false }
+        self.continuation = continuation
+        return true
+    }
+
+    func begin() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelled, !completed else { return false }
+        started = true
+        return true
+    }
+
+    /// Returns true when a visible panel should be dismissed on the main thread.
+    func cancel() -> Bool {
+        lock.lock()
+        cancelled = true
+        let shouldDismiss = started && !completed
+        let pending = !started && !completed ? continuation : nil
+        if pending != nil || (!started && !completed) {
+            completed = true
+            continuation = nil
+        }
+        lock.unlock()
+        pending?.resume(returning: .cancel)
+        return shouldDismiss
+    }
+
+    func finish(_ response: NSApplication.ModalResponse) {
+        lock.lock()
+        guard !completed else { lock.unlock(); return }
+        completed = true
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: response)
+    }
+}
+
 private struct GeminiCandidate: Decodable {
     let slot: Int?
     let title: String?
@@ -2829,11 +2876,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             context.textPosition = CGPoint(x: 50, y: 24)
             CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: String(page), attributes: [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.gray])), context)
         }
-        func draw(_ value: String, size: CGFloat = 11, bold: Bool = false, link: String? = nil) throws {
+        func draw(_ value: String, size: CGFloat = 11, bold: Bool = false, link: String? = nil) async throws {
             let attributes: [NSAttributedString.Key: Any] = [.font: bold ? NSFont.boldSystemFont(ofSize: size) : NSFont.systemFont(ofSize: size), .foregroundColor: NSColor.black]
             let attributed = NSAttributedString(string: value.isEmpty ? " " : value, attributes: attributes)
             let typesetter = CTTypesetterCreateWithAttributedString(attributed)
-            var offset = 0
+            var offset = 0, lines = 0
             while offset < attributed.length {
                 try Task.checkCancellation()
                 if y < 65 + size * 1.5 { newPage() }
@@ -2843,12 +2890,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 context.textPosition = CGPoint(x: 50, y: y); CTLineDraw(line, context)
                 if let raw = link, let url = URL(string: raw) { context.setURL(url as CFURL, for: CGRect(x: 50, y: y-size, width: 512, height: size*1.5)) }
                 y -= size * 1.5; offset += count
+                lines += 1
+                if lines % 32 == 0 { await Task.yield() }
             }
             y -= 6
         }
         newPage()
         let header = text.components(separatedBy: String(repeating: "=", count: 72))[0]
-        try draw(header)
+        try await draw(header)
         for (index, fact) in facts.enumerated() {
             await Task.yield()
             try Task.checkCancellation()
@@ -2859,24 +2908,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let pictureHeight: CGFloat = hasImage.flatMap { images[$0] } != nil ? 300 : 0
             let requiredHeight: CGFloat = min(680, titleHeight + hookHeight + pictureHeight + 100)
             if y < requiredHeight { newPage() }
-            try draw("\(index + 1). \(fact["title"] as? String ?? "Fact")", size: 16, bold: true)
-            try draw(fact["hook"] as? String ?? "", size: 12, bold: true)
+            try await draw("\(index + 1). \(fact["title"] as? String ?? "Fact")", size: 16, bold: true)
+            try await draw(fact["hook"] as? String ?? "", size: 12, bold: true)
             if let image = fact["image"] as? [String: Any], let url = image["url"] as? String {
                 if let bytes = images[url], let source = CGImageSourceCreateWithData(bytes as CFData, nil), let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1200, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) {
                     let scale = min(512 / CGFloat(cgImage.width), 280 / CGFloat(cgImage.height)), width = CGFloat(cgImage.width) * scale, height = CGFloat(cgImage.height) * scale
                     if y - height < 60 { newPage() }
                     context.draw(cgImage, in: CGRect(x: 50, y: y-height, width: width, height: height)); y -= height + 12
-                } else { try draw("Image unavailable in this download.", size: 9) }
+                } else { try await draw("Image unavailable in this download.", size: 9) }
             }
-            try draw(fact["body"] as? String ?? "")
-            try draw("Topic path: \((fact["topicPath"] as? [String] ?? []).joined(separator: " / "))", size: 9)
+            try await draw(fact["body"] as? String ?? "")
+            try await draw("Topic path: \((fact["topicPath"] as? [String] ?? []).joined(separator: " / "))", size: 9)
             for source in fact["sources"] as? [[String: Any]] ?? [] {
                 let url = source["url"] as? String ?? ""
-                try draw(source["title"] as? String ?? "Wikipedia", size: 10, bold: true, link: url); try draw(url, size: 9, link: url)
+                try await draw(source["title"] as? String ?? "Wikipedia", size: 10, bold: true, link: url); try await draw(url, size: 9, link: url)
             }
             if let image = fact["image"] as? [String: Any] {
-                if let credit = image["credit"] as? String { try draw("Image credit: \(credit)", size: 9) }
-                if let url = image["filePageUrl"] as? String ?? image["sourceUrl"] as? String { try draw(url, size: 9, link: url) }
+                if let credit = image["credit"] as? String { try await draw("Image credit: \(credit)", size: 9) }
+                if let url = image["filePageUrl"] as? String ?? image["sourceUrl"] as? String { try await draw(url, size: 9, link: url) }
             }
             y -= 14
         }
@@ -2910,28 +2959,57 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                             } }
                             var results: [(String, Data?)] = []; for await result in group { results.append(result) }; return results
                         }
+                        try Task.checkCancellation()
                         for (url, data) in downloaded { if let data { images[url] = data } }
+                        try Task.checkCancellation()
                         respondEvent(id: id, payload: ["type": "exportProgress", "token": token, "message": "Preparing pictures · \(min(start + 3, urls.count)) of \(urls.count)"])
                     }
                     omitted = files.flatMap { $0["facts"] as? [[String: Any]] ?? [] }.filter { fact in guard let url = (fact["image"] as? [String: Any])?["url"] as? String else { return false }; return images[url] == nil }.count
                 }
                 var entries: [(name: String, data: Data)] = []
+                var archiveSize = FactDownloadArchive.SizeTracker()
                 for (index, file) in files.enumerated() {
                     try Task.checkCancellation()
                     let text = file["text"] as? String ?? "", facts = file["facts"] as? [[String: Any]] ?? []
                     let data = format == "pdf" ? try await factPDF(text: text, facts: facts, images: images) : Data(text.utf8)
-                    entries.append((file["name"] as? String ?? "Fact.\(format)", data))
+                    let filename = file["name"] as? String ?? "Fact.\(format)"
+                    entries.append((filename, data))
+                    if folder {
+                        try archiveSize.append(name: filename, byteCount: data.count)
+                    }
                     respondEvent(id: id, payload: ["type": "exportProgress", "token": token, "message": "Preparing files · \(index + 1) of \(files.count)"])
                     await Task.yield()
                 }
                 try Task.checkCancellation()
-                let data = folder ? try FactDownloadArchive.build(entries) : entries[0].data
-                let panel = NSSavePanel(); panel.nameFieldStringValue = payload["filename"] as? String ?? "Facts.\(format)"; panel.allowedContentTypes = [folder ? .zip : format == "pdf" ? .pdf : .plainText]; panel.canCreateDirectories = true
-                let response = await withTaskCancellationHandler(operation: { await withCheckedContinuation { continuation in panel.begin { continuation.resume(returning: $0) } } }, onCancel: { DispatchQueue.main.async { panel.cancel(nil) } })
+                let data: Data
+                if folder {
+                    data = try await FactDownloadArchive.build(entries) { [weak self] phase, processed, total in
+                        let percent = total == 0 ? 100 : min(100, processed * 100 / total)
+                        self?.respondEvent(id: id, payload: ["type": "exportProgress", "token": token, "message": "\(phase) · \(percent)%"])
+                    }
+                } else {
+                    data = entries[0].data
+                }
+                try Task.checkCancellation()
+                let requestedFilename = payload["filename"] as? String ?? "Facts.\(format)"
+                let panel = NSSavePanel(); panel.nameFieldStringValue = requestedFilename; panel.allowedContentTypes = [folder ? .zip : format == "pdf" ? .pdf : .plainText]; panel.canCreateDirectories = true
+                let waiter = SavePanelWaiter()
+                let response = await withTaskCancellationHandler(operation: {
+                    await withCheckedContinuation { continuation in
+                        guard waiter.install(continuation) else { continuation.resume(returning: .cancel); return }
+                        DispatchQueue.main.async {
+                            guard waiter.begin() else { return }
+                            panel.begin { waiter.finish($0) }
+                        }
+                    }
+                }, onCancel: {
+                    if waiter.cancel() { DispatchQueue.main.async { panel.cancel(nil) } }
+                })
                 try Task.checkCancellation()
                 guard response == .OK, let url = panel.url else { respond(id: id, result: ["canceled": true]); return }
+                try Task.checkCancellation()
                 try data.write(to: url, options: .atomic)
-                respond(id: id, result: ["canceled": false, "omittedImages": omitted])
+                respond(id: id, result: ["canceled": false, "omittedImages": omitted, "filename": url.lastPathComponent, "cardCount": files.reduce(0) { $0 + (($1["facts"] as? [[String: Any]])?.count ?? 0) }])
             } catch is CancellationError { respond(id: id, error: "Download canceled.") }
             catch { respond(id: id, error: "Download could not be saved: \(error.localizedDescription)") }
         }

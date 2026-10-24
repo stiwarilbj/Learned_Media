@@ -91,22 +91,54 @@ test("TXT paths never request images, including per-card archives", async () => 
   assert.ok(individual.filename.endsWith(".txt"));
   assert.equal(individual.blob.type, "text/plain;charset=utf-8");
 });
-test("archives use UTF-8, retain ordering, reject invalid sizes and names", () => {
-  const bytes = d.buildZip([
+test("archives use UTF-8, retain ordering, reject invalid sizes and names", async () => {
+  const bytes = await d.buildZip([
     {
       name: "Folder/001-Émilie.txt",
       data: new TextEncoder().encode("complete"),
     },
   ]);
-  assert.equal(new DataView(bytes.buffer).getUint16(6, true), 0x800);
-  assert.throws(
-    () => d.buildZip(Array(65536).fill({ name: "a", data: new Uint8Array() })),
+  const zipView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  assert.equal(zipView.getUint16(6, true), 0x800);
+  assert.equal(zipView.getUint32(14, true), 0x4267d023);
+  const firstData = 30 + new TextEncoder().encode("Folder/001-Émilie.txt").length;
+  assert.equal(new TextDecoder().decode(bytes.subarray(firstData, firstData + 8)), "complete");
+  assert.equal(bytes[bytes.length - 22], 0x50);
+  assert.equal(bytes[bytes.length - 21], 0x4b);
+  await assert.rejects(
+    d.buildZip(Array(65536).fill({ name: "a", data: new Uint8Array() })),
     /Too many/,
   );
-  assert.throws(
-    () => d.buildZip([{ name: "../unsafe", data: new Uint8Array() }]),
+  await assert.rejects(
+    d.buildZip([{ name: "../unsafe", data: new Uint8Array() }]),
     /Invalid/,
   );
+  assert.throws(
+    () => d.assertZipArchiveSize([
+      { name: "large.bin", byteLength: 512 * 1024 * 1024 },
+    ]),
+    /512 MB/,
+  );
+  const tracker = d.createZipArchiveSizeTracker();
+  tracker.add({ name: "Folder/one.txt", byteLength: 8 });
+  tracker.add({ name: "Folder/two.txt", byteLength: 6 });
+  assert.equal(
+    tracker.totalBytes,
+    d.assertZipArchiveSize([
+      { name: "Folder/one.txt", byteLength: 8 },
+      { name: "Folder/two.txt", byteLength: 6 },
+    ]),
+  );
+});
+
+test("PDF text chunks preserve every character and keep surrogate pairs intact", () => {
+  const text = `${"word ".repeat(900)}${"x".repeat(8191)}😀 accented Tōhoku`;
+  const chunks = [...e.splitPdfText(text)];
+  assert.equal(chunks.join(""), text);
+  for (const chunk of chunks) {
+    const last = chunk.charCodeAt(chunk.length - 1);
+    assert.ok(last < 0xd800 || last > 0xdbff, "chunk ended with a high surrogate");
+  }
 });
 test("canceled preparation and empty collections produce no file", async () => {
   const controller = new AbortController();
@@ -121,6 +153,114 @@ test("canceled preparation and empty collections produce no file", async () => {
     e.buildFactExport("txt-single", "Session", []),
     /no cards/,
   );
+});
+
+test("pre-canceled PDF work performs no font requests", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let requests = 0;
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    requests += 1;
+    throw new Error("A canceled export must not fetch fonts");
+  };
+  try {
+    await assert.rejects(
+      e.buildPdf("Workspace", "2026-10-24", [card], new Map(), {
+        signal: controller.signal,
+      }),
+      (error) => error.name === "AbortError",
+    );
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("font waits cancel promptly, coalesce subscribers, and retry after failures", async () => {
+  const regular = readFileSync(new URL("../public/fonts/NotoSans-Regular.ttf", import.meta.url));
+  const bold = readFileSync(new URL("../public/fonts/NotoSans-Bold.ttf", import.meta.url));
+  const previousFetch = globalThis.fetch;
+  let requests = 0;
+  try {
+    globalThis.fetch = async (_url, { signal } = {}) => {
+      requests += 1;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 80);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+      return { ok: false, arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    const canceled = new AbortController();
+    const canceledBuild = e.buildPdf("Workspace", "2026-10-24", [card], new Map(), { signal: canceled.signal });
+    setTimeout(() => canceled.abort(), 5);
+    await assert.rejects(canceledBuild, (error) => error.name === "AbortError");
+    assert.equal(requests, 2);
+
+    requests = 0;
+    globalThis.fetch = async () => {
+      requests += 1;
+      return { ok: false };
+    };
+    await assert.rejects(
+      e.buildPdf("Workspace", "2026-10-24", [card], new Map()),
+      /PDF fonts could not be loaded/,
+    );
+    assert.equal(requests, 2);
+
+    requests = 0;
+    globalThis.fetch = async (url, { signal } = {}) => {
+      requests += 1;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 40);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+      const bytes = String(url).includes("Bold") ? bold : regular;
+      return { ok: true, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+    };
+    const one = new AbortController(), two = new AbortController();
+    const first = e.buildPdf("Workspace", "2026-10-24", [card], new Map(), { signal: one.signal });
+    const second = e.buildPdf("Workspace", "2026-10-24", [card], new Map(), { signal: two.signal });
+    setTimeout(() => one.abort(), 5);
+    const [firstResult, secondResult] = await Promise.allSettled([first, second]);
+    assert.equal(firstResult.status, "rejected");
+    assert.equal(firstResult.reason.name, "AbortError");
+    assert.equal(secondResult.status, "fulfilled");
+    assert.equal(requests, 2);
+    assert.ok(secondResult.value.length > 1000);
+
+    const renderController = new AbortController();
+    const longCard = {
+      ...card,
+      body: "A long original sentence stays intact. ".repeat(100000),
+    };
+    const rendering = e.buildPdf("Workspace", "2026-10-24", [longCard], new Map(), {
+      signal: renderController.signal,
+    });
+    setTimeout(() => renderController.abort(), 0);
+    await assert.rejects(rendering, (error) => error.name === "AbortError");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("ZIP assembly yields to cancellation and never returns a partial archive", async () => {
+  const controller = new AbortController();
+  const timerFired = new Promise((resolve) => setTimeout(() => {
+    controller.abort();
+    resolve(true);
+  }, 0));
+  const archive = d.buildZip([
+    { name: "Cards/large.txt", data: new Uint8Array(8 * 1024 * 1024) },
+  ], { signal: controller.signal });
+  await timerFired;
+  await assert.rejects(archive, (error) => error.name === "AbortError");
 });
 
 function topic(label, selected = true, children) {

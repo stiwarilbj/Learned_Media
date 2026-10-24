@@ -1,6 +1,7 @@
 import type { FactCard } from "./types";
 import {
   buildZip,
+  createZipArchiveSizeTracker,
   prepareDownloadNames,
   exportText,
   snapshotDownloadCards,
@@ -12,6 +13,7 @@ export type FactExportResult = {
   blob: Blob;
   filename: string;
   omittedImages: string[];
+  cardCount: number;
 };
 type ImageAsset = { bytes: Uint8Array; width: number; height: number };
 type Options = {
@@ -21,35 +23,136 @@ type Options = {
   date?: Date;
   tagNames?: readonly string[];
 };
-let fonts: Promise<string[]> | undefined;
-function fontData() {
-  if (!fonts)
-    fonts = Promise.all(
-      ["Regular", "Bold"].map(async (weight) => {
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/fonts/NotoSans-${weight}.ttf`,
-          { signal: AbortSignal.timeout(20000) },
-        );
-        if (!response.ok)
-          throw new Error(
-            "PDF fonts could not be loaded. Reconnect and retry.",
-          );
-        const data = new Uint8Array(await response.arrayBuffer());
-        let text = "";
-        for (let i = 0; i < data.length; i += 8192)
-          text += String.fromCharCode(...data.subarray(i, i + 8192));
-        return btoa(text);
-      }),
-    ).catch((error) => {
-      fonts = undefined;
-      throw error;
-    });
-  return fonts;
+export function* splitPdfText(value: string, chunkSize = 8192) {
+  let start = 0;
+  while (start < value.length) {
+    let end = Math.min(start + chunkSize, value.length);
+    if (end < value.length) {
+      const boundary = value.lastIndexOf(" ", end);
+      if (boundary > start + Math.floor(chunkSize / 2)) end = boundary + 1;
+    }
+    if (
+      end < value.length &&
+      end > start &&
+      value.charCodeAt(end - 1) >= 0xd800 &&
+      value.charCodeAt(end - 1) <= 0xdbff &&
+      value.charCodeAt(end) >= 0xdc00 &&
+      value.charCodeAt(end) <= 0xdfff
+    )
+      end -= 1;
+    if (end <= start) end = Math.min(start + 2, value.length);
+    yield value.slice(start, end);
+    start = end;
+  }
 }
+type FontFlight = {
+  controller: AbortController;
+  promise: Promise<string[]>;
+  subscribers: number;
+  settled: boolean;
+  timeout: ReturnType<typeof setTimeout>;
+};
+let cachedFonts: string[] | undefined;
+let fontFlight: FontFlight | undefined;
 function check(signal?: AbortSignal) {
   signal?.throwIfAborted();
 }
 const yieldTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  check(signal);
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => {
+      cleanup();
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new DOMException("Download canceled", "AbortError"),
+      );
+    };
+    const cleanup = () => signal.removeEventListener("abort", aborted);
+    signal.addEventListener("abort", aborted, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+function createFontFlight(): FontFlight {
+  const controller = new AbortController();
+  const flight: FontFlight = {
+    controller,
+    promise: Promise.resolve([]),
+    subscribers: 0,
+    settled: false,
+    timeout: setTimeout(() => {
+      controller.abort(
+        new DOMException("PDF fonts could not be loaded. Reconnect and retry.", "TimeoutError"),
+      );
+    }, 20000),
+  };
+  fontFlight = flight;
+  flight.promise = Promise.all(
+    ["Regular", "Bold"].map(async (weight) => {
+      check(controller.signal);
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/fonts/NotoSans-${weight}.ttf`,
+        { signal: controller.signal },
+      );
+      if (!response.ok)
+        throw new Error("PDF fonts could not be loaded. Reconnect and retry.");
+      const data = new Uint8Array(await response.arrayBuffer());
+      check(controller.signal);
+      let text = "";
+      for (let i = 0; i < data.length; i += 8192) {
+        check(controller.signal);
+        text += String.fromCharCode(...data.subarray(i, i + 8192));
+        if (i + 8192 < data.length) await yieldTask();
+      }
+      return btoa(text);
+    }),
+  )
+    .then((values) => {
+      cachedFonts = values;
+      return values;
+    })
+    .catch((error) => {
+      if (!controller.signal.aborted) controller.abort(error);
+      throw error;
+    })
+    .finally(() => {
+      flight.settled = true;
+      clearTimeout(flight.timeout);
+      if (fontFlight === flight) fontFlight = undefined;
+    });
+  // A canceled final subscriber can leave the shared fetch settling after its
+  // own wait has already ended. Keep that expected abort from becoming unhandled.
+  void flight.promise.catch(() => undefined);
+  return flight;
+}
+async function fontData(signal?: AbortSignal) {
+  check(signal);
+  if (cachedFonts) return cachedFonts;
+  const flight = fontFlight ?? createFontFlight();
+  flight.subscribers += 1;
+  try {
+    const values = await waitWithSignal(flight.promise, signal);
+    check(signal);
+    return values;
+  } finally {
+    flight.subscribers -= 1;
+    if (!flight.settled && flight.subscribers === 0) {
+      if (fontFlight === flight) fontFlight = undefined;
+      flight.controller.abort(new DOMException("Download canceled", "AbortError"));
+    }
+  }
+}
 export function canvasImage(
   url: string,
   signal?: AbortSignal,
@@ -124,9 +227,10 @@ export async function buildPdf(
   images: Map<string, ImageAsset>,
   options: Options = {},
 ): Promise<Uint8Array> {
+  check(options.signal);
   const [{ jsPDF: PDF }, font] = await Promise.all([
-    import("jspdf"),
-    fontData(),
+    waitWithSignal(import("jspdf"), options.signal),
+    fontData(options.signal),
   ]);
   check(options.signal);
   const pdf: jsPDF = new PDF({ unit: "pt", format: "letter", compress: true });
@@ -146,31 +250,40 @@ export async function buildPdf(
       y = 50;
     }
   };
-  const text = (value: string, size = 11, bold = false, url?: string) => {
+  const text = async (value: string, size = 11, bold = false, url?: string) => {
     pdf.setFont("NotoSans", bold ? "bold" : "normal");
     pdf.setFontSize(size);
-    for (const paragraph of value.split("\n"))
-      for (const line of pdf.splitTextToSize(
-        paragraph || " ",
-        512,
-      ) as string[]) {
-        room(size * 1.5);
-        pdf.text(line, 50, y);
-        if (url)
-          pdf.link(
-            50,
-            y - size,
-            Math.min(512, pdf.getTextWidth(line)),
-            size * 1.4,
-            { url },
-          );
-        y += size * 1.5;
+    let renderedLines = 0;
+    for (const paragraph of value.split("\n")) {
+      check(options.signal);
+      const content = paragraph || " ";
+      for (const chunk of splitPdfText(content)) {
+        check(options.signal);
+        const lines = pdf.splitTextToSize(chunk, 512) as string[];
+        for (const line of lines) {
+          check(options.signal);
+          room(size * 1.5);
+          pdf.text(line, 50, y);
+          if (url)
+            pdf.link(
+              50,
+              y - size,
+              Math.min(512, pdf.getTextWidth(line)),
+              size * 1.4,
+              { url },
+            );
+          y += size * 1.5;
+          renderedLines += 1;
+          if (renderedLines % 32 === 0) await yieldTask();
+        }
+        await yieldTask();
       }
+    }
     y += 6;
   };
-  text("LEARNED MEDIA", 20, true);
-  text(`Workspace: ${workspace}`);
-  text(`Exported: ${date}`);
+  await text("LEARNED MEDIA", 20, true);
+  await text(`Workspace: ${workspace}`);
+  await text(`Exported: ${date}`);
   for (let i = 0; i < cards.length; i++) {
     check(options.signal);
     const card = cards[i];
@@ -185,8 +298,8 @@ export async function buildPdf(
       ? Math.min(512 / image.width, 280 / image.height) * image.height + 12
       : 0;
     room(Math.min(650, titleHeight + hookHeight + pictureHeight + 50));
-    text(`${i + 1}. ${card.title}`, 16, true);
-    text(card.hook, 12, true);
+    await text(`${i + 1}. ${card.title}`, 16, true);
+    await text(card.hook, 12, true);
     if (image) {
       const scale = Math.min(512 / image.width, 280 / image.height);
       const width = image.width * scale,
@@ -194,16 +307,16 @@ export async function buildPdf(
       room(height + 12);
       pdf.addImage(image.bytes, "JPEG", 50, y, width, height);
       y += height + 12;
-    } else if (card.image?.url) text("Image unavailable in this download.", 9);
-    text(card.body);
-    text(`Topic path: ${card.topicPath.join(" / ")}`, 9);
+    } else if (card.image?.url) await text("Image unavailable in this download.", 9);
+    await text(card.body);
+    await text(`Topic path: ${card.topicPath.join(" / ")}`, 9);
     for (const source of card.sources) {
-      text(source.title, 10, true, source.url);
-      text(source.url, 9, false, source.url);
+      await text(source.title, 10, true, source.url);
+      await text(source.url, 9, false, source.url);
     }
-    if (card.image?.credit) text(`Image credit: ${card.image.credit}`, 9);
+    if (card.image?.credit) await text(`Image credit: ${card.image.credit}`, 9);
     const sourceUrl = card.image?.filePageUrl ?? card.image?.sourceUrl;
-    if (sourceUrl) text(sourceUrl, 9, false, sourceUrl);
+    if (sourceUrl) await text(sourceUrl, 9, false, sourceUrl);
     y += 14;
     if (i % 4 === 0) await yieldTask();
   }
@@ -220,7 +333,9 @@ export async function buildFactExport(
   input: FactCard[],
   options: Options = {},
 ): Promise<FactExportResult> {
+  check(options.signal);
   const cards = snapshotDownloadCards(input);
+  check(options.signal);
   if (!cards.length) throw new Error("There are no cards to download.");
   const date = (options.date ?? new Date()).toISOString(),
     naming = prepareDownloadNames(
@@ -233,6 +348,7 @@ export async function buildFactExport(
   const images = new Map<string, ImageAsset>(),
     omittedImages: string[] = [];
   if (format === "pdf") {
+    check(options.signal);
     const urls = [
       ...new Set(
         cards.map((c) => c.image?.url).filter((v): v is string => Boolean(v)),
@@ -246,10 +362,13 @@ export async function buildFactExport(
           check(options.signal);
           const url = urls[next++];
           try {
-            images.set(url, await canvasImage(url, options.signal));
+            const image = await canvasImage(url, options.signal);
+            check(options.signal);
+            images.set(url, image);
           } catch (error) {
             check(options.signal);
           }
+          check(options.signal);
           options.onProgress?.(
             `Preparing pictures · ${++done} of ${urls.length}`,
           );
@@ -260,13 +379,16 @@ export async function buildFactExport(
       if (c.image?.url && !images.has(c.image.url)) omittedImages.push(c.title);
     });
   }
-  const encode = async (items: FactCard[]) =>
-    format === "txt"
+  const encode = async (items: FactCard[]) => {
+    check(options.signal);
+    return format === "txt"
       ? new TextEncoder().encode(exportText(workspace, date, items))
       : buildPdf(workspace, date, items, images, options);
+  };
   let bytes: Uint8Array;
   if (folder) {
-    const entries = [];
+    const entries: Array<{ name: string; data: Uint8Array }> = [];
+    const archiveSize = createZipArchiveSizeTracker();
     for (let i = 0; i < cards.length; i++) {
       check(options.signal);
       options.onProgress?.(`Preparing cards · ${i + 1} of ${cards.length}`);
@@ -274,10 +396,19 @@ export async function buildFactExport(
         name: naming.entries[i],
         data: await encode([cards[i]]),
       });
+      archiveSize.add({ name: naming.entries[i], byteLength: entries[i].data.length });
       await yieldTask();
     }
     check(options.signal);
-    bytes = buildZip(entries);
+    bytes = await buildZip(entries, {
+      signal: options.signal,
+      onProgress: (processed, total) => {
+        if (processed === total || processed % (1024 * 1024) < 256 * 1024)
+          options.onProgress?.(
+            `Preparing archive · ${Math.min(100, Math.floor((processed / total) * 100))}%`,
+          );
+      },
+    });
   } else {
     options.onProgress?.(
       `Preparing ${cards.length} card${cards.length === 1 ? "" : "s"}`,
@@ -295,6 +426,7 @@ export async function buildFactExport(
     }),
     filename: naming.filename,
     omittedImages,
+    cardCount: cards.length,
   };
 }
 export function downloadBlob(blob: Blob, filename: string) {
