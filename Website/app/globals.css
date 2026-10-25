@@ -1234,6 +1234,9 @@ body { background: var(--page-gradient); }
 .answer-structure-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; width: max-content; margin-top: 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-blue); color: var(--primary); padding: 4px 5px 4px 9px; font-size: 9px; font-weight: 800; }
 .answer-structure-chip button { width: 19px; height: 19px; border: 0; border-radius: 50%; background: transparent; color: inherit; font-size: 15px; line-height: 1; cursor: pointer; }
 .answer-structure-chip button:hover, .answer-structure-chip button:focus-visible { outline: 0; background: rgba(42, 100, 246, .12); }
+.question-instruction-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; width: fit-content; max-width: 100%; margin-top: 7px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-blue); color: var(--ink); padding: 7px 9px; font-size: 10px; line-height: 1.4; }
+.question-instruction-notice button { min-height: 25px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--primary); padding: 3px 8px; font-size: 9px; font-weight: 800; cursor: pointer; }
+.question-instruction-notice button:hover, .question-instruction-notice button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .answer-steps { margin: 8px 0 0; padding-left: 22px; color: var(--ink); font-size: 12px; line-height: 1.65; }
 .answer-steps li + li { margin-top: 5px; }
 .answer-comparison { margin: 9px 0 0; display: grid; gap: 7px; }

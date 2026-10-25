@@ -75,6 +75,23 @@ export type LearningMessage = {
 
 export type AnswerStructure = "automatic" | "short-explanation" | "ordered-steps" | "side-by-side-comparison";
 export type ResolvedAnswerStructure = Exclude<AnswerStructure, "automatic">;
+export type QuestionInstructionPreference = "written" | "settings";
+export type QuestionLengthInstruction = { count: number; exact: boolean; kind: "sentences" | "words" };
+export type QuestionInstructionDirective = {
+  length?: QuestionLengthInstruction;
+  structure?: ResolvedAnswerStructure;
+  label: string;
+};
+export type QuestionInstructionResolution = {
+  preference: QuestionInstructionPreference;
+  directive?: QuestionInstructionDirective;
+  conflict: boolean;
+  conflictLabel: string;
+  effectiveDetailed: boolean;
+  effectiveStructure: AnswerStructure;
+  questionForPrompt: string;
+  policyVersion: string;
+};
 export type AnswerComparisonRow = { property: string; values: [string, string] };
 export type AnswerPresentation = {
   structure: ResolvedAnswerStructure;

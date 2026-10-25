@@ -2,7 +2,9 @@
 (function(scope) { const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ANSWER_STRUCTURES = exports.ANSWER_STRUCTURE_POLICY_VERSION = void 0;
+exports.ANSWER_STRUCTURES = exports.QUESTION_INSTRUCTION_POLICY_VERSION = exports.ANSWER_STRUCTURE_POLICY_VERSION = void 0;
+exports.resolveQuestionInstructions = resolveQuestionInstructions;
+exports.isQuestionInstructionPreference = isQuestionInstructionPreference;
 exports.normalizeAnswerStructure = normalizeAnswerStructure;
 exports.normalizeResolvedAnswerStructure = normalizeResolvedAnswerStructure;
 exports.shouldResetSubmittedAnswerStructure = shouldResetSubmittedAnswerStructure;
@@ -11,6 +13,7 @@ exports.normalizeSavedAnswerPresentation = normalizeSavedAnswerPresentation;
 exports.answerStructureLabel = answerStructureLabel;
 exports.isAnswerStructure = isAnswerStructure;
 exports.ANSWER_STRUCTURE_POLICY_VERSION = "answer-structure-v1";
+exports.QUESTION_INSTRUCTION_POLICY_VERSION = "question-instruction-override-v1";
 exports.ANSWER_STRUCTURES = [
     { value: "automatic", label: "Automatic" },
     { value: "short-explanation", label: "Short explanation" },
@@ -35,6 +38,169 @@ const cleanText = (value, maximum = 2_000) => {
     return (leading + value.slice(start, end).trim() + trailing).slice(0, maximum);
 };
 const normalized = (value) => value.normalize("NFC").replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+const smallNumbers = { one: 1, a: 1, an: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+function parseBoundedNumber(value, maximum) {
+    const count = /^\d+$/u.test(value) ? Number(value) : smallNumbers[value.toLocaleLowerCase()];
+    return Number.isInteger(count) && count >= 1 && count <= maximum ? count : undefined;
+}
+function maskQuotedQuestion(value) {
+    const chars = value.split("");
+    let quote = "";
+    for (let i = 0; i < chars.length; i++) {
+        const char = chars[i];
+        if (quote) {
+            chars[i] = " ";
+            if (char === quote || quote === "“" && char === "”" || quote === "‘" && char === "’")
+                quote = "";
+            continue;
+        }
+        if (char === "\"" || char === "“" || (char === "‘" && (i === 0 || /\s/u.test(chars[i - 1])))) {
+            quote = char;
+            chars[i] = " ";
+        }
+    }
+    return chars.join("");
+}
+function numberWords(maximum) {
+    return maximum === 10 ? "(?:one|a|an|two|three|four|five|six|seven|eight|nine|ten|[1-9]|10)" : "(?:one|a|an|two|three|four|five|six|seven|eight|nine|ten|\\d{1,3})";
+}
+function collectPattern(text, pattern, kind, build) {
+    const result = [];
+    pattern.lastIndex = 0;
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+        const item = build(match);
+        const phrase = item.phrase;
+        const relativeStart = phrase ? match[0].lastIndexOf(phrase) : match[0].length;
+        const start = match.index + Math.max(0, relativeStart);
+        const clauseStart = Math.max(text.lastIndexOf(".", start - 1), text.lastIndexOf("?", start - 1), text.lastIndexOf("!", start - 1), text.lastIndexOf(";", start - 1), text.lastIndexOf("\n", start - 1)) + 1;
+        const beforeAction = text.slice(clauseStart, start);
+        // Only recognize an instruction phrased as a direct request. References to
+        // hypothetical, quoted, or negated instructions are ordinary question text.
+        if (/\b(?:if|unless|imagine|suppose|hypothetically|would|could|might|should|don't|do not|never|not to)\b/iu.test(beforeAction))
+            continue;
+        const end = start + (phrase?.length ?? 0);
+        if (end > start)
+            result.push({ kind, ...item, start, end });
+        if (!match[0].length)
+            pattern.lastIndex++;
+    }
+    return result;
+}
+function detectQuestionInstructions(question) {
+    const masked = maskQuotedQuestion(question);
+    const action = "(?:please\\s+)?(?:answer|respond|explain|summarize|write|use|give(?:\\s+me)?|provide|keep\\s+(?:it|the answer))";
+    const sentenceNumber = numberWords(10);
+    const wordNumber = numberWords(500);
+    const lengthPatterns = [
+        { kind: "sentences", noun: "sentence", maximum: 10, regex: new RegExp(`\\b${action}\\b[^?!.;\\n]{0,70}?\\b((?:in|within)\\s+(?:(?:exactly|at most|no more than|up to)\\s+)?${sentenceNumber}\\s+sentences?|(?:in|within)\\s+(?:a\\s+)?(?:maximum|max)(?:\\s+of)?\\s+${sentenceNumber}\\s+sentences?|(?:exactly|at most|no more than|up to|(?:a\\s+)?(?:maximum|max)(?:\\s+of)?)\\s+${sentenceNumber}\\s+sentences?)\\b`, "giu") },
+        { kind: "words", noun: "word", maximum: 500, regex: new RegExp(`\\b${action}\\b[^?!.;\\n]{0,70}?\\b((?:in|within)\\s+(?:(?:exactly|at most|no more than|up to)\\s+)?${wordNumber}\\s+words?|(?:in|within)\\s+(?:a\\s+)?(?:maximum|max)(?:\\s+of)?\\s+${wordNumber}\\s+words?|(?:exactly|at most|no more than|up to|(?:a\\s+)?(?:maximum|max)(?:\\s+of)?)\\s+${wordNumber}\\s+words?)\\b`, "giu") }
+    ];
+    const items = [];
+    for (const spec of lengthPatterns) {
+        items.push(...collectPattern(masked, spec.regex, "length", match => {
+            const phrase = match[1].replace(/\s+/gu, " ").trim();
+            const countMatch = phrase.match(new RegExp(`(${spec.kind === "sentences" ? sentenceNumber : wordNumber})\\s+${spec.noun}s?`, "iu"));
+            const count = countMatch ? parseBoundedNumber(countMatch[1], spec.maximum) : undefined;
+            const exact = /\bexactly\b/iu.test(phrase)
+                || /\b(?:in|within)\b/iu.test(phrase) && !/\b(?:at most|no more than|up to|maximum|max)\b/iu.test(phrase);
+            if (!count)
+                return { key: "", label: "", phrase: "" };
+            const label = spec.kind === "sentences"
+                ? exact ? count === 1 ? "one sentence" : `${count} sentences` : `up to ${count} ${count === 1 ? "sentence" : "sentences"}`
+                : exact ? `exactly ${count} ${count === 1 ? "word" : "words"}` : `up to ${count} ${count === 1 ? "word" : "words"}`;
+            return { key: `${spec.kind}:${count}:${exact}`, label, phrase, length: { count, exact, kind: spec.kind } };
+        }).filter(item => item.key));
+    }
+    const formatPatterns = [
+        { regex: /\b(?:please\s+)?(?:use|answer|respond|explain|format|present|organize|write|give|provide)\b[^?!.;\n]{0,55}?\b((?:(?:in|as|with|using)\s+(?:(?:clear|ordered|numbered)\s+)?steps?|(?:numbered|ordered)\s+steps?|(?:in|as|with|using)\s+(?:numbered|ordered)\s+lists?))\b/giu, structure: "ordered-steps", label: "ordered steps", phrase: match => match[1] },
+        { regex: /\b(?:please\s+)?(?:compare|use|answer|respond|format|present|organize|write|give|provide)\b[^?!.;\n]{0,75}?\b(side[- ]by[- ]side(?:\s+comparison)?(?:\s+table)?|(?:in|as)\s+(?:a\s+)?comparison\s+table)\b/giu, structure: "side-by-side-comparison", label: "side-by-side comparison", phrase: match => match[1] },
+        { regex: /\b(?:please\s+)?(?:give(?:\s+me)?|provide|write|answer|explain|keep(?:\s+it)?)\b[^?!.;\n]{0,50}?\b((?:a\s+)?(?:short|brief)\s+explanation|in\s+(?:plain\s+)?prose|as\s+(?:a\s+)?paragraph)\b/giu, structure: "short-explanation", label: "short explanation", phrase: match => match[1] }
+    ];
+    for (const spec of formatPatterns) {
+        items.push(...collectPattern(masked, spec.regex, "structure", match => {
+            const phrase = spec.phrase(match).replace(/\s+/gu, " ").trim();
+            return { key: `structure:${spec.structure}`, label: spec.label, phrase, structure: spec.structure };
+        }));
+    }
+    const unique = new Map();
+    for (const item of items)
+        unique.set(item.key, item);
+    const all = [...unique.values()];
+    const lengths = all.filter(item => item.kind === "length");
+    const structures = all.filter(item => item.kind === "structure");
+    const contradictoryRemainder = lengths.some(item => {
+        const clauseEnd = masked.slice(item.end).search(/[.!?;\n]/u);
+        const remainder = masked.slice(item.end, clauseEnd < 0 ? undefined : item.end + clauseEnd);
+        const countPattern = item.length?.kind === "sentences" ? sentenceNumber : wordNumber;
+        const noun = item.length?.kind === "sentences" ? "sentences?" : "words?";
+        const connectorPattern = "\\b(?:or|rather than|instead of|not|but|and)\\s+(?:(?:then|instead)\\s+)?(?:(?:please\\s+)?(?:use|write|answer|keep(?:\\s+it)?|respond)\\s+)?(?:(?:in|within)\\s+)?(?:exactly\\s+|at most\\s+|no more than\\s+|up to\\s+)?(" + countPattern + ")(?:\\s+" + noun + ")?\\b";
+        const alternative = remainder.match(new RegExp(connectorPattern, "iu"));
+        const count = alternative ? parseBoundedNumber(alternative[1], item.length?.kind === "sentences" ? 10 : 500) : undefined;
+        return count !== undefined && count !== item.length?.count;
+    });
+    // Competing explicit values or incompatible requested forms are ambiguous.
+    if (contradictoryRemainder || new Set(lengths.map(item => item.key.split(":").slice(0, 2).join(":"))).size > 1
+        || new Set(structures.map(item => item.key)).size > 1
+        || lengths.some(item => item.length?.kind === "sentences" && item.length.count === 1) && structures.some(item => item.structure === "ordered-steps" || item.structure === "side-by-side-comparison")) {
+        return { items: [] };
+    }
+    const length = lengths[0]?.length;
+    const structure = structures[0]?.structure;
+    if (!length && !structure)
+        return { items: [] };
+    const label = [lengths[0]?.label, structures[0]?.label].filter(Boolean).join(" · ");
+    return { items: all, directive: { ...(length ? { length } : {}), ...(structure ? { structure } : {}), label } };
+}
+function questionWithoutInstructions(question, removed) {
+    let value = question;
+    for (const item of [...removed].sort((a, b) => b.start - a.start))
+        value = value.slice(0, item.start) + " " + value.slice(item.end);
+    return value.replace(/\s+/gu, " ").replace(/\s+([,.;:?!])/gu, "$1").replace(/([,;:]\s*){2,}/gu, " ").trim()
+        .replace(/^(?:please\s+)?(?:answer|respond|write|use|format|present|organize|structure|give|provide)\s*[:,-]\s*/iu, "")
+        .replace(/^use\s+to\s+/iu, "").replace(/^[,;:–—-]+\s*/u, "").replace(/[\s,;:–—-]+$/u, "")
+        .replace(/(?:^|[\s,;:–—-])(?:please\s+)?(?:answer|respond|write|use|format|present|organize|structure|give|provide)\s*[.!?]*$/iu, "")
+        .trim().replace(/^([a-z])/u, character => character.toLocaleUpperCase());
+}
+function resolveQuestionInstructions(question, detailed, structureValue, preferenceValue = "written") {
+    const preference = preferenceValue === "settings" ? "settings" : "written";
+    const settingStructure = normalizeAnswerStructure(structureValue);
+    const rawDetected = detectQuestionInstructions(question);
+    const rawCleanedQuestion = questionWithoutInstructions(question, rawDetected.items);
+    const instructionOnly = !rawCleanedQuestion.trim() || /^(?:please\s+)?(?:answer|respond|explain|write|use|format|present|organize|structure|give|provide)\s*[.!?]*$/iu.test(rawCleanedQuestion)
+        || /^(?:can|could|would)\s+you\s*$/iu.test(rawCleanedQuestion);
+    const detected = instructionOnly ? { items: [], directive: undefined } : rawDetected;
+    const directive = detected.directive;
+    const sentenceLimit = directive?.length?.kind === "sentences" ? directive.length : undefined;
+    const wordLimit = directive?.length?.kind === "words" ? directive.length : undefined;
+    const shortFormat = directive?.structure === "short-explanation";
+    const lengthConflict = Boolean(sentenceLimit && (sentenceLimit.count === 1 || !detailed && sentenceLimit.exact && sentenceLimit.count > 4))
+        || Boolean(wordLimit && detailed && (wordLimit.exact ? wordLimit.count < 150 || wordLimit.count > 250 : wordLimit.count < 150))
+        || Boolean(shortFormat && detailed);
+    const structureConflict = Boolean(directive?.structure && settingStructure !== "automatic" && directive.structure !== settingStructure)
+        || Boolean(sentenceLimit && sentenceLimit.count === 1 && (settingStructure === "ordered-steps" || settingStructure === "side-by-side-comparison"));
+    const conflict = Boolean(directive && (lengthConflict || structureConflict));
+    const suppressedKinds = new Set();
+    if (preference === "settings" && conflict) {
+        if (lengthConflict)
+            suppressedKinds.add("length");
+        if (structureConflict)
+            suppressedKinds.add("structure");
+    }
+    const activeItems = detected.items.filter(item => !suppressedKinds.has(item.kind));
+    const activeLength = activeItems.find(item => item.kind === "length")?.length;
+    const activeStructure = activeItems.find(item => item.kind === "structure")?.structure;
+    const oneSentence = activeLength?.kind === "sentences" && activeLength.count === 1;
+    const effectiveStructure = activeStructure ?? (oneSentence ? "short-explanation" : settingStructure);
+    const effectiveDetailed = effectiveStructure === "short-explanation" || oneSentence ? false : detailed;
+    // Keep the original draft in card history, but give the writer the
+    // substantive question separately from the resolved output instructions.
+    const questionForPrompt = detected.items.length ? questionWithoutInstructions(question, detected.items) || question : question;
+    const conflictLabel = conflict ? detected.items.filter(item => suppressedKinds.has(item.kind) || preference === "written" && ((item.kind === "length" && lengthConflict) || (item.kind === "structure" && structureConflict))).map(item => item.label).filter((item, index, list) => list.indexOf(item) === index).join(" · ") : "";
+    return { preference, directive: activeItems.length ? { ...(activeLength ? { length: activeLength } : {}), ...(activeStructure ? { structure: activeStructure } : {}), label: activeItems.map(item => item.label).filter((item, index, list) => list.indexOf(item) === index).join(" · ") } : undefined, conflict, conflictLabel, effectiveDetailed, effectiveStructure, questionForPrompt, policyVersion: exports.QUESTION_INSTRUCTION_POLICY_VERSION };
+}
+function isQuestionInstructionPreference(value) {
+    return value === "written" || value === "settings";
+}
 function normalizeAnswerStructure(value) {
     return typeof value === "string" && answerStructures.has(value) ? value : "automatic";
 }

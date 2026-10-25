@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { describeGeminiError, geminiFailureDetails, generateLearningResponse } from "@/lib/gemini";
 import type { FactCard, LearningMessage } from "@/lib/types";
-import { isAnswerStructure } from "@/lib/answer-structure";
+import { isAnswerStructure, isQuestionInstructionPreference } from "@/lib/answer-structure";
 
 export async function POST(request: Request) {
   try {
@@ -12,6 +12,7 @@ export async function POST(request: Request) {
       question?: string;
       detailed?: boolean;
       structure?: string;
+      instructionPreference?: string;
       history?: LearningMessage[];
     };
     const apiKey = request.headers.get("x-gemini-api-key")?.trim() ?? "";
@@ -28,6 +29,9 @@ export async function POST(request: Request) {
     }
     if (body.action === "question" && body.structure !== undefined && !isAnswerStructure(body.structure)) {
       return NextResponse.json({ error: "Choose a supported answer structure." }, { status: 400 });
+    }
+    if (body.action === "question" && body.instructionPreference !== undefined && !isQuestionInstructionPreference(body.instructionPreference)) {
+      return NextResponse.json({ error: "Choose a supported instruction priority." }, { status: 400 });
     }
     if (body.action === "glossary") {
       const result = await generateLearningResponse({
@@ -47,6 +51,7 @@ export async function POST(request: Request) {
       question: body.question?.trim().slice(0, 600),
       detailed: Boolean(body.detailed),
       structure: body.structure && isAnswerStructure(body.structure) ? body.structure : "automatic",
+      instructionPreference: body.instructionPreference && isQuestionInstructionPreference(body.instructionPreference) ? body.instructionPreference : "written",
       history: body.history?.slice(-6),
       mode: body.mode,
       signal: request.signal

@@ -1,8 +1,8 @@
 import { annotateEvidenceDates } from "./evidence-dates";
 import instructions from "./prompt-instructions.json";
 import { factWritingRules, difficultyRubric } from "./fact-quality";
-import { ANSWER_STRUCTURE_POLICY_VERSION } from "./answer-structure";
-import type { AnswerStructure } from "./types";
+import { ANSWER_STRUCTURE_POLICY_VERSION, resolveQuestionInstructions } from "./answer-structure";
+import type { AnswerStructure, QuestionInstructionPreference } from "./types";
 
 export type PromptOperation = "connection" | "candidate" | "combined" | "grounding" | "learn" | "adapt" | "glossary" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
 export type PromptField = { label: string; value: unknown; multiline?: boolean; reference?: boolean };
@@ -138,24 +138,39 @@ function supportingCard(card: unknown) {
 }
 
 /** Question answers have independent coverage and length guidance, never card settings. */
-export function buildQuestionPrompt({ card, question, detailed, structure = "automatic", history, evidence }: {
+export function buildQuestionPrompt({ card, question, detailed, structure = "automatic", instructionPreference = "written", history, evidence }: {
   card: unknown;
   question?: string;
   detailed?: boolean;
   structure?: AnswerStructure;
+  instructionPreference?: QuestionInstructionPreference;
   history?: unknown[];
   evidence: unknown[];
 }) {
-  const checklist = questionCoverageChecklist(question);
-  const scope = questionScope(question);
-  return buildPrompt("question", [...instructions.answerWriting, ...instructions.questionEvidence, ...questionTypeRules(question),
+  const resolution = resolveQuestionInstructions(question ?? "", Boolean(detailed), structure, instructionPreference);
+  const effectiveQuestion = resolution.questionForPrompt;
+  const effectiveStructure = resolution.effectiveStructure;
+  const effectiveDetailed = resolution.effectiveDetailed;
+  const checklist = questionCoverageChecklist(effectiveQuestion);
+  const scope = questionScope(effectiveQuestion);
+  const lengthInstruction = resolution.directive?.length;
+  const explicitLengthRules = lengthInstruction ? [lengthInstruction.kind === "sentences"
+    ? lengthInstruction.exact
+      ? `Write exactly ${lengthInstruction.count} complete sentence${lengthInstruction.count === 1 ? "" : "s"} in the entire answer text; citation metadata and controls do not count.`
+      : `Write no more than ${lengthInstruction.count} complete sentence${lengthInstruction.count === 1 ? "" : "s"} in the entire answer text; citation metadata and controls do not count.`
+    : lengthInstruction.exact
+      ? `Write exactly ${lengthInstruction.count} words in the entire answer text; citation metadata and controls do not count.`
+      : `Write no more than ${lengthInstruction.count} words in the entire answer text; citation metadata and controls do not count.`,
+  "Keep every requested part and the answer's factual scope within this length limit; state any unsupported detail concisely. Do not add a separate explanation of the formatting choice."] : [];
+  return buildPrompt("question", [...instructions.answerWriting, ...instructions.questionEvidence, ...questionTypeRules(effectiveQuestion),
     ...(checklist.length ? instructions.questionCoverage : []),
     ...(scope.length ? instructions.questionScope : []),
     ...instructions.questionStructure,
-    ...(structure === "short-explanation" ? instructions.questionStructureShort : []),
-    ...(structure === "short-explanation" ? [] : instructions[detailed ? "answerDetailed" : "answerShort"])], [
-    { label: "Original user query", value: question },
-    { label: "Requested answer structure", value: structure },
+    ...(effectiveStructure === "short-explanation" && !lengthInstruction ? instructions.questionStructureShort : []),
+    ...(lengthInstruction ? explicitLengthRules : []),
+    ...(lengthInstruction && resolution.conflict && resolution.preference === "written" ? [] : instructions[effectiveDetailed ? "answerDetailed" : "answerShort"])], [
+    { label: "Original user query", value: effectiveQuestion },
+    { label: "Requested answer structure", value: effectiveStructure },
     { label: "Answer structure policy", value: ANSWER_STRUCTURE_POLICY_VERSION },
     { label: "Supporting card context", value: supportingCard(card), reference: true },
     { label: "Previous conversation (context only)", value: history?.slice(-6), reference: true },
@@ -172,6 +187,7 @@ export function buildLearningPrompt(options: {
   question?: string;
   detailed?: boolean;
   structure?: AnswerStructure;
+  instructionPreference?: QuestionInstructionPreference;
   history?: unknown[];
   evidence: unknown[];
 }) {

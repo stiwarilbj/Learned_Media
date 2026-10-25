@@ -3,7 +3,7 @@ import { ValidationDiagnostics, type ValidationDiagnostic } from "./validation-d
 import { nextOutputCapacity, truncatedOutputFloor, MAX_OUTPUT_CAPACITY } from "./output-capacity";
 import { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildSearchInterpretationPrompt } from "./prompts";
 import { validateTopicPlan, type TopicQueryPlan } from "./topic-suggestions";
-import type { AnswerPresentation, AnswerStructure, CardGlossaryEntry, Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, ResolvedAnswerStructure, SavedCardGlossary, WikipediaSource } from "./types";
+import type { AnswerPresentation, AnswerStructure, CardGlossaryEntry, Difficulty, FactCard, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, QuestionInstructionPreference, ResolvedAnswerStructure, SavedCardGlossary, WikipediaSource } from "./types";
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaArticle, resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
@@ -21,7 +21,7 @@ import { cardGlossaryFingerprint, normalizeCardGlossary } from "./card-glossary"
 import { createSavedCardChronology } from "./card-chronology";
 import { createSavedCardLocations } from "./card-locations";
 import { factAngleDefinition, normalizeFactAngle, type FactAngle } from "./fact-angle";
-import { ANSWER_STRUCTURE_POLICY_VERSION, isAnswerStructure, normalizeAnswerResponse } from "./answer-structure";
+import { ANSWER_STRUCTURE_POLICY_VERSION, QUESTION_INSTRUCTION_POLICY_VERSION, isAnswerStructure, isQuestionInstructionPreference, normalizeAnswerResponse, resolveQuestionInstructions } from "./answer-structure";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
 const MODEL_CHECK_TIMEOUT_MS = 20_000;
@@ -1143,7 +1143,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
 type GlossaryLearningResponse = { glossary: SavedCardGlossary; modelOutcomes: GeminiModelOutcome[] };
 type AnswerLearningResponse = { answer: string; citations: WikipediaSource[]; modelOutcomes: GeminiModelOutcome[]; presentation?: AnswerPresentation; structure?: ResolvedAnswerStructure };
 type GlossaryLearningRequest = { apiKey: string; sessionId?: string; action: "glossary"; card: FactCard; signal?: AbortSignal };
-type AnswerLearningRequest = { apiKey: string; sessionId?: string; action: "learn" | "adapt" | "question"; card: FactCard; question?: string; detailed?: boolean; structure?: AnswerStructure; history?: LearningMessage[]; mode?: "simpler" | "deeper"; signal?: AbortSignal };
+type AnswerLearningRequest = { apiKey: string; sessionId?: string; action: "learn" | "adapt" | "question"; card: FactCard; question?: string; detailed?: boolean; structure?: AnswerStructure; instructionPreference?: QuestionInstructionPreference; history?: LearningMessage[]; mode?: "simpler" | "deeper"; signal?: AbortSignal };
 
 async function generateCardGlossary({ apiKey, sessionId = "default-session", card, signal }: GlossaryLearningRequest): Promise<GlossaryLearningResponse> {
   if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before explaining terms.", undefined, [], undefined, false);
@@ -1191,15 +1191,25 @@ export async function generateLearningResponse(request: GlossaryLearningRequest 
   if (request.action === "question" && request.structure !== undefined && !isAnswerStructure(request.structure)) {
     throw new GeminiFailure("Choose a supported answer structure.", undefined, [], undefined, false);
   }
+  if (request.action === "question" && request.instructionPreference !== undefined && !isQuestionInstructionPreference(request.instructionPreference)) {
+    throw new GeminiFailure("Choose a supported instruction priority.", undefined, [], undefined, false);
+  }
   const { apiKey, sessionId = "default-session", action, card, question, detailed, history, mode, signal } = request;
   const structure = request.action === "question" ? request.structure ?? "automatic" : "automatic";
+  const instructionPreference = request.action === "question" ? request.instructionPreference ?? "written" : "written";
+  const instructionResolution = request.action === "question"
+    ? resolveQuestionInstructions(question ?? "", Boolean(detailed), structure, instructionPreference)
+    : undefined;
+  const effectiveQuestion = instructionResolution?.questionForPrompt ?? question;
+  const effectiveStructure = instructionResolution?.effectiveStructure ?? structure;
+  const effectiveDetailed = instructionResolution?.effectiveDetailed ?? Boolean(detailed);
   if (!apiKey.trim()) throw new GeminiFailure("Add your Gemini API key in Settings before asking for more detail.", undefined, [], undefined, false);
   const cachedOriginals = card.sources.filter(source => source.extract?.trim());
   const cachedTitles = new Set(cachedOriginals.map(source => source.title.toLocaleLowerCase()));
   const missingOriginalTitles = card.sources.filter(source => !cachedTitles.has(source.title.toLocaleLowerCase())).map(source => source.title);
   const [fetchedOriginals, questionSources] = await Promise.all([
     missingOriginalTitles.length ? resolveWikipediaSources(missingOriginalTitles, 3, signal, { includeImages: false }) : Promise.resolve([]),
-    action === "question" && question ? resolveWikipediaSources([question], 2, signal, { includeImages: false }) : Promise.resolve([])
+    action === "question" && effectiveQuestion ? resolveWikipediaSources([effectiveQuestion], 2, signal, { includeImages: false }) : Promise.resolve([])
   ]);
   const originalSources = [
     ...cachedOriginals,
@@ -1209,10 +1219,10 @@ export async function generateLearningResponse(request: GlossaryLearningRequest 
   const sources = Array.from(new Map([...originalSources, ...questionSources].map((source) => [source.canonicalUrl ?? source.url, source])).values()).slice(0, 5);
   if (!sources.length) throw new GeminiFailure("Wikipedia did not return the cited pages for this fact.", undefined, [], undefined, true);
   sources.forEach(source => {
-    if (!originalUrls.has(source.canonicalUrl ?? source.url)) source.extract = selectEvidence(source.extract ?? "", question?.trim() ? question : card.title, 5);
+    if (!originalUrls.has(source.canonicalUrl ?? source.url)) source.extract = selectEvidence(source.extract ?? "", effectiveQuestion?.trim() ? effectiveQuestion : card.title, 5);
   });
   const context = sources.map((source, index) => ({ index, kind: originalUrls.has(source.canonicalUrl ?? source.url) ? "original" : "supplemental", title: source.title, extract: source.extract ?? "No extract returned" }));
-  const prompt = buildLearningPrompt({ action, mode, question, detailed, structure, history,
+  const prompt = buildLearningPrompt({ action, mode, question, detailed, structure, instructionPreference, history,
     card: { topicPath: card.topicPath, hook: card.hook, title: card.title, body: card.body, claim: card.claim }, evidence: context
   });
   const questionSchema = { type: "OBJECT", properties: {
@@ -1230,10 +1240,10 @@ export async function generateLearningResponse(request: GlossaryLearningRequest 
   }, required: ["citationIndexes"] };
   const ordinarySchema = { type: "OBJECT", properties: { answer: { type: "STRING" }, citationIndexes: { type: "ARRAY", items: { type: "INTEGER" } } }, required: ["answer", "citationIndexes"] };
   const result = await requestStructured<Record<string, unknown>>(apiKey, sessionId, prompt, action === "question" ? questionSchema : ordinarySchema, "learning", GENERATION_TIMEOUT_MS, signal, undefined, {
-    maxOutputTokens: action === "question" ? structure === "short-explanation" ? 2048 : detailed ? 8192 : 4096 : action === "adapt" && mode === "simpler" ? 2048 : action === "adapt" ? 4096 : undefined,
-    identity: {task: action === "question" ? "question" : action === "adapt" ? "adapt" : "learn", query: action === "question" ? question : undefined, topics: card.topicPath, filters: action === "question" ? {detailed: Boolean(detailed), structure, structurePolicy: ANSWER_STRUCTURE_POLICY_VERSION} : action === "adapt" ? {mode} : {}, context: {card: {hook: card.hook, title: card.title, body: card.body, claim: card.claim}, history: action === "question" ? history?.slice(-6) ?? [] : [], evidence: context, sourceUrls: sources.map(source => source.canonicalUrl ?? source.url)}}
+    maxOutputTokens: action === "question" ? effectiveStructure === "short-explanation" ? 2048 : effectiveDetailed ? 8192 : 4096 : action === "adapt" && mode === "simpler" ? 2048 : action === "adapt" ? 4096 : undefined,
+    identity: {task: action === "question" ? "question" : action === "adapt" ? "adapt" : "learn", query: action === "question" ? question : undefined, topics: card.topicPath, filters: action === "question" ? {detailed: effectiveDetailed, structure: effectiveStructure, structurePolicy: ANSWER_STRUCTURE_POLICY_VERSION, instructionPolicy: QUESTION_INSTRUCTION_POLICY_VERSION, instructionPreference, directive: instructionResolution?.directive} : action === "adapt" ? {mode} : {}, context: {card: {hook: card.hook, title: card.title, body: card.body, claim: card.claim}, history: action === "question" ? history?.slice(-6) ?? [] : [], evidence: context, sourceUrls: sources.map(source => source.canonicalUrl ?? source.url)}}
   });
-  const normalizedAnswer = action === "question" ? normalizeAnswerResponse(result.value, structure) : undefined;
+  const normalizedAnswer = action === "question" ? normalizeAnswerResponse(result.value, effectiveStructure) : undefined;
   const answer = normalizedAnswer?.answer ?? (typeof result.value.answer === "string" ? result.value.answer.trim() : "");
   if (!answer) throw new GeminiFailure("Gemini returned an empty explanation.", undefined, result.outcomes, undefined, true);
   const citationIndexes = Array.isArray(result.value.citationIndexes) ? result.value.citationIndexes : [];

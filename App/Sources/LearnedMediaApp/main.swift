@@ -2075,12 +2075,15 @@ private final class GeminiClient {
         return ["glossary": ["entries": entries, "sources": sources], "modelOutcomes": result.outcomes]
     }
 
-    func learn(key: String, action: String, card: [String: Any], question: String?, detailed: Bool, history: [[String: Any]], mode: String? = nil, structure: String = "automatic") async throws -> [String: Any] {
+    func learn(key: String, action: String, card: [String: Any], question: String?, detailed: Bool, history: [[String: Any]], mode: String? = nil, structure: String = "automatic", instructionPreference: String = "written") async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings before using this feature.") }
         let answerStructures = ["automatic", "short-explanation", "ordered-steps", "side-by-side-comparison"]
         guard action != "question" || answerStructures.contains(structure) else { throw NativeError(message: "Choose a supported answer structure.", retryable: false) }
+        guard action != "question" || ["written", "settings"].contains(instructionPreference) else { throw NativeError(message: "Choose a supported instruction priority.", retryable: false) }
         if action == "glossary" { return try await glossary(key: key, card: card) }
         if action == "adapt" && mode != "simpler" && mode != "deeper" { throw NativeError(message: "Choose a simpler or deeper explanation.", retryable: false) }
+        let instructionResolution = action == "question" ? QuestionInstructionPolicy.resolve(question ?? "", detailed: detailed, structure: structure, preference: instructionPreference) : nil
+        let effectiveQuestion = instructionResolution?.questionForPrompt ?? question
         let sourceTitles = (card["sources"] as? [[String: Any]] ?? []).prefix(3).compactMap { $0["title"] as? String }
         let cachedSources = (card["sources"] as? [[String: Any]] ?? []).filter { !($0["extract"] as? String ?? "").isEmpty }
         let cachedTitles = Set(cachedSources.compactMap { ($0["title"] as? String)?.lowercased() })
@@ -2090,8 +2093,8 @@ private final class GeminiClient {
         var sourceArray = cachedSources + fetchedSources
         let originalSources = sourceArray
         let originalURLs = Set(originalSources.compactMap { ($0["canonicalUrl"] as? String) ?? ($0["url"] as? String) })
-        if action == "question", let question, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let additional = await wikipedia.resolve(title: question, searchTitles: [])
+        if action == "question", let effectiveQuestion, !effectiveQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let additional = await wikipedia.resolve(title: effectiveQuestion, searchTitles: [])
             for source in additional where sourceArray.count < 5 {
                 let sourceURL = (source["canonicalUrl"] as? String) ?? (source["url"] as? String)
                 if !sourceArray.contains(where: { (($0["canonicalUrl"] as? String) ?? ($0["url"] as? String)) == sourceURL }) { sourceArray.append(source) }
@@ -2101,7 +2104,7 @@ private final class GeminiClient {
         sourceArray = sourceArray.map { original in
             var source = original
             if !originalURLs.contains((original["canonicalUrl"] as? String) ?? (original["url"] as? String ?? "")) {
-                source["extract"] = FactQuality.evidence(original["extract"] as? String ?? "", focus: question ?? (card["title"] as? String ?? ""), level: 5)
+                source["extract"] = FactQuality.evidence(original["extract"] as? String ?? "", focus: effectiveQuestion ?? (card["title"] as? String ?? ""), level: 5)
             }
             return source
         }
@@ -2114,10 +2117,12 @@ private final class GeminiClient {
                                          "title": card["title"] as? String ?? "", "body": card["body"] as? String ?? "", "claim": card["claim"] as? String ?? ""]
         let promptAction: PromptOperation = action == "adapt" ? .adapt : action == "learn" ? .learn : .question
         let prompt = PromptBuilder.learning(action: promptAction,
-            card: cardIdentity, question: question, detailed: detailed, history: history, mode: mode, structure: structure, evidence: context)
+            card: cardIdentity, question: question, detailed: detailed, history: history, mode: mode, structure: structure, instructionPreference: instructionPreference, evidence: context)
         let requestTask = action == "question" ? "question" : action == "adapt" ? "adapt" : "learn"
-        let requestFilters: [String: Any] = action == "question" ? ["detailed": detailed, "structure": structure, "structurePolicy": "answer-structure-v1"] : action == "adapt" ? ["mode": mode ?? "simpler"] : [:]
-        let outputLimit = action == "adapt" ? (mode == "deeper" ? 4096 : 2048) : action == "question" ? (structure == "short-explanation" ? 2048 : detailed ? 8192 : 4096) : detailed ? 8192 : 4096
+        let effectiveDetailed = instructionResolution?.effectiveDetailed ?? detailed
+        let effectiveStructure = instructionResolution?.effectiveStructure ?? structure
+        let requestFilters: [String: Any] = action == "question" ? ["detailed": effectiveDetailed, "structure": effectiveStructure, "structurePolicy": "answer-structure-v1", "instructionPolicy": QuestionInstructionPolicy.version, "instructionPreference": instructionPreference, "directive": instructionResolution?.directive ?? [:], "questionForPrompt": instructionResolution?.questionForPrompt ?? question ?? ""] : action == "adapt" ? ["mode": mode ?? "simpler"] : [:]
+        let outputLimit = action == "adapt" ? (mode == "deeper" ? 4096 : 2048) : action == "question" ? (effectiveStructure == "short-explanation" ? 2048 : effectiveDetailed ? 8192 : 4096) : detailed ? 8192 : 4096
         let questionSchema: [String: Any] = ["type": "OBJECT", "properties": [
             "directAnswer": ["type": "STRING"],
                 "answer": ["type": "STRING"],
@@ -2489,7 +2494,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let structure = payload["structure"] as? String ?? "automatic"
             let task = Task { [weak self] in
                 guard let self else { return }
-                do { respond(id: id, result: try await gemini.learn(key: geminiKey, action: actionName, card: card, question: question, detailed: detailed, history: history, mode: mode, structure: structure)) }
+                let instructionPreference = payload["instructionPreference"] as? String ?? "written"
+                do { respond(id: id, result: try await gemini.learn(key: geminiKey, action: actionName, card: card, question: question, detailed: detailed, history: history, mode: mode, structure: structure, instructionPreference: instructionPreference)) }
                 catch { respondGeminiFailure(id: id, error: error) }
                 activeTasks[id] = nil
             }

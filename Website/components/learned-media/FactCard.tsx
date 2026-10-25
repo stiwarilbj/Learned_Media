@@ -3,8 +3,8 @@ import { DownloadCardMenuItem } from "./CardDownloads";
 
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { DIFFICULTY_LABELS } from "@/lib/recommendations";
-import type { AnswerStructure, CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, SavedCardLocations } from "@/lib/types";
-import { ANSWER_STRUCTURES, answerStructureLabel, normalizeAnswerStructure } from "@/lib/answer-structure";
+import type { AnswerStructure, CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, QuestionInstructionPreference, SavedCardLocations } from "@/lib/types";
+import { ANSWER_STRUCTURES, answerStructureLabel, normalizeAnswerStructure, resolveQuestionInstructions } from "@/lib/answer-structure";
 import { resolveWikipediaArticle, resolveWikipediaCoordinates } from "@/lib/wikipedia";
 import { buildSourceSpotlightModel, canonicalWikipediaUrl, locatePassageContext, longestSharedPhraseRange, sourceSpotlightContextKey } from "@/lib/source-spotlight";
 import { getSourceSpotlightState, setSourceSpotlightState, subscribeSourceSpotlight, updateSourceSpotlightState, type SpotlightContextState } from "@/lib/source-spotlight-state";
@@ -30,16 +30,19 @@ type FactCardProps = {
   questionDetailed?: boolean;
   questionStructure?: AnswerStructure;
   questionStructureRevision?: number;
+  questionInstructionPreference?: QuestionInstructionPreference;
+  questionInstructionRevision?: number;
   adaptationLoading?: boolean;
   glossaryLoading?: boolean;
   adaptationErrors: Record<string, string | undefined>;
   hasGeminiKey?: boolean;
   onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
-  onAskQuestion: (id: string, question: string, detailed: boolean, structure: AnswerStructure, structureRevision: number) => void;
+  onAskQuestion: (id: string, question: string, detailed: boolean, structure: AnswerStructure, structureRevision: number, instructionPreference: QuestionInstructionPreference, instructionRevision: number) => void;
   onQuestionDraft: (id: string, value: string) => void;
   onQuestionDetailed: (id: string, value: boolean) => void;
   onQuestionStructure: (id: string, value: AnswerStructure) => void;
+  onQuestionInstructionPreference: (id: string, value: QuestionInstructionPreference) => void;
   onAdaptExplanation: (id: string, mode?: CardExplanationMode) => void;
   onExplainTerms: (id: string) => void;
   onCancelGlossary: (id: string) => void;
@@ -99,7 +102,7 @@ function EvidenceContextLoader({ workspaceId, cardId, sentenceIndex, expanded, e
   return null;
 }
 
-export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, questionStructure, questionStructureRevision = 0, adaptationLoading, glossaryLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, detourSlot, onThreeMore, onDetourProgress }: FactCardProps) {
+export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, questionStructure, questionStructureRevision = 0, questionInstructionPreference = "written", questionInstructionRevision = 0, adaptationLoading, glossaryLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onQuestionInstructionPreference, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, detourSlot, onThreeMore, onDetourProgress }: FactCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const [questionFocused, setQuestionFocused] = useState(false);
   const [followUpDismissed, setFollowUpDismissed] = useState(false);
@@ -155,6 +158,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const showFollowUpQuestions = questionFocused && !question.trim() && !followUpDismissed && followUpQuestions.length > 0;
   const detailed = questionDetailed ?? Boolean(card.questionDetailed);
   const selectedStructure = normalizeAnswerStructure(questionStructure);
+  const questionInstruction = useMemo(() => resolveQuestionInstructions(question, detailed, selectedStructure, questionInstructionPreference), [detailed, question, questionInstructionPreference, selectedStructure]);
   const showImage = displayMode === "picture-text";
   const reportDetourProgress = useCallback(() => {
     if (detourSlot === undefined || !onDetourProgress) return;
@@ -496,7 +500,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   function submitQuestion() {
     const clean = question.trim();
     if (!clean || questionLoading) return;
-    onAskQuestion(card.id, clean, detailed, selectedStructure, questionStructureRevision);
+    onAskQuestion(card.id, clean, detailed, selectedStructure, questionStructureRevision, questionInstructionPreference, questionInstructionRevision);
   }
 
   function openSpotlight(sentenceIndex: number, triggerId: string) {
@@ -792,6 +796,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
             <button type="button" className="question-send" onClick={submitQuestion} disabled={!question.trim() || questionLoading} aria-label="Send question"><Icon name="arrow" size={16} /></button>
           </div>
           {selectedStructure !== "automatic" && <div className="answer-structure-chip" aria-live="polite"><span>{answerStructureLabel(selectedStructure)}</span><button type="button" onClick={() => { onQuestionStructure(card.id, "automatic"); requestAnimationFrame(() => questionInputRef.current?.focus()); }} aria-label={`Remove ${answerStructureLabel(selectedStructure)} answer structure`}>×</button></div>}
+          {questionInstruction.conflict && <div className="question-instruction-notice" aria-live="polite"><span>{questionInstructionPreference === "settings" ? "For this answer: normal settings" : `For this answer: ${questionInstruction.conflictLabel}`}</span><button type="button" onClick={() => { onQuestionInstructionPreference(card.id, questionInstructionPreference === "settings" ? "written" : "settings"); requestAnimationFrame(() => questionInputRef.current?.focus()); }}>{questionInstructionPreference === "settings" ? "Use written instruction" : "Use normal settings"}</button></div>}
           {showFollowUpQuestions && <div className="question-suggestions" role="group" aria-label="Suggested questions" onKeyDown={(event) => {
             if (event.key === "Escape") { event.preventDefault(); questionInputRef.current?.focus(); setFollowUpDismissed(true); }
           }}>

@@ -179,11 +179,15 @@ public enum PromptBuilder {
     }
 
     public static func question(card: [String: Any], query: String?, detailed: Bool = false, structure: String = "automatic",
-                                history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
-        let checklist = coverageChecklist(query)
-        let scope = questionScope(query)
+                                instructionPreference: String = "written", history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
+        let resolution = QuestionInstructionPolicy.resolve(query ?? "", detailed: detailed, structure: structure, preference: instructionPreference)
+        let effectiveQuery = resolution.questionForPrompt
+        let effectiveStructure = resolution.effectiveStructure
+        let effectiveDetailed = resolution.effectiveDetailed
+        let checklist = coverageChecklist(effectiveQuery)
+        let scope = questionScope(effectiveQuery)
         let typeKey: String?
-        switch questionType(query) {
+        switch questionType(effectiveQuery) {
         case .when: typeKey = "questionWhen"
         case .why: typeKey = "questionWhy"
         case .difference: typeKey = "questionDifference"
@@ -195,11 +199,22 @@ public enum PromptBuilder {
             + (checklist.isEmpty ? [] : (PromptInstructions.rules["questionCoverage"] ?? []))
             + (scope.isEmpty ? [] : (PromptInstructions.rules["questionScope"] ?? []))
             + (PromptInstructions.rules["questionStructure"] ?? [])
-            + (structure == "short-explanation" ? (PromptInstructions.rules["questionStructureShort"] ?? []) : [])
-            + (structure == "short-explanation" ? [] : (PromptInstructions.rules[detailed ? "answerDetailed" : "answerShort"] ?? []))
-        return build(.question, rules: rules, fields: [
-            PromptField("Original user query", query),
-            PromptField("Requested answer structure", structure),
+        var activeRules = rules
+        let length = (resolution.directive?["length"] as? [String: Any])
+        let hasLength = length != nil
+        if effectiveStructure == "short-explanation" && !hasLength { activeRules += PromptInstructions.rules["questionStructureShort"] ?? [] }
+        if let length, let count = length["count"] as? Int, let kind = length["kind"] as? String {
+            let exact = length["exact"] as? Bool ?? false
+            let unit = kind == "sentences" ? "sentence" : "word"
+            activeRules.append(exact ? "Write exactly \(count) complete \(unit)\(count == 1 ? "" : "s") in the entire answer text; citation metadata and controls do not count." : "Write no more than \(count) complete \(unit)\(count == 1 ? "" : "s") in the entire answer text; citation metadata and controls do not count.")
+            activeRules.append("Keep every requested part and the answer's factual scope within this length limit; state any unsupported detail concisely. Do not add a separate explanation of the formatting choice.")
+        }
+        if !(hasLength && resolution.conflict && resolution.preference == "written") {
+            activeRules += PromptInstructions.rules[effectiveDetailed ? "answerDetailed" : "answerShort"] ?? []
+        }
+        return build(.question, rules: activeRules, fields: [
+            PromptField("Original user query", effectiveQuery),
+            PromptField("Requested answer structure", effectiveStructure),
             PromptField("Answer structure policy", "answer-structure-v1"),
             PromptField("Supporting card context", supportingCard(card), reference: true),
             PromptField("Previous conversation (context only)", Array(history.suffix(6)), reference: true),
@@ -211,10 +226,10 @@ public enum PromptBuilder {
 
     public static func learning(action: PromptOperation, card: [String: Any], question: String? = nil,
                                 detailed: Bool = false, history: [[String: Any]] = [], mode: String? = nil,
-                                structure: String = "automatic",
+                                structure: String = "automatic", instructionPreference: String = "written",
                                 evidence: [[String: Any]]) -> String {
         if action == .question {
-            return self.question(card: card, query: question, detailed: detailed, structure: structure, history: history, evidence: evidence)
+            return self.question(card: card, query: question, detailed: detailed, structure: structure, instructionPreference: instructionPreference, history: history, evidence: evidence)
         }
         if action == .adapt {
             let modeRule = mode == "deeper" ? "adaptDeeper" : "adaptSimpler"

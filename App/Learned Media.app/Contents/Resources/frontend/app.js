@@ -1990,7 +1990,7 @@
   function applyWorkspaceSnapshot(record) {
     const snapshot = record.state || record;
     clearTopicDetourCompletionNotice();
-    questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();answerOptionsOpenKey="";
+    questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();questionInstructionPreferences.clear();questionInstructionRevisions.clear();answerOptionsOpenKey="";
     state.workspaceId = record.id || "local-workspace";
     state.topicDetour = null;
     state.rabbitHole = null;
@@ -2580,6 +2580,8 @@
   const questionDrafts=new Map();
   const questionStructures=new Map();
   const questionStructureRevisions=new Map();
+  const questionInstructionPreferences=new Map();
+  const questionInstructionRevisions=new Map();
   let answerOptionsOpenKey="";
   function questionDraftKey(card){return state.workspaceId+"\u0000"+card.id;}
   function setQuestionStructure(key,value){
@@ -2587,11 +2589,17 @@
     if(current===next)return;
     questionStructures.set(key,next);questionStructureRevisions.set(key,(questionStructureRevisions.get(key)||0)+1);
   }
+  function questionInstructionPreference(key){return questionInstructionPreferences.get(key)==="settings"?"settings":"written";}
+  function setQuestionInstructionPreference(key,value){
+    const next=value==="settings"?"settings":"written";
+    if(questionInstructionPreference(key)===next)return;
+    questionInstructionPreferences.set(key,next);questionInstructionRevisions.set(key,(questionInstructionRevisions.get(key)||0)+1);
+  }
   document.addEventListener("pointerdown",function(event){if(answerOptionsOpenKey && !(event.target && event.target.closest && event.target.closest(".answer-options-control"))){answerOptionsOpenKey="";document.querySelectorAll(".answer-options-menu").forEach(function(menu){menu.remove();});document.querySelectorAll(".answer-options-trigger").forEach(function(trigger){trigger.setAttribute("aria-expanded","false");});}});
   function questionArea(card) {
     const box = node("div", { className: "question-box" });
     const row = node("div", { className: "question-row" });
-    const draftKey=questionDraftKey(card),selectedStructure=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(questionStructures.get(draftKey));
+    const draftKey=questionDraftKey(card),selectedStructure=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(questionStructures.get(draftKey)),instructionPreference=questionInstructionPreference(draftKey),instructionRevision=questionInstructionRevisions.get(draftKey)||0;
     const followUpQuestions = cardFollowUps.getCardFollowUpQuestions(card);
     const followUpKey = state.workspaceId + "\u0000" + card.id + "\u0000" + cardFollowUps.followUpQuestionFingerprint(card);
     let suggestions = null;
@@ -2607,6 +2615,7 @@
       followUpQuestions.forEach(function (question) {
         suggestions.appendChild(node("button", { type: "button", className: "question-suggestion", dataset: { cardId: card.id, questionSuggestion: "true" }, onClick: function () {
           questionDrafts.set(draftKey,question);
+          setQuestionInstructionPreference(draftKey,"written");
           input.value = question;
           dismissedFollowUpQuestionKey = followUpKey;
           suggestions.hidden = true;
@@ -2629,7 +2638,9 @@
         if (suggestions) suggestions.hidden = true;
       }
     }, onInput: function (event) {
+      const priorQuestion=questionDrafts.has(draftKey)?questionDrafts.get(draftKey):(card.question||"");
       questionDrafts.set(draftKey,event.target.value);
+      if(priorQuestion!==event.target.value)setQuestionInstructionPreference(draftKey,"written");
       if (suggestions) {
         if (!event.target.value.trim()) dismissedFollowUpQuestionKey = "";
         suggestions.hidden = Boolean(event.target.value.trim()) || focusedQuestionCardId !== card.id || dismissedFollowUpQuestionKey === followUpKey;
@@ -2662,6 +2673,8 @@
     row.appendChild(node("button", { className: "question-send", ariaLabel: "Send question", onClick: function () { askQuestion(card.id, input.value); } }, svg("arrow", 16)));
     box.appendChild(row);
     if(selectedStructure!=="automatic")box.appendChild(node("div",{className:"answer-structure-chip",ariaLive:"polite"},node("span",{text:window.LEARNED_MEDIA_ANSWER_STRUCTURE.answerStructureLabel(selectedStructure)}),node("button",{type:"button",ariaLabel:"Remove "+window.LEARNED_MEDIA_ANSWER_STRUCTURE.answerStructureLabel(selectedStructure)+" answer structure",onClick:function(){setQuestionStructure(draftKey,"automatic");render();requestAnimationFrame(function(){const field=document.querySelector(".question-row input[data-card-id='"+CSS.escape(card.id)+"']");if(field)field.focus();});}},"×")));
+    const instructionResolution=window.LEARNED_MEDIA_ANSWER_STRUCTURE.resolveQuestionInstructions(questionDrafts.has(draftKey)?questionDrafts.get(draftKey):(card.question||""),Boolean(card.questionDetailed),selectedStructure,instructionPreference);
+    if(instructionResolution.conflict)box.appendChild(node("div",{className:"question-instruction-notice",ariaLive:"polite"},node("span",{text:instructionPreference==="settings"?"For this answer: normal settings":"For this answer: "+instructionResolution.conflictLabel}),node("button",{type:"button",onClick:function(){setQuestionInstructionPreference(draftKey,instructionPreference==="settings"?"written":"settings");render();requestAnimationFrame(function(){const field=document.querySelector(".question-row input[data-card-id='"+CSS.escape(card.id)+"']");if(field)field.focus();});}},instructionPreference==="settings"?"Use written instruction":"Use normal settings")));
     if (suggestions) {
       suggestions.hidden = Boolean(input.value.trim()) || focusedQuestionCardId !== card.id || dismissedFollowUpQuestionKey === followUpKey;
       box.appendChild(suggestions);
@@ -3645,28 +3658,29 @@
   const learningTasks=new Map();
   function learningIdentity(card){return [state.workspaceId,generationToken,state.keyEditEpoch,cardExplanations.cardExplanationFingerprint(card)].join(":");}
   function learningIsCurrent(card,identity){return state.cards.includes(card) && learningIdentity(card)===identity;}
-  async function runCardLearning(card,action,question,requestedStructure,requestedStructureRevision){
+  async function runCardLearning(card,action,question,requestedStructure,requestedStructureRevision,requestedInstructionPreference,requestedInstructionRevision){
     const operationKey=state.workspaceId+":"+card.id+":"+action;
     if(learningTasks.has(operationKey))return;
-    const identity=learningIdentity(card),detailed=Boolean(card.questionDetailed),structure=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(requestedStructure),structureRevision=requestedStructureRevision===undefined?(questionStructureRevisions.get(questionDraftKey(card))||0):requestedStructureRevision,history=(card.questionHistory||[]).slice(),answerDetailed=structure==="short-explanation"?false:detailed;
+    const identity=learningIdentity(card),detailed=Boolean(card.questionDetailed),structure=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(requestedStructure),structureRevision=requestedStructureRevision===undefined?(questionStructureRevisions.get(questionDraftKey(card))||0):requestedStructureRevision,instructionPreference=action==="question"?(requestedInstructionPreference==="settings"?"settings":"written"):"written",instructionRevision=requestedInstructionRevision===undefined?(questionInstructionRevisions.get(questionDraftKey(card))||0):requestedInstructionRevision,questionResolution=action==="question"?window.LEARNED_MEDIA_ANSWER_STRUCTURE.resolveQuestionInstructions(question||"",detailed,structure,instructionPreference):null,history=(card.questionHistory||[]).slice(),answerDetailed=questionResolution?questionResolution.effectiveDetailed:(structure==="short-explanation"?false:detailed),normalizedQuestion=String(question||"").normalize("NFC").replace(/\s+/g," ").trim().toLowerCase();
     const errorKey=action==="learn"?card.id+":learn":card.id;
-    const cacheKey=scopedCacheKey(state.key,[action,card.topicPath,card.hook,card.title,card.body,card.claim,(card.sources||[]).map(function(source){return [source.canonicalUrl||source.url,source.extract||""];}),question || "",action==="question"?detailed:false,action==="question"?structure:"",action==="question"?"answer-structure-v1":"",action==="question"?history:[]]);
+    const resolutionIdentity=questionResolution?{effectiveDetailed:questionResolution.effectiveDetailed,effectiveStructure:questionResolution.effectiveStructure,preference:questionResolution.preference,directive:questionResolution.directive}:null;
+    const cacheKey=scopedCacheKey(state.key,[action,card.topicPath,card.hook,card.title,card.body,card.claim,(card.sources||[]).map(function(source){return [source.canonicalUrl||source.url,source.extract||""];}),action==="question"?normalizedQuestion:"",action==="question"?detailed:false,action==="question"?structure:"",action==="question"?"answer-structure-v1":"",action==="question"?"question-instruction-override-v1":"",action==="question"?instructionPreference:"",action==="question"?resolutionIdentity:null,action==="question"?history:[]]);
     const cached=learningResponseCache.get(cacheKey);
     state[action==="learn"?"loadingCard":"questionLoading"]=card.id;state.errorByCard[errorKey]="";
     const entry={identity:identity,task:null};learningTasks.set(operationKey,entry);render();
     try{
       let result=cached;
-      if(!result){entry.task=bridge("learn",{action:action,card:card,question:question,detailed:detailed,structure:structure,history:history});result=await entry.task;}
+      if(!result){entry.task=bridge("learn",{action:action,card:card,question:question,detailed:detailed,structure:structure,instructionPreference:instructionPreference,history:history});result=await entry.task;}
       if(!learningIsCurrent(card,identity) || learningTasks.get(operationKey)!==entry)return;
       mergeGeminiModelOutcomes(result.modelOutcomes||[]);
       if(action==="learn"){card.learnMore=result.answer;card.learnMoreSources=result.citations||[];}
       else{
         const savedPresentation=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeSavedAnswerPresentation(result.presentation);
-        const normalizedAnswer=savedPresentation?{answer:result.answer,presentation:savedPresentation,structure:savedPresentation.structure}:window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerResponse(result,structure);
+        const normalizedAnswer=savedPresentation?{answer:result.answer,presentation:savedPresentation,structure:savedPresentation.structure}:window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerResponse(result,questionResolution?questionResolution.effectiveStructure:structure);
         if(!normalizedAnswer)throw new Error("Gemini returned an answer that could not be safely presented.");
         result=Object.assign({},result,{answer:normalizedAnswer.answer,presentation:normalizedAnswer.presentation,structure:normalizedAnswer.structure});
         card.question=question;card.answer=result.answer;card.answerDetailed=answerDetailed;card.answerStructure=result.structure;card.answerPresentation=result.presentation;card.answerSources=result.citations||[];card.questionHistory=history.concat([{role:"user",content:question},{role:"assistant",content:result.answer}]);
-        const draftKey=questionDraftKey(card);if(window.LEARNED_MEDIA_ANSWER_STRUCTURE.shouldResetSubmittedAnswerStructure(questionStructures.get(draftKey),structure,questionStructureRevisions.get(draftKey)||0,structureRevision)){questionStructures.delete(draftKey);questionStructureRevisions.set(draftKey,structureRevision+1);}
+        const draftKey=questionDraftKey(card);if(window.LEARNED_MEDIA_ANSWER_STRUCTURE.shouldResetSubmittedAnswerStructure(questionStructures.get(draftKey),structure,questionStructureRevisions.get(draftKey)||0,structureRevision)){questionStructures.delete(draftKey);questionStructureRevisions.set(draftKey,structureRevision+1);}const currentQuestion=questionDrafts.has(draftKey)?String(questionDrafts.get(draftKey)||""):String(card.question||"");if(action==="question"&&instructionPreference!=="written"&&currentQuestion.trim()===String(question||"").trim()&&(questionInstructionRevisions.get(draftKey)||0)===instructionRevision){questionInstructionPreferences.set(draftKey,"written");questionInstructionRevisions.set(draftKey,instructionRevision+1);}
       }
       if(!cached)learningResponseCache.set(cacheKey,{answer:result.answer,citations:result.citations||[],presentation:result.presentation,structure:result.structure});
       saveState();
@@ -3674,7 +3688,7 @@
     finally{if(learningTasks.get(operationKey)===entry){learningTasks.delete(operationKey);if(learningIsCurrent(card,identity)){const field=action==="learn"?"loadingCard":"questionLoading";if(state[field]===card.id)state[field]=null;render();}}}
   }
   function learnMore(id){const card=state.cards.find(function(item){return item.id===id;});if(card && !card.learnMore)return runCardLearning(card,"learn");}
-  function askQuestion(id,value){const card=state.cards.find(function(item){return item.id===id;}),question=String(value||"").trim();if(card && question){const draftKey=questionDraftKey(card);return runCardLearning(card,"question",question,questionStructures.get(draftKey),questionStructureRevisions.get(draftKey)||0);}}
+  function askQuestion(id,value){const card=state.cards.find(function(item){return item.id===id;}),question=String(value||"").trim();if(card && question){const draftKey=questionDraftKey(card);return runCardLearning(card,"question",question,questionStructures.get(draftKey),questionStructureRevisions.get(draftKey)||0,questionInstructionPreference(draftKey),questionInstructionRevisions.get(draftKey)||0);}}
   function toggleCard(id, property) {
     const card = state.cards.find(function (item) { return item.id === id; });
     if (!card) return;
@@ -3700,7 +3714,7 @@
   async function signIn() {
     try {
       const result = await bridge("signIn", {});
-      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); answerOptionsOpenKey=""; }
+      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); questionInstructionPreferences.clear(); questionInstructionRevisions.clear(); answerOptionsOpenKey=""; }
       const previousOwner = state.cloudOwnerId;
       state.account = result.account;
       nativeAccountRestored = false;
@@ -3725,7 +3739,7 @@
   }
   async function signOut() {
     cancelNativeDownload();
-    questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();answerOptionsOpenKey="";
+    questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();questionInstructionPreferences.clear();questionInstructionRevisions.clear();answerOptionsOpenKey="";
     try {
       cancelWorkspaceOperations();
       cloudSyncToken += 1;

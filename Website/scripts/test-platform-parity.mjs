@@ -52,7 +52,7 @@ test('bridge status and detail preferences are independent and scoped',()=>{
  assert.match(native,/card\.questionDetailed=!card\.questionDetailed/);
  assert.match(native,/Answer options/);
  for(const structure of ['automatic','short-explanation','ordered-steps','side-by-side-comparison'])assert.ok(native.includes(structure),`native menu includes ${structure}`);
- assert.match(native,/answerDetailed=structure==="short-explanation"\?false:detailed/);
+ assert.match(native,/answerDetailed=questionResolution\?questionResolution\.effectiveDetailed/);
  assert.match(native,/card\.learnMoreSources=result\.citations/);
  const swift=readFileSync(new URL('../../App/Sources/LearnedMediaApp/main.swift',import.meta.url),'utf8');
  assert.match(swift,/activityKeys = \["prioritizeRecentByChannel"/);
@@ -89,7 +89,7 @@ for(const order of [['learn','question'],['question','learn']])test('native lear
  const card={id:'card',body:'Original fact',questionDetailed:true,questionHistory:[]},requests=new Map(),cache=new Map();
  const state={workspaceId:'workspace',keyEditEpoch:0,key:'fixture',cards:[card],errorByCard:{}};
  const runtime={};runInNewContext(readFileSync(new URL('../../App/Resources/frontend/answer-structure.js',import.meta.url),'utf8'),runtime);
- const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures:new Map(),questionStructureRevisions:new Map(),questionDraftKey:c=>state.workspaceId+'\0'+c.id,answerOptionsOpenKey:'',cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:(_key,x)=>JSON.stringify(x),learningResponseCache:cache,render(){},mergeGeminiModelOutcomes(){},saveState(){},bridge(action,payload){assert.equal(action,'learn');return new Promise(resolve=>requests.set(payload.action,resolve));}};
+ const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures:new Map(),questionStructureRevisions:new Map(),questionInstructionPreferences:new Map(),questionInstructionRevisions:new Map(),questionDrafts:new Map(),questionDraftKey:c=>state.workspaceId+'\0'+c.id,answerOptionsOpenKey:'',cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:(_key,x)=>JSON.stringify(x),learningResponseCache:cache,render(){},mergeGeminiModelOutcomes(){},saveState(){},bridge(action,payload){assert.equal(action,'learn');return new Promise(resolve=>requests.set(payload.action,resolve));}};
  runInNewContext(native.slice(native.indexOf('  const learningTasks=new Map();'),native.indexOf('  function toggleCard('))+';api={runCardLearning};',context);
  const jobs={learn:context.api.runCardLearning(card,'learn'),question:context.api.runCardLearning(card,'question','Why?')};
  card.questionDetailed=false;
@@ -100,7 +100,7 @@ for(const order of [['learn','question'],['question','learn']])test('native lear
 test('native stale learning completion cannot clear a newer operation',async()=>{
  const card={id:'card',body:'Original',questionDetailed:false},state={workspaceId:'old',keyEditEpoch:0,key:'fixture',cards:[card],errorByCard:{}};let resolve;
  const runtime={};runInNewContext(readFileSync(new URL('../../App/Resources/frontend/answer-structure.js',import.meta.url),'utf8'),runtime);
- const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures:new Map(),questionStructureRevisions:new Map(),questionDraftKey:c=>state.workspaceId+'\0'+c.id,cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:()=> 'cache',learningResponseCache:new Map(),render(){},mergeGeminiModelOutcomes(){throw Error('stale outcome');},saveState(){throw Error('stale save');},bridge:()=>new Promise(done=>resolve=done)};
+ const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures:new Map(),questionStructureRevisions:new Map(),questionInstructionPreferences:new Map(),questionInstructionRevisions:new Map(),questionDrafts:new Map(),questionDraftKey:c=>state.workspaceId+'\0'+c.id,cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:()=> 'cache',learningResponseCache:new Map(),render(){},mergeGeminiModelOutcomes(){throw Error('stale outcome');},saveState(){throw Error('stale save');},bridge:()=>new Promise(done=>resolve=done)};
  runInNewContext(native.slice(native.indexOf('  const learningTasks=new Map();'),native.indexOf('  function toggleCard('))+';api={runCardLearning};',context);
  const task=context.api.runCardLearning(card,'question','Why?');state.workspaceId='new';state.questionLoading='new-card';
  resolve({answer:'Obsolete',citations:[]});await task;
@@ -110,15 +110,18 @@ test('native question captures its structure and preserves a newer draft choice'
  const card={id:'structured-card',body:'Original',questionDetailed:true,questionHistory:[]};
  const state={workspaceId:'workspace',keyEditEpoch:0,key:'fixture',cards:[card],errorByCard:{}};
  const runtime={};runInNewContext(readFileSync(new URL('../../App/Resources/frontend/answer-structure.js',import.meta.url),'utf8'),runtime);
- const key=state.workspaceId+'\0'+card.id,questionStructures=new Map([[key,'ordered-steps']]),questionStructureRevisions=new Map([[key,2]]);
+ const key=state.workspaceId+'\0'+card.id,questionStructures=new Map([[key,'ordered-steps']]),questionStructureRevisions=new Map([[key,2]]),questionInstructionPreferences=new Map([[key,'settings']]),questionInstructionRevisions=new Map([[key,4]]),questionDrafts=new Map([[key,'Why did it fail? Answer in one sentence.']]);
  let request;
- const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures,questionStructureRevisions,questionDraftKey:c=>state.workspaceId+'\0'+c.id,cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:(_key,x)=>JSON.stringify(x),learningResponseCache:new Map(),render(){},mergeGeminiModelOutcomes(){},saveState(){},bridge(action,payload){assert.equal(action,'learn');request=payload;return new Promise(resolve=>{context.resolve=resolve;});}};
+ const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures,questionStructureRevisions,questionInstructionPreferences,questionInstructionRevisions,questionDrafts,questionDraftKey:c=>state.workspaceId+'\0'+c.id,cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:(_key,x)=>JSON.stringify(x),learningResponseCache:new Map(),render(){},mergeGeminiModelOutcomes(){},saveState(){},bridge(action,payload){assert.equal(action,'learn');request=payload;return new Promise(resolve=>{context.resolve=resolve;});}};
  runInNewContext(native.slice(native.indexOf('  const learningTasks=new Map();'),native.indexOf('  function toggleCard('))+';api={runCardLearning};',context);
- const task=context.api.runCardLearning(card,'question','How does it work?','ordered-steps',2);
+ const task=context.api.runCardLearning(card,'question','Why did it fail? Answer in one sentence.','ordered-steps',2,'settings',4);
  assert.equal(request.structure,'ordered-steps');assert.equal(request.detailed,true);
+ assert.equal(request.instructionPreference,'settings');
+ questionInstructionPreferences.set(key,'written');questionInstructionRevisions.set(key,5);questionDrafts.set(key,'A newer question');
  questionStructures.set(key,'side-by-side-comparison');questionStructureRevisions.set(key,3);
  context.resolve({directAnswer:'Pressure moves the diaphragm.',resolvedStructure:'ordered-steps',steps:['Pressure rises.','The diaphragm moves.'],citationIndexes:[0],citations:[{title:'Mechanism',url:'https://en.wikipedia.org/wiki/Mechanism'}],modelOutcomes:[]});
  await task;
  assert.equal(card.answerStructure,'ordered-steps');assert.match(card.answer,/1\. Pressure rises\./);assert.equal(card.answerDetailed,true);
  assert.equal(questionStructures.get(key),'side-by-side-comparison');assert.equal(questionStructureRevisions.get(key),3);
+ assert.equal(questionInstructionPreferences.get(key),'written');assert.equal(questionInstructionRevisions.get(key),5);
 });

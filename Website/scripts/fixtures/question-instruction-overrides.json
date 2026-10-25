@@ -1,0 +1,212 @@
+[
+  {
+    "name": "one sentence overrides detailed prose",
+    "question": "Answer in one sentence: Why does the sky appear blue?",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": true,
+      "conflictLabel": "one sentence",
+      "effectiveDetailed": false,
+      "effectiveStructure": "short-explanation",
+      "questionForPrompt": "Why does the sky appear blue?",
+      "directive": { "label": "one sentence", "length": { "count": 1, "exact": true, "kind": "sentences" } }
+    }
+  },
+  {
+    "name": "at most one sentence is labeled grammatically and uses prose",
+    "question": "Explain in at most one sentence why it failed.",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": true,
+      "conflictLabel": "up to 1 sentence",
+      "effectiveDetailed": false,
+      "effectiveStructure": "short-explanation",
+      "questionForPrompt": "Explain why it failed.",
+      "directive": { "label": "up to 1 sentence", "length": { "count": 1, "exact": false, "kind": "sentences" } }
+    }
+  },
+  {
+    "name": "normal settings suppress a conflicting length",
+    "question": "Explain this result in at most 100 words.",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "settings",
+    "expected": {
+      "conflict": true,
+      "conflictLabel": "up to 100 words",
+      "effectiveDetailed": true,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "Explain this result.",
+      "directive": null
+    }
+  },
+  {
+    "name": "single sentence uses prose with a selected list structure",
+    "question": "Why did the test fail? Answer in one sentence.",
+    "detailed": false,
+    "structure": "ordered-steps",
+    "preference": "written",
+    "expected": {
+      "conflict": true,
+      "conflictLabel": "one sentence",
+      "effectiveDetailed": false,
+      "effectiveStructure": "short-explanation",
+      "questionForPrompt": "Why did the test fail?",
+      "directive": { "label": "one sentence", "length": { "count": 1, "exact": true, "kind": "sentences" } }
+    }
+  },
+  {
+    "name": "ordered steps override selected comparison",
+    "question": "Use numbered steps to explain how the pump works.",
+    "detailed": false,
+    "structure": "side-by-side-comparison",
+    "preference": "written",
+    "expected": {
+      "conflict": true,
+      "conflictLabel": "ordered steps",
+      "effectiveDetailed": false,
+      "effectiveStructure": "ordered-steps",
+      "questionForPrompt": "Explain how the pump works.",
+      "directive": { "label": "ordered steps", "structure": "ordered-steps" }
+    }
+  },
+  {
+    "name": "maximum word phrase is recognized",
+    "question": "Please explain in a maximum of 100 words why it failed.",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": true,
+      "conflictLabel": "up to 100 words",
+      "effectiveDetailed": true,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "Please explain why it failed.",
+      "directive": { "label": "up to 100 words", "length": { "count": 100, "exact": false, "kind": "words" } }
+    }
+  },
+  {
+    "name": "compatible sentence limit remains active without a notice",
+    "question": "When was the telescope completed? Answer in three sentences.",
+    "detailed": false,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": false,
+      "conflictLabel": "",
+      "effectiveDetailed": false,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "When was the telescope completed?",
+      "directive": { "label": "3 sentences", "length": { "count": 3, "exact": true, "kind": "sentences" } }
+    }
+  },
+  {
+    "name": "side by side request resolves to comparison",
+    "question": "Compare the two designs side by side: how do they differ?",
+    "detailed": false,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": false,
+      "conflictLabel": "",
+      "effectiveDetailed": false,
+      "effectiveStructure": "side-by-side-comparison",
+      "questionForPrompt": "Compare the two designs: how do they differ?",
+      "directive": { "label": "side-by-side comparison", "structure": "side-by-side-comparison" }
+    }
+  },
+  {
+    "name": "quoted instructions are ignored",
+    "question": "The note says \"answer in one sentence\"; why did the result change?",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": false,
+      "conflictLabel": "",
+      "effectiveDetailed": true,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "The note says \"answer in one sentence\"; why did the result change?",
+      "directive": null
+    }
+  },
+  {
+    "name": "negated instructions are ignored",
+    "question": "Do not answer in one sentence; explain why the result changed.",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": false,
+      "conflictLabel": "",
+      "effectiveDetailed": true,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "Do not answer in one sentence; explain why the result changed.",
+      "directive": null
+    }
+  },
+  {
+    "name": "hypothetical instructions are ignored",
+    "question": "If I asked you to answer in one sentence, why did the result change?",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": false,
+      "conflictLabel": "",
+      "effectiveDetailed": true,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "If I asked you to answer in one sentence, why did the result change?",
+      "directive": null
+    }
+  },
+  {
+    "name": "contradictory length requests are ignored",
+    "question": "Answer in one sentence or three sentences: why did it fail?",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": false,
+      "conflictLabel": "",
+      "effectiveDetailed": true,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "Answer in one sentence or three sentences: why did it fail?",
+      "directive": null
+    }
+  },
+  {
+    "name": "out of range limits are ignored",
+    "question": "Answer in at most 501 words: why did it fail?",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": false,
+      "conflictLabel": "",
+      "effectiveDetailed": true,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "Answer in at most 501 words: why did it fail?",
+      "directive": null
+    }
+  },
+  {
+    "name": "format only is not a substantive question",
+    "question": "Use numbered steps.",
+    "detailed": true,
+    "structure": "automatic",
+    "preference": "written",
+    "expected": {
+      "conflict": false,
+      "conflictLabel": "",
+      "effectiveDetailed": true,
+      "effectiveStructure": "automatic",
+      "questionForPrompt": "Use numbered steps.",
+      "directive": null
+    }
+  }
+]
