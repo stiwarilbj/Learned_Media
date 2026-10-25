@@ -2,12 +2,13 @@
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
-import type { YouTubeChannelRecord, YouTubeImportProgress, YouTubeTopic, YouTubeVideo, YouTubeWorkspaceState } from "@/lib/youtube";
-import { YOUTUBE_TOPICS, filterYouTubeVideos, relatedYouTubeVideos, selectRandomVideos } from "@/lib/youtube";
+import type { YouTubeChannelRecord, YouTubeTopic, YouTubeVideo, YouTubeWorkspaceState } from "@/lib/youtube";
+import { YOUTUBE_TOPICS, filterYouTubeVideos, partitionYouTubeVideoResults, relatedYouTubeVideos, selectRandomVideos } from "@/lib/youtube";
 import type { RankedVideoSearchResult } from "@/lib/gemini";
 import { watchYouTubePlayback } from "@/lib/youtube-playback";
 import { Icon } from "./icons";
 import { VirtualizedRows } from "./VirtualizedRows";
+import { useYouTubeImportProgress } from "./youtubeImportProgress";
 
 type VideoWorkspaceProps = {
   workspaceId: string;
@@ -16,7 +17,6 @@ type VideoWorkspaceProps = {
   channelById: ReadonlyMap<string, YouTubeChannelRecord>;
   videosByChannel: ReadonlyMap<string, YouTubeVideo[]>;
   youtubeStatus: "not-configured" | "connecting" | "refreshing" | "connected" | "error";
-  progress: YouTubeImportProgress;
   error?: string;
   searchResults: YouTubeVideo[];
   searchReasons: Record<string, RankedVideoSearchResult>;
@@ -104,6 +104,7 @@ function VideoList({ videos, savedIds, reasons, smartSearchRan, emptyState = "se
     return () => window.removeEventListener("resize", update);
   }, []);
   const renderVideo = useCallback((video: YouTubeVideo) => <VideoCard video={video} saved={savedIds.has(video.id)} reason={reasons?.[video.id]} onOpenVideo={onOpenVideo} onSaveVideo={onSaveVideo} />, [onOpenVideo, onSaveVideo, reasons, savedIds]);
+  const { strong, broader } = useMemo(() => partitionYouTubeVideoResults(videos, reasons), [videos, reasons]);
   if (!videos.length) {
     const emptyCopy = emptyState === "saved"
       ? ["No saved videos yet", "Save a video from Discover or a channel and it will appear here."]
@@ -117,8 +118,6 @@ function VideoList({ videos, savedIds, reasons, smartSearchRan, emptyState = "se
     return <div className="video-empty"><div className="empty-orbit"><Icon name={emptyState === "saved" ? "bookmark" : emptyState === "history" ? "history" : "search"} size={24} /></div><h2>{emptyCopy[0]}</h2><p>{emptyCopy[1]}</p></div>;
   }
   const columns = viewportWidth > 900 ? 3 : viewportWidth > 620 ? 2 : 1;
-  const strong = videos.filter(video => reasons?.[video.id]?.relevance !== "broader");
-  const broader = videos.filter(video => reasons?.[video.id]?.relevance === "broader");
   const grid = (items: YouTubeVideo[]) => <VirtualizedRows items={items} columns={columns} estimatedHeight={viewportWidth <= 620 ? 285 : 260} gap={13} className="video-grid" getKey={videoRowKey} renderItem={renderVideo} />;
   return <>{strong.length > 0 && grid(strong)}{broader.length > 0 && <section aria-label="Broader recommendations"><h3>Broader recommendations</h3>{grid(broader)}</section>}</>;
 }
@@ -132,7 +131,7 @@ function VideoTabs({ activeTab, savedCount, onTabChange }: { activeTab: YouTubeW
   }}>{([["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]] as const).map(([tab, label]) => <button type="button" role="tab" aria-selected={activeTab === tab} tabIndex={activeTab === tab ? 0 : -1} className={activeTab === tab ? "active" : ""} key={tab} onClick={() => onTabChange(tab)}>{label}{tab === "saved" && savedCount ? <small>{savedCount}</small> : null}</button>)}</div>;
 }
 
-export function VideoWorkspace({ workspaceId, workspace, videoById, channelById, videosByChannel, youtubeStatus, progress, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, searchHasMore, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, playbackFlushRef, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
+export function VideoWorkspace({ workspaceId, workspace, videoById, channelById, videosByChannel, youtubeStatus, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, searchHasMore, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, playbackFlushRef, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
   const [ended, setEnded] = useState(false);
   const showMoreRef = useRef<HTMLDivElement>(null);
   const savedIds = useMemo(() => new Set(workspace.savedIds), [workspace.savedIds]);
@@ -198,7 +197,7 @@ export function VideoWorkspace({ workspaceId, workspace, videoById, channelById,
   </section>;
 
   const sortedChannels = [...workspace.channels].sort((a, b) => a.name.localeCompare(b.name));
-  if (workspace.activeTab === "channels") return <section className="content-view video-workspace"><div className="view-heading video-heading"><div><span className="eyebrow">Approved creators</span><h1>Channels worth wandering through</h1><p>Every catalog here is limited to the channels you approved</p></div></div>{workspace.libraryIncomplete && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}<VideoTabs activeTab={workspace.activeTab} savedCount={workspace.savedIds.length} onTabChange={onTabChange} />{sortedChannels.length ? <div className="channel-grid">{sortedChannels.map((channel) => <button type="button" className="channel-card" key={channel.id} onClick={() => onOpenChannel(channel.id)}>{channel.thumbnailUrl ? <img src={channel.thumbnailUrl} alt="" /> : <span className="channel-avatar">{channel.name.slice(0, 1)}</span>}<span><strong>{channel.name}</strong><small>{channel.videoCount.toLocaleString()} videos</small></span><Icon name="chevronRight" size={17} /></button>)}</div> : <EmptyVideoSetup onOpenSettings={onOpenSettings} />}</section>;
+  if (workspace.activeTab === "channels") return <section className="content-view video-workspace"><div className="view-heading video-heading"><div><span className="eyebrow">Approved creators</span><h1>Channels worth wandering through</h1><p>Every catalog here is limited to the channels you approved</p></div></div>{workspace.libraryIncomplete && <ImportNotice error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}<VideoTabs activeTab={workspace.activeTab} savedCount={workspace.savedIds.length} onTabChange={onTabChange} />{sortedChannels.length ? <div className="channel-grid">{sortedChannels.map((channel) => <button type="button" className="channel-card" key={channel.id} onClick={() => onOpenChannel(channel.id)}>{channel.thumbnailUrl ? <img src={channel.thumbnailUrl} alt="" /> : <span className="channel-avatar">{channel.name.slice(0, 1)}</span>}<span><strong>{channel.name}</strong><small>{channel.videoCount.toLocaleString()} videos</small></span><Icon name="chevronRight" size={17} /></button>)}</div> : <EmptyVideoSetup onOpenSettings={onOpenSettings} />}</section>;
 
   let videos = searchResults;
   if (workspace.activeTab === "saved") videos = savedVideos;
@@ -206,8 +205,8 @@ export function VideoWorkspace({ workspaceId, workspace, videoById, channelById,
   const title = workspace.activeTab === "saved" ? "Saved videos" : workspace.activeTab === "history" ? "Watch history" : "A calmer way to find something good";
   return <section className="content-view video-workspace">
     <div className="view-heading video-heading"><div><span className="eyebrow">Learned Media Videos</span><h1>{title}</h1><p>{workspace.activeTab === "saved" ? "The videos you saved for another time" : workspace.activeTab === "history" ? "Videos you have opened in this workspace" : "Discover approved creators, search their full imported catalogs, and watch without leaving your workspace"}</p></div>{workspace.activeTab === "discover" && <div className="video-heading-actions"><button type="button" className="secondary-button" onClick={onRefreshVideos} disabled={youtubeStatus === "connecting" || youtubeStatus === "refreshing"}><Icon name="reset" size={15} /> Refresh videos</button><button type="button" className="secondary-button" onClick={onShuffle} disabled={!workspace.videos.length}><Icon name="reset" size={15} /> Shuffle</button><button type="button" className="primary-button small" onClick={onShowMore} disabled={!workspace.videos.length || Boolean(workspace.searchText.trim() && !searchHasMore)}><Icon name="plus" size={15} /> Show more</button></div>}</div>
-    {(youtubeStatus === "connecting" || youtubeStatus === "refreshing") && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
-    {youtubeStatus === "error" && <ImportNotice progress={progress} error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
+    {(youtubeStatus === "connecting" || youtubeStatus === "refreshing") && <ImportNotice error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
+    {youtubeStatus === "error" && <ImportNotice error={error} onPause={onPauseImport} onResume={onResumeImport} onRetry={onRetryImport} />}
     {workspace.libraryIncomplete && youtubeStatus !== "connecting" && youtubeStatus !== "refreshing" && <div className="video-incomplete"><Icon name="help" size={15} /> This library is still incomplete. You can browse now and resume importing from Settings</div>}
     <VideoTabs activeTab={workspace.activeTab} savedCount={workspace.savedIds.length} onTabChange={onTabChange} />
     {workspace.activeTab === "discover" && <>
@@ -229,7 +228,8 @@ function SearchProgress({ loading, phase, onCancel }: { loading: boolean; phase:
   return <div className="video-search-progress" role="status"><span>{label}</span><button type="button" className="text-button" onClick={onCancel}>Cancel</button></div>;
 }
 
-function ImportNotice({ progress, error, onPause, onResume, onRetry }: { progress: YouTubeImportProgress; error?: string; onPause: () => void; onResume: () => void; onRetry: () => void }) {
+function ImportNotice({ error, onPause, onResume, onRetry }: { error?: string; onPause: () => void; onResume: () => void; onRetry: () => void }) {
+  const progress = useYouTubeImportProgress();
   const completed = `${progress.completedChannels}/${progress.totalChannels} channels`;
   return <div className="video-import-notice" role="status"><div><strong>{progress.phase === "paused" ? "Import paused" : "Building your approved library"}</strong><span>{completed} · {progress.importedVideos.toLocaleString()} videos imported{error ? ` · ${error}` : ""}</span></div>{progress.phase === "paused" ? <button type="button" className="ghost-button" onClick={onResume}>Resume</button> : progress.phase === "complete" || progress.phase === "error" ? <button type="button" className="ghost-button" onClick={onRetry}>Retry</button> : <button type="button" className="ghost-button" onClick={onPause}>Pause</button>}</div>;
 }

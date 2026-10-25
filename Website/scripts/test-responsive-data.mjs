@@ -19,7 +19,7 @@ const { flattenTopics, selectedLeafCount, selectWeightedTopicPaths, toggleTopicS
 const { updateTopicTree } = require("../lib/topic-tree.ts");
 const { compactTopicPreferences, restoreTopicPreferences } = require("../lib/topic-preferences.ts");
 const { createTopicSuggestionIndex, suggestTopics } = require("../lib/topic-suggestions.ts");
-const { selectRandomVideos } = require("../lib/youtube.ts");
+const { selectRandomVideos, createYouTubeListMemo, partitionYouTubeVideoResults, createYouTubeProgressStore } = require("../lib/youtube.ts");
 
 function findTopic(nodes, predicate) {
   const stack = [...nodes].reverse();
@@ -117,4 +117,75 @@ test("large video catalogs return a unique small sample without sorting the full
   assert.equal(new Set(sample.map((video) => video.id)).size, 24);
   assert.ok(!sample.some((video) => video.id === "video-0"));
   assert.ok(elapsedMs < 500, `sampling took ${elapsedMs.toFixed(1)}ms`);
+});
+
+test("video result partitioning preserves order and reuses the input when there are no broader matches", () => {
+  const videos = Array.from({ length: 30000 }, (_, index) => ({ id: `video-${index}`, position: index }));
+  const onlyStrong = Object.fromEntries(videos.map((video) => [video.id, { relevance: "strong" }]));
+  const startedAt = performance.now();
+  const plain = partitionYouTubeVideoResults(videos, onlyStrong);
+  const plainElapsed = performance.now() - startedAt;
+  assert.equal(plain.strong, videos, "ordinary lists should keep their original array and avoid partition allocations");
+  assert.deepEqual(plain.broader, []);
+  assert.ok(plainElapsed < 25, `empty-reason partition took ${plainElapsed.toFixed(1)}ms`);
+
+  const reasons = { "video-4": { relevance: "broader" }, "video-25000": { relevance: "broader" } };
+  const split = partitionYouTubeVideoResults(videos, reasons);
+  assert.equal(split.strong.length, 29998);
+  assert.deepEqual(split.broader.map((video) => video.id), ["video-4", "video-25000"]);
+  assert.equal(split.strong[4].id, "video-5");
+  assert.equal(split.strong.at(-1).id, "video-29999");
+});
+
+test("video list memo keeps randomly ordered results stable until a source input changes", () => {
+  const memo = createYouTubeListMemo();
+  const workspaceVideos = [{ id: "a" }, { id: "b" }];
+  const randomOrder = [workspaceVideos[1], workspaceVideos[0]];
+  let builds = 0;
+  const key = ["workspace", "channel", workspaceVideos, "random"];
+  const first = memo(key, () => { builds += 1; return randomOrder; });
+  const unrelatedRerender = memo(["workspace", "channel", workspaceVideos, "random"], () => { builds += 1; return [...workspaceVideos].reverse(); });
+  assert.equal(unrelatedRerender, first);
+  assert.equal(builds, 1);
+  const changedSort = memo(["workspace", "channel", workspaceVideos, "newest"], () => { builds += 1; return workspaceVideos; });
+  assert.notEqual(changedSort, first);
+  assert.equal(builds, 2);
+
+  const partitionMemo = createYouTubeListMemo();
+  const initialReasons = { a: { relevance: "strong" } };
+  const initialGroups = partitionMemo([workspaceVideos, initialReasons], () => partitionYouTubeVideoResults(workspaceVideos, initialReasons));
+  const changedReasons = { a: { relevance: "broader" } };
+  const updatedGroups = partitionMemo([workspaceVideos, changedReasons], () => partitionYouTubeVideoResults(workspaceVideos, changedReasons));
+  assert.notEqual(updatedGroups, initialGroups, "changed search reasons should invalidate the cached grouping");
+  assert.deepEqual(updatedGroups.broader.map((video) => video.id), ["a"]);
+});
+
+test("YouTube progress store batches same-phase updates and flushes phase changes and final progress", () => {
+  const frames = new Map();
+  let nextFrame = 1;
+  const store = createYouTubeProgressStore({ phase: "idle", completedChannels: 0, totalChannels: 2, importedVideos: 0 }, (callback) => {
+    const id = nextFrame++;
+    frames.set(id, callback);
+    return { kind: "animation", id };
+  }, (frame) => frames.delete(frame.id));
+  let notifications = 0;
+  store.subscribe(() => { notifications += 1; });
+
+  store.publish({ phase: "resolving", completedChannels: 0, totalChannels: 2, importedVideos: 0 });
+  assert.equal(notifications, 1, "initial phase should be visible immediately");
+  store.publish({ phase: "importing", completedChannels: 0, totalChannels: 2, completedSources: 0, totalSources: 10, importedVideos: 0 });
+  assert.equal(notifications, 2, "phase change should be visible immediately");
+
+  store.publish({ phase: "importing", completedChannels: 1, totalChannels: 2, completedSources: 1, totalSources: 10, importedVideos: 12 });
+  store.publish({ phase: "importing", completedChannels: 2, totalChannels: 2, completedSources: 2, totalSources: 10, importedVideos: 23 });
+  assert.equal(notifications, 2, "same-frame counters should not publish repeatedly");
+  const [frameId, runFrame] = frames.entries().next().value;
+  frames.delete(frameId);
+  runFrame();
+  assert.equal(notifications, 3);
+  assert.equal(store.getSnapshot().importedVideos, 23, "the latest progress snapshot should win");
+
+  store.publish({ phase: "complete", completedChannels: 2, totalChannels: 2, completedSources: 10, totalSources: 10, importedVideos: 30 });
+  assert.equal(notifications, 4, "completion should flush immediately");
+  assert.equal(store.getSnapshot().phase, "complete");
 });

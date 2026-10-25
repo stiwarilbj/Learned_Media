@@ -33,6 +33,27 @@ test('every approved identity, individual video and recency default is identical
  for(const key of ['APPROVED_YOUTUBE_CHANNELS','APPROVED_INDIVIDUAL_VIDEOS','DEFAULT_YOUTUBE_RECENCY_PREFERENCES','YOUTUBE_TOPICS','YOUTUBE_CATALOG_VERSION'])assert.deepEqual(clean(mac.youtube[key]),clean(youtube[key]));
  assert.ok(mac.youtube.APPROVED_INDIVIDUAL_VIDEOS.some(v=>(v.videoId || v.id)==='QTQVZuBV9oA'));
 });
+test('large video grouping and progress batching match on website and Mac',()=>{
+ const videos=Array.from({length:30000},(_,id)=>({id:String(id)}));
+ const reasons={"7":{relevance:'broader'},"20000":{relevance:'broader'}};
+ const websiteGroups=youtube.partitionYouTubeVideoResults(videos,reasons),nativeGroups=mac.youtube.partitionYouTubeVideoResults(videos,reasons);
+ assert.deepEqual(clean(nativeGroups),clean(websiteGroups));
+ const websiteUnsplit=youtube.partitionYouTubeVideoResults(videos,{}),nativeUnsplit=mac.youtube.partitionYouTubeVideoResults(videos,{});
+ assert.equal(websiteUnsplit.strong,videos);assert.equal(nativeUnsplit.strong,videos);
+ for(const createStore of [youtube.createYouTubeProgressStore,mac.youtube.createYouTubeProgressStore]){
+  const frames=new Map();let nextFrame=0,notifications=0;
+  const store=createStore({phase:'importing',completedChannels:0,totalChannels:4,importedVideos:0},callback=>{const id=++nextFrame;frames.set(id,callback);return {kind:'timeout',id};},frame=>frames.delete(frame.id));
+  store.subscribe(()=>notifications++);
+  store.publish({phase:'importing',completedChannels:0,totalChannels:4,importedVideos:0});
+  store.publish({phase:'importing',completedChannels:1,totalChannels:4,importedVideos:10});
+  store.publish({phase:'importing',completedChannels:2,totalChannels:4,importedVideos:20});
+  assert.equal(notifications,0);
+  [...frames.values()][0]();frames.clear();
+  assert.equal(notifications,1);assert.equal(store.getSnapshot().importedVideos,20);
+  store.publish({phase:'complete',completedChannels:4,totalChannels:4,importedVideos:30});
+  assert.equal(notifications,2);assert.equal(store.getSnapshot().phase,'complete');
+ }
+});
 test('native discovery topic restriction uses the catalog filter',()=>{
  const context={state:{youtube:{topic:'Science',videos:[{id:'a',topics:['Science']},{id:'b',topics:['History']}]}},window:{LEARNED_MEDIA_YOUTUBE:{filter:(videos,q,topic)=>videos.filter(v=>topic==='All'||v.topics.includes(topic))}}};
  runInNewContext(extract('discoveryVideos','videoTabs')+';result=discoveryVideos();',context);

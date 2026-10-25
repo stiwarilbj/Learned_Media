@@ -104,6 +104,95 @@ export type YouTubeImportProgress = {
   paused?: boolean;
 };
 
+type ProgressFrame = { kind: "animation" | "timeout"; id: number | ReturnType<typeof setTimeout> };
+
+function scheduleYouTubeProgressFrame(callback: () => void): ProgressFrame {
+  if (typeof requestAnimationFrame === "function") return { kind: "animation", id: requestAnimationFrame(callback) };
+  return { kind: "timeout", id: setTimeout(callback, 16) };
+}
+
+function cancelYouTubeProgressFrame(frame: ProgressFrame) {
+  if (frame.kind === "animation" && typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame.id as number);
+  else clearTimeout(frame.id as ReturnType<typeof setTimeout>);
+}
+
+/**
+ * Keeps the latest import progress while limiting presentation updates to one per frame.
+ * Phase changes and terminal states flush immediately so controls stay responsive.
+ */
+export function createYouTubeProgressStore(initial: YouTubeImportProgress, scheduleFrame = scheduleYouTubeProgressFrame, cancelFrame = cancelYouTubeProgressFrame) {
+  let snapshot = initial;
+  let latest = initial;
+  let frame: ProgressFrame | null = null;
+  const listeners = new Set<() => void>();
+
+  const flush = () => {
+    frame = null;
+    if (snapshot === latest) return;
+    snapshot = latest;
+    listeners.forEach((listener) => listener());
+  };
+
+  const publish = (next: YouTubeImportProgress, immediate = false) => {
+    const phaseChanged = next.phase !== latest.phase;
+    latest = next;
+    const terminal = next.phase === "idle" || next.phase === "complete" || next.phase === "paused" || next.phase === "error";
+    if (immediate || phaseChanged || terminal) {
+      if (frame) cancelFrame(frame);
+      flush();
+      return;
+    }
+    if (!frame) frame = scheduleFrame(flush);
+  };
+
+  const update = (change: (current: YouTubeImportProgress) => YouTubeImportProgress, immediate = false) => {
+    publish(change(latest), immediate);
+  };
+
+  return {
+    getSnapshot: () => snapshot,
+    getLatest: () => latest,
+    getServerSnapshot: () => initial,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    publish,
+    update,
+    flush
+  };
+}
+
+/** Memoizes a derived video list by shallow identity of its source inputs. */
+export function createYouTubeListMemo<T>() {
+  let previousKey: readonly unknown[] | undefined;
+  let previousValue: T;
+  return (key: readonly unknown[], create: () => T): T => {
+    if (previousKey && previousKey.length === key.length && key.every((value, index) => Object.is(value, previousKey![index]))) return previousValue;
+    previousKey = key;
+    previousValue = create();
+    return previousValue;
+  };
+}
+
+export function partitionYouTubeVideoResults<T extends Pick<YouTubeVideo, "id">>(videos: T[], reasons?: Record<string, { relevance?: string } | undefined>) {
+  let strong: T[] | undefined;
+  let broader: T[] | undefined;
+  for (let index = 0; index < videos.length; index += 1) {
+    const video = videos[index];
+    if (reasons?.[video.id]?.relevance === "broader") {
+      if (!broader) {
+        strong = videos.slice(0, index);
+        broader = [];
+      }
+      broader.push(video);
+    } else if (strong) {
+      strong.push(video);
+    }
+  }
+  return strong && broader ? { strong, broader } : { strong: videos, broader: [] as T[] };
+}
+
 export type YouTubeSearchConceptGroup = {
   related?: string[];
   label?: string;

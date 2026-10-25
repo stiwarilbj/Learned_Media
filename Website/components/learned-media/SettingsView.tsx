@@ -2,8 +2,9 @@
 
 import type { FactCard, GeminiModelCheck, GeminiStatus } from "@/lib/types";
 import { DownloadSettings } from "./CardDownloads";
-import { APPROVED_YOUTUBE_CHANNELS, type YouTubeImportProgress } from "@/lib/youtube";
+import { APPROVED_YOUTUBE_CHANNELS } from "@/lib/youtube";
 import { Icon } from "./icons";
+import { useYouTubeImportProgress } from "./youtubeImportProgress";
 
 type SyncStatus = "signed-out" | "syncing" | "synced" | "offline" | "error";
 
@@ -29,7 +30,6 @@ type SettingsViewProps = {
   syncError?: string;
   youtubeKey: string;
   youtubeStatus: "not-configured" | "connecting" | "refreshing" | "connected" | "error";
-  youtubeProgress: YouTubeImportProgress;
   youtubeLastSyncAt?: string;
   prioritizeRecentByChannel: Record<string, boolean>;
   onYoutubeKeyChange: (value: string) => void;
@@ -58,7 +58,7 @@ const statusCopy: Record<GeminiStatus, string> = {
   unavailable: "Gemini unavailable"
 };
 
-export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, revealGradually, onRevealGraduallyChange, onResetAll, onDeleteLearningData, onGoogleSignIn, onGoogleSignOut, account, syncStatus, syncError, youtubeKey, youtubeStatus, youtubeProgress, youtubeLastSyncAt, prioritizeRecentByChannel, onYoutubeKeyChange, onYoutubeRecentBiasChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
+export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelChecks, modelChecking, onTestConnection, onRemoveKey, theme, onThemeChange, revealGradually, onRevealGraduallyChange, onResetAll, onDeleteLearningData, onGoogleSignIn, onGoogleSignOut, account, syncStatus, syncError, youtubeKey, youtubeStatus, youtubeLastSyncAt, prioritizeRecentByChannel, onYoutubeKeyChange, onYoutubeRecentBiasChange, onConnectYoutube, onRemoveYoutubeKey, onPauseYoutubeImport, onResumeYoutubeImport, onRetryYoutubeImport, onRefreshYoutube, workspaceName, cards }: SettingsViewProps) {
   const primaryModels = modelChecks.slice(0, 2);
   const checkedPrimaryCount = primaryModels.filter((model) => model.status !== "unchecked").length;
   const workingPrimaryCount = new Set(primaryModels.filter((model) => model.status === "working").map((model) => model.resolvedModel ?? model.model)).size;
@@ -138,7 +138,7 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
             <div className="api-key-guide youtube-guide"><div className="api-key-guide-icon"><Icon name="image" size={16} /></div><div className="api-key-guide-copy"><strong>Need a YouTube key?</strong><p>1. <a href={YOUTUBE_PROJECT_URL} target="_blank" rel="noreferrer">Create or select a Google Cloud project</a><br />2. <a href={YOUTUBE_LIBRARY_URL} target="_blank" rel="noreferrer">Enable YouTube Data API v3</a><br />3. Open <a href={YOUTUBE_CREDENTIALS_URL} target="_blank" rel="noreferrer">Credentials</a> → Create credentials → API key, then restrict it to YouTube Data API v3<br />4. Copy the key here and connect it</p></div></div>
             <p className="youtube-restriction-note">Website keys may be restricted to this GitHub Pages site. The Mac app needs a key that also permits native requests. If a restriction blocks a request, Google will report it here</p>
             {youtubeLastSyncAt && <p className="youtube-restriction-note">Last successful refresh: {new Date(youtubeLastSyncAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</p>}
-            {youtubeProgress.phase !== "idle" && <div className="video-import-notice" role="status"><div><strong>{youtubeProgress.phase === "paused" ? "Import paused" : youtubeStatus === "refreshing" ? "Refreshing library" : "Library import"}</strong><span>{youtubeProgress.completedSources !== undefined ? `${youtubeProgress.completedSources}/${youtubeProgress.totalSources ?? 0} sources · ` : `${youtubeProgress.completedChannels}/${youtubeProgress.totalChannels} channels · `}{youtubeProgress.importedVideos.toLocaleString()} videos</span></div>{youtubeProgress.phase === "paused" ? <button type="button" className="ghost-button" onClick={onResumeYoutubeImport}>Resume</button> : youtubeProgress.phase === "complete" || youtubeProgress.phase === "error" ? <button type="button" className="ghost-button" onClick={onRetryYoutubeImport}>Retry</button> : <button type="button" className="ghost-button" onClick={onPauseYoutubeImport}>Pause</button>}</div>}
+            <YouTubeImportNotice status={youtubeStatus} onPause={onPauseYoutubeImport} onResume={onResumeYoutubeImport} onRetry={onRetryYoutubeImport} />
           </section>
 
           <section className="settings-card export-settings-card">
@@ -170,4 +170,19 @@ export function SettingsView({ apiKey, onApiKeyChange, status, feedback, modelCh
       </div>
     </section>
   );
+}
+
+function YouTubeImportNotice({ status, onPause, onResume, onRetry }: { status: SettingsViewProps["youtubeStatus"]; onPause: () => void; onResume: () => void; onRetry: () => void }) {
+  const progress = useYouTubeImportProgress();
+  if (progress.phase === "idle") return null;
+  const sourceCount = progress.completedSources !== undefined
+    ? `${progress.completedSources}/${progress.totalSources ?? 0} sources · `
+    : `${progress.completedChannels}/${progress.totalChannels} channels · `;
+  const heading = progress.phase === "paused" ? "Import paused" : status === "refreshing" ? "Refreshing library" : "Library import";
+  const action = progress.phase === "paused"
+    ? <button type="button" className="ghost-button" onClick={onResume}>Resume</button>
+    : progress.phase === "complete" || progress.phase === "error"
+      ? <button type="button" className="ghost-button" onClick={onRetry}>Retry</button>
+      : <button type="button" className="ghost-button" onClick={onPause}>Pause</button>;
+  return <div className="video-import-notice" role="status"><div><strong>{heading}</strong><span>{sourceCount}{progress.importedVideos.toLocaleString()} videos</span></div>{action}</div>;
 }
