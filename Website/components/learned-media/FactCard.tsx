@@ -3,7 +3,8 @@ import { DownloadCardMenuItem } from "./CardDownloads";
 
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { DIFFICULTY_LABELS } from "@/lib/recommendations";
-import type { CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, SavedCardLocations } from "@/lib/types";
+import type { AnswerStructure, CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, SavedCardLocations } from "@/lib/types";
+import { ANSWER_STRUCTURES, answerStructureLabel, normalizeAnswerStructure } from "@/lib/answer-structure";
 import { resolveWikipediaArticle, resolveWikipediaCoordinates } from "@/lib/wikipedia";
 import { buildSourceSpotlightModel, canonicalWikipediaUrl, locatePassageContext, longestSharedPhraseRange, sourceSpotlightContextKey } from "@/lib/source-spotlight";
 import { getSourceSpotlightState, setSourceSpotlightState, subscribeSourceSpotlight, updateSourceSpotlightState, type SpotlightContextState } from "@/lib/source-spotlight-state";
@@ -27,15 +28,18 @@ type FactCardProps = {
   questionError?: string;
   questionDraft?: string;
   questionDetailed?: boolean;
+  questionStructure?: AnswerStructure;
+  questionStructureRevision?: number;
   adaptationLoading?: boolean;
   glossaryLoading?: boolean;
   adaptationErrors: Record<string, string | undefined>;
   hasGeminiKey?: boolean;
   onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
-  onAskQuestion: (id: string, question: string, detailed: boolean) => void;
+  onAskQuestion: (id: string, question: string, detailed: boolean, structure: AnswerStructure, structureRevision: number) => void;
   onQuestionDraft: (id: string, value: string) => void;
   onQuestionDetailed: (id: string, value: boolean) => void;
+  onQuestionStructure: (id: string, value: AnswerStructure) => void;
   onAdaptExplanation: (id: string, mode?: CardExplanationMode) => void;
   onExplainTerms: (id: string) => void;
   onCancelGlossary: (id: string) => void;
@@ -95,13 +99,14 @@ function EvidenceContextLoader({ workspaceId, cardId, sentenceIndex, expanded, e
   return null;
 }
 
-export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, adaptationLoading, glossaryLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, detourSlot, onThreeMore, onDetourProgress }: FactCardProps) {
+export const FactCard = memo(function FactCard({ card, workspaceId, displayMode, revealGradually, learnLoading, questionLoading, learnError, questionError, questionDraft, questionDetailed, questionStructure, questionStructureRevision = 0, adaptationLoading, glossaryLoading, adaptationErrors, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, detourSlot, onThreeMore, onDetourProgress }: FactCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const [questionFocused, setQuestionFocused] = useState(false);
   const [followUpDismissed, setFollowUpDismissed] = useState(false);
   const [difficultyMenuOpen, setDifficultyMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [learnMenuOpen, setLearnMenuOpen] = useState(false);
+  const [answerOptionsOpen, setAnswerOptionsOpen] = useState(false);
   const difficultyPickerRef = useRef<HTMLDivElement>(null);
   const difficultyTriggerRef = useRef<HTMLButtonElement>(null);
   const difficultyMenuRef = useRef<HTMLDivElement>(null);
@@ -111,6 +116,9 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const learnMenuRef = useRef<HTMLDivElement>(null);
   const learnMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const learnMenuItemsRef = useRef<HTMLDivElement>(null);
+  const answerOptionsRef = useRef<HTMLDivElement>(null);
+  const answerOptionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const answerOptionsMenuRef = useRef<HTMLDivElement>(null);
   const glossaryHeadingRef = useRef<HTMLSpanElement>(null);
   const chronologyHeadingRef = useRef<HTMLHeadingElement>(null);
   const locationHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -146,6 +154,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   const followUpQuestions = useMemo(() => getCardFollowUpQuestions(card), [card]);
   const showFollowUpQuestions = questionFocused && !question.trim() && !followUpDismissed && followUpQuestions.length > 0;
   const detailed = questionDetailed ?? Boolean(card.questionDetailed);
+  const selectedStructure = normalizeAnswerStructure(questionStructure);
   const showImage = displayMode === "picture-text";
   const reportDetourProgress = useCallback(() => {
     if (detourSlot === undefined || !onDetourProgress) return;
@@ -247,6 +256,21 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
     window.addEventListener("pointerdown", closeOutside);
     return () => window.removeEventListener("pointerdown", closeOutside);
   }, [learnMenuOpen]);
+
+  useEffect(() => {
+    if (!answerOptionsOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!answerOptionsRef.current?.contains(event.target as Node)) setAnswerOptionsOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOutside);
+    return () => window.removeEventListener("pointerdown", closeOutside);
+  }, [answerOptionsOpen]);
+
+  useEffect(() => {
+    if (!answerOptionsOpen) return;
+    const items = Array.from(answerOptionsMenuRef.current?.querySelectorAll<HTMLButtonElement>("[role='menuitemradio'], [role='menuitemcheckbox']") ?? []);
+    (items.find(item => item.getAttribute("role") === "menuitemradio" && item.getAttribute("aria-checked") === "true") ?? items[0])?.focus();
+  }, [answerOptionsOpen]);
 
   useEffect(() => {
     if (!moreMenuOpen) return;
@@ -383,6 +407,28 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
     }
   }
 
+  function closeAnswerOptions(restoreFocus = false) {
+    setAnswerOptionsOpen(false);
+    if (restoreFocus) requestAnimationFrame(() => answerOptionsTriggerRef.current?.focus());
+  }
+
+  function handleAnswerOptionsKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role='menuitemradio'], [role='menuitemcheckbox']"));
+    const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowDown") nextIndex = (currentIndex + 1 + options.length) % options.length;
+    else if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + options.length) % options.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else if (event.key === "Escape") { event.preventDefault(); closeAnswerOptions(true); return; }
+    if (nextIndex !== undefined) { event.preventDefault(); options[nextIndex]?.focus(); }
+  }
+
+  function chooseAnswerStructure(value: AnswerStructure) {
+    onQuestionStructure(card.id, value);
+    closeAnswerOptions(true);
+  }
+
   function openGlossary() {
     closeLearnMenu();
     focusGlossaryHeadingOnOpenRef.current = true;
@@ -450,7 +496,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   function submitQuestion() {
     const clean = question.trim();
     if (!clean || questionLoading) return;
-    onAskQuestion(card.id, clean, detailed);
+    onAskQuestion(card.id, clean, detailed, selectedStructure, questionStructureRevision);
   }
 
   function openSpotlight(sentenceIndex: number, triggerId: string) {
@@ -733,9 +779,19 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
               placeholder="Ask a question about this fact"
               aria-label={`Ask a question about ${card.title}`}
             />
-            <button type="button" className={`details-toggle ${detailed ? "selected" : ""}`} onClick={() => onQuestionDetailed(card.id, !detailed)} aria-pressed={detailed}>More Details</button>
+            <div className="answer-options-control" ref={answerOptionsRef}>
+              <button type="button" ref={answerOptionsTriggerRef} className={`answer-options-trigger ${answerOptionsOpen ? "selected" : ""}`} onClick={() => setAnswerOptionsOpen(open => !open)} aria-haspopup="menu" aria-expanded={answerOptionsOpen} aria-controls={`answer-options-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`}>
+                Answer options <Icon name="chevronDown" size={12} />
+              </button>
+              {answerOptionsOpen && <div className="answer-options-menu" id={`answer-options-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} ref={answerOptionsMenuRef} role="menu" aria-label="Answer options" onKeyDown={handleAnswerOptionsKeyDown}>
+                <button type="button" role="menuitemcheckbox" aria-checked={detailed} onClick={() => { onQuestionDetailed(card.id, !detailed); closeAnswerOptions(true); }}><span>More Details</span><span className="answer-option-check">{detailed ? "✓" : ""}</span></button>
+                <span className="answer-options-divider" role="separator" />
+                {ANSWER_STRUCTURES.map(option => <button key={option.value} type="button" role="menuitemradio" aria-checked={selectedStructure === option.value} onClick={() => chooseAnswerStructure(option.value)}><span>{option.label}</span><span className="answer-option-check">{selectedStructure === option.value ? "✓" : ""}</span></button>)}
+              </div>}
+            </div>
             <button type="button" className="question-send" onClick={submitQuestion} disabled={!question.trim() || questionLoading} aria-label="Send question"><Icon name="arrow" size={16} /></button>
           </div>
+          {selectedStructure !== "automatic" && <div className="answer-structure-chip" aria-live="polite"><span>{answerStructureLabel(selectedStructure)}</span><button type="button" onClick={() => { onQuestionStructure(card.id, "automatic"); requestAnimationFrame(() => questionInputRef.current?.focus()); }} aria-label={`Remove ${answerStructureLabel(selectedStructure)} answer structure`}>×</button></div>}
           {showFollowUpQuestions && <div className="question-suggestions" role="group" aria-label="Suggested questions" onKeyDown={(event) => {
             if (event.key === "Escape") { event.preventDefault(); questionInputRef.current?.focus(); setFollowUpDismissed(true); }
           }}>
@@ -749,7 +805,15 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
               });
             }}>{suggestion}</button>)}
           </div>}
-          {card.answer && <div className="learning-answer question-answer"><span className="answer-label"><Icon name="message" size={14} /> {card.answerDetailed ? "Detailed answer" : "Answer"}</span><p>{card.answer}</p><div className="answer-sources">{card.answerSources?.map((source) => <a href={source.url} key={source.url} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={11} /></a>)}</div></div>}
+          {card.answer && <div className="learning-answer question-answer"><span className="answer-label"><Icon name="message" size={14} /> {card.answerStructure === "ordered-steps" ? "Ordered steps" : card.answerStructure === "side-by-side-comparison" ? "Side-by-side comparison" : card.answerStructure === "short-explanation" ? "Short explanation" : card.answerDetailed ? "Detailed answer" : "Answer"}</span>
+            {card.answerPresentation ? <>
+              <p>{card.answerPresentation.directAnswer}</p>
+              {card.answerPresentation.structure === "ordered-steps" && <ol className="answer-steps">{card.answerPresentation.steps?.map((step, index) => <li key={`${index}:${step}`}>{step}</li>)}</ol>}
+              {card.answerPresentation.structure === "side-by-side-comparison" && <dl className="answer-comparison">{card.answerPresentation.comparisonRows?.map((row, index) => <div className="answer-comparison-row" key={`${index}:${row.property}`}><dt>{row.property}</dt><dd><span className="comparison-subject">{card.answerPresentation?.comparisonSubjects?.[0]}</span><span>{row.values[0]}</span></dd><dd><span className="comparison-subject">{card.answerPresentation?.comparisonSubjects?.[1]}</span><span>{row.values[1]}</span></dd></div>)}</dl>}
+              {card.answerPresentation.structure === "short-explanation" && card.answerPresentation.paragraphs?.map((paragraph, index) => <p key={`${index}:${paragraph}`}>{paragraph}</p>)}
+              {card.answerPresentation.fallbackReason && <p className="answer-format-note">{card.answerPresentation.fallbackReason}</p>}
+            </> : <p>{card.answer}</p>}
+            <div className="answer-sources">{card.answerSources?.map((source) => <a href={source.url} key={source.url} target="_blank" rel="noreferrer">{source.title}<Icon name="external" size={11} /></a>)}</div></div>}
           {questionLoading && <div className="learning-loading"><span className="loading-dot" /> Gemini is reading the cited Wikipedia pages</div>}
           {questionError && <p className="learning-error">{questionError}</p>}
         </div>

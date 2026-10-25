@@ -1135,6 +1135,26 @@ body { background: var(--page-gradient); }
 .question-row { display: flex; gap: 7px; align-items: center; }
 .question-row input { min-width: 0; flex: 1; height: 37px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); color: var(--ink); padding: 0 10px; outline: 0; font-size: 11px; }
 .question-row input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(42,100,246,.1); }
+.answer-options-control { position: relative; flex: 0 0 auto; }
+.answer-options-trigger { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); padding: 0 9px; font-size: 9px; font-weight: 850; white-space: nowrap; cursor: pointer; }
+.answer-options-trigger:hover, .answer-options-trigger.selected { border-color: var(--primary); background: var(--surface-blue); color: var(--primary); }
+.answer-options-trigger:focus-visible, .answer-options-menu button:focus-visible, .answer-structure-chip button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.answer-options-menu { position: absolute; z-index: 30; right: 0; bottom: calc(100% + 7px); width: min(238px, calc(100vw - 42px)); padding: 5px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); box-shadow: 0 12px 32px rgba(40, 75, 120, .17); }
+.answer-options-menu button { width: 100%; min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 0; border-radius: 7px; background: transparent; color: var(--ink); padding: 7px 9px; font-size: 10px; text-align: left; cursor: pointer; }
+.answer-options-menu button:hover, .answer-options-menu button:focus-visible { outline: 0; background: var(--surface-blue); color: var(--primary); }
+.answer-options-divider { display: block; height: 1px; margin: 4px 6px; background: var(--border); }
+.answer-option-check { min-width: 12px; color: var(--primary); font-weight: 900; text-align: center; }
+.answer-structure-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; margin-top: 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-blue); color: var(--primary); padding: 4px 6px 4px 9px; font-size: 9px; font-weight: 800; }
+.answer-structure-chip button { width: 19px; height: 19px; border: 0; border-radius: 50%; background: transparent; color: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
+.answer-structure-chip button:hover { background: rgba(72, 140, 220, .14); }
+.answer-steps { margin: 8px 0 0; padding-left: 24px; color: var(--ink); font-size: 12px; line-height: 1.65; }
+.answer-steps li + li { margin-top: 5px; }
+.answer-comparison { margin: 9px 0 0; display: grid; gap: 7px; }
+.answer-comparison-row { display: grid; grid-template-columns: minmax(85px, .7fr) minmax(0, 1fr) minmax(0, 1fr); gap: 9px; align-items: start; border-top: 1px solid var(--border); padding-top: 7px; }
+.answer-comparison-row dt { color: var(--muted); font-size: 10px; font-weight: 850; }
+.answer-comparison-row dd { min-width: 0; margin: 0; color: var(--ink); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.comparison-subject { display: block; margin-bottom: 2px; color: var(--primary); font-size: 9px; font-weight: 850; }
+.answer-format-note { border-left: 2px solid var(--border-strong); padding-left: 8px; color: var(--muted) !important; font-size: 10px !important; }
 .question-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .question-suggestions[hidden] { display: none; }
 .question-suggestion { max-width: 100%; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-soft); color: var(--muted); padding: 6px 10px; font-size: 10px; line-height: 1.35; text-align: left; cursor: pointer; }
@@ -1234,6 +1254,11 @@ body { background: var(--page-gradient); }
   .start-panel-copy h1 { font-size: 31px; }
   .question-row { flex-wrap: wrap; }
   .question-row input { flex-basis: calc(100% - 42px); }
+  .answer-options-control { margin-left: auto; }
+  .answer-options-menu { right: 0; bottom: calc(100% + 6px); }
+  .answer-comparison-row { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .answer-comparison-row dd { display: grid; grid-template-columns: minmax(72px, 31%) minmax(0, 1fr); gap: 8px; }
+  .comparison-subject { margin-bottom: 0; }
   .details-toggle { margin-left: auto; }
   .fact-actions button span { display: inline; }
   .fact-breadcrumbs { font-size: 12px; }

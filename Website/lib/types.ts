@@ -73,6 +73,19 @@ export type LearningMessage = {
   content: string;
 };
 
+export type AnswerStructure = "automatic" | "short-explanation" | "ordered-steps" | "side-by-side-comparison";
+export type ResolvedAnswerStructure = Exclude<AnswerStructure, "automatic">;
+export type AnswerComparisonRow = { property: string; values: [string, string] };
+export type AnswerPresentation = {
+  structure: ResolvedAnswerStructure;
+  directAnswer: string;
+  paragraphs?: string[];
+  steps?: string[];
+  comparisonSubjects?: [string, string];
+  comparisonRows?: AnswerComparisonRow[];
+  fallbackReason?: string;
+};
+
 export type GeminiModelCheckStatus = "unchecked" | "checking" | "working" | "failed" | "cooldown";
 
 export type GeminiModelCheck = {
@@ -137,6 +150,8 @@ export type FactCard = {
   questionDetailed?: boolean;
   answer?: string;
   answerDetailed?: boolean;
+  answerStructure?: ResolvedAnswerStructure;
+  answerPresentation?: AnswerPresentation;
   answerSources?: WikipediaSource[];
   questionHistory?: LearningMessage[];
   provenance?: {

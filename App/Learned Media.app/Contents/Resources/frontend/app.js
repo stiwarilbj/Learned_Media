@@ -794,6 +794,9 @@
       accent: ["blue", "lilac", "mint", "sand", "coral"][index % 5],
       createdAt: new Date().toISOString()
     }, card, { sources: references.sources, evidence: references.evidence, image: image, hook: hook });
+    const answerStructure = window.LEARNED_MEDIA_ANSWER_STRUCTURE;
+    normalized.answerPresentation = answerStructure && answerStructure.normalizeSavedAnswerPresentation(card.answerPresentation);
+    normalized.answerStructure = normalized.answerPresentation && normalized.answerPresentation.structure || (answerStructure && answerStructure.normalizeResolvedAnswerStructure(card.answerStructure));
     normalized.explanations = cardExplanations.normalizeCardExplanations(normalized);
     normalized.glossary = cardGlossary.normalizeCardGlossary(normalized);
     normalized.chronology = cardChronology.createSavedCardChronology(normalized.chronology, normalized) || cardChronology.normalizeSavedCardChronology(normalized);
@@ -1987,6 +1990,7 @@
   function applyWorkspaceSnapshot(record) {
     const snapshot = record.state || record;
     clearTopicDetourCompletionNotice();
+    questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();answerOptionsOpenKey="";
     state.workspaceId = record.id || "local-workspace";
     state.topicDetour = null;
     state.rabbitHole = null;
@@ -2574,10 +2578,20 @@
     return wrap;
   }
   const questionDrafts=new Map();
+  const questionStructures=new Map();
+  const questionStructureRevisions=new Map();
+  let answerOptionsOpenKey="";
   function questionDraftKey(card){return state.workspaceId+"\u0000"+card.id;}
+  function setQuestionStructure(key,value){
+    const next=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(value),current=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(questionStructures.get(key));
+    if(current===next)return;
+    questionStructures.set(key,next);questionStructureRevisions.set(key,(questionStructureRevisions.get(key)||0)+1);
+  }
+  document.addEventListener("pointerdown",function(event){if(answerOptionsOpenKey && !(event.target && event.target.closest && event.target.closest(".answer-options-control"))){answerOptionsOpenKey="";document.querySelectorAll(".answer-options-menu").forEach(function(menu){menu.remove();});document.querySelectorAll(".answer-options-trigger").forEach(function(trigger){trigger.setAttribute("aria-expanded","false");});}});
   function questionArea(card) {
     const box = node("div", { className: "question-box" });
     const row = node("div", { className: "question-row" });
+    const draftKey=questionDraftKey(card),selectedStructure=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(questionStructures.get(draftKey));
     const followUpQuestions = cardFollowUps.getCardFollowUpQuestions(card);
     const followUpKey = state.workspaceId + "\u0000" + card.id + "\u0000" + cardFollowUps.followUpQuestionFingerprint(card);
     let suggestions = null;
@@ -2592,7 +2606,7 @@
       } });
       followUpQuestions.forEach(function (question) {
         suggestions.appendChild(node("button", { type: "button", className: "question-suggestion", dataset: { cardId: card.id, questionSuggestion: "true" }, onClick: function () {
-          questionDrafts.set(questionDraftKey(card),question);
+          questionDrafts.set(draftKey,question);
           input.value = question;
           dismissedFollowUpQuestionKey = followUpKey;
           suggestions.hidden = true;
@@ -2602,7 +2616,7 @@
         } }, question));
       });
     }
-    const input = node("input", { value: questionDrafts.has(questionDraftKey(card)) ? questionDrafts.get(questionDraftKey(card)) : card.question || "", placeholder: "Ask a question about this fact", ariaLabel: "Ask a question about " + card.title, dataset: { cardId: card.id }, onFocus: function () {
+    const input = node("input", { value: questionDrafts.has(draftKey) ? questionDrafts.get(draftKey) : card.question || "", placeholder: "Ask a question about this fact", ariaLabel: "Ask a question about " + card.title, dataset: { cardId: card.id }, onFocus: function () {
       if (focusedQuestionCardId !== card.id) {
         focusedQuestionCardId = card.id;
         dismissedFollowUpQuestionKey = "";
@@ -2615,7 +2629,7 @@
         if (suggestions) suggestions.hidden = true;
       }
     }, onInput: function (event) {
-      questionDrafts.set(questionDraftKey(card),event.target.value);
+      questionDrafts.set(draftKey,event.target.value);
       if (suggestions) {
         if (!event.target.value.trim()) dismissedFollowUpQuestionKey = "";
         suggestions.hidden = Boolean(event.target.value.trim()) || focusedQuestionCardId !== card.id || dismissedFollowUpQuestionKey === followUpKey;
@@ -2631,9 +2645,23 @@
       }
     } });
     row.appendChild(input);
-    row.appendChild(node("button", { className: "details-toggle" + (card.questionDetailed ? " selected" : ""), "aria-pressed":Boolean(card.questionDetailed), onClick: function () { card.questionDetailed = !card.questionDetailed; saveState(); render(); } }, "More Details"));
+    const optionWrap=node("div",{className:"answer-options-control"});
+    const optionID="answer-options-"+safeCardElementId(card.id),isOpen=answerOptionsOpenKey===draftKey;
+    const optionTrigger=node("button",{type:"button",className:"answer-options-trigger"+(isOpen?" selected":""),"aria-haspopup":"menu",ariaExpanded:isOpen,ariaControls:optionID,id:optionID+"-trigger",onClick:function(){answerOptionsOpenKey=isOpen?"":draftKey;render();}},"Answer options ",svg("chevronDown",12));
+    optionWrap.appendChild(optionTrigger);
+    if(isOpen){
+      const restoreTrigger=function(){requestAnimationFrame(function(){const trigger=document.getElementById(optionID+"-trigger");if(trigger)trigger.focus();});};
+      const menu=node("div",{className:"answer-options-menu",id:optionID,role:"menu",ariaLabel:"Answer options",onKeydown:function(event){const items=Array.from(menu.querySelectorAll("[role='menuitemcheckbox'],[role='menuitemradio']")),index=items.indexOf(document.activeElement);let next;if(event.key==="ArrowDown")next=(index+1)%items.length;else if(event.key==="ArrowUp")next=(index-1+items.length)%items.length;else if(event.key==="Home")next=0;else if(event.key==="End")next=items.length-1;else if(event.key==="Escape"){event.preventDefault();answerOptionsOpenKey="";render();restoreTrigger();return;}if(next!==undefined){event.preventDefault();items[next].focus();}}});
+      menu.appendChild(node("button",{type:"button",role:"menuitemcheckbox",ariaChecked:Boolean(card.questionDetailed),onClick:function(){card.questionDetailed=!card.questionDetailed;answerOptionsOpenKey="";saveState();render();restoreTrigger();}},node("span",{text:"More Details"}),node("span",{className:"answer-option-check",text:card.questionDetailed?"✓":""})));
+      menu.appendChild(node("span",{className:"answer-options-divider",role:"separator"}));
+      window.LEARNED_MEDIA_ANSWER_STRUCTURE.ANSWER_STRUCTURES.forEach(function(option){menu.appendChild(node("button",{type:"button",role:"menuitemradio",ariaChecked:selectedStructure===option.value,onClick:function(){setQuestionStructure(draftKey,option.value);answerOptionsOpenKey="";render();restoreTrigger();}},node("span",{text:option.label}),node("span",{className:"answer-option-check",text:selectedStructure===option.value?"✓":""})));});
+      optionWrap.appendChild(menu);
+      requestAnimationFrame(function(){const selected=menu.querySelector("[role='menuitemradio'][aria-checked='true']")||menu.querySelector("button");if(selected)selected.focus();});
+    }
+    row.appendChild(optionWrap);
     row.appendChild(node("button", { className: "question-send", ariaLabel: "Send question", onClick: function () { askQuestion(card.id, input.value); } }, svg("arrow", 16)));
     box.appendChild(row);
+    if(selectedStructure!=="automatic")box.appendChild(node("div",{className:"answer-structure-chip",ariaLive:"polite"},node("span",{text:window.LEARNED_MEDIA_ANSWER_STRUCTURE.answerStructureLabel(selectedStructure)}),node("button",{type:"button",ariaLabel:"Remove "+window.LEARNED_MEDIA_ANSWER_STRUCTURE.answerStructureLabel(selectedStructure)+" answer structure",onClick:function(){setQuestionStructure(draftKey,"automatic");render();requestAnimationFrame(function(){const field=document.querySelector(".question-row input[data-card-id='"+CSS.escape(card.id)+"']");if(field)field.focus();});}},"×")));
     if (suggestions) {
       suggestions.hidden = Boolean(input.value.trim()) || focusedQuestionCardId !== card.id || dismissedFollowUpQuestionKey === followUpKey;
       box.appendChild(suggestions);
@@ -2645,7 +2673,21 @@
         if (suggestions) suggestions.hidden = true;
       }
     });
-    if (card.answer) box.appendChild(node("div", { className: "learning-answer question-answer" }, node("span", { className: "answer-label" }, svg("message", 14), " ", card.answerDetailed ? "Detailed answer" : "Answer"), node("p", { text: card.answer }), sourceList(card, true)));
+    if (card.answer) {
+      const answer=node("div",{className:"learning-answer question-answer"});
+      const presentation=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeSavedAnswerPresentation(card.answerPresentation),resolved=card.answerStructure||presentation&&presentation.structure;
+      const label=resolved==="ordered-steps"?"Ordered steps":resolved==="side-by-side-comparison"?"Side-by-side comparison":resolved==="short-explanation"?"Short explanation":card.answerDetailed?"Detailed answer":"Answer";
+      answer.appendChild(node("span",{className:"answer-label"},svg("message",14)," ",label));
+      if(presentation){
+        answer.appendChild(node("p",{text:presentation.directAnswer}));
+        if(presentation.structure==="ordered-steps"){const list=node("ol",{className:"answer-steps"});(presentation.steps||[]).forEach(function(step){list.appendChild(node("li",{text:step}));});answer.appendChild(list);}
+        else if(presentation.structure==="side-by-side-comparison"){
+          const list=node("dl",{className:"answer-comparison"});(presentation.comparisonRows||[]).forEach(function(item){const line=node("div",{className:"answer-comparison-row"});line.appendChild(node("dt",{text:item.property}));line.appendChild(node("dd",{},node("span",{className:"comparison-subject",text:presentation.comparisonSubjects[0]}),node("span",{text:item.values[0]})));line.appendChild(node("dd",{},node("span",{className:"comparison-subject",text:presentation.comparisonSubjects[1]}),node("span",{text:item.values[1]})));list.appendChild(line);});answer.appendChild(list);
+        } else (presentation.paragraphs||[]).forEach(function(paragraph){answer.appendChild(node("p",{text:paragraph}));});
+        if(presentation.fallbackReason)answer.appendChild(node("p",{className:"answer-format-note",text:presentation.fallbackReason}));
+      } else answer.appendChild(node("p",{text:card.answer}));
+      answer.appendChild(sourceList(card,true));box.appendChild(answer);
+    }
     if (learningTasks.has(state.workspaceId+":"+card.id+":question")) box.appendChild(node("div", { className: "learning-loading" }, node("span", { className: "loading-dot" }), " Gemini is reading the cited Wikipedia pages"));
     return box;
   }
@@ -3603,29 +3645,36 @@
   const learningTasks=new Map();
   function learningIdentity(card){return [state.workspaceId,generationToken,state.keyEditEpoch,cardExplanations.cardExplanationFingerprint(card)].join(":");}
   function learningIsCurrent(card,identity){return state.cards.includes(card) && learningIdentity(card)===identity;}
-  async function runCardLearning(card,action,question){
+  async function runCardLearning(card,action,question,requestedStructure,requestedStructureRevision){
     const operationKey=state.workspaceId+":"+card.id+":"+action;
     if(learningTasks.has(operationKey))return;
-    const identity=learningIdentity(card),detailed=Boolean(card.questionDetailed),history=(card.questionHistory||[]).slice();
+    const identity=learningIdentity(card),detailed=Boolean(card.questionDetailed),structure=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(requestedStructure),structureRevision=requestedStructureRevision===undefined?(questionStructureRevisions.get(questionDraftKey(card))||0):requestedStructureRevision,history=(card.questionHistory||[]).slice(),answerDetailed=structure==="short-explanation"?false:detailed;
     const errorKey=action==="learn"?card.id+":learn":card.id;
-    const cacheKey=scopedCacheKey(state.key,[action,card.topicPath,card.hook,card.title,card.body,card.claim,(card.sources||[]).map(function(source){return [source.canonicalUrl||source.url,source.extract||""];}),question || "",action==="question"?detailed:false,action==="question"?history:[]]);
+    const cacheKey=scopedCacheKey(state.key,[action,card.topicPath,card.hook,card.title,card.body,card.claim,(card.sources||[]).map(function(source){return [source.canonicalUrl||source.url,source.extract||""];}),question || "",action==="question"?detailed:false,action==="question"?structure:"",action==="question"?"answer-structure-v1":"",action==="question"?history:[]]);
     const cached=learningResponseCache.get(cacheKey);
     state[action==="learn"?"loadingCard":"questionLoading"]=card.id;state.errorByCard[errorKey]="";
     const entry={identity:identity,task:null};learningTasks.set(operationKey,entry);render();
     try{
       let result=cached;
-      if(!result){entry.task=bridge("learn",{action:action,card:card,question:question,detailed:detailed,history:history});result=await entry.task;}
+      if(!result){entry.task=bridge("learn",{action:action,card:card,question:question,detailed:detailed,structure:structure,history:history});result=await entry.task;}
       if(!learningIsCurrent(card,identity) || learningTasks.get(operationKey)!==entry)return;
       mergeGeminiModelOutcomes(result.modelOutcomes||[]);
       if(action==="learn"){card.learnMore=result.answer;card.learnMoreSources=result.citations||[];}
-      else{card.question=question;card.answer=result.answer;card.answerDetailed=detailed;card.answerSources=result.citations||[];card.questionHistory=history.concat([{role:"user",content:question},{role:"assistant",content:result.answer}]);}
-      if(!cached)learningResponseCache.set(cacheKey,{answer:result.answer,citations:result.citations||[]});
+      else{
+        const savedPresentation=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeSavedAnswerPresentation(result.presentation);
+        const normalizedAnswer=savedPresentation?{answer:result.answer,presentation:savedPresentation,structure:savedPresentation.structure}:window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerResponse(result,structure);
+        if(!normalizedAnswer)throw new Error("Gemini returned an answer that could not be safely presented.");
+        result=Object.assign({},result,{answer:normalizedAnswer.answer,presentation:normalizedAnswer.presentation,structure:normalizedAnswer.structure});
+        card.question=question;card.answer=result.answer;card.answerDetailed=answerDetailed;card.answerStructure=result.structure;card.answerPresentation=result.presentation;card.answerSources=result.citations||[];card.questionHistory=history.concat([{role:"user",content:question},{role:"assistant",content:result.answer}]);
+        const draftKey=questionDraftKey(card);if(window.LEARNED_MEDIA_ANSWER_STRUCTURE.shouldResetSubmittedAnswerStructure(questionStructures.get(draftKey),structure,questionStructureRevisions.get(draftKey)||0,structureRevision)){questionStructures.delete(draftKey);questionStructureRevisions.set(draftKey,structureRevision+1);}
+      }
+      if(!cached)learningResponseCache.set(cacheKey,{answer:result.answer,citations:result.citations||[],presentation:result.presentation,structure:result.structure});
       saveState();
     }catch(error){if(learningIsCurrent(card,identity))state.errorByCard[errorKey]=error.message;}
     finally{if(learningTasks.get(operationKey)===entry){learningTasks.delete(operationKey);if(learningIsCurrent(card,identity)){const field=action==="learn"?"loadingCard":"questionLoading";if(state[field]===card.id)state[field]=null;render();}}}
   }
   function learnMore(id){const card=state.cards.find(function(item){return item.id===id;});if(card && !card.learnMore)return runCardLearning(card,"learn");}
-  function askQuestion(id,value){const card=state.cards.find(function(item){return item.id===id;}),question=String(value||"").trim();if(card && question)return runCardLearning(card,"question",question);}
+  function askQuestion(id,value){const card=state.cards.find(function(item){return item.id===id;}),question=String(value||"").trim();if(card && question){const draftKey=questionDraftKey(card);return runCardLearning(card,"question",question,questionStructures.get(draftKey),questionStructureRevisions.get(draftKey)||0);}}
   function toggleCard(id, property) {
     const card = state.cards.find(function (item) { return item.id === id; });
     if (!card) return;
@@ -3651,7 +3700,7 @@
   async function signIn() {
     try {
       const result = await bridge("signIn", {});
-      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); }
+      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); answerOptionsOpenKey=""; }
       const previousOwner = state.cloudOwnerId;
       state.account = result.account;
       nativeAccountRestored = false;
@@ -3676,6 +3725,7 @@
   }
   async function signOut() {
     cancelNativeDownload();
+    questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();answerOptionsOpenKey="";
     try {
       cancelWorkspaceOperations();
       cloudSyncToken += 1;

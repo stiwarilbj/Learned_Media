@@ -178,7 +178,7 @@ public enum PromptBuilder {
         card.filter { ["topicPath", "hook", "title", "body", "claim"].contains($0.key) }
     }
 
-    public static func question(card: [String: Any], query: String?, detailed: Bool = false,
+    public static func question(card: [String: Any], query: String?, detailed: Bool = false, structure: String = "automatic",
                                 history: [[String: Any]] = [], evidence: [[String: Any]]) -> String {
         let checklist = coverageChecklist(query)
         let scope = questionScope(query)
@@ -194,9 +194,13 @@ public enum PromptBuilder {
             + (typeKey.flatMap { PromptInstructions.rules[$0] } ?? [])
             + (checklist.isEmpty ? [] : (PromptInstructions.rules["questionCoverage"] ?? []))
             + (scope.isEmpty ? [] : (PromptInstructions.rules["questionScope"] ?? []))
-            + (PromptInstructions.rules[detailed ? "answerDetailed" : "answerShort"] ?? [])
+            + (PromptInstructions.rules["questionStructure"] ?? [])
+            + (structure == "short-explanation" ? (PromptInstructions.rules["questionStructureShort"] ?? []) : [])
+            + (structure == "short-explanation" ? [] : (PromptInstructions.rules[detailed ? "answerDetailed" : "answerShort"] ?? []))
         return build(.question, rules: rules, fields: [
             PromptField("Original user query", query),
+            PromptField("Requested answer structure", structure),
+            PromptField("Answer structure policy", "answer-structure-v1"),
             PromptField("Supporting card context", supportingCard(card), reference: true),
             PromptField("Previous conversation (context only)", Array(history.suffix(6)), reference: true),
             PromptField("Wikipedia evidence", evidence, reference: true),
@@ -207,9 +211,10 @@ public enum PromptBuilder {
 
     public static func learning(action: PromptOperation, card: [String: Any], question: String? = nil,
                                 detailed: Bool = false, history: [[String: Any]] = [], mode: String? = nil,
+                                structure: String = "automatic",
                                 evidence: [[String: Any]]) -> String {
         if action == .question {
-            return self.question(card: card, query: question, detailed: detailed, history: history, evidence: evidence)
+            return self.question(card: card, query: question, detailed: detailed, structure: structure, history: history, evidence: evidence)
         }
         if action == .adapt {
             let modeRule = mode == "deeper" ? "adaptDeeper" : "adaptSimpler"

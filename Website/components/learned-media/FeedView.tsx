@@ -4,7 +4,7 @@ import { DownloadSession } from "./CardDownloads";
 import { useCallback, useEffect, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
-import type { CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, SavedCardLocations, TopicNode } from "@/lib/types";
+import type { AnswerStructure, CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, SavedCardLocations, TopicNode } from "@/lib/types";
 import type { TopicSearchIndex } from "@/lib/topic-search-types";
 import type { TopicDetour, TopicDetourProgress } from "@/lib/topic-detours";
 import type { FactAngle } from "@/lib/fact-angle";
@@ -37,16 +37,17 @@ type FeedViewProps = {
   toast?: string;
   learnLoading: string | null;
   questionLoading: string | null;
-  questionDrafts: Record<string, { text?: string; detailed?: boolean }>;
+  questionDrafts: Record<string, { text?: string; detailed?: boolean; structure?: AnswerStructure; structureRevision?: number }>;
   learningErrors: Record<string, string | undefined>;
   adaptationLoading: string | null;
   glossaryLoading: string | null;
   hasGeminiKey: boolean;
   onAction: (id: string, action: FactCardAction) => void;
   onLearnMore: (id: string) => void;
-  onAskQuestion: (id: string, question: string, detailed: boolean) => void;
+  onAskQuestion: (id: string, question: string, detailed: boolean, structure: AnswerStructure, structureRevision: number) => void;
   onQuestionDraft: (id: string, value: string) => void;
   onQuestionDetailed: (id: string, value: boolean) => void;
+  onQuestionStructure: (id: string, value: AnswerStructure) => void;
   onAdaptExplanation: (id: string, mode?: CardExplanationMode) => void;
   onExplainTerms: (id: string) => void;
   onCancelGlossary: (id: string) => void;
@@ -118,7 +119,7 @@ function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, c
   );
 }
 
-export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, factAngle, factAngleLocked, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onEndFactBatch, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, factAngle, factAngleLocked, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onEndFactBatch, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
   const handleViewportRangeChange = useCallback((start: number) => {
     const lastDetourCardId = topicDetour?.slotCardIds[2];
     if (!topicDetour || !lastDetourCardId) return;
@@ -127,8 +128,8 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
   }, [cards, onTopicDetourProgress, topicDetour]);
   const renderCard = useCallback((card: FactCardType) => {
     const slot = topicDetour?.workspaceId === workspaceId ? topicDetour.slotCardIds.indexOf(card.id) : -1;
-    return <FactCard card={card} workspaceId={workspaceId} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} adaptationLoading={adaptationLoading === `${card.id}:simpler` || adaptationLoading === `${card.id}:deeper`} glossaryLoading={glossaryLoading === card.id} adaptationErrors={learningErrors} hasGeminiKey={hasGeminiKey} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} onAdaptExplanation={onAdaptExplanation} onExplainTerms={onExplainTerms} onCancelGlossary={onCancelGlossary} onLocationsResolved={onLocationsResolved} onOpenSettings={onOpenSettings} onThreeMore={onThreeMore} detourSlot={slot >= 0 ? slot : undefined} onDetourProgress={onTopicDetourProgress} />;
-  }, [adaptationLoading, glossaryLoading, hasGeminiKey, learnLoading, learningErrors, onAction, onAdaptExplanation, onAskQuestion, onCancelGlossary, onExplainTerms, onLearnMore, onLocationsResolved, onOpenSettings, onQuestionDetailed, onQuestionDraft, onThreeMore, onTopicDetourProgress, questionDrafts, questionLoading, revealGradually, settings.displayMode, topicDetour, workspaceId]);
+    return <FactCard card={card} workspaceId={workspaceId} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} questionStructure={questionDrafts[card.id]?.structure} questionStructureRevision={questionDrafts[card.id]?.structureRevision} adaptationLoading={adaptationLoading === `${card.id}:simpler` || adaptationLoading === `${card.id}:deeper`} glossaryLoading={glossaryLoading === card.id} adaptationErrors={learningErrors} hasGeminiKey={hasGeminiKey} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} onQuestionStructure={onQuestionStructure} onAdaptExplanation={onAdaptExplanation} onExplainTerms={onExplainTerms} onCancelGlossary={onCancelGlossary} onLocationsResolved={onLocationsResolved} onOpenSettings={onOpenSettings} onThreeMore={onThreeMore} detourSlot={slot >= 0 ? slot : undefined} onDetourProgress={onTopicDetourProgress} />;
+  }, [adaptationLoading, glossaryLoading, hasGeminiKey, learnLoading, learningErrors, onAction, onAdaptExplanation, onAskQuestion, onCancelGlossary, onExplainTerms, onLearnMore, onLocationsResolved, onOpenSettings, onQuestionDetailed, onQuestionDraft, onQuestionStructure, onThreeMore, onTopicDetourProgress, questionDrafts, questionLoading, revealGradually, settings.displayMode, topicDetour, workspaceId]);
   return (
     <div className="feed-workspace">
       {rabbitHole && <div className="rabbit-banner"><div><Icon name="arrow" size={16} /><span>Rabbit Hole Mode <strong>→ {rabbitHole}</strong></span></div><button type="button" onClick={onReset}>Exit rabbit hole</button></div>}

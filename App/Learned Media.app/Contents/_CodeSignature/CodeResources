@@ -12,9 +12,13 @@
 		<data>
 		7qisCDRjNC2IxHU4V+I/RC89BJI=
 		</data>
+		<key>Resources/frontend/answer-structure.js</key>
+		<data>
+		N7FIcCk5L1XCr9seX/feA/b4vYg=
+		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		diytNnqnXgF5uHeJcd1c20QUizU=
+		iy6e+YSquZSLcj41/+4szUvv9GI=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -98,7 +102,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		EaMxY1h2ovdRVgpjqO5NvlPAblg=
+		8Pwu1IBMdxrn7kaZ5Y3dw1ikLtU=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -126,7 +130,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		wSPtApi6+6rVX/bzpdBTqqeQhHw=
+		JPzgfnNKtx/vYLsJPkKA/93KP+g=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -138,7 +142,7 @@
 		</data>
 		<key>Resources/frontend/snapshot-validation.js</key>
 		<data>
-		voSQjt75lVUhyVmKyoIALnHwX1U=
+		aeedIu6ts8IKzQFjQ2DLifvkivQ=
 		</data>
 		<key>Resources/frontend/source-spotlight.js</key>
 		<data>
@@ -146,7 +150,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		FCO15g+btsOwsUyB+X8B/4QsTAI=
+		+pkU4O0p81jXdNsoHQ6xBJLx5Go=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -221,11 +225,18 @@
 			TQxeILpLw4QXFAVzi4PD0c2gqYpLDKsWdo0HGYYALdo=
 			</data>
 		</dict>
+		<key>Resources/frontend/answer-structure.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			nbw8m7UM5P0HyVts8pdwzaMM0f5maZQ8ud+cr7NpVCM=
+			</data>
+		</dict>
 		<key>Resources/frontend/app.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			cCN0EyfytfC/efXYAO0yO3qXVLfNs6DVQhJsyxmZMn8=
+			5UI5LRIIjzmQilzw4Wd7t5HrrYl4/NewF5MbG/eI5yw=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -372,7 +383,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ohsdTe9iNhX97x84juTyP2fLcLvQp+FOrdLqVKpQYcc=
+			3BETWQfHDZQdr3GScSzqEXV1Uq8kdcVO7/fuflfrzj4=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -421,7 +432,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			gdCnu1S6kXIGXyEC1clPTurW0Jmpqx3a+zxdfcxvXts=
+			UTzM3fGkWluZqd5aFJAcSQU1NxdjekWD6psPR6hNbXg=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -442,7 +453,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			BH1P/rZyrDXVZpdrwW9UPWn18Y4eugun4DhhomKwCEY=
+			iFtY63LP20Lb8Qjqe+0nEcHxIzuKVgWx5ek1HP7JTxU=
 			</data>
 		</dict>
 		<key>Resources/frontend/source-spotlight.js</key>
@@ -456,7 +467,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			MmKrpsX9+1e1yuCczK1kWOc7PRhoKAbRf3TRRTN+k7c=
+			TfwEncAZiDoDMaXKztOseoUuAMUiaxyJoV0lIAOq7ZU=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>

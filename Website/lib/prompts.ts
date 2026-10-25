@@ -1,6 +1,8 @@
 import { annotateEvidenceDates } from "./evidence-dates";
 import instructions from "./prompt-instructions.json";
 import { factWritingRules, difficultyRubric } from "./fact-quality";
+import { ANSWER_STRUCTURE_POLICY_VERSION } from "./answer-structure";
+import type { AnswerStructure } from "./types";
 
 export type PromptOperation = "connection" | "candidate" | "combined" | "grounding" | "learn" | "adapt" | "glossary" | "question" | "videoInterpret" | "topicInterpret" | "videoVerify";
 export type PromptField = { label: string; value: unknown; multiline?: boolean; reference?: boolean };
@@ -136,10 +138,11 @@ function supportingCard(card: unknown) {
 }
 
 /** Question answers have independent coverage and length guidance, never card settings. */
-export function buildQuestionPrompt({ card, question, detailed, history, evidence }: {
+export function buildQuestionPrompt({ card, question, detailed, structure = "automatic", history, evidence }: {
   card: unknown;
   question?: string;
   detailed?: boolean;
+  structure?: AnswerStructure;
   history?: unknown[];
   evidence: unknown[];
 }) {
@@ -148,8 +151,12 @@ export function buildQuestionPrompt({ card, question, detailed, history, evidenc
   return buildPrompt("question", [...instructions.answerWriting, ...instructions.questionEvidence, ...questionTypeRules(question),
     ...(checklist.length ? instructions.questionCoverage : []),
     ...(scope.length ? instructions.questionScope : []),
-    ...instructions[detailed ? "answerDetailed" : "answerShort"]], [
+    ...instructions.questionStructure,
+    ...(structure === "short-explanation" ? instructions.questionStructureShort : []),
+    ...(structure === "short-explanation" ? [] : instructions[detailed ? "answerDetailed" : "answerShort"])], [
     { label: "Original user query", value: question },
+    { label: "Requested answer structure", value: structure },
+    { label: "Answer structure policy", value: ANSWER_STRUCTURE_POLICY_VERSION },
     { label: "Supporting card context", value: supportingCard(card), reference: true },
     { label: "Previous conversation (context only)", value: history?.slice(-6), reference: true },
     { label: "Wikipedia evidence", value: evidence, reference: true },
@@ -164,6 +171,7 @@ export function buildLearningPrompt(options: {
   card: unknown;
   question?: string;
   detailed?: boolean;
+  structure?: AnswerStructure;
   history?: unknown[];
   evidence: unknown[];
 }) {

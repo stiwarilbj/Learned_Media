@@ -263,7 +263,9 @@ function installNetworkMock(options = {}) {
         }).filter(Boolean).reverse() };
       } else if (prompt.includes("Return at most three specialized or potentially unfamiliar terms")) {
         output = { entries: options.glossaryEntries ?? [] };
-      } else if (prompt.startsWith("Rewrite the original fact") || prompt.startsWith("Explain this one card") || prompt.startsWith("Answer the user's exact question")) {
+      } else if (prompt.startsWith("Answer the user's exact question")) {
+        output = { directAnswer: options.emptyAnswer ? "" : options.learningAnswer ?? "The instrument used a diaphragm to detect pressure changes.", resolvedStructure: "short-explanation", paragraphs: [], citationIndexes: [0] };
+      } else if (prompt.startsWith("Rewrite the original fact") || prompt.startsWith("Explain this one card")) {
         output = { answer: options.emptyAnswer ? "" : options.learningAnswer ?? "The instrument used a diaphragm to detect pressure changes.", citationIndexes: [0] };
       } else {
         throw new Error(`Unexpected Gemini prompt: ${prompt.slice(0, 90)}`);
@@ -553,7 +555,7 @@ await t.test("reference fields isolate prompt-like source content without changi
     const parsed = JSON.parse(block.slice("Wikipedia evidence: ".length));
     assert.equal(parsed.kind, "reference_material");
     assert.deepEqual(parsed.data, evidence);
-    assert.equal(blocks.length, action === "question" ? 5 : 3, "source newlines cannot create extra prompt blocks");
+    assert.equal(blocks.length, action === "question" ? 7 : 3, "source newlines cannot create extra prompt blocks");
     if (action === "question") assert.equal(blocks[1], "Original user query: " + query);
   }
   for (const operation of ["grounding", "videoVerify"]) {
@@ -714,6 +716,42 @@ await t.test("learning prompts contain only the active length and operation with
   assert.equal(geminiCallCount(state), 3);
 });
 
+await t.test("question structures use one request, retain balanced content, and salvage unsuitable formats", async () => {
+  const state = installNetworkMock({ transformOutput(output, prompt) {
+    if (!prompt.startsWith("Answer the user's exact question")) return output;
+    const requested = prompt.match(/Requested answer structure: ([^\n]+)/)?.[1] ?? "automatic";
+    const directAnswer = "The instrument measures pressure through a moving diaphragm.";
+    if (requested === "automatic" || requested === "ordered-steps") return { directAnswer, resolvedStructure: "ordered-steps", steps: ["Pressure pushes the diaphragm.", "Its movement changes the recorded reading."], citationIndexes: [0] };
+    if (requested === "short-explanation") return { directAnswer, resolvedStructure: "short-explanation", paragraphs: ["The displacement is translated into a pressure reading."], citationIndexes: [0] };
+    return { directAnswer, resolvedStructure: "side-by-side-comparison", comparisonSubjects: ["A", "B"], comparisonRows: [{ property: "Measurement", values: ["Pressure", "Temperature"] }], citationIndexes: [0] };
+  } });
+  const sessionId = await connectMock(state), fact = factBundle("amber");
+  const card = { id: "answer-structure", hook: fact.hook, title: fact.title, body: fact.sentences.join(" "), topicPath: ["Science"], sources: [{ title: "Shared Article", url: "https://en.wikipedia.org/wiki/Shared_Article", extract: articleExtract() }] };
+  const choices = ["automatic", "short-explanation", "ordered-steps", "side-by-side-comparison"];
+  for (let index = 0; index < choices.length; index++) {
+    const structure = choices[index];
+    const result = await generateLearningResponse({ apiKey: "test-key", sessionId, action: "question", card, question: `How should choice ${index} explain this?`, detailed: true, structure });
+    assert.equal(result.structure, structure === "automatic" ? "ordered-steps" : structure);
+    assert.ok(result.answer.startsWith("The instrument measures pressure"));
+    assert.ok(result.citations.length);
+    if (structure === "side-by-side-comparison") assert.deepEqual(result.presentation.comparisonSubjects, ["A", "B"]);
+  }
+  assert.equal(geminiCallCount(state), 4, "each distinct question/structure is one existing Gemini operation");
+  await generateLearningResponse({ apiKey: "test-key", sessionId, action: "question", card, question: "How should choice 3 explain this?", detailed: true, structure: "side-by-side-comparison" });
+  assert.equal(geminiCallCount(state), 4, "the same successful answer and structure use the existing response cache");
+
+  const malformed = installNetworkMock({ transformOutput(output, prompt) {
+    return prompt.startsWith("Answer the user's exact question") ? { directAnswer: "The evidence supports one difference.", resolvedStructure: "side-by-side-comparison", comparisonSubjects: ["A", "B"], comparisonRows: [{ property: "Result", values: ["Only one value"] }], citationIndexes: [0] } : output;
+  } });
+  const malformedSession = await connectMock(malformed);
+  const fallback = await generateLearningResponse({ apiKey: "test-key", sessionId: malformedSession, action: "question", card, question: "Compare A and B", structure: "side-by-side-comparison" });
+  assert.equal(fallback.structure, "short-explanation");
+  assert.match(fallback.answer, /cannot support a balanced comparison/i);
+  assert.equal(geminiCallCount(malformed), 1, "malformed presentation falls back locally without a second call");
+  await assert.rejects(generateLearningResponse({ apiKey: "test-key", sessionId: malformedSession, action: "question", card, question: "Invalid option", structure: "invented" }), /supported answer structure/i);
+  assert.equal(geminiCallCount(malformed), 1, "invalid client values are rejected before another model call");
+});
+
 await t.test("glossaries use one cached learning request, salvage valid cited terms, and reuse empty results", async () => {
   const state = installNetworkMock({ glossaryEntries: [
     { term: "meteorograph", definition: "A meteorograph is an instrument that records weather measurements over time.", citationIndexes: [0] },
@@ -794,10 +832,11 @@ await t.test("the original question takes priority over unrelated card details a
   const evidence = [{ index: 0, kind: "supplemental", title: "Convection", extract: "A  complete passage.\nAnother sentence." }];
   const prompt = buildLearningPrompt({ action: "question", card, question, history, evidence });
   const blocks = prompt.split("\n\n");
-  assert.equal(blocks[1], "Original user query: " + question, "preserve the exact current query separately and put it before context");
-  assert.deepEqual(JSON.parse(blocks[2].slice("Supporting card context: ".length)).data, card);
-  assert.deepEqual(JSON.parse(blocks[3].slice("Previous conversation (context only): ".length)).data, history.slice(-6));
-  assert.deepEqual(JSON.parse(blocks[4].slice("Wikipedia evidence: ".length)).data, evidence);
+  const field = label => blocks.find(value => value.startsWith(label + ": "))?.slice(label.length + 2);
+  assert.equal(field("Original user query"), question, "preserve the exact current query separately and put it before context");
+  assert.deepEqual(JSON.parse(field("Supporting card context")).data, card);
+  assert.deepEqual(JSON.parse(field("Previous conversation (context only)")).data, history.slice(-6));
+  assert.deepEqual(JSON.parse(field("Wikipedia evidence")).data, evidence);
   assert.ok(blocks[0].includes("address every requested part and omit card details that do not help answer it"));
   assert.ok(blocks[0].includes("Previous conversation may clarify references but must not replace the current query"));
   assert.ok(blocks[0].includes("Supplemental sources may directly support the answer to the query"));

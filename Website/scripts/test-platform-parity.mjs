@@ -49,8 +49,10 @@ test('card search includes the same original text on both platforms',()=>{
  assert.equal(mac.cards.cardSearchText(card),require('../lib/card-search-text.ts').cardSearchText(card));
 });
 test('bridge status and detail preferences are independent and scoped',()=>{
- assert.match(native,/card\.questionDetailed = !card\.questionDetailed/);
- assert.match(native,/answerDetailed=detailed/);
+ assert.match(native,/card\.questionDetailed=!card\.questionDetailed/);
+ assert.match(native,/Answer options/);
+ for(const structure of ['automatic','short-explanation','ordered-steps','side-by-side-comparison'])assert.ok(native.includes(structure),`native menu includes ${structure}`);
+ assert.match(native,/answerDetailed=structure==="short-explanation"\?false:detailed/);
  assert.match(native,/card\.learnMoreSources=result\.citations/);
  const swift=readFileSync(new URL('../../App/Sources/LearnedMediaApp/main.swift',import.meta.url),'utf8');
  assert.match(swift,/activityKeys = \["prioritizeRecentByChannel"/);
@@ -86,7 +88,8 @@ test('native compact navigation retains icon wrappers and the Explore icon',()=>
 for(const order of [['learn','question'],['question','learn']])test('native learning keeps drafts, detail labels and citations independent: '+order.join(' then '),async()=>{
  const card={id:'card',body:'Original fact',questionDetailed:true,questionHistory:[]},requests=new Map(),cache=new Map();
  const state={workspaceId:'workspace',keyEditEpoch:0,key:'fixture',cards:[card],errorByCard:{}};
- const context={state,generationToken:0,Map,Boolean,cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:(_key,x)=>JSON.stringify(x),learningResponseCache:cache,render(){},mergeGeminiModelOutcomes(){},saveState(){},bridge(action,payload){assert.equal(action,'learn');return new Promise(resolve=>requests.set(payload.action,resolve));}};
+ const runtime={};runInNewContext(readFileSync(new URL('../../App/Resources/frontend/answer-structure.js',import.meta.url),'utf8'),runtime);
+ const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures:new Map(),questionStructureRevisions:new Map(),questionDraftKey:c=>state.workspaceId+'\0'+c.id,answerOptionsOpenKey:'',cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:(_key,x)=>JSON.stringify(x),learningResponseCache:cache,render(){},mergeGeminiModelOutcomes(){},saveState(){},bridge(action,payload){assert.equal(action,'learn');return new Promise(resolve=>requests.set(payload.action,resolve));}};
  runInNewContext(native.slice(native.indexOf('  const learningTasks=new Map();'),native.indexOf('  function toggleCard('))+';api={runCardLearning};',context);
  const jobs={learn:context.api.runCardLearning(card,'learn'),question:context.api.runCardLearning(card,'question','Why?')};
  card.questionDetailed=false;
@@ -96,9 +99,26 @@ for(const order of [['learn','question'],['question','learn']])test('native lear
 });
 test('native stale learning completion cannot clear a newer operation',async()=>{
  const card={id:'card',body:'Original',questionDetailed:false},state={workspaceId:'old',keyEditEpoch:0,key:'fixture',cards:[card],errorByCard:{}};let resolve;
- const context={state,generationToken:0,Map,Boolean,cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:()=> 'cache',learningResponseCache:new Map(),render(){},mergeGeminiModelOutcomes(){throw Error('stale outcome');},saveState(){throw Error('stale save');},bridge:()=>new Promise(done=>resolve=done)};
+ const runtime={};runInNewContext(readFileSync(new URL('../../App/Resources/frontend/answer-structure.js',import.meta.url),'utf8'),runtime);
+ const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures:new Map(),questionStructureRevisions:new Map(),questionDraftKey:c=>state.workspaceId+'\0'+c.id,cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:()=> 'cache',learningResponseCache:new Map(),render(){},mergeGeminiModelOutcomes(){throw Error('stale outcome');},saveState(){throw Error('stale save');},bridge:()=>new Promise(done=>resolve=done)};
  runInNewContext(native.slice(native.indexOf('  const learningTasks=new Map();'),native.indexOf('  function toggleCard('))+';api={runCardLearning};',context);
  const task=context.api.runCardLearning(card,'question','Why?');state.workspaceId='new';state.questionLoading='new-card';
  resolve({answer:'Obsolete',citations:[]});await task;
  assert.equal(card.answer,undefined);assert.equal(state.questionLoading,'new-card');
+});
+test('native question captures its structure and preserves a newer draft choice',async()=>{
+ const card={id:'structured-card',body:'Original',questionDetailed:true,questionHistory:[]};
+ const state={workspaceId:'workspace',keyEditEpoch:0,key:'fixture',cards:[card],errorByCard:{}};
+ const runtime={};runInNewContext(readFileSync(new URL('../../App/Resources/frontend/answer-structure.js',import.meta.url),'utf8'),runtime);
+ const key=state.workspaceId+'\0'+card.id,questionStructures=new Map([[key,'ordered-steps']]),questionStructureRevisions=new Map([[key,2]]);
+ let request;
+ const context={state,generationToken:0,Map,Boolean,window:{LEARNED_MEDIA_ANSWER_STRUCTURE:runtime.LEARNED_MEDIA_ANSWER_STRUCTURE},questionStructures,questionStructureRevisions,questionDraftKey:c=>state.workspaceId+'\0'+c.id,cardExplanations:{cardExplanationFingerprint:c=>c.body},scopedCacheKey:(_key,x)=>JSON.stringify(x),learningResponseCache:new Map(),render(){},mergeGeminiModelOutcomes(){},saveState(){},bridge(action,payload){assert.equal(action,'learn');request=payload;return new Promise(resolve=>{context.resolve=resolve;});}};
+ runInNewContext(native.slice(native.indexOf('  const learningTasks=new Map();'),native.indexOf('  function toggleCard('))+';api={runCardLearning};',context);
+ const task=context.api.runCardLearning(card,'question','How does it work?','ordered-steps',2);
+ assert.equal(request.structure,'ordered-steps');assert.equal(request.detailed,true);
+ questionStructures.set(key,'side-by-side-comparison');questionStructureRevisions.set(key,3);
+ context.resolve({directAnswer:'Pressure moves the diaphragm.',resolvedStructure:'ordered-steps',steps:['Pressure rises.','The diaphragm moves.'],citationIndexes:[0],citations:[{title:'Mechanism',url:'https://en.wikipedia.org/wiki/Mechanism'}],modelOutcomes:[]});
+ await task;
+ assert.equal(card.answerStructure,'ordered-steps');assert.match(card.answer,/1\. Pressure rises\./);assert.equal(card.answerDetailed,true);
+ assert.equal(questionStructures.get(key),'side-by-side-comparison');assert.equal(questionStructureRevisions.get(key),3);
 });

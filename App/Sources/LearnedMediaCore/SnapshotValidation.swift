@@ -60,6 +60,29 @@ public enum SnapshotValidation {
         guard let value = object(raw) else { return false }
         return text(value["title"]) && text(value["url"]) && ["canonicalUrl", "extract"].allSatisfy { optional(value[$0], { $0 is String }) }
     }
+    private static let resolvedAnswerStructures: Set<String> = ["short-explanation", "ordered-steps", "side-by-side-comparison"]
+    private static func answerPresentation(_ raw: Any?) -> Bool {
+        guard let value = object(raw), text(value["directAnswer"]), let structure = value["structure"] as? String,
+              resolvedAnswerStructures.contains(structure), optional(value["fallbackReason"], { (($0 as? String)?.count ?? 0) <= 300 }) else { return false }
+        if structure == "ordered-steps" {
+            guard let steps = value["steps"] as? [String], (2...10).contains(steps.count) else { return false }
+            return steps.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+        if structure == "side-by-side-comparison" {
+            guard let subjects = value["comparisonSubjects"] as? [String], subjects.count == 2,
+                  subjects.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+                  subjects[0].localizedCaseInsensitiveCompare(subjects[1]) != .orderedSame,
+                  let rows = value["comparisonRows"] as? [[String: Any]], (1...10).contains(rows.count) else { return false }
+            return rows.allSatisfy { row in
+                guard text(row["property"]), let values = row["values"] as? [String], values.count == 2 else { return false }
+                return values.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+        }
+        return optional(value["paragraphs"], { raw in
+            guard let paragraphs = raw as? [String], paragraphs.count <= 8 else { return false }
+            return paragraphs.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        })
+    }
     private static func cards(_ value: Any?) -> Bool {
         guard let values = value as? [Any] else { return false }
         var ids = Set<String>()
@@ -71,6 +94,8 @@ public enum SnapshotValidation {
                   ["liked", "saved", "known", "moreLike", "lessLike", "surprise", "questionDetailed", "answerDetailed"].allSatisfy({ optional(card[$0], boolean) }),
                   ["sentenceCount", "difficulty", "obscurity"].allSatisfy({ optional(card[$0], number) }), optional(card["createdAt"], { $0 is String }),
                   optional(card["answerSources"], { ($0 as? [Any])?.allSatisfy(source) == true }),
+                  optional(card["answerStructure"], { resolvedAnswerStructures.contains($0 as? String ?? "") }),
+                  optional(card["answerPresentation"], answerPresentation),
                   optional(card["learnMoreSources"], { ($0 as? [Any])?.allSatisfy(source) == true }),
                   optional(card["chronology"], { raw in
                       guard let chronology = object(raw), let fingerprint = chronology["fingerprint"] as? String,

@@ -16,6 +16,20 @@ const number = (value) => typeof value === "number" && Number.isFinite(value);
 const optional = (value, check) => value == null || check(value);
 const sourceValid = (value) => object(value) && text(value.title) && text(value.url)
     && optional(value.canonicalUrl, v => typeof v === "string") && optional(value.extract, v => typeof v === "string");
+const resolvedAnswerStructures = ["short-explanation", "ordered-steps", "side-by-side-comparison"];
+function answerPresentationValid(value) {
+    if (!object(value) || !text(value.directAnswer) || !resolvedAnswerStructures.includes(value.structure)
+        || !optional(value.fallbackReason, item => typeof item === "string" && item.length <= 300))
+        return false;
+    if (value.structure === "ordered-steps")
+        return Array.isArray(value.steps) && value.steps.length >= 2 && value.steps.length <= 10 && value.steps.every(text);
+    if (value.structure === "side-by-side-comparison")
+        return Array.isArray(value.comparisonSubjects) && value.comparisonSubjects.length === 2
+            && value.comparisonSubjects.every(text) && value.comparisonSubjects[0].toLocaleLowerCase() !== value.comparisonSubjects[1].toLocaleLowerCase()
+            && Array.isArray(value.comparisonRows) && value.comparisonRows.length > 0 && value.comparisonRows.length <= 10
+            && value.comparisonRows.every(row => object(row) && text(row.property) && Array.isArray(row.values) && row.values.length === 2 && row.values.every(text));
+    return optional(value.paragraphs, item => Array.isArray(item) && item.length <= 8 && item.every(text));
+}
 function topicsValid(value) {
     if (object(value)) {
         return value.format === "learned-media-topic-preferences-v1" && strings(value.selected) && strings(value.expanded)
@@ -54,6 +68,8 @@ function cardsValid(value) {
             // Older cards use display labels such as "Just now" here.
             || !optional(card.createdAt, v => typeof v === "string")
             || !optional(card.answerSources, v => Array.isArray(v) && v.every(sourceValid))
+            || !optional(card.answerStructure, value => resolvedAnswerStructures.includes(value))
+            || !optional(card.answerPresentation, answerPresentationValid)
             || !optional(card.learnMoreSources, v => Array.isArray(v) && v.every(sourceValid))
             || !optional(card.chronology, v => object(v) && /^[a-f0-9]{16}$/.test(v.fingerprint) && Array.isArray(v.events) && v.events.length <= 12
                 && v.events.every(item => object(item) && text(item.dateText) && text(item.eventText) && object(item.anchor)

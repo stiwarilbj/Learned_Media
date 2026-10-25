@@ -32,7 +32,8 @@ test("validated workspace snapshots retain optional card metadata across JSON ro
     chronology: { events: [{ dateText: "1900", eventText: "The event happened", anchor: { field: "body", sentenceIndex: 0 } }], fingerprint: "0123456789abcdef" },
     locations: { locations: [{ name: "London", articleTitle: "London", anchor: { field: "body", sentenceIndex: 1 }, latitude: 51.5072, longitude: -0.1276 }], fingerprint: "0123456789abcdef" },
     learnMore: "An additional explanation.", learnMoreSources: [source], question: "Why did it happen?", questionDetailed: true,
-    answer: "Because of this cause.", answerDetailed: true, answerSources: [source],
+    answer: "Because of this cause.", answerDetailed: true, answerStructure: "side-by-side-comparison",
+    answerPresentation: { structure: "side-by-side-comparison", directAnswer: "A and B differ.", comparisonSubjects: ["A", "B"], comparisonRows: [{ property: "Result", values: ["Supported result", "Not established by the supplied sources"] }] }, answerSources: [source],
     questionHistory: [{ role: "user", content: "Why?" }, { role: "assistant", content: "Because." }],
     provenance: { provider: "gemini", model: "gemini-3.5-flash-lite", generatedAt: "2026-10-24T12:00:00.000Z" }
   };
@@ -43,6 +44,8 @@ test("validated workspace snapshots retain optional card metadata across JSON ro
   assert.deepEqual(restored.cards[0].chronology, card.chronology);
   assert.deepEqual(restored.cards[0].learnMoreSources, [source]);
   assert.equal(restored.cards[0].questionDetailed, true);
+  assert.equal(restored.cards[0].answerStructure, card.answerStructure);
+  assert.deepEqual(restored.cards[0].answerPresentation, card.answerPresentation);
   assert.deepEqual(restored.cards[0].locations, card.locations);
   assert.deepEqual(restored.cards[0].followUpQuestions, card.followUpQuestions);
 });

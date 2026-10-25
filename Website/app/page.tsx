@@ -12,6 +12,8 @@ import { AccountCredentials } from "@/lib/account-credentials";
 import { LatestSnapshotQueue } from "@/lib/latest-snapshot-queue";
 import { rememberFact, mergeFactMemory, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
 import { FactNoveltyIndex, factNoveltySignatures } from "@/lib/fact-novelty";
+import { ANSWER_STRUCTURE_POLICY_VERSION, normalizeAnswerStructure, normalizeResolvedAnswerStructure, normalizeSavedAnswerPresentation, shouldResetSubmittedAnswerStructure } from "@/lib/answer-structure";
+import type { AnswerStructure, AnswerPresentation, ResolvedAnswerStructure } from "@/lib/types";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
@@ -363,6 +365,7 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
   });
   const normalizedReferences = normalizeSpotlightSources(linkedSources, raw.evidence ?? [], 3);
   const sources = normalizedReferences.sources;
+  const answerPresentation = normalizeSavedAnswerPresentation(raw.answerPresentation);
   const rawDifficulty = legacyDifficulty ? migrateLegacyDifficulty(raw.difficulty ?? raw.obscurity) : raw.difficulty ?? raw.obscurity;
   const difficulty = normalizeDifficulty(rawDifficulty, DEFAULT_DIFFICULTY);
   const normalized: FactCard = {
@@ -397,6 +400,8 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     questionDetailed: raw.questionDetailed,
     answer: raw.answer,
     answerDetailed: raw.answerDetailed,
+    answerStructure: answerPresentation?.structure ?? normalizeResolvedAnswerStructure(raw.answerStructure),
+    answerPresentation,
     answerSources: raw.answerSources ? uniqueSources(raw.answerSources) : undefined,
     questionHistory: raw.questionHistory,
     provenance: raw.provenance
@@ -433,7 +438,7 @@ function normalizeSavedState(parsed: Partial<PersistedState> | null, collapseIni
   return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
 }
 
-function learningResponseCacheKey(sessionId: string, apiKey: string, action: "learn" | "question", card: FactCard, question = "", detailed = false, history: LearningMessage[] = []) {
+function learningResponseCacheKey(sessionId: string, apiKey: string, action: "learn" | "question", card: FactCard, question = "", detailed = false, history: LearningMessage[] = [], structure: AnswerStructure = "automatic") {
   const identity = {
     id: card.id,
     title: card.title,
@@ -443,7 +448,7 @@ function learningResponseCacheKey(sessionId: string, apiKey: string, action: "le
     claim: card.claim,
     sources: card.sources.map((source) => ({ title: source.title, url: source.canonicalUrl ?? source.url, extract: source.extract }))
   };
-  return requestCacheKey(requestCacheScope(sessionId, apiKey), "learning-response", action, identity, question.trim(), detailed, history.slice(-6));
+  return requestCacheKey(requestCacheScope(sessionId, apiKey), "learning-response", action, ANSWER_STRUCTURE_POLICY_VERSION, identity, question.trim(), detailed, structure, history.slice(-6));
 }
 
 export default function HomePage() {
@@ -485,7 +490,7 @@ export default function HomePage() {
   const [cards, setCards] = useState<FactCard[]>([]);
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
-  const [questionDrafts, setQuestionDrafts] = useState<Record<string, { text?: string; detailed?: boolean }>>({});
+  const [questionDrafts, setQuestionDrafts] = useState<Record<string, { text?: string; detailed?: boolean; structure?: AnswerStructure; structureRevision?: number }>>({});
   const [learningProfile, setLearningProfileState] = useState<LearningProfile>({});
   const learningProfileRef = useRef(learningProfile);
   // Keep consecutive event handlers current even before React commits a render.
@@ -657,7 +662,7 @@ export default function HomePage() {
   const globalSearchAbortController = useRef<AbortController | null>(null);
   const naturalSearchCache = useRef(new SessionCache<TopicQueryPlan>(100, SEARCH_CACHE_TTL_MS));
   const youtubeSearchCache = useRef(new SessionCache<{ results: YouTubeVideo[]; reasons: Record<string, RankedVideoSearchResult>; plan: VideoSearchPlan; expanded: boolean }>(100, SEARCH_CACHE_TTL_MS));
-  const learningResponseCache = useRef(new SessionCache<{ answer: string; citations: WikipediaSource[] }>(100, SEARCH_CACHE_TTL_MS));
+  const learningResponseCache = useRef(new SessionCache<{ answer: string; citations: WikipediaSource[]; presentation?: AnswerPresentation; structure?: ResolvedAnswerStructure }>(100, SEARCH_CACHE_TTL_MS));
   const youtubeCatalogLoadedRef = useRef(false);
   const youtubeActivityLoadedWorkspaceRef = useRef<string | null>(null);
   const youtubeActivityEditEpoch = useRef(0);
@@ -1276,6 +1281,7 @@ export default function HomePage() {
       const owner = user?.id ?? null;
       if (credentialOwner.current !== owner) {
         credentialOwner.current = owner;
+        setQuestionDrafts({});
         setAuthRestored(false);
         void credentialManager.current?.switchAccount(owner).then(() => { if (active && credentialOwner.current === owner) setAuthRestored(true); });
       } else {
@@ -2351,15 +2357,25 @@ export default function HomePage() {
     }
   }, [apiKey, cards, learnLoading, recordGeminiFailure, recordGeminiOutcomes]);
 
-  const askQuestion = useCallback(async (id: string, question: string, detailed: boolean) => {
+  const askQuestion = useCallback(async (id: string, question: string, detailed: boolean, selectedStructure: AnswerStructure = "automatic", submittedStructureRevision = 0) => {
     const card = cards.find((item) => item.id === id);
     if (!card || questionLoading) return;
+    const structure = normalizeAnswerStructure(selectedStructure);
+    const answerDetailed = structure === "short-explanation" ? false : detailed;
     const history: LearningMessage[] = card.questionHistory ?? [];
-    const cacheKey = learningResponseCacheKey(sessionIdRef.current, apiKey.trim(), "question", card, question, detailed, history);
+    const cacheKey = learningResponseCacheKey(sessionIdRef.current, apiKey.trim(), "question", card, question, detailed, history, structure);
+    const applyAnswer = (answer: string, citations: WikipediaSource[], presentation?: AnswerPresentation, resolvedStructure?: ResolvedAnswerStructure) => {
+      const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: answer }];
+      setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer, answerDetailed, answerPresentation: presentation, answerStructure: resolvedStructure, answerSources: citations, questionHistory: nextHistory } : item));
+      setQuestionDrafts((current) => {
+        const draft = current[id];
+        if (!shouldResetSubmittedAnswerStructure(draft?.structure, structure, draft?.structureRevision ?? 0, submittedStructureRevision)) return current;
+        return { ...current, [id]: { ...draft, structure: "automatic" } };
+      });
+    };
     const cached = learningResponseCache.current.get(cacheKey);
     if (cached) {
-      const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: cached.answer }];
-      setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: cached.answer, answerDetailed: detailed, answerSources: cached.citations, questionHistory: nextHistory } : item));
+      applyAnswer(cached.answer, cached.citations, cached.presentation, cached.structure);
       return;
     }
     const requestId = requestGeneration.current;
@@ -2370,30 +2386,30 @@ export default function HomePage() {
     setLearningErrors((current) => ({ ...current, [id]: undefined }));
     try {
       if (isGitHubPagesRuntime()) {
-        const payload = await generateLearningResponse({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, action: "question", card, question, detailed, history, signal: controller.signal });
+        const payload = await generateLearningResponse({ apiKey: apiKey.trim(), sessionId: sessionIdRef.current, action: "question", card, question, detailed, structure, history, signal: controller.signal });
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
         recordGeminiOutcomes(payload.modelOutcomes);
-        learningResponseCache.current.set(cacheKey, { answer: payload.answer, citations: payload.citations });
-        const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: payload.answer }];
-        setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: payload.answer, answerDetailed: detailed, answerSources: payload.citations, questionHistory: nextHistory } : item));
+        learningResponseCache.current.set(cacheKey, { answer: payload.answer, citations: payload.citations, presentation: payload.presentation, structure: payload.structure });
+        applyAnswer(payload.answer, payload.citations, payload.presentation, payload.structure);
         return;
       }
       const response = await fetch("/api/learn", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
-        body: JSON.stringify({ action: "question", card, question, detailed, history }),
+        body: JSON.stringify({ action: "question", card, question, detailed, structure, history }),
         signal: controller.signal
       });
-      const payload = await response.json() as { answer?: string; citations?: FactCard["sources"]; modelOutcomes?: GeminiModelOutcome[]; modelStatus?: GeminiStatus; error?: string };
+      const payload = await response.json() as { answer?: string; citations?: FactCard["sources"]; presentation?: AnswerPresentation; structure?: ResolvedAnswerStructure; modelOutcomes?: GeminiModelOutcome[]; modelStatus?: GeminiStatus; error?: string };
       if (!response.ok) {
         recordGeminiOutcomes(payload.modelOutcomes ?? [], payload.modelStatus);
         throw new Error(payload.error ?? "Gemini could not answer this question.");
       }
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       recordGeminiOutcomes(payload.modelOutcomes ?? []);
-      learningResponseCache.current.set(cacheKey, { answer: payload.answer ?? "", citations: payload.citations ?? [] });
-      const nextHistory: LearningMessage[] = [...history, { role: "user", content: question }, { role: "assistant", content: payload.answer ?? "" }];
-      setCards((current) => current.map((item) => item.id === id ? { ...item, question, answer: payload.answer, answerDetailed: detailed, answerSources: payload.citations, questionHistory: nextHistory } : item));
+      const answer = payload.answer ?? "";
+      const citations = payload.citations ?? [];
+      learningResponseCache.current.set(cacheKey, { answer, citations, presentation: payload.presentation, structure: payload.structure });
+      applyAnswer(answer, citations, payload.presentation, payload.structure);
     } catch (error) {
       recordGeminiFailure(error);
       if (!controller.signal.aborted && requestGeneration.current === requestId) setLearningErrors((current) => ({ ...current, [id]: error instanceof Error ? error.message : "Gemini could not answer this question." }));
@@ -2536,6 +2552,14 @@ export default function HomePage() {
   const updateQuestionDetailPreference = useCallback((id: string, detailed: boolean) => {
     setQuestionDrafts((current) => current[id]?.detailed === detailed ? current : { ...current, [id]: { ...current[id], detailed } });
     setCards((current) => current.map((card) => card.id === id && card.questionDetailed !== detailed ? { ...card, questionDetailed: detailed } : card));
+  }, []);
+
+  const updateQuestionStructure = useCallback((id: string, structure: AnswerStructure) => {
+    setQuestionDrafts((current) => {
+      const previous = current[id] ?? {};
+      if (normalizeAnswerStructure(previous.structure) === structure) return current;
+      return { ...current, [id]: { ...previous, structure, structureRevision: (previous.structureRevision ?? 0) + 1 } };
+    });
   }, []);
 
   const handleCardAction = useCallback((id: string, action: FactCardAction) => {
@@ -3250,10 +3274,10 @@ export default function HomePage() {
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={chooseExploreTopic} />;
       if (view === "videos") return <VideoWorkspace workspaceId={workspaceId} playbackFlushRef={youtubePlaybackFlushRef} workspace={youtubeWorkspace} videoById={youtubeIndexes.videoById} channelById={youtubeIndexes.channelById} videosByChannel={youtubeIndexes.videosByChannel} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} searchHasMore={youtubeSearchHasMore} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(youtubeTopicPool(topic), 24, [], current.prioritizeRecentByChannel).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={recordYouTubePlaybackPosition} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
-    if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onThreeMore={startTopicDetour} />;
+    if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onThreeMore={startTopicDetour} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} revealGradually={revealGradually} onRevealGraduallyChange={setRevealGraduallyPreference} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus === "synced" && keySyncStatus === "syncing" ? "syncing" : syncStatus === "synced" && keySyncStatus === "error" ? "error" : syncStatus} syncError={[syncError, keySyncError].filter(Boolean).join(" ")} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} factAngle={selectedFactAngle} onFactAngleChange={setSelectedFactAngle} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
-    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} factAngle={activeFactBatch?.angle ?? selectedFactAngle} factAngleLocked={Boolean(activeFactBatch)} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onEndFactBatch={endFactBatch} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onFactAngleChange={setSelectedFactAngle} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
+    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} factAngle={activeFactBatch?.angle ?? selectedFactAngle} factAngleLocked={Boolean(activeFactBatch)} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onEndFactBatch={endFactBatch} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onFactAngleChange={setSelectedFactAngle} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
 
   const topicSuggestions = localTopicSuggestions;
