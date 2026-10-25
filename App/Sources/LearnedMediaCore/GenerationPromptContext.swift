@@ -4,14 +4,21 @@ import Foundation
 public struct GenerationPromptContext {
     public let surpriseMe: Bool
     public let rabbitHole: String?
-    public init(surpriseMe: Bool = false, rabbitHole: String? = nil) {
+    public let factAngle: FactAngle
+    public init(surpriseMe: Bool = false, rabbitHole: String? = nil, factAngle: FactAngle = .varied) {
         self.surpriseMe = surpriseMe
+        self.factAngle = factAngle
         let value = rabbitHole?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.rabbitHole = value?.isEmpty == false ? String(value!.prefix(500)) : nil
     }
+    public var factAngleRule: String { factAngle.instruction }
+    public var factAngleField: PromptField { PromptField("Fact angle", factAngle.label) }
+    public var surpriseModeField: PromptField { PromptField("Surprise mode", surpriseMe ? "Choose a surprising example within the selected fact angle and assigned topic." : nil) }
+    public var threadContextField: PromptField { PromptField("Optional thread context", rabbitHole) }
     public var fields: [PromptField] {
-        [PromptField("Surprise mode", surpriseMe ? "Choose an unexpected angle within each assigned topic." : nil),
-         PromptField("Optional thread context", rabbitHole)]
+        [factAngleField,
+         surpriseModeField,
+         threadContextField]
     }
 }
 

@@ -118,13 +118,14 @@ export function buildPrompt(operation: PromptOperation, rules: string[] = [], fi
 }
 
 /** Standalone cards keep exact length, difficulty, and per-sentence evidence rules. */
-export function buildFactCardPrompt({ sentenceCount, difficulties, fields, combined = false }: {
+export function buildFactCardPrompt({ sentenceCount, difficulties, fields, combined = false, rules = [] }: {
   sentenceCount: number;
   difficulties: number[];
   fields: PromptField[];
   combined?: boolean;
+  rules?: string[];
 }) {
-  return buildPrompt(combined ? "combined" : "grounding", [factWritingRules(sentenceCount, "evidenceIds"),
+  return buildPrompt(combined ? "combined" : "grounding", [factWritingRules(sentenceCount, "evidenceIds"), ...rules,
     ...Array.from(new Set(difficulties)).sort((a, b) => a - b).map(difficultyRubric)], fields);
 }
 

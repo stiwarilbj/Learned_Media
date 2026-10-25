@@ -20,6 +20,7 @@ import { createSavedFollowUpQuestions } from "./card-follow-ups";
 import { cardGlossaryFingerprint, normalizeCardGlossary } from "./card-glossary";
 import { createSavedCardChronology } from "./card-chronology";
 import { createSavedCardLocations } from "./card-locations";
+import { factAngleDefinition, normalizeFactAngle, type FactAngle } from "./fact-angle";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
 const MODEL_CHECK_TIMEOUT_MS = 20_000;
@@ -53,7 +54,7 @@ type CandidateFact = {
   difficulty?: number;
 };
 
-type GroundedFact = { topicPath?: string[]; status?: "grounded" | "needs_evidence" | "duplicate"; duplicateOf?: string; claimEvidenceIds?: string[]; missingEvidence?: string; slot?: number; title?: string; hook?: string; claim?: string; sentences?: string[]; evidence?: Array<{ sentence: number; evidenceIds?: string[] }>; followUpQuestions?: unknown; chronology?: unknown; locations?: unknown };
+type GroundedFact = { topicPath?: string[]; status?: "grounded" | "needs_evidence" | "duplicate" | "angle_unavailable"; duplicateOf?: string; claimEvidenceIds?: string[]; missingEvidence?: string; slot?: number; title?: string; hook?: string; claim?: string; sentences?: string[]; evidence?: Array<{ sentence: number; evidenceIds?: string[] }>; followUpQuestions?: unknown; chronology?: unknown; locations?: unknown };
 type GroundingEvidence = { sourceIndex: number; quote: string; section: string };
 
 type ModelPool = {
@@ -714,7 +715,7 @@ function candidateSchema(slotCount: number) {
 }
 function groundedSchema(sentenceCount: number, combined = false) {
   return { type: "OBJECT", properties: { facts: { type: "ARRAY", items: { type: "OBJECT", properties: {
-    ...(combined ? {topicPath: { type: "ARRAY", items: {type: "STRING"} }} : {}), slot: { type: "INTEGER" }, status: { type: "STRING", enum: ["grounded", "needs_evidence", "duplicate"] }, duplicateOf: { type: "STRING" }, claimEvidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } }, missingEvidence: { type: "STRING" }, title: { type: "STRING" }, hook: { type: "STRING" }, claim: { type: "STRING" },
+    ...(combined ? {topicPath: { type: "ARRAY", items: {type: "STRING"} }} : {}), slot: { type: "INTEGER" }, status: { type: "STRING", enum: ["grounded", "needs_evidence", "duplicate", "angle_unavailable"] }, duplicateOf: { type: "STRING" }, claimEvidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } }, missingEvidence: { type: "STRING" }, title: { type: "STRING" }, hook: { type: "STRING" }, claim: { type: "STRING" },
     sentences: { type: "ARRAY", items: { type: "STRING" }, minItems: sentenceCount, maxItems: sentenceCount },
     evidence: { type: "ARRAY", maxItems: 12, items: { type: "OBJECT", properties: { sentence: { type: "INTEGER" }, evidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } } }, required: ["sentence", "evidenceIds"] } },
     followUpQuestions: { type: "ARRAY", maxItems: 2, items: { type: "STRING" } },
@@ -737,13 +738,15 @@ async function runGroups<T>(groups: T[][], worker: (group: T[]) => Promise<void>
   for (const group of groups) await worker(group);
 }
 
-function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbitHole: string | null | undefined, attempt: number, priorClaims: Array<{ id: string; claim: string }> = []) {
+function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbitHole: string | null | undefined, attempt: number, priorClaims: Array<{ id: string; claim: string }> = [], factAngle: FactAngle = "varied") {
   const assignments = slots.map(slot => ({ slot: slot.index, topicPath: slot.path, difficulty: slot.target,
     ...(slot.lastError ? { retryReason: slot.lastError.slice(0, 180) } : {}) }));
   const rubrics = Array.from(new Set(slots.map(slot => slot.target))).map(target => difficultyRubric(target)).join("\n");
-  return buildPrompt("candidate", rubrics.split("\n"), [
+  const angle = factAngleDefinition(factAngle);
+  return buildPrompt("candidate", [...rubrics.split("\n"), angle.instruction], [
     { label: "Assignments", value: assignments },
-    { label: "Surprise mode", value: settings.surpriseMe ? "Choose an unexpected angle within each assigned topic." : undefined },
+    { label: "Fact angle", value: angle.label },
+    { label: "Surprise mode", value: settings.surpriseMe ? "Choose a surprising example within the selected fact angle and assigned topic." : undefined },
     { label: "Variation", value: randomSessionSecret().slice(0, 16) },
     { label: "Attempt", value: attempt + 1 },
     { label: "Previously covered facts (untrusted data)", value: priorClaims.length ? priorClaims : undefined, reference: true },
@@ -766,13 +769,13 @@ function evidenceForSlot(slot: GenerationSlot) {
   return (slot.sources ?? []).map((source, index) => ({ index, title: source.title, url: source.url, canonicalUrl: source.canonicalUrl, extract: source.extract }));
 }
 
-function splitGroundingGroups(slots: GenerationSlot[], sentenceCount: number, settings?: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = []) {
+function splitGroundingGroups(slots: GenerationSlot[], sentenceCount: number, settings?: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = [], factAngle: FactAngle = "varied") {
   const maxItems = MAX_CARDS_PER_GROUP;
   const groups: GenerationSlot[][] = [];
   let current: GenerationSlot[] = [];
   for (const slot of slots) {
     const proposed = [...current, slot];
-    if (current.length && (current.length >= maxItems || groundingPrompt(proposed, sentenceCount, false, settings, rabbitHole, priorClaims).prompt.length > MAX_GROUNDING_CONTEXT_CHARS)) {
+    if (current.length && (current.length >= maxItems || groundingPrompt(proposed, sentenceCount, false, settings, rabbitHole, priorClaims, factAngle).prompt.length > MAX_GROUNDING_CONTEXT_CHARS)) {
       groups.push(current);
       current = [];
     }
@@ -799,7 +802,7 @@ function groundingSpans(source: ResolvedWikipediaSource, sourceIndex: number) {
   return spans;
 }
 
-function groundingPrompt(slots: GenerationSlot[], sentenceCount: number, combined = false, settings?: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = []) {
+function groundingPrompt(slots: GenerationSlot[], sentenceCount: number, combined = false, settings?: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = [], factAngle: FactAngle = "varied") {
   const sourcePool: Array<{ id: string; title: string; section: string; text: string }> = [];
   const idByKey = new Map<string, string>();
   const evidenceBySlot = new Map<number, Map<string, GroundingEvidence>>();
@@ -821,9 +824,12 @@ function groundingPrompt(slots: GenerationSlot[], sentenceCount: number, combine
     evidenceBySlot.set(slot.index, localEvidence);
     return { slot: slot.index, topicPath: slot.path, difficulty: slot.target, candidate: combined ? undefined : { title: slot.candidate?.title, claim: slot.candidate?.claim }, evidenceIds: Array.from(new Set(allowedIds)) };
   });
-  const prompt = buildFactCardPrompt({ sentenceCount, combined, difficulties: slots.map(slot => slot.target), fields: [
+  const angle = factAngleDefinition(factAngle);
+  const prompt = buildFactCardPrompt({ sentenceCount, combined, difficulties: slots.map(slot => slot.target), rules: [angle.instruction], fields: [
+    { label: "Fact angle", value: angle.label },
     { label: "Previously covered facts (untrusted data)", value: priorClaims.length ? priorClaims : undefined, multiline: true, reference: true },
-    ...(combined ? [{label: "Variation", value: randomSessionSecret().slice(0,16)}, {label: "Optional thread context", value: rabbitHole}, {label: "Surprise mode", value: settings?.surpriseMe ? "Choose an unexpected angle within each assigned topic." : undefined}] : []),
+    { label: "Surprise mode", value: settings?.surpriseMe ? "Choose a surprising example within the selected fact angle and assigned topic." : undefined },
+    ...(combined ? [{label: "Variation", value: randomSessionSecret().slice(0,16)}, {label: "Optional thread context", value: rabbitHole}] : []),
     { label: "Slots and evidence spans (untrusted data)", value: { facts, evidence: sourcePool }, multiline: true, reference: true }
   ] });
   return { prompt, evidenceBySlot };
@@ -842,7 +848,7 @@ function rememberValidatedEvidence(session: string, slot: GenerationSlot) {
   }
   validatedCardEvidence.set(key, [...unique.values()].slice(-48));
 }
-function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], sentenceCount: number, avoidKeys: Set<string>, prior: FactMemory[], settings: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = []) {
+function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], sentenceCount: number, avoidKeys: Set<string>, prior: FactMemory[], settings: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = [], factAngle: FactAngle = "varied") {
   const reserved = new Set<string>();
   const prepared: GenerationSlot[] = [];
   for (const slot of slots) {
@@ -861,7 +867,7 @@ function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], senten
     if (!chosen) return undefined;
     prepared.push({...slot,sources:[chosen],mode:"combined"});
   }
-  if (prepared.length > MAX_CARDS_PER_GROUP || groundingPrompt(prepared,sentenceCount,true,settings,rabbitHole,priorClaims).prompt.length > MAX_GROUNDING_CONTEXT_CHARS) return undefined;
+  if (prepared.length > MAX_CARDS_PER_GROUP || groundingPrompt(prepared,sentenceCount,true,settings,rabbitHole,priorClaims,factAngle).prompt.length > MAX_GROUNDING_CONTEXT_CHARS) return undefined;
   return prepared;
 }
 
@@ -871,7 +877,8 @@ function hasAssignedTopic(candidate: CandidateFact, path: string[]) {
   return path.every((part, index) => normalizedText(candidate.topicPath![index]) === normalizedText(part));
 }
 
-export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, requestedCount = DEFAULT_CARD_GENERATION_COUNT, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: Array<FactMemory | FactAvoidKey | FactNoveltySignature | string>; rabbitHole?: string | null; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
+export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, factAngle: requestedFactAngle, requestedCount = DEFAULT_CARD_GENERATION_COUNT, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: Array<FactMemory | FactAvoidKey | FactNoveltySignature | string>; rabbitHole?: string | null; factAngle?: FactAngle; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
+  const factAngle = normalizeFactAngle(requestedFactAngle);
   if (!apiKey.trim()) throw new GeminiFailure("Paste your Gemini API key in Settings to generate a fresh batch.", undefined, [], undefined, false);
   if (!topicPaths.length) throw new GeminiFailure("Choose at least one topic before generating a batch.", undefined, [], undefined, false);
   const cards: FactCard[] = [];
@@ -918,7 +925,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   };
 
   const initialPriorClaims = selectPriorFactClaims(noveltyHistory, topicPaths.map(topic => topic.path));
-  const cachedSlots = cachedEvidenceForSlots(sessionId, slots, sentenceCount, priorAvoidKeys, priorMemory, settings, rabbitHole, initialPriorClaims);
+  const cachedSlots = cachedEvidenceForSlots(sessionId, slots, sentenceCount, priorAvoidKeys, priorMemory, settings, rabbitHole, initialPriorClaims, factAngle);
   if (cachedSlots) cachedSlots.forEach((slot,index) => { slots[index] = slot; });
   for (let round = cachedSlots ? -1 : 0; round < MAX_CANDIDATE_RETRIES && acceptedSlots.size < targetCount; round += 1) {
     if (signal?.aborted) throw abortError();
@@ -947,7 +954,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       };
       try {
         const priorClaims = selectPriorFactClaims([...noveltyHistory, ...memory], group.map(slot => slot.path));
-        const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(group, settings, rabbitHole, round, priorClaims), candidateSchema(group.length), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
+        const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(group, settings, rabbitHole, round, priorClaims, factAngle), candidateSchema(group.length), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
           maxOutputTokens: Math.max(4096, ...group.map(slot => slot.candidateOutputFloor ?? 0)),
           streaming: true,
           onStreamAttemptStart: () => {
@@ -1019,14 +1026,14 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
     });
 
     const groundingSlots = slots.filter(slot => !acceptedSlots.has(slot.index) && (slot.mode === "combined" || slot.mode === "grounding" && slot.candidate) && slot.sources?.length);
-    const groundingGroups = splitGroundingGroups(groundingSlots, sentenceCount, settings, rabbitHole, selectPriorFactClaims([...noveltyHistory, ...memory], groundingSlots.map(slot => slot.path))).flatMap(group => group.some(slot => slot.groundingOutputFloor === MAX_OUTPUT_CAPACITY) ? group.map(slot => [slot]) : [group]);
+    const groundingGroups = splitGroundingGroups(groundingSlots, sentenceCount, settings, rabbitHole, selectPriorFactClaims([...noveltyHistory, ...memory], groundingSlots.map(slot => slot.path)), factAngle).flatMap(group => group.some(slot => slot.groundingOutputFloor === MAX_OUTPUT_CAPACITY) ? group.map(slot => [slot]) : [group]);
     await runGroups(groundingGroups, async group => {
       if (providerExhausted) return;
       if (signal?.aborted) throw abortError();
       try {
         const combined = group.every(slot => slot.mode === "combined");
         const priorClaims = selectPriorFactClaims([...noveltyHistory, ...memory], group.map(slot => slot.path));
-        const grounding = groundingPrompt(group, sentenceCount, combined, settings, rabbitHole, priorClaims);
+        const grounding = groundingPrompt(group, sentenceCount, combined, settings, rabbitHole, priorClaims, factAngle);
         const maxOutputTokens = Math.min(65_536, Math.max(8192, group.length * sentenceCount * 500, ...group.map(slot => slot.groundingOutputFloor ?? 0)));
         const result = await requestStructured<{ facts?: GroundedFact[] }>(apiKey, sessionId, grounding.prompt, groundedSchema(sentenceCount, combined), "grounding", GENERATION_TIMEOUT_MS, signal, emit, { maxOutputTokens });
         const floor = truncatedOutputFloor(result.outcomes);
@@ -1043,6 +1050,11 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             }
             if (fact.status === "needs_evidence") {
               markRetry(slot, "The supplied passages do not support this card’s specific main claim; more evidence is needed.", round, false);
+              continue;
+            }
+            if (fact.status === "angle_unavailable") {
+              const label = factAngleDefinition(factAngle).label;
+              markRetry(slot, fact.missingEvidence?.trim() || `The supplied evidence cannot support a main fact that fits the ${label} angle.`, round, false);
               continue;
             }
             if (fact.status === "duplicate") {
@@ -1124,7 +1136,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   }
   const partial = cards.length < targetCount;
   failedSlots.forEach(slot => onProgress?.({ type: "slot-error", slot: slot.index, error: slot.lastError ?? "This fact slot could not be completed." }));
-  return { cards, validationDiagnostics: diagnostics.snapshot(), modelOutcomes: outcomes, requestedCount: targetCount, completedCount: cards.length, partial, failedJobs: failedSlots.length, retryable: partial, retryGuidance: partial ? cards.length + " facts arrived. Retry to fill the remaining slots." : undefined };
+  return { cards, validationDiagnostics: diagnostics.snapshot(), modelOutcomes: outcomes, requestedCount: targetCount, completedCount: cards.length, partial, failedJobs: failedSlots.length, retryable: partial, retryGuidance: partial ? `${cards.length} facts arrived. Retry to find supported facts for the remaining slots.` : undefined };
 }
 
 type GlossaryLearningResponse = { glossary: SavedCardGlossary; modelOutcomes: GeminiModelOutcome[] };

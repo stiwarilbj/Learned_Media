@@ -7,8 +7,10 @@ import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
 import type { CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, SavedCardLocations, TopicNode } from "@/lib/types";
 import type { TopicSearchIndex } from "@/lib/topic-search-types";
 import type { TopicDetour, TopicDetourProgress } from "@/lib/topic-detours";
+import type { FactAngle } from "@/lib/fact-angle";
 import { selectedLeafCount } from "@/lib/topic-tree";
 import { FactCard } from "./FactCard";
+import { FactAngleControl } from "./FactAngleControl";
 import { Icon } from "./icons";
 import { TopicTree } from "./TopicTree";
 import { VirtualizedRows } from "./VirtualizedRows";
@@ -21,6 +23,8 @@ type FeedViewProps = {
   catalogRevision: number;
   topicSearchIndex?: TopicSearchIndex;
   settings: FeedSettings;
+  factAngle: FactAngle;
+  factAngleLocked: boolean;
   revealGradually: boolean;
   topics: TopicNode[];
   customTopic: string;
@@ -55,6 +59,8 @@ type FeedViewProps = {
   onEndTopicDetour: () => void;
   onTopicDetourProgress: (id: string, progress: TopicDetourProgress) => void;
   onSettingsChange: (next: Partial<FeedSettings>) => void;
+  onFactAngleChange: (angle: FactAngle) => void;
+  onEndFactBatch: () => void;
   onCustomTopicChange: (value: string) => void;
   onAddCustomTopic: () => void;
   onToggleTopic: (id: string) => void;
@@ -70,7 +76,7 @@ function SkeletonCard() {
 
 const cardRowKey = (card: FactCardType) => card.id;
 
-function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, customTopic, settings, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onReset, showReset }: Pick<FeedViewProps, "topics" | "query" | "catalogRevision" | "topicSearchIndex" | "customTopic" | "settings" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onCollapseTopics" | "onWeightTopic" | "onRemoveCustomTopic" | "onSettingsChange" | "onReset" | "showReset">) {
+function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, customTopic, settings, factAngle, factAngleLocked, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onReset, showReset }: Pick<FeedViewProps, "topics" | "query" | "catalogRevision" | "topicSearchIndex" | "customTopic" | "settings" | "factAngle" | "factAngleLocked" | "onFactAngleChange" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onCollapseTopics" | "onWeightTopic" | "onRemoveCustomTopic" | "onSettingsChange" | "onReset" | "showReset">) {
   const [topicsOpen, setTopicsOpen] = useState(true);
   useEffect(() => {
     setTopicsOpen(window.innerWidth > 820);
@@ -104,6 +110,7 @@ function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, c
           <div className="feed-length-options" role="group" aria-label="Description length in sentences">
             {SENTENCE_LENGTH_OPTIONS.map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} disabled={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length })}>{length}</button>)}
           </div>
+          <FactAngleControl value={factAngle} onChange={onFactAngleChange} disabled={factAngleLocked} id="feed-fact-angle" />
           <button type="button" className={`feed-surprise-toggle ${settings.surpriseMe ? "selected" : ""}`} onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={14} /> Surprise Me <span>{settings.surpriseMe ? "On" : "Off"}</span></button>
         </div>
       </details>
@@ -111,7 +118,7 @@ function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, c
   );
 }
 
-export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, factAngle, factAngleLocked, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onEndFactBatch, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
   const handleViewportRangeChange = useCallback((start: number) => {
     const lastDetourCardId = topicDetour?.slotCardIds[2];
     if (!topicDetour || !lastDetourCardId) return;
@@ -127,7 +134,7 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
       {rabbitHole && <div className="rabbit-banner"><div><Icon name="arrow" size={16} /><span>Rabbit Hole Mode <strong>→ {rabbitHole}</strong></span></div><button type="button" onClick={onReset}>Exit rabbit hole</button></div>}
       {toast && <div className="feed-toast"><Icon name="check" size={15} /> {toast}</div>}
       <div className="feed-layout">
-          <TopicSidebar topics={topics} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicSearchIndex} customTopic={customTopic} settings={settings} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onCollapseTopics={onCollapseTopics} onWeightTopic={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} onSettingsChange={onSettingsChange} onReset={onReset} showReset={showReset} />
+          <TopicSidebar topics={topics} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicSearchIndex} customTopic={customTopic} settings={settings} factAngle={factAngle} factAngleLocked={factAngleLocked} onFactAngleChange={onFactAngleChange} onCustomTopicChange={onCustomTopicChange} onAddCustomTopic={onAddCustomTopic} onToggleTopic={onToggleTopic} onExpandTopic={onExpandTopic} onCollapseTopics={onCollapseTopics} onWeightTopic={onWeightTopic} onRemoveCustomTopic={onRemoveCustomTopic} onSettingsChange={onSettingsChange} onReset={onReset} showReset={showReset} />
         <section className="feed-content-column">
           <div className="feed-toolbar">
             <div className="active-topics"><span className="toolbar-label">Your feed</span></div>
@@ -138,7 +145,7 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
           <div className="fact-feed">
             <VirtualizedRows items={cards} columns={1} estimatedHeight={settings.displayMode === "text" ? 490 : 660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} onViewportRangeChange={handleViewportRangeChange} />
             {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> {topicDetour?.phase === "generating" ? "Gemini is building your topic detour" : "Gemini is building the next facts"}</div>}
-            {generationError && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry} disabled={loading} aria-busy={loading}>Retry missing facts</button></div>}
+            {generationError && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry} disabled={loading} aria-busy={loading}>Retry missing facts</button><button type="button" className="text-button" onClick={onEndFactBatch} disabled={loading}>End this batch</button></div>}
             {canLoadMore && !topicDetour && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 7 more</button></div>}
           </div>
         </section>

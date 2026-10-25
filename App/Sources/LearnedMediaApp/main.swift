@@ -1518,7 +1518,7 @@ private final class GeminiClient {
 
     private func groundedSchema(sentenceCount: Int) -> [String: Any] {
         ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": [
-            "slot": ["type": "INTEGER"], "status": ["type": "STRING", "enum": ["grounded", "needs_evidence", "duplicate"]], "duplicateOf": ["type": "STRING"], "claimEvidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]], "missingEvidence": ["type": "STRING"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
+            "slot": ["type": "INTEGER"], "status": ["type": "STRING", "enum": ["grounded", "needs_evidence", "duplicate", "angle_unavailable"]], "duplicateOf": ["type": "STRING"], "claimEvidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]], "missingEvidence": ["type": "STRING"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
             "sentences": ["type": "ARRAY", "minItems": sentenceCount, "maxItems": sentenceCount, "items": ["type": "STRING"]],
             "evidence": ["type": "ARRAY", "maxItems": 12, "items": ["type": "OBJECT", "properties": ["sentence": ["type": "INTEGER"], "evidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["sentence", "evidenceIds"]]],
             "followUpQuestions": ["type": "ARRAY", "maxItems": 2, "items": ["type": "STRING"]],
@@ -1536,7 +1536,7 @@ private final class GeminiClient {
             return item
         }
         let rubrics = Array(Set(slots.map(\.level))).sorted().map { FactQuality.rubric($0) }.joined(separator: "\n")
-        return PromptBuilder.build(.candidate, rules: rubrics.components(separatedBy: "\n"), fields: [
+        return PromptBuilder.build(.candidate, rules: rubrics.components(separatedBy: "\n") + [context.factAngleRule], fields: [
             PromptField("Assignments", assignments), PromptField("Attempt", attempt + 1),
             PromptField("Previously covered facts (untrusted data)", priorClaims.isEmpty ? nil : priorClaims, reference: true)
         ] + context.fields)
@@ -1624,10 +1624,12 @@ private final class GeminiClient {
             return value
         }
         let prompt = PromptBuilder.factCard(sentenceCount: sentenceCount, difficulties: slots.map(\.level), fields: [
+            context.factAngleField,
+            context.surpriseModeField,
             PromptField("Variation", combined ? UUID().uuidString : nil),
             PromptField("Previously covered facts (untrusted data)", priorClaims.isEmpty ? nil : priorClaims, multiline: true, reference: true),
             PromptField("Slots and evidence spans (untrusted data)", ["facts": values, "evidence": sourcePool], multiline: true, reference: true)
-        ] + (combined ? context.fields : []), combined: combined)
+        ] + (combined ? [context.threadContextField] : []), combined: combined, additionalRules: [context.factAngleRule])
         return GeminiGroundingPlan(prompt: prompt, evidenceBySlot: evidenceBySlot)
     }
 
@@ -1832,10 +1834,10 @@ private final class GeminiClient {
         return card
     }
 
-    func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [[String: Any]], requestedCount: Int = 7, rabbitHole: String? = nil, onCard: @escaping ([String: Any], Int, Int, Int) -> Void) async throws -> [String: Any] {
+    func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [[String: Any]], requestedCount: Int = 7, rabbitHole: String? = nil, factAngle: FactAngle = .varied, onCard: @escaping ([String: Any], Int, Int, Int) -> Void) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings to generate a fresh batch.", retryable: false) }
         guard !topics.isEmpty else { throw NativeError(message: "Choose a topic first.", retryable: false) }
-        let context = GenerationPromptContext(surpriseMe: settings["surpriseMe"] as? Bool ?? false, rabbitHole: rabbitHole)
+        let context = GenerationPromptContext(surpriseMe: settings["surpriseMe"] as? Bool ?? false, rabbitHole: rabbitHole, factAngle: factAngle)
         let targetCount = max(1, min(10, requestedCount))
         let sentenceCount = FactQuality.sentenceCount(settings["sentenceLength"])
         let groupSize = 10
@@ -1957,6 +1959,14 @@ private final class GeminiClient {
                             slots[slotIndex].sources = []
                             continue
                         }
+                        if fact.status == "angle_unavailable" {
+                            let detail = fact.missingEvidence?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: detail?.isEmpty == false ? detail! : "The supplied evidence cannot support a main fact that fits the \(factAngle.label) angle.")
+                            slots[slotIndex].mode = "candidate"
+                            slots[slotIndex].candidate = nil
+                            slots[slotIndex].sources = []
+                            continue
+                        }
                         if fact.status == "duplicate" {
                             slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: "Gemini identified this as a repeat of \(fact.duplicateOf ?? "another covered fact").")
                             slots[slotIndex].mode = "candidate"
@@ -1997,7 +2007,7 @@ private final class GeminiClient {
         guard !cards.isEmpty else {
             throw NativeError(message: slots.first(where: { accepted[$0.index] == nil })?.lastError ?? "Gemini could not complete a Wikipedia-grounded batch.", retryable: generationStatus == "rate-limited", outcomes: outcomes, status: generationStatus, validationDiagnostics: diagnostics.snapshot)
         }
-        return ["cards": cards, "validationDiagnostics": diagnostics.snapshot, "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "modelStatus": generationStatus ?? "connected", "partial": failed > 0, "failedJobs": failed, "retryable": failed > 0, "retryGuidance": failed > 0 ? "Some work failed. Retry to fill the remaining cards." : ""]
+        return ["cards": cards, "validationDiagnostics": diagnostics.snapshot, "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "modelStatus": generationStatus ?? "connected", "partial": failed > 0, "failedJobs": failed, "retryable": failed > 0, "retryGuidance": failed > 0 ? "\(cards.count) facts arrived. Retry to find supported facts for the remaining slots." : ""]
     }
 
     private func glossary(key: String, card: [String: Any]) async throws -> [String: Any] {
@@ -2371,13 +2381,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let settings = payload["settings"] as? [String: Any] ?? [:]
             let avoid = payload["avoid"] as? [[String: Any]] ?? []
             let requestedCount = payload["requestedCount"] as? Int ?? 7
+            let factAngle: FactAngle
+            if let rawAngle = payload["factAngle"] {
+                guard let value = rawAngle as? String, let parsed = FactAngle(rawValue: value) else {
+                    respond(id: id, error: "Choose a supported fact angle before generating a batch.")
+                    return
+                }
+                factAngle = parsed
+            } else {
+                factAngle = .varied
+            }
             let token = payload["token"] as? Int ?? 0
             let detourID = payload["detourId"] as? String
             let detourSlots = payload["detourSlots"] as? [Int] ?? []
             let task = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let result = try await gemini.generate(key: geminiKey, topics: topics, settings: settings, avoid: avoid, requestedCount: requestedCount, rabbitHole: payload["rabbitHole"] as? String) { [weak self] card, slot, completed, requested in
+                    let result = try await gemini.generate(key: geminiKey, topics: topics, settings: settings, avoid: avoid, requestedCount: requestedCount, rabbitHole: payload["rabbitHole"] as? String, factAngle: factAngle) { [weak self] card, slot, completed, requested in
                         var event: [String: Any] = ["type": "generationCard", "token": token, "card": card, "completed": completed, "requested": requested]
                         if let detourID, detourSlots.indices.contains(slot) {
                             event["detourId"] = detourID

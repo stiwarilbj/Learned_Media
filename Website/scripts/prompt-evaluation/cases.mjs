@@ -99,9 +99,11 @@ export function registerEvaluation(h) {
             assert.ok(answer.answer.includes('does not explain why it was abandoned'));
           }
         } else {
-          const args = h.generationArgs(sessionId);
+          const requestedCount=fixture.requestedCount ?? 7;
+          const args = h.generationArgs(sessionId,{requestedCount,args:fixture.factAngle ? {factAngle:fixture.factAngle} : undefined});
+          if (fixture.topicPath) args.topicPaths=[{path:fixture.topicPath,weight:1}];
           const expected = fixture.sentenceLength ?? args.settings.sentenceLength;
-          const result=await h.generateGeminiFacts({...args, settings:{...args.settings, sentenceLength:expected}, requestedCount:7,
+          const result=await h.generateGeminiFacts({...args, settings:{...args.settings, sentenceLength:expected}, requestedCount,
             onProgress:event=>{if(event.type==='card')published.push({slot:event.slot,card:structuredClone(event.card)});}});
           Object.assign(row, measureCardCoverage(result.cards, expected));
           const fingerprints=result.cards.map(c=>c.body.toLowerCase().replace(/\s+/g,' ').trim());
@@ -113,7 +115,14 @@ export function registerEvaluation(h) {
               if (validCitation(card,e)) row.citationValid++;
             }
           }
-          assert.equal(result.completedCount,7);
+          assert.equal(result.completedCount,requestedCount);
+          if (fixture.factAngle) {
+            const prompts=[...state.candidatePrompts,...state.groundingPrompts];
+            row.angleGuidanceValid=Number(prompts.length===2 && prompts.every(prompt=>
+              prompt.includes(`Fact angle: ${fixture.factAngleLabel}`)
+              && prompt.includes(fixture.factAngleInstruction)
+              && prompt.toLowerCase().includes('the central claim itself must meet this angle')));
+          }
           if (fixture.quotedSentence) {
             const assignments=h.candidateAssignments(state.candidatePrompts[0]);
             assert.deepEqual(assignments.map(slot=>slot.slot),[0,1,2,3,4,5,6]);

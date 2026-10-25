@@ -27,6 +27,7 @@
   const cardLocations = window.LEARNED_MEDIA_CARD_LOCATIONS;
   const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
   const topicDetours = window.LEARNED_MEDIA_TOPIC_DETOURS;
+  const factAngleOptions = window.LEARNED_MEDIA_FACT_ANGLES || [];
   const sourceSpotlightStates = new Map();
   const sourceSpotlightRequests = new Map();
   let adaptationRequest = null;
@@ -139,6 +140,7 @@
     changed: function (keys) {
       const restored = !nativeKeyEditing && keys.gemini && keys.gemini !== state.key;
       if (state.key !== keys.gemini) {
+        if (activeFactBatch) { clearFactAngleBatch(); state.topicDetour = null; }
         cancelCardAdaptation();
         cancelCardGlossary();
         for (const entry of learningTasks.values()) entry.task?.cancel?.();
@@ -224,6 +226,8 @@
   let generationToken = 0;
   let activeGenerationTask = null;
   let activeGenerationDetourId = null;
+  let selectedFactAngle = "varied";
+  let activeFactBatch = null;
   let suppressTopicDetourScroll = false;
   let topicDetourProgressFrame = 0;
   let pendingTopicDetourAnchor = null;
@@ -272,6 +276,18 @@
   const NATURAL_SEARCH_STOP_WORDS = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from", "how", "i", "in", "into", "is", "it", "of", "on", "or", "the", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with"]);
 
   function makeTopics() { return shared.createCatalogTopics(); }
+  function factAngleOption(id) { return factAngleOptions.find(function (option) { return option.id === id; }) || factAngleOptions[0] || { id: "varied", label: "Varied", description: "Keep the usual mix of distinct, specific facts.", instruction: "Use the existing varied selection of distinct, specific facts." }; }
+  function clearFactAngleBatch() { activeFactBatch = null; selectedFactAngle = "varied"; }
+  function beginFactAngleBatch(detourRequest) {
+    const key = detourRequest ? "detour:" + detourRequest.id : "feed";
+    const accountId = state.account && state.account.id || null;
+    if (activeFactBatch && activeFactBatch.workspaceId === state.workspaceId && activeFactBatch.accountId === accountId && activeFactBatch.key === key) return activeFactBatch.angle;
+    if (activeFactBatch) throw new Error("Finish or end the current batch before starting another one.");
+    activeFactBatch = { workspaceId: state.workspaceId, accountId: accountId, key: key, angle: selectedFactAngle };
+    selectedFactAngle = "varied";
+    return activeFactBatch.angle;
+  }
+  function endFactAngleBatch() { activeFactBatch = null; selectedFactAngle = "varied"; }
   function buildTopicNode(seed, parentPath, depth, rootIndex) {
     const label = String(typeof seed === "string" ? seed : titleCaseCatalogLabel(seed.label)).replace(/\s+/g, " ").trim();
     if (!label) return null;
@@ -1936,6 +1952,7 @@
     if (activeGenerationTask && typeof activeGenerationTask.cancel === "function") activeGenerationTask.cancel();
     activeGenerationTask = null;
     activeGenerationDetourId = null;
+    clearFactAngleBatch();
     state.topicDetour = null;
     cancelCardAdaptation();
     cancelCardGlossary();
@@ -2495,6 +2512,26 @@
       } }, String(length)));
     });
     body.appendChild(lengths);
+    const activeAngle = activeFactBatch ? activeFactBatch.angle : selectedFactAngle;
+    const angleOption = factAngleOption(activeAngle);
+    const angleControl = node("div", { className: "fact-angle-control" });
+    const angleId = setup ? "setup-fact-angle" : "feed-fact-angle";
+    angleControl.appendChild(node("label", { className: "control-label", "for": angleId, text: "Fact angle" }));
+    const angleSelect = node("select", { id: angleId, ariaLabel: "Fact angle", disabled: Boolean(activeFactBatch), onChange: function (event) {
+      if (activeFactBatch) return;
+      const next = factAngleOptions.find(function (option) { return option.id === event.currentTarget.value; });
+      if (!next) return;
+      selectedFactAngle = next.id;
+      const description = angleControl.querySelector(".fact-angle-description");
+      if (description) description.textContent = next.description;
+    } });
+    factAngleOptions.forEach(function (option) { angleSelect.appendChild(node("option", { value: option.id, text: option.label })); });
+    angleSelect.value = activeAngle;
+    angleControl.appendChild(angleSelect);
+    angleControl.appendChild(node("span", { id: angleId + "-description", className: "fact-angle-description", text: angleOption.description }));
+    angleControl.appendChild(node("span", { id: angleId + "-note", className: "fact-angle-note", text: "Applies to your next batch, including retries." }));
+    angleSelect.setAttribute("aria-describedby", angleId + "-description " + angleId + "-note");
+    body.appendChild(angleControl);
     body.appendChild(node("button", { className: "feed-surprise-toggle" + (state.settings.surpriseMe ? " selected" : ""), onClick: function () { state.settings.surpriseMe = !state.settings.surpriseMe; saveState(); render(); } }, svg("sparkles", 14), " Surprise Me ", node("span", { text: state.settings.surpriseMe ? "On" : "Off" })));
     details.appendChild(body);
     return details;
@@ -2762,7 +2799,7 @@
     column.appendChild(list);
     layout.appendChild(column);
     if (state.generationError && !state.loading) {
-      list.appendChild(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { type: "button", className: "secondary-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); state.generationError = ""; if (state.topicDetour) beginTopicDetourGeneration(state.topicDetour); else generateBatch(generationToken, state.pendingSlots); } }, "Retry missing facts")));
+      list.appendChild(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { type: "button", className: "secondary-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); retryFactBatch(); } }, "Retry missing facts"), node("button", { type: "button", className: "text-button", disabled: state.loading || !activeFactBatch, onClick: function (event) { event.preventDefault(); endFactBatch(); } }, "End this batch")));
     }
     return node("div", { className: "feed-workspace" }, state.toast ? node("div", { className: "feed-toast" }, svg("check", 15), " ", state.toast) : null, layout);
   }
@@ -2775,10 +2812,10 @@
     gemini.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("key", 19)), node("div", {}, node("h2", { text: "Gemini API key" }), node("p", { text: "Use Gemini for fresh facts, Learn more, and questions." })), node("span", { className: "status-dot " + state.geminiStatus, text: statusLabel() })));
     gemini.appendChild(node("label", { className: "field-label", text: "Paste your API key here" }));
     const keyRow = node("div", { className: "key-input-row" });
-    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { cancelCardAdaptation(); cancelCardGlossary(); state.adaptationLoading = null; closeDifficultyMenu(false); state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.loadingCard = null; state.questionLoading = null; state.modelChecking = false; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", state.key); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
+    keyRow.appendChild(node("input", { id: "gemini-key", type: "password", value: state.key, placeholder: "Paste your API key here", autocomplete: "new-password", onInput: function (event) { if (activeFactBatch) { clearFactAngleBatch(); state.topicDetour = null; } cancelCardAdaptation(); cancelCardGlossary(); state.adaptationLoading = null; closeDifficultyMenu(false); state.keyEditEpoch += 1; state.key = event.target.value; clearSessionSearchCaches(); state.loadingCard = null; state.questionLoading = null; state.modelChecking = false; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", state.key); }, onKeydown: function (event) { if (event.key === "Enter") testKey(); } }));
     const keyActions = node("div", { className: "key-actions" });
     keyActions.appendChild(node("button", { className: "primary-button small", disabled: state.geminiStatus === "testing", onClick: testKey }, svg("sparkles", 15), state.geminiStatus === "testing" ? " Connecting" : " Connect Gemini"));
-    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { cancelCardAdaptation(); cancelCardGlossary(); state.adaptationLoading = null; closeDifficultyMenu(false); state.key = ""; clearSessionSearchCaches(); state.loadingCard = null; state.questionLoading = null; state.modelChecking = false; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", ""); showToast("Remembered key removed."); } }, "Remove"));
+    keyActions.appendChild(node("button", { className: "ghost-button", onClick: function () { if (activeFactBatch) { clearFactAngleBatch(); state.topicDetour = null; } cancelCardAdaptation(); cancelCardGlossary(); state.adaptationLoading = null; closeDifficultyMenu(false); state.key = ""; clearSessionSearchCaches(); state.loadingCard = null; state.questionLoading = null; state.modelChecking = false; state.geminiStatus = "not-configured"; state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; }); state.generationError = ""; generationToken += 1; state.connectionToken += 1; state.generationRequestToken += 1; bridge("cancelAll", {}).catch(function () {}); editNativeCredential("gemini", ""); showToast("Remembered key removed."); } }, "Remove"));
     keyRow.appendChild(keyActions);
     gemini.appendChild(keyRow);
     gemini.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your key is remembered in this Mac’s Keychain and privately synced when you sign in with Google. Remove also clears it from your account." })));
@@ -3247,6 +3284,16 @@
       activeGenerationTask = null;
       activeGenerationDetourId = null;
       state.loading = false;
+      if (activeFactBatch && activeFactBatch.key === "detour:" + state.topicDetour.id) endFactAngleBatch();
+    } else if (activeFactBatch && activeFactBatch.key === "feed") {
+      state.topicDetour = Object.assign({}, next, { phase: "queued" });
+      state.view = "feed";
+      state.started = true;
+      state.generationError = "";
+      render();
+      return;
+    } else if (activeFactBatch && activeFactBatch.key.indexOf("detour:") === 0) {
+      endFactAngleBatch();
     }
     state.topicDetour = next;
     state.view = "feed";
@@ -3266,10 +3313,36 @@
       activeGenerationDetourId = null;
       state.loading = false;
     }
+    if (activeFactBatch && activeFactBatch.key === "detour:" + detour.id) endFactAngleBatch();
     state.topicDetour = null;
     state.pendingSlots = 7;
     state.generationError = "";
     render();
+  }
+  function endFactBatch() {
+    if (state.loading || !activeFactBatch) return;
+    const active = activeFactBatch;
+    endFactAngleBatch();
+    state.pendingSlots = 7;
+    state.generationError = "";
+    if (active.key.indexOf("detour:") === 0 && state.topicDetour && state.topicDetour.id === active.key.slice("detour:".length)) state.topicDetour = null;
+    const queued = state.topicDetour;
+    render();
+    if (queued && queued.phase === "queued" && queued.workspaceId === state.workspaceId) window.queueMicrotask(function () {
+      if (state.topicDetour && state.topicDetour.id === queued.id && !state.loading) beginTopicDetourGeneration(state.topicDetour);
+    });
+  }
+  function retryFactBatch() {
+    state.generationError = "";
+    if (activeFactBatch && activeFactBatch.key === "feed") {
+      generateBatch(generationToken, state.pendingSlots);
+      return;
+    }
+    if (state.topicDetour && state.topicDetour.phase !== "queued") {
+      beginTopicDetourGeneration(state.topicDetour);
+      return;
+    }
+    generateBatch(generationToken, state.pendingSlots);
   }
   function startFeed() {
     if (!selectedCount()) return showToast("Choose at least one topic before starting.");
@@ -3296,6 +3369,7 @@
     activeGenerationTask = null;
     activeGenerationDetourId = null;
     state.topicDetour = null;
+    clearFactAngleBatch();
     bridge("cancelAll", {}).catch(function () {});
     state.started = false;
     state.rabbitHole = null;
@@ -3425,6 +3499,11 @@
     if (state.loading || !detourRequest && !selectedCount()) return;
     const activeToken = token || generationToken;
     if (!state.key.trim() || state.geminiStatus !== "connected") { state.generationError = "Connect Gemini in Settings before generating facts."; state.loading = false; render(); return; }
+    let batchAngle;
+    try { batchAngle = beginFactAngleBatch(detourRequest); }
+    catch (error) { state.generationError = error.message || "Finish or end the current batch before starting another one."; render(); return; }
+    const angleLabel = factAngleOption(batchAngle).label;
+    const withAngle = function (message) { return angleLabel + " · " + message; };
     state.loading = true;
     state.generationError = "";
     const count = Math.max(1, Math.min(10, Number(requestedCount) || 7));
@@ -3439,7 +3518,7 @@
     render();
     try {
       const generationSettings = Object.assign({}, state.settings, { sentenceLength: generationSentenceLength });
-      const task = bridge("generate", { topics: assignedTopics, rabbitHole: detourRequest ? null : state.rabbitHole, requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], token: state.generationRequestToken, detourId: detourRequest && detourRequest.id, detourSlots: detourRequest && detourRequest.slotIndexes });
+      const task = bridge("generate", { topics: assignedTopics, rabbitHole: detourRequest ? null : state.rabbitHole, requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], factAngle: batchAngle, token: state.generationRequestToken, detourId: detourRequest && detourRequest.id, detourSlots: detourRequest && detourRequest.slotIndexes });
       activeGenerationTask = task;
       const result = await task;
       if (activeToken !== generationToken) return;
@@ -3453,18 +3532,19 @@
       if (detourRequest && state.topicDetour && state.topicDetour.id === detourRequest.id) {
         const missing = topicDetours.missingTopicDetourSlots(state.topicDetour);
         state.pendingSlots = missing.length || 7;
-        state.generationError = missing.length ? (result.retryGuidance || "Some topic cards could not be verified. Retry to fill the remaining facts.") : "";
+        state.generationError = missing.length ? withAngle(result.retryGuidance || "Some topic cards could not be verified. Retry to fill the remaining facts.") : "";
+        if (!missing.length) endFactAngleBatch();
       } else {
         state.pendingSlots = Math.max(0, count - completed);
-        if (state.pendingSlots) { state.generationError = completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."; }
-        else state.pendingSlots = 7;
+        if (state.pendingSlots) { state.generationError = withAngle(completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."); }
+        else { state.pendingSlots = 7; endFactAngleBatch(); }
       }
     } catch (error) {
       if (activeToken !== generationToken) return;
       state.pendingSlots = detourRequest && state.topicDetour && state.topicDetour.id === detourRequest.id
         ? Math.max(1, topicDetours.missingTopicDetourSlots(state.topicDetour).length)
         : Math.max(1, count - state.batchAccepted);
-      state.generationError = error.message || "Could not generate a new batch.";
+      state.generationError = withAngle(error.message || "Could not generate a new batch.");
       showToast(state.generationError);
     } finally {
       if (activeToken === generationToken) {
@@ -3475,7 +3555,7 @@
         saveState();
         render();
         const queued = state.topicDetour;
-        if (!detourRequest && queued && queued.phase === "queued" && queued.workspaceId === state.workspaceId) beginTopicDetourGeneration(queued);
+        if (!detourRequest && !activeFactBatch && queued && queued.phase === "queued" && queued.workspaceId === state.workspaceId) beginTopicDetourGeneration(queued);
       }
     }
   }
@@ -3571,7 +3651,7 @@
   async function signIn() {
     try {
       const result = await bridge("signIn", {});
-      if (state.account?.id !== result.account?.id) cancelNativeDownload();
+      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); }
       const previousOwner = state.cloudOwnerId;
       state.account = result.account;
       nativeAccountRestored = false;

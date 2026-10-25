@@ -22,6 +22,9 @@ export function formatComparison(baseline,candidate,result=compareReports(baseli
     lines.push(`${id}: ${paired.accepted ? 'PASS' : 'REJECT'}`,
       `  success: ${transition(old?.taskSuccess,next?.taskSuccess,success)} | citations: ${citations(old)} → ${citations(next)} | duplicates: ${transition(old?.duplicateRate,next?.duplicateRate,percent)} | candidate duplicates: ${transition(old?.candidateDuplicateRate,next?.candidateDuplicateRate,percent)}`,
       `  output: ${transition(old?.outputBytes,next?.outputBytes)} bytes | prompt: ${transition(old?.promptBytes,next?.promptBytes)} bytes | calls: ${transition(old?.geminiCalls,next?.geminiCalls)}`);
+    if (old?.angleGuidanceValid !== undefined || next?.angleGuidanceValid !== undefined) {
+      lines.push(`  fact-angle guidance: ${transition(old?.angleGuidanceValid,next?.angleGuidanceValid)}/1`);
+    }
     if (old?.cardTotal || next?.cardTotal) {
       const counts=row=>row ? `${number(row.sentenceCountValid)}/${number(row.cardTotal)} @ ${number(row.expectedSentences)}` : 'missing';
       const coverage=row=>row ? `${number(row.sentenceCited)}/${number(row.sentenceTotal)}` : 'missing';

@@ -169,9 +169,9 @@ public enum PromptBuilder {
         return build(operation, fields: [PromptField("Query", normalized)])
     }
 
-    public static func factCard(sentenceCount: Int, difficulties: [Int], fields: [PromptField], combined: Bool = false) -> String {
+    public static func factCard(sentenceCount: Int, difficulties: [Int], fields: [PromptField], combined: Bool = false, additionalRules: [String] = []) -> String {
         build(combined ? .combined : .grounding, rules: [FactQuality.writingRules(for: sentenceCount, evidenceIDs: true)]
-            + Array(Set(difficulties)).sorted().map { FactQuality.rubric($0) }, fields: fields)
+            + Array(Set(difficulties)).sorted().map { FactQuality.rubric($0) } + additionalRules, fields: fields)
     }
 
     private static func supportingCard(_ card: [String: Any]) -> [String: Any] {

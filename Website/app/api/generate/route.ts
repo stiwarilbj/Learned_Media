@@ -1,6 +1,7 @@
 import { describeGeminiError, generateGeminiFacts } from "@/lib/gemini";
 import type { FactAvoidKey, FactMemory } from "@/lib/fact-quality";
 import type { FactNoveltySignature } from "@/lib/fact-novelty";
+import { isFactAngle, normalizeFactAngle } from "@/lib/fact-angle";
 import type { FeedSettings, LearningProfile } from "@/lib/types";
 import { NextResponse } from "next/server";
 
@@ -10,6 +11,7 @@ type GenerateBody = {
   learningProfile?: LearningProfile;
   avoid?: Array<FactNoveltySignature | FactMemory | FactAvoidKey | string>;
   rabbitHole?: string | null;
+  factAngle?: string;
   requestedCount?: number;
 };
 
@@ -39,6 +41,7 @@ function streamResponse(request: Request, apiKey: string, sessionId: string, bod
         learningProfile: body.learningProfile ?? {},
         avoid: body.avoid ?? [],
         rabbitHole: body.rabbitHole,
+        factAngle: normalizeFactAngle(body.factAngle),
         requestedCount: body.requestedCount,
         signal: request.signal,
         onProgress: (event) => send({ type: "progress", event })
@@ -56,6 +59,7 @@ function streamResponse(request: Request, apiKey: string, sessionId: string, bod
 export async function POST(request: Request) {
   try {
     const body = await request.json() as GenerateBody;
+    if (body.factAngle !== undefined && !isFactAngle(body.factAngle)) return NextResponse.json({ error: "Choose a supported fact angle before generating a batch." }, { status: 400 });
     const apiKey = request.headers.get("x-gemini-api-key")?.trim() ?? "";
     const sessionId = request.headers.get("x-learned-media-session")?.trim() || "browser-session";
     if (!apiKey) return NextResponse.json({ error: "Paste your Gemini API key in Settings and connect it before starting the feed.", reason: "missing-credential" }, { status: 400 });
@@ -68,6 +72,7 @@ export async function POST(request: Request) {
       learningProfile: body.learningProfile ?? {},
       avoid: body.avoid ?? [],
       rabbitHole: body.rabbitHole,
+      factAngle: normalizeFactAngle(body.factAngle),
       requestedCount: body.requestedCount,
       signal: request.signal
     });

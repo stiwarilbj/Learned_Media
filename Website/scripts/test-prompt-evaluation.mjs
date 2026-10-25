@@ -25,8 +25,20 @@ test('paired reports permit a genuine reliability improvement without extra call
  const next=copy();next.promptHash='a'.repeat(64);const result=compareReports(old,next);
  assert.equal(result.accepted,true);assert.equal(result.improved,true);
 });
+test('new angle-specific prompt coverage counts as a measured reliability improvement',()=>{
+ const old=copy(),next=copy();
+ for (const id of ['angle-unexpected-mechanism','angle-unusual-decision','angle-failed-experiment','angle-overlooked-detail']) {
+  const before=old.cases.find(row=>row.id===id),after=next.cases.find(row=>row.id===id);
+  assert.equal(before.angleGuidanceValid,0);after.angleGuidanceValid=1;
+ }
+ next.promptHash='b'.repeat(64);
+ const result=compareReports(old,next);assert.equal(result.accepted,true);assert.equal(result.improved,true);
+ const regressedBaseline=structuredClone(old);regressedBaseline.cases.find(row=>row.id==='angle-failed-experiment').angleGuidanceValid=1;
+ const regressed=structuredClone(next);regressed.cases.find(row=>row.id==='angle-failed-experiment').angleGuidanceValid=0;
+ assert.equal(compareReports(regressedBaseline,regressed).accepted,false);
+});
 test('different fixture sets, modes, missing cases and malformed metrics cannot pass',()=>{
- for(const mutate of [r=>r.suiteHash='other',r=>r.mode='other',r=>r.cases.pop(),r=>r.cases.push(r.cases[0]),r=>r.cases[0].geminiCalls=NaN,r=>r.cases[0].citationValid=2]){
+ for(const mutate of [r=>r.suiteHash='other',r=>r.mode='other',r=>r.cases.pop(),r=>r.cases.push(r.cases[0]),r=>r.cases[0].geminiCalls=NaN,r=>r.cases[0].citationValid=2,r=>r.cases.find(c=>c.id==='angle-failed-experiment').angleGuidanceValid=2]){
   const next=copy();mutate(next);assert.equal(compareReports(baseline,next).accepted,false);
  }
 });

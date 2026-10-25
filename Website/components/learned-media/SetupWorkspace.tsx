@@ -4,8 +4,10 @@ import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
 import type { DisplayMode, FeedSettings, TopicNode } from "@/lib/types";
 import type { TopicSearchIndex } from "@/lib/topic-search-types";
+import type { FactAngle } from "@/lib/fact-angle";
 import { selectedLeafCount, summarizeSelection } from "@/lib/topic-tree";
 import { Icon } from "./icons";
+import { FactAngleControl } from "./FactAngleControl";
 import { TopicTree } from "./TopicTree";
 
 type SetupWorkspaceProps = {
@@ -15,6 +17,7 @@ type SetupWorkspaceProps = {
   searchIndex?: TopicSearchIndex;
   onQueryChange: (value: string) => void;
   settings: FeedSettings;
+  factAngle: FactAngle;
   customTopic: string;
   onCustomTopicChange: (value: string) => void;
   onAddCustomTopic: () => void;
@@ -24,6 +27,7 @@ type SetupWorkspaceProps = {
   onWeightTopic: (id: string, delta: number) => void;
   onRemoveCustomTopic: (id: string) => void;
   onSettingsChange: (next: Partial<FeedSettings>) => void;
+  onFactAngleChange: (angle: FactAngle) => void;
   onResetTopics: () => void;
   onStart: () => void;
   onOpenSettings: () => void;
@@ -36,7 +40,7 @@ const modeCopy: Array<{ id: DisplayMode; label: string; icon: "list" | "lightbul
   { id: "text", label: "Text only", icon: "lightbulb" }
 ];
 
-export function SetupWorkspace({ topics, query, catalogRevision, searchIndex, onQueryChange, settings, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
+export function SetupWorkspace({ topics, query, catalogRevision, searchIndex, onQueryChange, settings, factAngle, customTopic, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onFactAngleChange, onResetTopics, onStart, onOpenSettings, canStart, hasGeminiKey }: SetupWorkspaceProps) {
   const selectedCount = selectedLeafCount(topics);
   const hasSelection = selectedCount > 0;
   const selectionSummary = summarizeSelection(topics);
@@ -95,6 +99,7 @@ export function SetupWorkspace({ topics, query, catalogRevision, searchIndex, on
               <div className="feed-length-options" role="group" aria-label="Description length in sentences">
                 {SENTENCE_LENGTH_OPTIONS.map((length) => <button type="button" key={length} className={settings.sentenceLength === length ? "selected" : ""} aria-pressed={settings.sentenceLength === length} disabled={settings.sentenceLength === length} onClick={() => onSettingsChange({ sentenceLength: length })}>{length}</button>)}
               </div>
+              <FactAngleControl value={factAngle} onChange={onFactAngleChange} id="setup-fact-angle" />
               <button type="button" className={`setup-surprise ${settings.surpriseMe ? "selected" : ""}`} onClick={() => onSettingsChange({ surpriseMe: !settings.surpriseMe })}><Icon name="sparkles" size={14} /> Surprise Me <span>{settings.surpriseMe ? "On" : "Off"}</span></button>
             </div>
           </details>

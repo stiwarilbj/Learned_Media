@@ -223,6 +223,10 @@ function installNetworkMock(options = {}) {
             state.omittedSlots.add("evidence:" + slot);
             return { slot, status: "needs_evidence", claim, missingEvidence: "The passage mentions the subject but does not establish the claimed mechanism." };
           }
+          if (options.angleUnavailableSlot === slot && (!options.angleUnavailableOnce || !state.omittedSlots.has("angle:" + slot))) {
+            state.omittedSlots.add("angle:" + slot);
+            return { slot, status: "angle_unavailable", claim, missingEvidence: "The supplied passages do not document an experiment that failed to reach its intended result." };
+          }
           if (options.duplicateGroundedSlot === slot && !state.omittedSlots.has("grounded-duplicate:" + slot)) {
             state.omittedSlots.add("grounded-duplicate:" + slot);
             return { slot, status: "duplicate", duplicateOf: "previously covered claim" };
@@ -977,7 +981,7 @@ await t.test("active surprise guidance stays within assigned topics without pres
   assert.equal(result.completedCount, 1);
   assert.equal(geminiCallCount(state), 2);
   const candidate = state.candidatePrompts[0];
-  assert.ok(candidate.includes("Surprise mode: Choose an unexpected angle within each assigned topic."));
+  assert.ok(candidate.includes("Surprise mode: Choose a surprising example within the selected fact angle and assigned topic."));
   assert.deepEqual(candidateAssignments(candidate)[0].topicPath, args.topicPaths[0].path);
   for (const prompt of [candidate, state.groundingPrompts[0]]) {
     assert.ok(prompt.includes("Difficulty 1/10:"));
@@ -1287,8 +1291,70 @@ await t.test("needs-evidence results recover only the unsupported slot without p
   const retry = groundingSlots(state.groundingPrompts[1]);
   assert.deepEqual(retry.map(slot => slot.slot), [6]);
   const schema = state.requests.find(request => request.body?.contents?.[0]?.parts?.[0]?.text?.includes("Return one result for each slot"))?.body?.generationConfig?.responseSchema;
-  assert.deepEqual(schema.properties.facts.items.properties.status.enum, ["grounded", "needs_evidence", "duplicate"]);
+  assert.deepEqual(schema.properties.facts.items.properties.status.enum, ["grounded", "needs_evidence", "duplicate", "angle_unavailable"]);
   assert.ok(!schema.properties.facts.items.required.includes("sentences"), "needs-evidence results need no invented sentences");
+});
+
+await t.test("fact angles reach candidate and grounding prompts without changing the two-call path", async () => {
+  const angles = [
+    ["unexpected-mechanism", "Unexpected mechanism", "exclude ordinary explanations"],
+    ["unusual-decision", "Unusual decision", "Do not present a routine decision as unusual"],
+    ["failed-experiment", "Failed experiment", "Distinguish an actual failure from a successful experiment that produced a negative finding"],
+    ["overlooked-detail", "Overlooked detail", "Do not claim the detail is unknown or overlooked by everyone"]
+  ];
+  for (const [factAngle, label, requiredRule] of angles) {
+    const state = installNetworkMock();
+    const sessionId = await connectMock(state);
+    const args = generationArgs(sessionId, { requestedCount: 1, args: { factAngle } });
+    const result = await generateGeminiFacts(args);
+    assert.equal(result.completedCount, 1, `${label} keeps the valid batch`);
+    assert.equal(geminiCallCount(state), 2, `${label} uses the ordinary candidate and grounding calls`);
+    for (const prompt of [...state.candidatePrompts, ...state.groundingPrompts]) {
+      assert.ok(prompt.includes(`Fact angle: ${label}`));
+      assert.ok(prompt.includes(requiredRule));
+      assert.ok(prompt.toLowerCase().includes("the central claim itself must meet this angle"));
+    }
+  }
+});
+
+await t.test("unsupported fact angles are rejected before a model request", async () => {
+  const state = installNetworkMock();
+  const sessionId = await connectMock(state);
+  await assert.rejects(generateGeminiFacts({ ...generationArgs(sessionId), factAngle: "Unexpected mechanism" }), /supported fact angle/);
+  assert.equal(geminiCallCount(state), 0);
+});
+
+await t.test("angle-unavailable grounding retries only that slot and retains the selected angle", async () => {
+  const state = installNetworkMock({ angleUnavailableSlot: 3, angleUnavailableOnce: true });
+  const sessionId = await connectMock(state);
+  const published = [];
+  const result = await generateGeminiFacts({ ...generationArgs(sessionId), requestedCount: 7, factAngle: "failed-experiment", onProgress: event => { if (event.type === "card") published.push(event.slot); } });
+  assert.equal(result.completedCount, 7);
+  assert.equal(geminiCallCount(state), 4, "only the unavailable slot adds candidate and grounding requests");
+  assert.deepEqual(candidateAssignments(state.candidatePrompts.at(-1)).map(slot => slot.slot), [3]);
+  assert.ok(state.candidatePrompts.every(prompt => prompt.includes("Fact angle: Failed experiment")));
+  assert.ok(state.groundingPrompts.every(prompt => prompt.includes("Fact angle: Failed experiment")));
+  assert.deepEqual(published.slice(0, 6), [0, 1, 2, 4, 5, 6]);
+  assert.equal(published.at(-1), 3);
+});
+
+await t.test("cached evidence keeps its angle and retries only an unsupported cached slot", async () => {
+  const options = {};
+  const state = installNetworkMock(options);
+  const sessionId = await connectMock(state);
+  const args = { ...generationArgs(sessionId), requestedCount: 7, factAngle: "overlooked-detail" };
+  const warm = await generateGeminiFacts(args);
+  assert.equal(warm.completedCount, 7);
+  assert.equal(geminiCallCount(state), 2);
+  options.angleUnavailableSlot = 5;
+  options.angleUnavailableOnce = true;
+  const before = geminiCallCount(state);
+  const result = await generateGeminiFacts(args);
+  assert.equal(result.completedCount, 7);
+  assert.equal(geminiCallCount(state) - before, 3, "cached evidence needs one combined call plus recovery for only the missing slot");
+  assert.deepEqual(candidateAssignments(state.candidatePrompts.at(-1)).map(slot => slot.slot), [5]);
+  assert.ok(state.groundingPrompts.slice(-2).every(prompt => prompt.includes("Fact angle: Overlooked detail")));
+  assert.ok(state.groundingPrompts.at(-2).includes("Choose candidates and write grounded cards in one batch"));
 });
 
 await t.test("unsupported claims and missing or unknown claim evidence preserve successful cards", async () => {

@@ -14,7 +14,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		XlrHH5Ro63rYDy5TvSsBhGVrFgE=
+		diytNnqnXgF5uHeJcd1c20QUizU=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -68,6 +68,10 @@
 		<data>
 		cPTTWo3e/gjDUcSRI1vo9EMxH80=
 		</data>
+		<key>Resources/frontend/fact-angles.js</key>
+		<data>
+		YctqEqImRR7i95io4zYl1t3iHkw=
+		</data>
 		<key>Resources/frontend/fact-downloads.js</key>
 		<data>
 		98go8nX1VfHBX3jNygeplYX29ig=
@@ -94,7 +98,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		67nkd68ew0asIMV9Hh+QZmUXoQg=
+		EaMxY1h2ovdRVgpjqO5NvlPAblg=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -122,7 +126,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		4TWuVq/0TPdlXdfXjOYqldMLHVA=
+		wSPtApi6+6rVX/bzpdBTqqeQhHw=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -142,7 +146,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		Vah9SRnZ/nmvw37bHobVvi9GI6A=
+		FCO15g+btsOwsUyB+X8B/4QsTAI=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -221,7 +225,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			tnVwnXpmiP+QKxcl8IkzZPipZlSSgGjgklTbu0KK9Yw=
+			cCN0EyfytfC/efXYAO0yO3qXVLfNs6DVQhJsyxmZMn8=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -315,6 +319,13 @@
 			LjYpPUw5DKYlIH9PG+iOGoWRY8q3OOMuR4prl3wVCgU=
 			</data>
 		</dict>
+		<key>Resources/frontend/fact-angles.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			/gGSpzx2wtKOauW162FdOZMH5z5ejejEncX7K+bU3OA=
+			</data>
+		</dict>
 		<key>Resources/frontend/fact-downloads.js</key>
 		<dict>
 			<key>hash2</key>
@@ -361,7 +372,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			kjxlY9SunajRkNXWioN2ibUY5ga4/2Dox7vBSFet7uk=
+			ohsdTe9iNhX97x84juTyP2fLcLvQp+FOrdLqVKpQYcc=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -410,7 +421,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			C1f6rmegQNCxI3heM+bFgdTW8jzPZ+E4IhfCRkDAtxk=
+			gdCnu1S6kXIGXyEC1clPTurW0Jmpqx3a+zxdfcxvXts=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -445,7 +456,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			h1cButQ9+ab5PpTNSPsOEZiSHzEp9zQPl2BqrEzqJGY=
+			MmKrpsX9+1e1yuCczK1kWOc7PRhoKAbRf3TRRTN+k7c=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>

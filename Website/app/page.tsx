@@ -38,6 +38,7 @@ import { cardGlossaryFingerprint, normalizeCardGlossary } from "@/lib/card-gloss
 import { createSavedCardLocations, cardLocationsFingerprint } from "@/lib/card-locations";
 import { createSavedCardChronology, normalizeSavedCardChronology } from "@/lib/card-chronology";
 import { createSavedFollowUpQuestions, normalizeSavedFollowUpQuestions } from "@/lib/card-follow-ups";
+import { factAngleDefinition, type FactAngle } from "@/lib/fact-angle";
 import { clearCardRevealProgress } from "@/lib/card-reveal";
 import { acceptTopicDetourCard, createTopicDetour, markTopicDetourProgress, missingTopicDetourSlots, orderTopicDetourCards, type TopicDetour, type TopicDetourProgress } from "@/lib/topic-detours";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, SavedCardGlossary, SavedCardLocations, TopicNode, View, WikipediaSource } from "@/lib/types";
@@ -81,6 +82,7 @@ type YouTubeWorkspaceActivity = YouTubeActivityState;
 type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
 type CardSearchWorkerReply = { type: "ready"; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey: string; ids: string[] };
+type ActiveFactBatch = { workspaceId: string; accountId: string | null; key: string; angle: FactAngle };
 type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ coverage?: YouTubeSearchCandidate["coverage"]; videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
 type YouTubeWorkerSearchRequest = { query: string; plan: VideoSearchPlan; topic: YouTubeTopic | "All"; channelId?: string; limit: number; excludedIds?: string[]; expanded?: boolean; viewKey?: string };
 type ConfirmationRequest = {
@@ -464,6 +466,22 @@ export default function HomePage() {
     pendingCustomTopicWorkspace.current = nextWorkspaceId;
   }, []);
   const [settings, setSettings] = useState<FeedSettings>(DEFAULT_SETTINGS);
+  const [selectedFactAngle, setSelectedFactAngleState] = useState<FactAngle>("varied");
+  const selectedFactAngleRef = useRef<FactAngle>("varied");
+  const setSelectedFactAngle = useCallback((angle: FactAngle) => {
+    selectedFactAngleRef.current = angle;
+    setSelectedFactAngleState(angle);
+  }, []);
+  const [activeFactBatch, setActiveFactBatchState] = useState<ActiveFactBatch | null>(null);
+  const activeFactBatchRef = useRef<ActiveFactBatch | null>(null);
+  const updateActiveFactBatch = useCallback((batch: ActiveFactBatch | null) => {
+    activeFactBatchRef.current = batch;
+    setActiveFactBatchState(batch);
+  }, []);
+  const clearFactAngleBatch = useCallback(() => {
+    updateActiveFactBatch(null);
+    setSelectedFactAngle("varied");
+  }, [setSelectedFactAngle, updateActiveFactBatch]);
   const [cards, setCards] = useState<FactCard[]>([]);
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
@@ -520,6 +538,13 @@ export default function HomePage() {
   const [geminiStatus, setGeminiStatus] = useState<GeminiStatus>("not-configured");
   const [supabaseConfigured, setSupabaseConfigured] = useState(false);
   const [account, setAccount] = useState<CloudAccount | null>(null);
+  const factAngleOwnerRef = useRef<{ workspaceId: string; accountId: string | null } | null>(null);
+  useEffect(() => {
+    const owner = { workspaceId, accountId: account?.id ?? null };
+    const previous = factAngleOwnerRef.current;
+    if (previous && (previous.workspaceId !== owner.workspaceId || previous.accountId !== owner.accountId)) clearFactAngleBatch();
+    factAngleOwnerRef.current = owner;
+  }, [account?.id, clearFactAngleBatch, workspaceId]);
   const [syncStatus, setSyncStatus] = useState<"signed-out" | "syncing" | "synced" | "offline" | "error">("signed-out");
   const [syncError, setSyncError] = useState("");
   const [modelChecks, setModelChecks] = useState<GeminiModelCheck[]>(() => ALLOWED_GEMINI_MODELS.map((model) => ({ model, status: "unchecked" })));
@@ -789,11 +814,12 @@ export default function HomePage() {
     requestGeneration.current += 1;
     workspaceEpochRef.current += 1;
     setLoading(false);
+    clearFactAngleBatch();
     setLearnLoading(null);
     setQuestionLoading(null);
     setAdaptationLoading(null);
     setYoutubeSmartSearchLoading(false);
-  }, [updateTopicDetour]);
+  }, [clearFactAngleBatch, updateTopicDetour]);
 
   const scheduleCloudSave = useCallback(() => {
     const currentStore = workspaceStoreRef.current;
@@ -1193,6 +1219,12 @@ export default function HomePage() {
         if (apiKeyRef.current !== keys.gemini) {
           connectionAbortController.current?.abort();
           generationAbortController.current?.abort();
+          generationAbortController.current = null;
+          activeGenerationDetourId.current = null;
+          if (activeFactBatchRef.current) {
+            clearFactAngleBatch();
+            updateTopicDetour(null);
+          }
           learningAbortController.current?.abort();
           questionAbortController.current?.abort();
           adaptationAbortController.current?.controller.abort();
@@ -1910,6 +1942,21 @@ export default function HomePage() {
       setView("settings");
       return;
     }
+    const accountId = account?.id ?? null;
+    const batchKey = detourRequest ? `detour:${detourRequest.id}` : "feed";
+    const currentBatch = activeFactBatchRef.current;
+    let batchAngle: FactAngle;
+    if (currentBatch && currentBatch.workspaceId === workspaceIdRef.current && currentBatch.accountId === accountId && currentBatch.key === batchKey) {
+      batchAngle = currentBatch.angle;
+    } else if (currentBatch) {
+      setToast("Finish or end the current batch before starting another one.");
+      return;
+    } else {
+      batchAngle = selectedFactAngleRef.current;
+      updateActiveFactBatch({ workspaceId: workspaceIdRef.current, accountId, key: batchKey, angle: batchAngle });
+      setSelectedFactAngle("varied");
+    }
+    const angleError = (message: string) => `${factAngleDefinition(batchAngle).label} · ${message}`;
     const controller = new AbortController();
     const requestId = requestGeneration.current;
     const imageWorkspaceId = workspaceIdRef.current;
@@ -1957,6 +2004,7 @@ export default function HomePage() {
           settings,
           learningProfile,
           rabbitHole: activeRabbitHole,
+          factAngle: batchAngle,
           avoid: factNoveltySignatures(factMemoryRef.current),
           signal: controller.signal,
           onProgress: (event) => {
@@ -1981,30 +2029,32 @@ export default function HomePage() {
           const missing = topicDetourRef.current?.id === detourRequest.id ? missingTopicDetourSlots(topicDetourRef.current) : [];
           setFeedHasMore(missing.length === 0);
           setPendingSlots(missing.length || DEFAULT_CARD_GENERATION_COUNT);
-          setGenerationError(missing.length ? result.retryGuidance ?? "Some topic cards could not be verified. Retry to fill the remaining facts." : "");
+          setGenerationError(missing.length ? angleError(result.retryGuidance ?? "Some topic cards could not be verified. Retry to fill the remaining facts.") : "");
+          if (!missing.length) updateActiveFactBatch(null);
           return;
         }
         if (!receivedIds.size) {
           setFeedHasMore(false);
           setPendingSlots(count);
-          setGenerationError("Gemini returned no new complete cards. Retry when you are ready.");
+          setGenerationError(angleError("Gemini returned no new complete cards. Retry when you are ready."));
           setToast("No new complete facts arrived. Retry when you are ready.");
         } else if (result.partial || receivedIds.size < count) {
           setFeedHasMore(false);
           setPendingSlots(Math.max(1, count - receivedIds.size));
-          setGenerationError(result.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards.");
+          setGenerationError(angleError(result.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards."));
           setToast(receivedIds.size + " facts arrived. Retry to fill the remaining slots.");
         } else {
           setFeedHasMore(true);
           setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
           setGenerationError("");
+          updateActiveFactBatch(null);
         }
         return;
       }
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
-        body: JSON.stringify({ topics: assignedTopics, requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, avoid: factNoveltySignatures(factMemoryRef.current) }),
+        body: JSON.stringify({ topics: assignedTopics, requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, factAngle: batchAngle, avoid: factNoveltySignatures(factMemoryRef.current) }),
         signal: controller.signal
       });
       if (!response.ok) {
@@ -2043,31 +2093,33 @@ export default function HomePage() {
         const missing = topicDetourRef.current?.id === detourRequest.id ? missingTopicDetourSlots(topicDetourRef.current) : [];
         setFeedHasMore(missing.length === 0);
         setPendingSlots(missing.length || DEFAULT_CARD_GENERATION_COUNT);
-        setGenerationError(missing.length ? finalPayload?.retryGuidance ?? "Some topic cards could not be verified. Retry to fill the remaining facts." : "");
+        setGenerationError(missing.length ? angleError(finalPayload?.retryGuidance ?? "Some topic cards could not be verified. Retry to fill the remaining facts.") : "");
+        if (!missing.length) updateActiveFactBatch(null);
         return;
       }
       if (!receivedIds.size) {
         setFeedHasMore(false);
         setPendingSlots(count);
-        setGenerationError("Gemini returned no new complete cards. Retry when you are ready.");
+        setGenerationError(angleError("Gemini returned no new complete cards. Retry when you are ready."));
         setToast("No new complete facts arrived. Retry when you are ready.");
       } else if (finalPayload?.partial || receivedIds.size < count) {
         setFeedHasMore(false);
         setPendingSlots(Math.max(1, count - receivedIds.size));
-        setGenerationError(finalPayload?.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards.");
+        setGenerationError(angleError(finalPayload?.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards."));
         setToast(receivedIds.size + " facts arrived. Retry to fill the remaining slots.");
       } else {
         setFeedHasMore(true);
         setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
         setGenerationError("");
+        updateActiveFactBatch(null);
       }
     } catch (error) {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       setFeedHasMore(false);
       setPendingSlots(detourRequest && topicDetourRef.current?.id === detourRequest.id ? Math.max(1, missingTopicDetourSlots(topicDetourRef.current).length) : Math.max(1, count - receivedIds.size));
       const message = error instanceof Error ? error.message : "Gemini could not generate this batch. Check the key in Settings and try again.";
-      setGenerationError(message);
-      setToast(message);
+      setGenerationError(angleError(message));
+      setToast(angleError(message));
     } finally {
       if (!controller.signal.aborted && requestGeneration.current === requestId && displayModeRef.current === "picture-text") enqueueImageHydration(Array.from(receivedCards.values()), requestId, imageWorkspaceId);
       if (generationAbortController.current === controller) {
@@ -2075,7 +2127,7 @@ export default function HomePage() {
         activeGenerationDetourId.current = null;
         setLoading(false);
         const queued = topicDetourRef.current;
-        if (!controller.signal.aborted && !detourRequest && queued?.phase === "queued" && queued.workspaceId === workspaceIdRef.current) {
+        if (!controller.signal.aborted && !activeFactBatchRef.current && !detourRequest && queued?.phase === "queued" && queued.workspaceId === workspaceIdRef.current) {
           const slots = missingTopicDetourSlots(queued);
           const request = { id: queued.id, topicPath: [...queued.topicPath], slotIndexes: slots };
           updateTopicDetour({ ...queued, phase: "generating" });
@@ -2085,7 +2137,7 @@ export default function HomePage() {
         }
       }
     }
-  }, [apiKey, enqueueImageHydration, geminiStatus, learningProfile, pendingSlots, rabbitHole, selectedCount, settings, topics, updateTopicDetour]);
+  }, [account?.id, apiKey, enqueueImageHydration, geminiStatus, learningProfile, pendingSlots, rabbitHole, selectedCount, setSelectedFactAngle, settings, topics, updateActiveFactBatch, updateTopicDetour]);
   startFeedRef.current = startFeed;
 
   const startTopicDetour = useCallback((sourceCardId: string) => {
@@ -2103,15 +2155,18 @@ export default function HomePage() {
       generationAbortController.current = null;
       activeGenerationDetourId.current = null;
       setLoading(false);
+      updateActiveFactBatch(null);
+    } else if (activeFactBatchRef.current?.key.startsWith("detour:")) {
+      updateActiveFactBatch(null);
     }
-    updateTopicDetour(next);
+    const current = { ...next, phase: activeFactBatchRef.current || generationAbortController.current ? "queued" as const : "generating" as const };
+    updateTopicDetour(current);
     setRabbitHole(null);
     setView("feed");
-    if (generationAbortController.current) return;
+    if (generationAbortController.current || activeFactBatchRef.current) return;
     const request = { id: next.id, topicPath: [...next.topicPath], slotIndexes: [0, 1, 2] };
-    updateTopicDetour({ ...next, phase: "generating" });
     void startFeedRef.current?.(null, 3, request);
-  }, [apiKey, geminiStatus, updateTopicDetour]);
+  }, [apiKey, geminiStatus, updateActiveFactBatch, updateTopicDetour]);
 
   const endTopicDetour = useCallback(() => {
     const current = topicDetourRef.current;
@@ -2122,11 +2177,34 @@ export default function HomePage() {
       generationAbortController.current = null;
       activeGenerationDetourId.current = null;
       setLoading(false);
+      if (activeFactBatchRef.current?.key === `detour:${current.id}`) updateActiveFactBatch(null);
+    } else if (activeFactBatchRef.current?.key === `detour:${current.id}`) {
+      updateActiveFactBatch(null);
     }
     updateTopicDetour(null);
     setFeedHasMore(true);
     setGenerationError("");
-  }, [updateTopicDetour]);
+  }, [updateActiveFactBatch, updateTopicDetour]);
+
+  const endFactBatch = useCallback(() => {
+    if (generationAbortController.current) return;
+    const active = activeFactBatchRef.current;
+    if (!active) return;
+    updateActiveFactBatch(null);
+    setSelectedFactAngle("varied");
+    setGenerationError("");
+    setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
+    setFeedHasMore(true);
+    if (active.key.startsWith("detour:") && topicDetourRef.current?.id === active.key.slice("detour:".length)) updateTopicDetour(null);
+    const queued = topicDetourRef.current;
+    if (queued?.phase === "queued" && queued.workspaceId === workspaceIdRef.current) {
+      const request = { id: queued.id, topicPath: [...queued.topicPath], slotIndexes: missingTopicDetourSlots(queued) };
+      updateTopicDetour({ ...queued, phase: "generating" });
+      queueMicrotask(() => {
+        if (topicDetourRef.current?.id === request.id && !generationAbortController.current) void startFeedRef.current?.(null, request.slotIndexes.length, request);
+      });
+    }
+  }, [setSelectedFactAngle, updateActiveFactBatch, updateTopicDetour]);
 
   const handleTopicDetourProgress = useCallback((cardId: string, progress: TopicDetourProgress) => {
     const current = topicDetourRef.current;
@@ -2149,7 +2227,11 @@ export default function HomePage() {
 
   const retryGeneration = useCallback(() => {
     const current = topicDetourRef.current;
-    if (!current) { void startFeed(null, pendingSlots); return; }
+    // A queued detour must not steal Retry from a partially completed feed batch.
+    if (activeFactBatchRef.current?.key === "feed" || !current || current.phase === "queued") {
+      void startFeed(null, pendingSlots);
+      return;
+    }
     const slotIndexes = missingTopicDetourSlots(current);
     if (!slotIndexes.length) return;
     const request = { id: current.id, topicPath: [...current.topicPath], slotIndexes };
@@ -2196,6 +2278,7 @@ export default function HomePage() {
     setAdaptationLoading(null);
     setLearningErrors({});
     setGenerationError("");
+    clearFactAngleBatch();
     setTopics(blankTopics);
     setView("feed");
     if (hydrated) {
@@ -2206,7 +2289,7 @@ export default function HomePage() {
       window.scrollTo({ top: 0, behavior: "smooth" });
       mainScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     });
-  }, [cancelGeneration, clearTopicDetourStatusNotice, hydrated, learningProfile, settings, theme, topics, updateTopicDetour]);
+  }, [cancelGeneration, clearFactAngleBatch, clearTopicDetourStatusNotice, hydrated, learningProfile, settings, theme, topics, updateTopicDetour]);
 
   const resetTopics = useCallback(() => {
     const blankTopics = clearTopicSelections(topics);
@@ -2494,6 +2577,7 @@ export default function HomePage() {
   const performResetAllPreferences = useCallback(() => {
     clearTopicDetourStatusNotice();
     cancelGeneration();
+    clearFactAngleBatch();
     requestGeneration.current += 1;
     setTopics(createDefaultTopics());
     topicCatalogReset.current += 1;
@@ -2523,7 +2607,7 @@ export default function HomePage() {
     window.dispatchEvent(new Event("learned-media-reset-downloads"));
     setView("feed");
     setToast("Preferences restored to the starting mix.");
-  }, [cancelGeneration, clearTopicDetourStatusNotice, setRevealGraduallyPreference, updateTopicDetour]);
+  }, [cancelGeneration, clearFactAngleBatch, clearTopicDetourStatusNotice, setRevealGraduallyPreference, updateTopicDetour]);
 
   const resetAllPreferences = useCallback(() => {
     setConfirmation({
@@ -2537,6 +2621,7 @@ export default function HomePage() {
   const performDeleteLearningData = useCallback(() => {
     clearTopicDetourStatusNotice();
     cancelGeneration();
+    clearFactAngleBatch();
     requestGeneration.current += 1;
     setCards([]);
     setQuestionDrafts({});
@@ -2550,7 +2635,7 @@ export default function HomePage() {
     setRabbitHole(null);
     updateTopicDetour(null);
     setToast("Learning data cleared. Your topic library and Gemini key were kept.");
-  }, [cancelGeneration, clearTopicDetourStatusNotice, updateTopicDetour]);
+  }, [cancelGeneration, clearFactAngleBatch, clearTopicDetourStatusNotice, updateTopicDetour]);
 
   const deleteLearningData = useCallback(() => {
     setConfirmation({
@@ -2569,6 +2654,12 @@ export default function HomePage() {
     apiKeyRef.current = value;
     connectionAbortController.current?.abort();
     generationAbortController.current?.abort();
+    generationAbortController.current = null;
+    activeGenerationDetourId.current = null;
+    if (activeFactBatchRef.current) {
+      updateTopicDetour(null);
+      clearFactAngleBatch();
+    }
     learningAbortController.current?.abort();
     questionAbortController.current?.abort();
     adaptationAbortController.current?.controller.abort();
@@ -2591,7 +2682,7 @@ export default function HomePage() {
     setQuestionLoading(null);
     setAdaptationLoading(null);
     setGenerationError("");
-  }, []);
+  }, [clearFactAngleBatch, updateTopicDetour]);
 
   const testConnection = useCallback(async () => {
     const keyAtStart = apiKeyRef.current.trim();
@@ -3161,8 +3252,8 @@ export default function HomePage() {
       if (view === "videos") return <VideoWorkspace workspaceId={workspaceId} playbackFlushRef={youtubePlaybackFlushRef} workspace={youtubeWorkspace} videoById={youtubeIndexes.videoById} channelById={youtubeIndexes.channelById} videosByChannel={youtubeIndexes.videosByChannel} youtubeStatus={youtubeStatus} progress={youtubeProgress} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} searchHasMore={youtubeSearchHasMore} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(youtubeTopicPool(topic), 24, [], current.prioritizeRecentByChannel).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={recordYouTubePlaybackPosition} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onThreeMore={startTopicDetour} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} revealGradually={revealGradually} onRevealGraduallyChange={setRevealGraduallyPreference} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus === "synced" && keySyncStatus === "syncing" ? "syncing" : syncStatus === "synced" && keySyncStatus === "error" ? "error" : syncStatus} syncError={[syncError, keySyncError].filter(Boolean).join(" ")} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
-    if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
-    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
+    if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} factAngle={selectedFactAngle} onFactAngleChange={setSelectedFactAngle} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
+    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} factAngle={activeFactBatch?.angle ?? selectedFactAngle} factAngleLocked={Boolean(activeFactBatch)} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onEndFactBatch={endFactBatch} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onFactAngleChange={setSelectedFactAngle} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
 
   const topicSuggestions = localTopicSuggestions;

@@ -19,7 +19,9 @@ export function compareReports(baseline,candidate) {
     for (const r of [old,next]) {
       if (typeof r.taskSuccess!=='boolean' || ['citationTotal','citationValid','duplicateRate','candidateDuplicateRate','outputBytes','promptBytes','geminiCalls'].some(k=>!Number.isFinite(r[k]) || r[k]<0)
         || r.citationValid>r.citationTotal || r.duplicateRate>1 || r.candidateDuplicateRate>1) errors.push(`${old.id}: invalid metrics`);
+      if ('angleGuidanceValid' in r && (!Number.isInteger(r.angleGuidanceValid) || r.angleGuidanceValid<0 || r.angleGuidanceValid>1)) errors.push(`${old.id}: invalid angle-guidance metric`);
     }
+    if (('angleGuidanceValid' in old) !== ('angleGuidanceValid' in next)) errors.push(`${old.id}: angle-guidance metrics differ`);
     const sentenceMetrics=['expectedSentences','cardTotal','sentenceCountValid','sentenceTotal','sentenceCited'];
     // Historical paired reports without these metrics remain comparable with each other.
     if (sentenceMetrics.some(k=>k in old || k in next)) {
@@ -41,7 +43,9 @@ export function compareReports(baseline,candidate) {
     if (next.geminiCalls>old.geminiCalls) errors.push(`${old.id}: Gemini calls increased`);
     if (next.outputBytes>Math.ceil(old.outputBytes*1.1)) errors.push(`${old.id}: model output grew by more than 10%`);
     if (next.promptBytes>Math.ceil(old.promptBytes*1.1)) errors.push(`${old.id}: prompt grew by more than 10%`);
-    improved ||= (!old.taskSuccess && next.taskSuccess) || validity(next)>validity(old) || next.duplicateRate<old.duplicateRate || next.candidateDuplicateRate<old.candidateDuplicateRate;
+    if ('angleGuidanceValid' in old && next.angleGuidanceValid<old.angleGuidanceValid) errors.push(`${old.id}: fact-angle prompt guidance regressed`);
+    improved ||= (!old.taskSuccess && next.taskSuccess) || validity(next)>validity(old) || next.duplicateRate<old.duplicateRate || next.candidateDuplicateRate<old.candidateDuplicateRate
+      || ('angleGuidanceValid' in old && next.angleGuidanceValid>old.angleGuidanceValid);
   }
   if (baseline.promptHash!==candidate.promptHash && !improved) errors.push('Changed prompts need a measured reliability improvement; passing unchanged replays alone is insufficient.');
   return {accepted:errors.length===0,improved,errors};
