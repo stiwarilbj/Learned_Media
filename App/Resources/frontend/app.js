@@ -163,7 +163,7 @@
         state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; });
         clearSessionSearchCaches(); state.connectionToken += 1; state.generationRequestToken += 1;
       }
-      if (state.youtubeKey !== keys.youtube) { state.youtubeKey = keys.youtube; state.youtubeStatus = "not-configured"; state.connectionToken += 1; }
+      if (state.youtubeKey !== keys.youtube) { invalidateNativeYouTubeSync(); state.youtubeKey = keys.youtube; state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; clearNativeYouTubeProgress(); }
       bridge("useKeys", keys).then(function () { if (restored) checkRestoredNativeKey(keys.gemini); }).catch(function () {});
       if (!nativeKeyEditing) render();
     },
@@ -271,6 +271,7 @@
   let topicSearchExpansionSuppressed = false;
   const topicSearchExpansionOverrides = new Map();
   let youtubeSyncActive = false;
+  let youtubeSyncToken = 0;
   let youtubeSearchToken = 0;
   let searchInterpretToken = 0;
   let searchInterpretTimer = null;
@@ -1611,7 +1612,7 @@
     const progress = state.youtubeProgress || {};
     const sourceCount = progress.completedSources !== undefined ? (progress.completedSources || 0) + "/" + (progress.totalSources || 0) + " sources" : (progress.completedChannels || 0) + "/" + (progress.totalChannels || 58) + " channels";
     const notice = node("div", { className: "video-import-notice", role: "status" }, node("div", {}, node("strong", { text: progress.phase === "paused" ? "Import paused" : state.youtubeStatus === "refreshing" ? "Refreshing your approved library" : "Building your approved library" }), node("span", { dataset: { youtubeProgressCount: "true" }, text: sourceCount + " · " + (progress.importedVideos || 0).toLocaleString() + " videos imported" + (state.youtubeError ? " · " + state.youtubeError : "") })));
-    notice.appendChild(node("button", { className: "ghost-button", onClick: progress.phase === "paused" ? function () { youtubeConnect(false); } : progress.phase === "complete" || progress.phase === "error" ? function () { youtubeConnect(true); } : function () { state.youtubeStatus = "paused"; publishNativeYouTubeProgress(Object.assign({}, state.youtubeProgress, { phase: "paused" })); state.connectionToken += 1; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); render(); } }, progress.phase === "paused" ? "Resume" : progress.phase === "complete" || progress.phase === "error" ? "Retry" : "Pause"));
+    notice.appendChild(node("button", { className: "ghost-button", onClick: progress.phase === "paused" ? function () { youtubeConnect(false); } : progress.phase === "complete" || progress.phase === "error" ? function () { youtubeConnect(true); } : function () { state.youtubeStatus = "paused"; invalidateNativeYouTubeSync(); publishNativeYouTubeProgress(Object.assign({}, state.youtubeProgress, { phase: "paused" })); state.connectionToken += 1; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); render(); } }, progress.phase === "paused" ? "Resume" : progress.phase === "complete" || progress.phase === "error" ? "Retry" : "Pause"));
     return notice;
   }
   function updateNativeYouTubeProgressNotices() {
@@ -1626,11 +1627,24 @@
     youtubeProgressStore.publish(state.youtubeProgress);
     if (progress.phase === "complete" || progress.phase === "error") render();
   }
+  function invalidateNativeYouTubeSync() {
+    youtubeSyncToken += 1;
+    youtubeSyncActive = false;
+  }
+  function idleNativeYouTubeProgress() {
+    return { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 };
+  }
+  function clearNativeYouTubeProgress() {
+    const progress = state.youtubeProgress || {};
+    if (progress.phase === "idle" && progress.completedChannels === 0 && progress.totalChannels === window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length && progress.importedVideos === 0 && progress.completedSources === 0 && progress.totalSources === 0 && !progress.currentSource && !progress.error) return;
+    publishNativeYouTubeProgress(idleNativeYouTubeProgress());
+  }
   function youtubeConnect(force) {
     const key = state.youtubeKey.trim();
     if (!key) { state.view = "settings"; showToast("Paste your YouTube API key in Settings first."); return; }
     if (youtubeSyncActive) return;
     youtubeSyncActive = true;
+    const syncToken = ++youtubeSyncToken;
     const token = ++state.connectionToken;
     state.youtubeStatus = state.youtube.videos.length ? "refreshing" : "connecting"; state.youtubeError = ""; publishNativeYouTubeProgress({ phase: "resolving", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }); render();
     window.LEARNED_MEDIA_YOUTUBE.sync(key, state.youtube, function (progress) { if (token !== state.connectionToken) return; publishNativeYouTubeProgress(progress); }, Boolean(force), function () { return token === state.connectionToken; }).then(async function (result) {
@@ -1639,7 +1653,7 @@
       if (token !== state.connectionToken) return;
       const available = {}; result.videos.forEach(function (video) { available[video.id] = true; }); const preserved = (state.youtube.discoverIds || []).filter(function (id) { return available[id]; });
       state.youtube = Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: shared.youtube.YOUTUBE_CATALOG_VERSION, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : (result.lastSyncAt || new Date().toISOString()), discoverIds: preserved.length ? preserved : window.LEARNED_MEDIA_YOUTUBE.shuffle(discoveryVideos(result.videos), 24, [],state.youtube.prioritizeRecentByChannel).map(function (video) { return video.id; }) }); state.youtubeStatus = result.incomplete ? "error" : "connected"; state.youtubeError = result.progress.error || ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; if (force) videoSearchIndex(true); saveState(); render(); showToast(result.incomplete ? "YouTube connected, but some approved sources need a retry." : "YouTube connected. Your approved video library is ready.");
-    }).catch(function (error) { if (token !== state.connectionToken) return; state.youtubeStatus = "error"; state.youtubeError = error.message || "YouTube import failed."; publishNativeYouTubeProgress(Object.assign({}, state.youtubeProgress, { phase: "error" })); showToast(state.youtubeError); }).finally(function () { youtubeSyncActive = false; });
+    }).catch(function (error) { if (token !== state.connectionToken) return; state.youtubeStatus = "error"; state.youtubeError = error.message || "YouTube import failed."; publishNativeYouTubeProgress(Object.assign({}, state.youtubeProgress, { phase: "error" })); showToast(state.youtubeError); }).finally(function () { if (syncToken === youtubeSyncToken) youtubeSyncActive = false; });
   }
   const videoSearch = window.LEARNED_MEDIA_VIDEO_SEARCH;
   let youtubeSemanticWorker = null, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0, youtubeIndexPolicy = "";
@@ -1975,6 +1989,12 @@
   }
   function collapseTopicBranches(topics) { return shared.collapseTopicBranches(topics); }
   function cancelWorkspaceOperations() {
+    if (youtubeSyncActive || state.youtubeProgress.phase !== "idle") {
+      invalidateNativeYouTubeSync();
+      state.youtubeStatus = state.youtube.incomplete ? "error" : state.youtube.videos.length ? "connected" : "not-configured";
+      state.youtubeError = "";
+      publishNativeYouTubeProgress(idleNativeYouTubeProgress());
+    }
     for(const entry of learningTasks.values())entry.task?.cancel?.();learningTasks.clear();
     clearTopicDetourCompletionNotice();
     state.repeatBatchPreview = null;
@@ -2998,11 +3018,11 @@
     youtube.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("image", 19)), node("div", {}, node("h2", { text: "YouTube Videos" }), node("p", { text: "Use your own YouTube Data API key for the approved video library." })), node("span", { className: "status-dot " + (state.youtubeStatus === "connected" || state.youtubeStatus === "refreshing" ? "connected" : state.youtubeStatus === "error" ? "unavailable" : ""), text: state.youtubeStatus === "connecting" ? "Connecting" : state.youtubeStatus === "refreshing" ? "Refreshing" : state.youtubeStatus === "connected" ? "Connected" : state.youtubeStatus === "error" ? "Needs attention" : "Not configured" })));
     youtube.appendChild(node("label", { className: "field-label", text: "Paste your YouTube API key here" }));
     const youtubeRow = node("div", { className: "key-input-row" });
-    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.youtubeKey = event.target.value; editNativeCredential("youtube", state.youtubeKey); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; state.youtubeProgress = { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }; bridge("cancelAll", {}).catch(function () {}); render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
+    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; invalidateNativeYouTubeSync(); state.youtubeKey = event.target.value; editNativeCredential("youtube", state.youtubeKey); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; clearNativeYouTubeProgress(); bridge("cancelAll", {}).catch(function () {}); render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
     const youtubeActions = node("div", { className: "key-actions" });
     youtubeActions.appendChild(node("button", { className: "primary-button small", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: youtubeConnect }, state.youtubeStatus === "connecting" ? " Connecting" : state.youtubeStatus === "refreshing" ? " Refreshing" : " Connect YouTube"));
     youtubeActions.appendChild(node("button", { className: "ghost-button", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: function () { youtubeConnect(true); } }, "Refresh videos"));
-    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.keyEditEpoch += 1; state.youtubeKey = ""; editNativeCredential("youtube", ""); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; bridge("cancelAll", {}).catch(function () {}); showToast("Remembered YouTube key removed."); } }, "Remove key"));
+    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.keyEditEpoch += 1; invalidateNativeYouTubeSync(); state.youtubeKey = ""; editNativeCredential("youtube", ""); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; clearNativeYouTubeProgress(); bridge("cancelAll", {}).catch(function () {}); showToast("Remembered YouTube key removed."); } }, "Remove key"));
     youtubeRow.appendChild(youtubeActions); youtube.appendChild(youtubeRow);
     youtube.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your YouTube key is remembered in this Mac’s Keychain and privately synced when you sign in with Google." })));
     const guideCopy = node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a YouTube key?" }), node("p", { html: "1. <a href=\"https://console.cloud.google.com/projectcreate\" target=\"_blank\">Create or select a Google Cloud project</a><br>2. <a href=\"https://console.cloud.google.com/apis/library/youtube.googleapis.com\" target=\"_blank\">Enable YouTube Data API v3</a><br>3. Open <a href=\"https://console.cloud.google.com/apis/credentials\" target=\"_blank\">Credentials</a> → Create credentials → API key and restrict it to YouTube Data API v3<br>4. Copy the key into Learned Media and connect" }));
@@ -3878,7 +3898,7 @@
   async function signIn() {
     try {
       const result = await bridge("signIn", {});
-      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); state.repeatBatchPreview = null; state.repeatMenuOpen = false; questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); questionInstructionPreferences.clear(); questionInstructionRevisions.clear(); answerOptionsOpenKey=""; }
+      if (state.account?.id !== result.account?.id) { cancelWorkspaceOperations(); cancelNativeDownload(); clearFactAngleBatch(); state.repeatBatchPreview = null; state.repeatMenuOpen = false; questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); questionInstructionPreferences.clear(); questionInstructionRevisions.clear(); answerOptionsOpenKey=""; }
       const previousOwner = state.cloudOwnerId;
       state.account = result.account;
       nativeAccountRestored = false;

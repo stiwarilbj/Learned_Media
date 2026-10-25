@@ -826,7 +826,16 @@ export default function HomePage() {
     glossaryAbortController.current?.controller.abort();
     glossaryAbortController.current = null;
     setGlossaryLoading(null);
-    youtubeAbortController.current?.abort();
+    const activeYouTubeImport = youtubeAbortController.current;
+    if (activeYouTubeImport) {
+      activeYouTubeImport.abort();
+      youtubeAbortController.current = null;
+      setYoutubeStatus((current) => current === "connecting" || current === "refreshing"
+        ? youtubeWorkspaceRef.current.libraryIncomplete ? "error" : youtubeWorkspaceRef.current.videos.length ? "connected" : "not-configured"
+        : current);
+      setYoutubeError("");
+    }
+    publishYouTubeImportProgress({ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0, completedSources: 0 }, true);
     youtubeSearchAbortController.current?.abort();
     globalSearchAbortController.current?.abort();
     imageHydrationControllers.current.forEach(controller => controller.abort());
@@ -1115,7 +1124,10 @@ export default function HomePage() {
     questionAbortController.current?.abort();
     adaptationAbortController.current?.controller.abort();
     glossaryAbortController.current?.controller.abort();
-    youtubeAbortController.current?.abort();
+    const activeYouTubeImport = youtubeAbortController.current;
+    activeYouTubeImport?.abort();
+    if (youtubeAbortController.current === activeYouTubeImport) youtubeAbortController.current = null;
+    if (activeYouTubeImport) publishYouTubeImportProgress({ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0, completedSources: 0 }, true);
     youtubeSearchAbortController.current?.abort();
   }, []);
 
@@ -1279,7 +1291,10 @@ export default function HomePage() {
           restoredGeminiKey.current = userEditingKey.current ? "" : keys.gemini;
         }
         if (youtubeKeyRef.current !== keys.youtube) {
-          youtubeAbortController.current?.abort();
+          const activeYouTubeImport = youtubeAbortController.current;
+          activeYouTubeImport?.abort();
+          if (youtubeAbortController.current === activeYouTubeImport) youtubeAbortController.current = null;
+          publishYouTubeImportProgress({ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0, completedSources: 0 }, true);
           youtubeSearchAbortController.current?.abort();
           youtubeKeyRef.current = keys.youtube;
           setYoutubeKey(keys.youtube);
@@ -1310,6 +1325,7 @@ export default function HomePage() {
       const user = session?.user;
       const owner = user?.id ?? null;
       if (credentialOwner.current !== owner) {
+        cancelWorkspaceRequests();
         credentialOwner.current = owner;
         setQuestionDrafts({});
         setAuthRestored(false);
@@ -1426,7 +1442,7 @@ export default function HomePage() {
     };
     window.addEventListener("online", retry); window.addEventListener("focus", retry);
     return () => { active = false; listener.subscription.unsubscribe(); cloudAbortController.current?.abort(); window.removeEventListener("online", retry); window.removeEventListener("focus", retry); };
-  }, [hydrated, keysHydrated, resetCustomTopicReservations, scheduleCloudSave, updateLastCompletedBatchSetup]);
+  }, [cancelWorkspaceRequests, hydrated, keysHydrated, resetCustomTopicReservations, scheduleCloudSave, updateLastCompletedBatchSetup]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -2991,7 +3007,7 @@ export default function HomePage() {
     try {
       const workspaceAtStart = workspaceIdRef.current;
       const result = await importCoordinatedYouTubeCatalog(keyAtStart, controller.signal,
-        (progress) => { if (!controller.signal.aborted && youtubeKeyRef.current.trim() === keyAtStart) publishYouTubeImportProgress(progress); },
+        (progress) => { if (!controller.signal.aborted && youtubeKeyRef.current.trim() === keyAtStart && workspaceIdRef.current === workspaceAtStart) publishYouTubeImportProgress(progress); },
         { force, workspaceId: workspaceAtStart });
       if (controller.signal.aborted || youtubeKeyRef.current.trim() !== keyAtStart || workspaceIdRef.current !== workspaceAtStart) return;
       const catalog = result.workspace;
@@ -3065,13 +3081,22 @@ export default function HomePage() {
     keyEditEpoch.current += 1;
     credentialManager.current?.edit("youtube", value);
     youtubeKeyRef.current = value;
-    youtubeAbortController.current?.abort();
+    const activeYouTubeImport = youtubeAbortController.current;
+    activeYouTubeImport?.abort();
+    if (youtubeAbortController.current === activeYouTubeImport) youtubeAbortController.current = null;
     youtubeSearchAbortController.current?.abort();
     youtubeSearchCache.current.clear();
     setYoutubeKey(value);
     setYoutubeStatus("not-configured");
     setYoutubeError("");
     publishYouTubeImportProgress({ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS.length, importedVideos: 0, completedSources: 0 }, true);
+  }, []);
+
+  const pauseYouTubeImport = useCallback(() => {
+    const activeYouTubeImport = youtubeAbortController.current;
+    activeYouTubeImport?.abort();
+    if (youtubeAbortController.current === activeYouTubeImport) youtubeAbortController.current = null;
+    updateYouTubeImportProgress((current) => ({ ...current, phase: "paused", paused: true }), true);
   }, []);
 
   const removeYouTubeKey = useCallback(() => {
@@ -3399,9 +3424,9 @@ export default function HomePage() {
 
   const renderMain = () => {
     if (view === "explore") return <ExploreView onChoose={chooseExploreTopic} />;
-      if (view === "videos") return <VideoWorkspace workspaceId={workspaceId} playbackFlushRef={youtubePlaybackFlushRef} workspace={youtubeWorkspace} videoById={youtubeIndexes.videoById} channelById={youtubeIndexes.channelById} videosByChannel={youtubeIndexes.videosByChannel} youtubeStatus={youtubeStatus} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} searchHasMore={youtubeSearchHasMore} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(youtubeTopicPool(topic), 24, [], current.prioritizeRecentByChannel).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={recordYouTubePlaybackPosition} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={() => { youtubeAbortController.current?.abort(); updateYouTubeImportProgress((current) => ({ ...current, phase: "paused", paused: true }), true); }} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
+      if (view === "videos") return <VideoWorkspace workspaceId={workspaceId} playbackFlushRef={youtubePlaybackFlushRef} workspace={youtubeWorkspace} videoById={youtubeIndexes.videoById} channelById={youtubeIndexes.channelById} videosByChannel={youtubeIndexes.videosByChannel} youtubeStatus={youtubeStatus} error={youtubeError} searchResults={videoSearchResults} searchReasons={youtubeSearchReasons} smartSearchLoading={youtubeSmartSearchLoading} searchPhase={youtubeSearchPhase} smartSearchRan={youtubeSmartSearchRan} searchHasMore={youtubeSearchHasMore} onOpenSettings={() => setView("settings")} onTabChange={(tab) => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, activeTab: tab, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSearchChange={handleVideoSearch} onSmartSearch={() => void smartVideoSearch()} onCancelSearch={cancelSmartVideoSearch} onTopicChange={(topic) => { cancelSmartVideoSearch(); setYoutubeSearchResults([]); setYoutubeSearchReasons({}); setYoutubeSmartSearchRan(false); setYoutubeSearchPhase("idle"); updateYouTubeWorkspace((current) => ({ ...current, selectedTopic: topic, discoverIds: selectRandomVideos(youtubeTopicPool(topic), 24, [], current.prioritizeRecentByChannel).map((video) => video.id) })); }} onShuffle={shuffleYouTube} onShowMore={showMoreYouTube} onRefreshVideos={() => void connectYouTube(true)} onOpenVideo={openVideo} onOpenChannel={openChannel} onBack={() => { cancelSmartVideoSearch(); setYoutubeSmartSearchRan(false); setYoutubeSearchResults([]); updateYouTubeWorkspace((current) => ({ ...current, selectedChannelId: undefined, selectedVideoId: undefined, searchText: "" })); }} onSaveVideo={saveVideo} onPlaybackPosition={recordYouTubePlaybackPosition} onChannelOrder={(order) => updateYouTubeWorkspace((current) => ({ ...current, channelOrder: order }))} onPauseImport={pauseYouTubeImport} onResumeImport={() => void connectYouTube()} onRetryImport={() => void connectYouTube()} />;
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onThreeMore={startTopicDetour} />;
-    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} revealGradually={revealGradually} onRevealGraduallyChange={setRevealGraduallyPreference} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus === "synced" && keySyncStatus === "syncing" ? "syncing" : syncStatus === "synced" && keySyncStatus === "error" ? "error" : syncStatus} syncError={[syncError, keySyncError].filter(Boolean).join(" ")} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); updateYouTubeImportProgress((current) => ({ ...current, phase: "paused", paused: true }), true); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
+    if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} revealGradually={revealGradually} onRevealGraduallyChange={setRevealGraduallyPreference} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus === "synced" && keySyncStatus === "syncing" ? "syncing" : syncStatus === "synced" && keySyncStatus === "error" ? "error" : syncStatus} syncError={[syncError, keySyncError].filter(Boolean).join(" ")} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={pauseYouTubeImport} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} factAngle={selectedFactAngle} onFactAngleChange={setSelectedFactAngle} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
     return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} factAngle={activeFactBatch?.setup.factAngle ?? selectedFactAngle} factAngleLocked={Boolean(activeFactBatch)} lastCompletedBatchSetup={lastCompletedBatchSetup} repeatBatchPreview={repeatBatchPreview} repeatDisabledReason={loading || activeFactBatch || topicDetour ? "Finish or end the current batch or topic detour before repeating." : undefined} onPrepareRepeat={prepareRepeatBatch} onCancelRepeat={() => setRepeatBatchPreview(null)} onConfirmRepeat={confirmRepeatBatch} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onEndFactBatch={endFactBatch} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onFactAngleChange={setSelectedFactAngle} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };

@@ -54,6 +54,33 @@ test('large video grouping and progress batching match on website and Mac',()=>{
   assert.equal(notifications,2);assert.equal(store.getSnapshot().phase,'complete');
  }
 });
+test('a canceled native YouTube import cannot clear a newer attempt',async()=>{
+ const pending=[];
+ const state={youtubeKey:'fixture',youtube:{channels:[],videos:[],sourceStates:{},discoverIds:[],prioritizeRecentByChannel:{},incomplete:false},youtubeProgress:{phase:'idle'},connectionToken:0,youtubeStatus:'not-configured',youtubeError:''};
+ const context={state,youtubeSyncActive:false,youtubeSyncToken:0,window:{LEARNED_MEDIA_YOUTUBE:{CHANNELS:[],YOUTUBE_CATALOG_VERSION:1,sync:()=>new Promise(resolve=>pending.push(resolve)),shuffle:()=>[]}},shared:{youtube:{YOUTUBE_CATALOG_VERSION:1}},publishNativeYouTubeProgress(progress){state.youtubeProgress=progress;},render(){},bridge:()=>Promise.resolve(),discoveryVideos:()=>[],videoSearchIndex(){},saveState(){},showToast(){},Date,Promise,Object,Boolean};
+ context.state.youtube.discoverIds=[];
+ runInNewContext(native.slice(native.indexOf('  function invalidateNativeYouTubeSync('),native.indexOf('  const videoSearch ='))+';api={youtubeConnect,invalidateNativeYouTubeSync};',context);
+ const result={channels:[],videos:[],sourceStates:{},incomplete:false,lastSyncAt:'2026-10-25T00:00:00.000Z',progress:{},completedCheckpointSources:[]};
+ context.api.youtubeConnect(false);
+ assert.equal(pending.length,1);
+ context.api.invalidateNativeYouTubeSync();
+ state.connectionToken+=1;
+ context.api.youtubeConnect(false);
+ assert.equal(pending.length,2,'the next import should start immediately after cancellation');
+ pending[0](result);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(context.youtubeSyncActive,true,'the stale attempt must not clear the replacement attempt’s active state');
+ pending[1](result);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(context.youtubeSyncActive,false,'the current attempt clears its own active state on completion');
+});
+test('website YouTube progress ignores aborted imports and imports from another workspace',()=>{
+ const page=readFileSync(new URL('../../Website/app/page.tsx',import.meta.url),'utf8');
+ assert.match(page,/!controller\.signal\.aborted && youtubeKeyRef\.current\.trim\(\) === keyAtStart && workspaceIdRef\.current === workspaceAtStart/);
+ assert.match(page,/publishYouTubeImportProgress\(\{ phase: "idle", completedChannels: 0, totalChannels: APPROVED_YOUTUBE_CHANNELS\.length, importedVideos: 0, completedSources: 0 \}, true\)/);
+ assert.match(page,/if \(credentialOwner\.current !== owner\) \{\s*cancelWorkspaceRequests\(\);/);
+ assert.match(native,/state\.account\?\.id !== result\.account\?\.id\) \{ cancelWorkspaceOperations\(\);/);
+});
 test('native discovery topic restriction uses the catalog filter',()=>{
  const context={state:{youtube:{topic:'Science',videos:[{id:'a',topics:['Science']},{id:'b',topics:['History']}]}},window:{LEARNED_MEDIA_YOUTUBE:{filter:(videos,q,topic)=>videos.filter(v=>topic==='All'||v.topics.includes(topic))}}};
  runInNewContext(extract('discoveryVideos','videoTabs')+';result=discoveryVideos();',context);
