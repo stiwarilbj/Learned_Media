@@ -344,6 +344,60 @@ function geminiCallCount(state) {
   return state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").length;
 }
 
+test("malformed stable batch assignments are rejected before any provider request", async () => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("Provider request must not start"); };
+  try {
+    await assert.rejects(generateGeminiFacts({
+      ...generationArgs(`invalid-stable-slots-${++testNumber}`, {
+        requestedCount: 2,
+        args: { topicPaths: [
+          { path: ["Science", "Optics"], weight: 1, difficulty: 7, slotId: "batch:0" },
+          { path: ["Science", "Optics"], weight: 1, difficulty: 7 }
+        ] }
+      })
+    }), /stable ID for every requested card/);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("stable slot IDs survive partial results and point back to their assigned topics", async () => {
+  const state = installNetworkMock();
+  const sessionId = await connectMock(state);
+  const slots = Array.from({ length: 3 }, (_, index) => ({
+    path: ["Science", `Slot topic ${index}`], weight: 1, difficulty: index + 4, slotId: `stable:${index}`
+  }));
+  const result = await generateGeminiFacts({
+    ...generationArgs(sessionId, { requestedCount: 3 }),
+    topicPaths: slots,
+    requestedCount: 3
+  });
+  assert.equal(result.cards.length, 3);
+  assert.equal(new Set(result.slotMappings.map(mapping => mapping.slotId)).size, 3);
+  assert.deepEqual(result.slotMappings.map(mapping => mapping.slotId).sort(), ["stable:0", "stable:1", "stable:2"]);
+  for (const mapping of result.slotMappings) {
+    const card = result.cards.find(item => item.id === mapping.cardId);
+    const slot = slots.find(item => item.slotId === mapping.slotId);
+    assert.deepEqual(card.topicPath, slot.path);
+    assert.equal(card.difficulty, slot.difficulty);
+  }
+  assert.equal(geminiCallCount(state), 2, "slot IDs must not add a generation request");
+  state.requests.length = 0;
+  const retrySessionId = await connectMock(state);
+  const retry = await generateGeminiFacts({
+    ...generationArgs(retrySessionId, { requestedCount: 1 }),
+    topicPaths: [slots[1]],
+    requestedCount: 1
+  });
+  assert.deepEqual(retry.slotMappings.map(mapping => mapping.slotId), ["stable:1"]);
+  assert.equal(retry.cards[0].topicPath.join("/"), slots[1].path.join("/"));
+  assert.equal(retry.cards[0].difficulty, slots[1].difficulty);
+  assert.equal(geminiCallCount(state), 2, "a one-slot retry keeps the ordinary candidate and grounding path");
+});
+
 function geminiCalls(state) {
   return state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => ({
     model: decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]),

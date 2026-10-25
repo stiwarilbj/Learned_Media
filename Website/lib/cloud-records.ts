@@ -1,4 +1,6 @@
 // Common browser/native wire format. No account tokens, API keys or imported video catalog.
+import { isBatchSetup } from "./batch-replay";
+
 export type CloudRecord = { id: string; name: string; createdAt: string; updatedAt: string; state: Record<string, any> };
 const secretFields = new Set(['key', 'apiKey', 'youtubeKey', 'geminiKey', 'access_token', 'refresh_token', 'provider_token', 'provider_refresh_token']);
 function clean(value: any): any {
@@ -13,7 +15,9 @@ export function canonicalRecord(record: CloudRecord): CloudRecord {
     persistenceVersion: 2, topicCatalogVersion: state.topicCatalogVersion ?? state.catalogVersion ?? 0,
     savedAt: state.savedAt, topics: state.topics || [], settings: state.settings || {}, cards: state.cards || [],
     learningProfile: state.learningProfile || state.profile || {}, feedStarted: state.feedStarted ?? state.started ?? false,
-    theme: state.theme || 'light', youtubeActivity: { ...activity, selectedTopic: activity.selectedTopic ?? activity.topic ?? 'All', activeTab: activity.activeTab ?? activity.tab ?? 'discover', channelOrder: activity.channelOrder ?? activity.order ?? 'newest' }
+    theme: state.theme || 'light',
+    lastCompletedBatchSetup: isBatchSetup(state.lastCompletedBatchSetup) ? state.lastCompletedBatchSetup : undefined,
+    youtubeActivity: { ...activity, selectedTopic: activity.selectedTopic ?? activity.topic ?? 'All', activeTab: activity.activeTab ?? activity.tab ?? 'discover', channelOrder: activity.channelOrder ?? activity.order ?? 'newest' }
   }});
 }
 export function nativeRecord(record: CloudRecord): CloudRecord {

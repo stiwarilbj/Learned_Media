@@ -2,11 +2,11 @@ import { describeGeminiError, generateGeminiFacts } from "@/lib/gemini";
 import type { FactAvoidKey, FactMemory } from "@/lib/fact-quality";
 import type { FactNoveltySignature } from "@/lib/fact-novelty";
 import { isFactAngle, normalizeFactAngle } from "@/lib/fact-angle";
-import type { FeedSettings, LearningProfile } from "@/lib/types";
+import type { Difficulty, FeedSettings, LearningProfile } from "@/lib/types";
 import { NextResponse } from "next/server";
 
 type GenerateBody = {
-  topics?: Array<{ path: string[]; weight: number }>;
+  topics?: Array<{ path: string[]; weight: number; difficulty?: Difficulty; slotId?: string }>;
   settings?: FeedSettings;
   learningProfile?: LearningProfile;
   avoid?: Array<FactNoveltySignature | FactMemory | FactAvoidKey | string>;

@@ -20,6 +20,7 @@
   const cardExplanations = window.LEARNED_MEDIA_CARD_EXPLANATIONS;
   const cardGlossary = window.LEARNED_MEDIA_CARD_GLOSSARY;
   const factNovelty = window.LEARNED_MEDIA_FACT_NOVELTY;
+  const batchReplay = window.LEARNED_MEDIA_BATCH_REPLAY;
   let factNoveltyIndex = null;
   let factNoveltyIndexSource = null;
   let legacyYoutubeRecencyPreferences = Object.assign({}, window.LEARNED_MEDIA_YOUTUBE.DEFAULT_RECENCY_PREFERENCES || {});
@@ -120,7 +121,11 @@
     youtubeSearchError: "",
     connectionToken: 0,
     generationRequestToken: 0,
-    activeGenerationSentenceLength: 3
+    activeGenerationSentenceLength: 3,
+    lastCompletedBatchSetup: null,
+    repeatBatchPreview: null,
+    repeatMenuOpen: false,
+    activeGenerationSlotIds: []
   };
   let nativeKeyEditing = false;
   let nativeCredentialOwner = null;
@@ -228,6 +233,8 @@
   let activeGenerationDetourId = null;
   let selectedFactAngle = "varied";
   let activeFactBatch = null;
+  let repeatMenuTriggerFocus = false;
+  let focusRepeatFirstAfterRender = false;
   let suppressTopicDetourScroll = false;
   let topicDetourProgressFrame = 0;
   let pendingTopicDetourAnchor = null;
@@ -277,17 +284,8 @@
 
   function makeTopics() { return shared.createCatalogTopics(); }
   function factAngleOption(id) { return factAngleOptions.find(function (option) { return option.id === id; }) || factAngleOptions[0] || { id: "varied", label: "Varied", description: "Keep the usual mix of distinct, specific facts.", instruction: "Use the existing varied selection of distinct, specific facts." }; }
-  function clearFactAngleBatch() { activeFactBatch = null; selectedFactAngle = "varied"; }
-  function beginFactAngleBatch(detourRequest) {
-    const key = detourRequest ? "detour:" + detourRequest.id : "feed";
-    const accountId = state.account && state.account.id || null;
-    if (activeFactBatch && activeFactBatch.workspaceId === state.workspaceId && activeFactBatch.accountId === accountId && activeFactBatch.key === key) return activeFactBatch.angle;
-    if (activeFactBatch) throw new Error("Finish or end the current batch before starting another one.");
-    activeFactBatch = { workspaceId: state.workspaceId, accountId: accountId, key: key, angle: selectedFactAngle };
-    selectedFactAngle = "varied";
-    return activeFactBatch.angle;
-  }
-  function endFactAngleBatch() { activeFactBatch = null; selectedFactAngle = "varied"; }
+  function clearFactAngleBatch() { activeFactBatch = null; selectedFactAngle = "varied"; state.activeGenerationSlotIds = []; }
+  function endFactAngleBatch() { clearFactAngleBatch(); }
   function buildTopicNode(seed, parentPath, depth, rootIndex) {
     const label = String(typeof seed === "string" ? seed : titleCaseCatalogLabel(seed.label)).replace(/\s+/g, " ").trim();
     if (!label) return null;
@@ -495,7 +493,7 @@
     if (message.type === "generationCard" && message.token === state.generationRequestToken && state.started) {
       const raw = message.card;
       const assignment = message.detourId && Number.isInteger(message.detourSlot) ? { id: message.detourId, slot: message.detourSlot } : undefined;
-      if (!acceptNewFact(raw, state.activeGenerationSentenceLength, assignment)) return;
+      if (!acceptNewFact(raw, state.activeGenerationSentenceLength, assignment, message.slotId, message.slot)) return;
       saveState();
       render();
       if (assignment) requestAnimationFrame(function () {
@@ -560,7 +558,7 @@
     state.youtube = Object.assign({}, state.youtube, mapped);
   }
   function currentWorkspaceSnapshot() {
-    return { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), topics: state.topics, settings: Object.assign({}, state.settings, { sentenceLength: normalizeSentenceLength(state.settings.sentenceLength) }), cards: state.cards, profile: state.profile, started: state.started, youtubeActivity: youtubeActivity() };
+    return { persistenceVersion: PERSISTENCE_VERSION, catalogVersion: TOPIC_CATALOG_VERSION, savedAt: new Date().toISOString(), topics: state.topics, settings: Object.assign({}, state.settings, { sentenceLength: normalizeSentenceLength(state.settings.sentenceLength) }), cards: state.cards, profile: state.profile, started: state.started, youtubeActivity: youtubeActivity(), lastCompletedBatchSetup: batchReplay.isBatchSetup(state.lastCompletedBatchSetup) ? state.lastCompletedBatchSetup : undefined };
   }
   function activeWorkspaceRecord() {
     const existing = state.workspaces.find(function (item) { return item.id === state.workspaceId; });
@@ -604,11 +602,17 @@
       factNoveltyIndexSource = state.factMemory;
     }
     const item = memoryOf(card);
+    if (activeFactBatch && activeFactBatch.replayNoveltyIndex && activeFactBatch.replayNoveltyIndex.findDuplicate(item)) return true;
     return Boolean(factNoveltyIndex.findDuplicate(item));
   }
-  function acceptNewFact(raw, expectedSentenceLength, detourAcceptance) {
-    if (!raw || !raw.id || !raw.body || !hasExactSentenceCount(raw.body, expectedSentenceLength === undefined ? state.settings.sentenceLength : expectedSentenceLength) || repeatedFact(raw)) return false;
-    const card = normalizeCard(raw);
+  function acceptNewFact(raw, expectedSentenceLength, detourAcceptance, suppliedSlotId, suppliedSlotIndex) {
+    const batch = activeFactBatch;
+    if (!batch || batch.workspaceId !== state.workspaceId || batch.accountId !== (state.account && state.account.id || null)) return false;
+    const slotId = suppliedSlotId || batch.requestSlotIds && batch.requestSlotIds[suppliedSlotIndex];
+    if (!slotId || !batch.requestSlotIds || batch.requestSlotIds.indexOf(slotId) < 0 || !batch.setup.slots.some(function (slot) { return slot.id === slotId; }) || batch.accepted[slotId] || Object.keys(batch.accepted).some(function (key) { return batch.accepted[key] === (raw && raw.id); })) return false;
+    const source = batch.replay ? Object.assign({}, raw, { displayModeOverride: batch.setup.settings.displayMode }) : raw;
+    if (!source || !source.id || !source.body || !hasExactSentenceCount(source.body, expectedSentenceLength === undefined ? batch.setup.settings.sentenceLength : expectedSentenceLength) || repeatedFact(source)) return false;
+    const card = normalizeCard(source);
     const detour = detourAcceptance && state.topicDetour && state.topicDetour.id === detourAcceptance.id ? state.topicDetour : null;
     if (detour) {
       const acceptedDetour = topicDetours.acceptTopicDetourCard(detour, detourAcceptance.slot, card.id);
@@ -624,6 +628,7 @@
       state.topicDetour = acceptedDetour;
       state.cards = topicDetours.orderTopicDetourCards(state.cards, state.topicDetour, card);
     } else { archiveFacts([card]); state.cards.push(card); }
+    batch.accepted[slotId] = card.id;
     state.batchAccepted += 1;
     return true;
   }
@@ -794,6 +799,7 @@
       accent: ["blue", "lilac", "mint", "sand", "coral"][index % 5],
       createdAt: new Date().toISOString()
     }, card, { sources: references.sources, evidence: references.evidence, image: image, hook: hook });
+    if (card.displayModeOverride !== "text" && card.displayModeOverride !== "picture-text") normalized.displayModeOverride = undefined;
     const answerStructure = window.LEARNED_MEDIA_ANSWER_STRUCTURE;
     normalized.answerPresentation = answerStructure && answerStructure.normalizeSavedAnswerPresentation(card.answerPresentation);
     normalized.answerStructure = normalized.answerPresentation && normalized.answerPresentation.structure || (answerStructure && answerStructure.normalizeResolvedAnswerStructure(card.answerStructure));
@@ -1952,6 +1958,8 @@
   function cancelWorkspaceOperations() {
     for(const entry of learningTasks.values())entry.task?.cancel?.();learningTasks.clear();
     clearTopicDetourCompletionNotice();
+    state.repeatBatchPreview = null;
+    state.repeatMenuOpen = false;
     if (activeGenerationTask && typeof activeGenerationTask.cancel === "function") activeGenerationTask.cancel();
     activeGenerationTask = null;
     activeGenerationDetourId = null;
@@ -1989,9 +1997,13 @@
   }
   function applyWorkspaceSnapshot(record) {
     const snapshot = record.state || record;
+    clearFactAngleBatch();
     clearTopicDetourCompletionNotice();
     questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();questionInstructionPreferences.clear();questionInstructionRevisions.clear();answerOptionsOpenKey="";
     state.workspaceId = record.id || "local-workspace";
+    state.lastCompletedBatchSetup = batchReplay.isBatchSetup(snapshot.lastCompletedBatchSetup) ? snapshot.lastCompletedBatchSetup : null;
+    state.repeatBatchPreview = null;
+    state.repeatMenuOpen = false;
     state.topicDetour = null;
     state.rabbitHole = null;
     state.workspaceName = record.name || "Local Workspace";
@@ -2363,6 +2375,11 @@
     window.__learnedMediaPopoverDismiss = true;
     document.addEventListener("pointerdown", function (event) {
       const target = event.target;
+      if (state.repeatMenuOpen && !(target && target.closest && target.closest(".repeat-batch-control"))) {
+        state.repeatMenuOpen = false;
+        state.repeatBatchPreview = null;
+        render();
+      }
       if (state.difficultyMenuCardId && !(target && target.closest && target.closest(".difficulty-picker"))) closeDifficultyMenu(false);
       if (state.moreMenuCardId && !(target && target.closest && target.closest(".fact-more-menu"))) closeMoreMenu(false);
       if (state.learnMenuCardId && !(target && target.closest && target.closest(".learn-more-menu"))) closeLearnMenu(false);
@@ -2386,6 +2403,14 @@
     });
     document.addEventListener("keydown", function (event) {
       if (event.key !== "Escape") return;
+      if (state.repeatMenuOpen) {
+        event.preventDefault();
+        state.repeatMenuOpen = false;
+        state.repeatBatchPreview = null;
+        repeatMenuTriggerFocus = true;
+        render();
+        return;
+      }
       if (state.moreMenuCardId) {
         event.preventDefault();
         closeMoreMenu(true);
@@ -2491,6 +2516,20 @@
     aside.appendChild(details);
     return aside;
   }
+  function changeGlobalDisplayMode(mode) {
+    if (state.settings.displayMode === mode) return;
+    state.settings.displayMode = mode;
+    state.cards = state.cards.map(function (card) {
+      if (!card.displayModeOverride) return card;
+      const copy = Object.assign({}, card);
+      delete copy.displayModeOverride;
+      return copy;
+    });
+    cancelImageHydrations();
+    if (mode === "picture-text") hydrateCardImages(state.cards, generationToken);
+    saveState();
+    render();
+  }
   function feedCustomize(setup) {
     const details = node("details", { className: setup ? "setup-customize" : "feed-customize" });
     details.open = setup ? setupCustomizeOpen : feedCustomizeOpen;
@@ -2502,8 +2541,8 @@
     const body = node("div", { className: "setup-customize-body" });
     body.appendChild(node("span", { className: "control-label", text: "Display style" }));
     const display = node("div", { className: "feed-display-options" });
-    display.appendChild(node("button", { className: state.settings.displayMode === "picture-text" ? "selected" : "", onClick: function () { state.settings.displayMode = "picture-text"; saveState(); hydrateCardImages(state.cards, generationToken); render(); } }, "Image + text"));
-    display.appendChild(node("button", { className: state.settings.displayMode === "text" ? "selected" : "", onClick: function () { state.settings.displayMode = "text"; cancelImageHydrations(); saveState(); render(); } }, "Text only"));
+    display.appendChild(node("button", { className: state.settings.displayMode === "picture-text" ? "selected" : "", onClick: function () { changeGlobalDisplayMode("picture-text"); } }, "Image + text"));
+    display.appendChild(node("button", { className: state.settings.displayMode === "text" ? "selected" : "", onClick: function () { changeGlobalDisplayMode("text"); } }, "Text only"));
     body.appendChild(display);
     body.appendChild(node("span", { className: "control-label", text: "Description length (sentences):" }));
     const lengths = node("div", { className: "feed-length-options", role: "group", ariaLabel: "Description length in sentences" });
@@ -2563,7 +2602,7 @@
     return node("div", { className: "setup-stack" }, layout);
   }
   function imageBlock(card) {
-    if (state.settings.displayMode === "text") return null;
+    if ((card.displayModeOverride || state.settings.displayMode) === "text") return null;
     const image = card.image && card.image.url;
     const wrap = node("div", { className: "fact-image " + (image ? "has-image" : "no-image") });
     if (image) {
@@ -2835,6 +2874,7 @@
     const column = node("section", { className: "feed-content-column" });
     const toolbar = node("div", { className: "feed-toolbar" }, node("div", { className: "active-topics" }, node("span", { className: "toolbar-label", text: "Your feed" }), node("span", { className: "topic-chip selected-chip", text: selectedTopics().map(function (topic) { return topic.path.join(" / "); }).join(" · ") || "Your selected topics" })));
     toolbar.appendChild(node("button", { className: "ghost-button", disabled: !state.cards.length || Boolean(downloadTask), onClick: function () { exportFactsNative(state.cards, false); } }, "Download session"));
+    toolbar.appendChild(repeatBatchControl());
     toolbar.appendChild(nativeDownloadFeedback());
     if (state.topicDetour || topicDetourCompletionNotice) {
       const detour = state.topicDetour;
@@ -2857,6 +2897,50 @@
       list.appendChild(node("div", { className: "feed-error", role: "alert" }, svg("help", 17), node("div", {}, node("strong", { text: "Generation paused" }), node("span", { text: state.generationError })), node("button", { type: "button", className: "secondary-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); retryFactBatch(); } }, "Retry missing facts"), node("button", { type: "button", className: "text-button", disabled: state.loading || !activeFactBatch, onClick: function (event) { event.preventDefault(); endFactBatch(); } }, "End this batch")));
     }
     return node("div", { className: "feed-workspace" }, state.toast ? node("div", { className: "feed-toast" }, svg("check", 15), " ", state.toast) : null, layout);
+  }
+  function repeatBatchDisabledReason() {
+    if (state.loading || activeFactBatch || state.topicDetour) return "Finish or end the current batch or topic detour before repeating.";
+    if (!batchReplay.isBatchSetup(state.lastCompletedBatchSetup)) return "Complete a full batch to save its setup here.";
+    return "";
+  }
+  function repeatBatchControl() {
+    const root = node("div", { className: "repeat-batch-control" });
+    const disabledReason = repeatBatchDisabledReason();
+    root.appendChild(node("button", { type: "button", className: "toolbar-icon-button repeat-batch-trigger", ariaLabel: "Feed controls", "aria-haspopup": "dialog", ariaExpanded: state.repeatMenuOpen, onClick: function () {
+      state.repeatMenuOpen = !state.repeatMenuOpen;
+      if (state.repeatMenuOpen) focusRepeatFirstAfterRender = true;
+      else { state.repeatBatchPreview = null; repeatMenuTriggerFocus = true; }
+      render();
+    } }, svg("more", 16)));
+    if (!state.repeatMenuOpen) return root;
+    const panel = node("div", { className: "repeat-batch-popover", role: "dialog", ariaLabel: "Feed controls" });
+    const preview = state.repeatBatchPreview;
+    if (!preview) {
+      const setup = batchReplay.isBatchSetup(state.lastCompletedBatchSetup) ? state.lastCompletedBatchSetup : null;
+      panel.appendChild(node("button", { type: "button", className: "repeat-batch-menu-action", disabled: !setup || Boolean(disabledReason), title: disabledReason || undefined, onClick: function () {
+        if (!setup || disabledReason) return;
+        state.repeatBatchPreview = batchReplay.cloneBatchSetupForRepeat(setup, "preview-" + Date.now());
+        focusRepeatFirstAfterRender = true;
+        render();
+      } }, node("strong", { text: "Repeat this batch’s setup" }), node("span", { text: setup ? "Use its original topics and settings with fresh facts." : "Complete a full batch to save its setup here." })));
+      if (disabledReason) panel.appendChild(node("p", { className: "repeat-batch-note", role: "status", text: disabledReason }));
+    } else {
+      const summary = batchReplay.summarizeBatchSetup(preview);
+      const list = node("ul");
+      summary.topics.forEach(function (topic) { list.appendChild(node("li", {}, node("span", { text: topic.path }), node("b", { text: "×" + topic.count + " · L" + topic.difficulty }))); });
+      const previewContent = node("div", { className: "repeat-batch-preview", ariaLive: "polite" }, node("strong", { text: "Fresh facts · " + summary.count + " cards" }), list,
+        node("p", {}, node("b", { text: "Difficulty targets: " }), summary.difficulty),
+        node("p", {}, node("b", { text: "Length: " }), summary.sentenceLength + " sentences · ", node("b", { text: "Pictures: " }), summary.displayMode === "picture-text" ? "On" : "Off"),
+        node("p", {}, node("b", { text: "Fact angle: " }), factAngleOption(summary.factAngle).label, " · ", node("b", { text: "Surprise Me: " }), summary.surpriseMe ? "On" : "Off"));
+      if (summary.rabbitHole) previewContent.appendChild(node("p", {}, node("b", { text: "Rabbit hole: " }), summary.rabbitHole));
+      previewContent.appendChild(node("span", { className: "repeat-batch-hint", text: "Your current settings stay unchanged." }));
+      panel.appendChild(previewContent);
+      panel.appendChild(node("div", { className: "repeat-batch-preview-actions" },
+        node("button", { type: "button", className: "primary-button small", disabled: Boolean(disabledReason), title: disabledReason || undefined, dataset: { repeatGenerate: "true" }, onClick: function () { const captured = state.repeatBatchPreview; if (!captured || disabledReason) return; state.repeatMenuOpen = false; void generateBatch(generationToken, captured.slots.length, undefined, captured); } }, "Generate fresh facts"),
+        node("button", { type: "button", className: "text-button", onClick: function () { state.repeatBatchPreview = null; repeatMenuTriggerFocus = true; render(); } }, "Use current setup")));
+    }
+    root.appendChild(panel);
+    return root;
   }
   function settingsView() {
     const section = node("section", { className: "content-view settings-view" });
@@ -3056,6 +3140,10 @@
     const currentMainScroll = document.querySelector(".main-scroll");
     if (currentMainScroll) mainScrollTop = /auto|scroll/.test(getComputedStyle(currentMainScroll).overflowY) ? currentMainScroll.scrollTop : window.scrollY;
     const activeElement = document.activeElement;
+    const restoreRepeatTrigger = repeatMenuTriggerFocus;
+    repeatMenuTriggerFocus = false;
+    const focusRepeatFirst = focusRepeatFirstAfterRender;
+    focusRepeatFirstAfterRender = false;
     if (activeElement && activeElement.dataset && activeElement.dataset.spotlightCard && activeElement.dataset.spotlightTrigger) {
       focusedSpotlightTrigger = { workspaceId: state.workspaceId, cardId: activeElement.dataset.spotlightCard, triggerId: activeElement.dataset.spotlightTrigger };
     }
@@ -3215,6 +3303,13 @@
             .find(function (element) { return element.dataset.locationTitleCard === restoreLocationTriggerCardId; });
           if (title) title.focus();
         }
+      }
+      if (restoreRepeatTrigger) {
+        const trigger = document.querySelector(".repeat-batch-trigger");
+        if (trigger) trigger.focus();
+      } else if (focusRepeatFirst && state.repeatMenuOpen) {
+        const target = state.repeatBatchPreview ? document.querySelector("[data-repeat-generate]") : document.querySelector(".repeat-batch-menu-action");
+        if (target && !target.disabled) target.focus();
       }
       suppressTopicDetourScroll = false;
     });
@@ -3424,6 +3519,8 @@
     activeGenerationTask = null;
     activeGenerationDetourId = null;
     state.topicDetour = null;
+    state.repeatBatchPreview = null;
+    state.repeatMenuOpen = false;
     clearFactAngleBatch();
     bridge("cancelAll", {}).catch(function () {});
     state.started = false;
@@ -3508,9 +3605,8 @@
     imageHydrationRequests.clear();
   }
   function hydrateCardImages(cards, token) {
-    if (state.settings.displayMode === "text") return;
     const epoch = imageHydrationEpoch;
-    (cards || []).forEach(function (card) {
+    (cards || []).filter(function (card) { return (card.displayModeOverride || state.settings.displayMode) === "picture-text"; }).forEach(function (card) {
       if (!card || !card.id || card.image || !(card.sources || []).length || imageHydrationQueued.has(card.id) || imageHydrationRequests.has(card.id)) return;
       imageHydrationQueued.add(card.id);
       imageHydrationQueue.push({ card: card, token: token, epoch: epoch, workspaceId: state.workspaceId });
@@ -3524,14 +3620,14 @@
       while (imageHydrationQueue.length) {
         const job = imageHydrationQueue.shift();
         imageHydrationQueued.delete(job.card.id);
-        if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || state.settings.displayMode === "text") continue;
+        if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || (job.card.displayModeOverride || state.settings.displayMode) === "text") continue;
         const card = state.cards.find(function (item) { return item.id === job.card.id; });
         if (!card || card.image || !(card.sources || []).length) continue;
         const request = bridge("resolveFactImage", { cardId: card.id, source: card.sources[0] });
         imageHydrationRequests.set(card.id, request);
         try {
           const result = await request;
-          if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || state.settings.displayMode === "text" || !result || !result.image) continue;
+          if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || (job.card.displayModeOverride || state.settings.displayMode) === "text" || !result || !result.image) continue;
           const current = state.cards.find(function (item) { return item.id === result.cardId; });
           if (!current) continue;
           current.image = result.image;
@@ -3550,67 +3646,116 @@
       if (imageHydrationQueue.length) void drainImageHydrationQueue();
     }
   }
-  async function generateBatch(token, requestedCount, detourRequest) {
-    if (state.loading || !detourRequest && !selectedCount()) return;
+  function completeActiveFactBatch() {
+    const batch = activeFactBatch;
+    if (!batch || batch.workspaceId !== state.workspaceId || batch.accountId !== (state.account && state.account.id || null)) return false;
+    if (batchReplay.missingBatchSetupSlots(batch.setup, Object.keys(batch.accepted)).length) return false;
+    const acceptedIds = new Set(Object.values(batch.accepted));
+    const acceptedCards = batch.setup.slots.map(function (slot) { return state.cards.find(function (card) { return card.id === batch.accepted[slot.id]; }); }).filter(Boolean);
+    if (acceptedCards.length !== batch.setup.slots.length || acceptedIds.size !== batch.setup.slots.length) return false;
+    const signatures = factNovelty.factNoveltySignatures(acceptedCards.map(memoryOf)).slice(0, 10);
+    state.lastCompletedBatchSetup = Object.assign({}, batch.setup, { novelty: signatures });
+    clearFactAngleBatch();
+    return true;
+  }
+  async function generateBatch(token, requestedCount, detourRequest, replaySetup) {
+    if (state.loading) return;
+    if (!detourRequest && !replaySetup && !activeFactBatch && !selectedCount()) return;
     const activeToken = token || generationToken;
-    if (!state.key.trim() || state.geminiStatus !== "connected") { state.generationError = "Connect Gemini in Settings before generating facts."; state.loading = false; render(); return; }
-    let batchAngle;
-    try { batchAngle = beginFactAngleBatch(detourRequest); }
-    catch (error) { state.generationError = error.message || "Finish or end the current batch before starting another one."; render(); return; }
-    const angleLabel = factAngleOption(batchAngle).label;
+    if (!state.key.trim() || state.geminiStatus !== "connected") { state.generationError = "Connect Gemini in Settings before generating facts."; state.loading = false; state.view = "settings"; render(); return; }
+    const accountId = state.account && state.account.id || null;
+    const batchKey = detourRequest ? "detour:" + detourRequest.id : "feed";
+    let batch = activeFactBatch;
+    let replay = false;
+    let setup;
+    if (batch) {
+      if (batch.workspaceId !== state.workspaceId || batch.accountId !== accountId || batch.key !== batchKey) { state.generationError = "Finish or end the current batch before starting another one."; render(); return; }
+      setup = batch.setup;
+      replay = batch.replay;
+    } else if (replaySetup) {
+      if (!batchReplay.isBatchSetup(replaySetup)) { state.generationError = "The saved batch setup could not be verified."; render(); return; }
+      replay = true;
+      setup = batchReplay.cloneBatchSetupForRepeat(replaySetup, "repeat-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8));
+      batch = { workspaceId: state.workspaceId, accountId: accountId, key: batchKey, setup: setup, accepted: {}, replay: true, replayNoveltyIndex: setup.novelty && setup.novelty.length ? new factNovelty.FactNoveltyIndex(setup.novelty) : null };
+      activeFactBatch = batch;
+      selectedFactAngle = "varied";
+      state.repeatBatchPreview = null;
+      state.repeatMenuOpen = false;
+    } else {
+      const count = Math.max(1, Math.min(10, Number(requestedCount) || 7));
+      let assignments;
+      if (detourRequest) {
+        const indexes = detourRequest.slotIndexes || [];
+        if (indexes.length !== 3 || new Set(indexes).size !== 3 || indexes.some(function (slot) { return !Number.isInteger(slot) || slot < 0 || slot > 2; })) { state.generationError = "This topic detour could not be restored safely. Please start it again."; render(); return; }
+        assignments = indexes.map(function () { return { path: detourRequest.topicPath.slice(), weight: 10, difficulty: difficultyEngine.getTopicLearningProfile(state.profile, detourRequest.topicPath, state.settings.obscurity).targetDifficulty }; });
+      } else assignments = weightedTopicPaths(count);
+      if (!assignments.length) { state.generationError = "Choose at least one topic before generating more facts."; render(); return; }
+      setup = batchReplay.createBatchSetup({ id: batchKey + "-" + Date.now(), slots: assignments.map(function (slot) { return { topicPath: slot.path, difficulty: slot.difficulty }; }), settings: Object.assign({}, state.settings, { sentenceLength: normalizeSentenceLength(state.settings.sentenceLength) }), factAngle: selectedFactAngle, rabbitHole: detourRequest ? null : state.rabbitHole });
+      batch = { workspaceId: state.workspaceId, accountId: accountId, key: batchKey, setup: setup, accepted: {}, replay: false, replayNoveltyIndex: null };
+      activeFactBatch = batch;
+      selectedFactAngle = "varied";
+    }
+    const angleLabel = factAngleOption(setup.factAngle).label;
     const withAngle = function (message) { return angleLabel + " · " + message; };
+    const completedSlotIds = Object.keys(batch.accepted);
+    const remainingSlots = batchReplay.missingBatchSetupSlots(setup, completedSlotIds);
+    const requestSlots = detourRequest ? detourRequest.slotIndexes.map(function (index) { return setup.slots[index]; }).filter(function (slot) { return slot && !batch.accepted[slot.id]; }) : remainingSlots;
+    if (!requestSlots.length) { completeActiveFactBatch(); state.pendingSlots = 7; saveState(); render(); return; }
+    const assignedTopics = requestSlots.map(function (slot) { return { path: slot.topicPath.slice(), weight: 10, difficulty: slot.difficulty, slotId: slot.id }; });
+    if (!batchReplay.validBatchSlotAssignments(setup, assignedTopics)) { state.generationError = withAngle("The saved batch assignments could not be verified. End this batch and start again."); state.pendingSlots = requestSlots.length; render(); return; }
+    batch.requestSlotIds = requestSlots.map(function (slot) { return slot.id; });
+    state.activeGenerationSlotIds = batch.requestSlotIds.slice();
     state.loading = true;
     state.generationError = "";
-    const count = Math.max(1, Math.min(10, Number(requestedCount) || 7));
     activeGenerationDetourId = detourRequest ? detourRequest.id : null;
-    const assignedTopics = detourRequest
-      ? detourRequest.slotIndexes.map(function () { return { path: detourRequest.topicPath.slice(), weight: 10, difficulty: difficultyEngine.getTopicLearningProfile(state.profile, detourRequest.topicPath, state.settings.obscurity).targetDifficulty }; })
-      : weightedTopicPaths(count);
     const existingCardIds = new Set(state.cards.map(function (card) { return card.id; }));
-    const generationSentenceLength = normalizeSentenceLength(state.settings.sentenceLength);
+    const generationSentenceLength = normalizeSentenceLength(setup.settings.sentenceLength);
     state.activeGenerationSentenceLength = generationSentenceLength;
     state.batchAccepted = 0;
+    state.pendingSlots = requestSlots.length;
     render();
     try {
-      const generationSettings = Object.assign({}, state.settings, { sentenceLength: generationSentenceLength });
-      const task = bridge("generate", { topics: assignedTopics, rabbitHole: detourRequest ? null : state.rabbitHole, requestedCount: count, settings: generationSettings, avoid: state.factMemory || [], factAngle: batchAngle, token: state.generationRequestToken, detourId: detourRequest && detourRequest.id, detourSlots: detourRequest && detourRequest.slotIndexes });
+      const generationSettings = Object.assign({}, setup.settings, { sentenceLength: generationSentenceLength });
+      const avoid = (state.factMemory || []).concat(setup.novelty || []);
+      const task = bridge("generate", { topics: assignedTopics, rabbitHole: setup.rabbitHole, requestedCount: requestSlots.length, settings: generationSettings, avoid: avoid, factAngle: setup.factAngle, token: state.generationRequestToken, detourId: detourRequest && detourRequest.id, detourSlots: detourRequest && detourRequest.slotIndexes });
       activeGenerationTask = task;
       const result = await task;
-      if (activeToken !== generationToken) return;
+      if (activeToken !== generationToken || state.workspaceId !== batch.workspaceId || (state.account && state.account.id || null) !== batch.accountId || activeFactBatch !== batch) return;
       mergeGeminiModelOutcomes(result.modelOutcomes);
       if (result.modelStatus) state.geminiStatus = result.modelStatus;
+      const mappedSlots = new Map((result.slotMappings || []).map(function (mapping) { return [mapping.cardId, mapping.slotId]; }));
       (result.cards || []).forEach(function (card, index) {
-        const slot = detourRequest && detourRequest.slotIndexes[index];
-        acceptNewFact(card, generationSentenceLength, detourRequest && Number.isInteger(slot) ? { id: detourRequest.id, slot: slot } : undefined);
+        if (Object.values(batch.accepted).indexOf(card.id) >= 0) return;
+        const slotId = mappedSlots.get(card.id) || batch.requestSlotIds[index];
+        const slotIndex = setup.slots.findIndex(function (slot) { return slot.id === slotId; });
+        const detourSlot = detourRequest && detourRequest.slotIndexes.indexOf(slotIndex) >= 0 ? slotIndex : undefined;
+        acceptNewFact(card, generationSentenceLength, detourRequest && Number.isInteger(detourSlot) ? { id: detourRequest.id, slot: detourSlot } : undefined, slotId, index);
       });
-      const completed = state.batchAccepted;
-      if (detourRequest && state.topicDetour && state.topicDetour.id === detourRequest.id) {
-        const missing = topicDetours.missingTopicDetourSlots(state.topicDetour);
-        state.pendingSlots = missing.length || 7;
-        state.generationError = missing.length ? withAngle(result.retryGuidance || "Some topic cards could not be verified. Retry to fill the remaining facts.") : "";
-        if (!missing.length) endFactAngleBatch();
+      const missing = batchReplay.missingBatchSetupSlots(setup, Object.keys(batch.accepted));
+      if (missing.length) {
+        state.pendingSlots = missing.length;
+        state.generationError = withAngle(result.retryGuidance || (setup.slots.length - missing.length) + " of " + setup.slots.length + " facts completed. Retry to fill the missing slots.");
       } else {
-        state.pendingSlots = Math.max(0, count - completed);
-        if (state.pendingSlots) { state.generationError = withAngle(completed + " of " + count + " new facts completed. Unsupported or repeated facts were skipped. Retry to fill the missing slots."); }
-        else { state.pendingSlots = 7; endFactAngleBatch(); }
+        state.pendingSlots = 7;
+        state.generationError = "";
+        completeActiveFactBatch();
       }
     } catch (error) {
-      if (activeToken !== generationToken) return;
-      state.pendingSlots = detourRequest && state.topicDetour && state.topicDetour.id === detourRequest.id
-        ? Math.max(1, topicDetours.missingTopicDetourSlots(state.topicDetour).length)
-        : Math.max(1, count - state.batchAccepted);
+      if (activeToken !== generationToken || activeFactBatch !== batch) return;
+      state.pendingSlots = batchReplay.missingBatchSetupSlots(setup, Object.keys(batch.accepted)).length || requestSlots.length;
       state.generationError = withAngle(error.message || "Could not generate a new batch.");
       showToast(state.generationError);
     } finally {
-      if (activeToken === generationToken) {
+      if (activeToken === generationToken && state.workspaceId === batch.workspaceId && (state.account && state.account.id || null) === batch.accountId) {
         hydrateCardImages(state.cards.filter(function (card) { return !existingCardIds.has(card.id); }), activeToken);
         activeGenerationTask = null;
         activeGenerationDetourId = null;
+        state.activeGenerationSlotIds = [];
         state.loading = false;
         saveState();
         render();
         const queued = state.topicDetour;
-        if (!detourRequest && !activeFactBatch && queued && queued.phase === "queued" && queued.workspaceId === state.workspaceId) beginTopicDetourGeneration(queued);
+        if (!activeFactBatch && !detourRequest && queued && queued.phase === "queued" && queued.workspaceId === state.workspaceId) beginTopicDetourGeneration(queued);
       }
     }
   }
@@ -3714,7 +3859,7 @@
   async function signIn() {
     try {
       const result = await bridge("signIn", {});
-      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); questionInstructionPreferences.clear(); questionInstructionRevisions.clear(); answerOptionsOpenKey=""; }
+      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); state.repeatBatchPreview = null; state.repeatMenuOpen = false; questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); questionInstructionPreferences.clear(); questionInstructionRevisions.clear(); answerOptionsOpenKey=""; }
       const previousOwner = state.cloudOwnerId;
       state.account = result.account;
       nativeAccountRestored = false;
@@ -3747,6 +3892,8 @@
       if (cloudSaveTimer) { window.clearTimeout(cloudSaveTimer); cloudSaveTimer = null; }
       await bridge("signOut", {});
       state.account = null;
+      state.repeatBatchPreview = null;
+      state.repeatMenuOpen = false;
       nativeAccountRestored = false;
       nativeCredentialOwner = null;
       await nativeCredentials.switchAccount(null);

@@ -1,13 +1,15 @@
 "use client";
 import { DownloadSession } from "./CardDownloads";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DIFFICULTY_LABELS, normalizeDifficulty } from "@/lib/recommendations";
 import { SENTENCE_LENGTH_OPTIONS } from "@/lib/fact-quality";
-import type { AnswerStructure, CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, QuestionInstructionPreference, SavedCardLocations, TopicNode } from "@/lib/types";
+import type { AnswerStructure, BatchSetup, CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, FeedSettings, QuestionInstructionPreference, SavedCardLocations, TopicNode } from "@/lib/types";
 import type { TopicSearchIndex } from "@/lib/topic-search-types";
 import type { TopicDetour, TopicDetourProgress } from "@/lib/topic-detours";
 import type { FactAngle } from "@/lib/fact-angle";
+import { factAngleDefinition } from "@/lib/fact-angle";
+import { summarizeBatchSetup } from "@/lib/batch-replay";
 import { selectedLeafCount } from "@/lib/topic-tree";
 import { FactCard } from "./FactCard";
 import { FactAngleControl } from "./FactAngleControl";
@@ -25,6 +27,9 @@ type FeedViewProps = {
   settings: FeedSettings;
   factAngle: FactAngle;
   factAngleLocked: boolean;
+  lastCompletedBatchSetup: BatchSetup | null;
+  repeatBatchPreview: BatchSetup | null;
+  repeatDisabledReason?: string;
   revealGradually: boolean;
   topics: TopicNode[];
   customTopic: string;
@@ -63,6 +68,9 @@ type FeedViewProps = {
   onSettingsChange: (next: Partial<FeedSettings>) => void;
   onFactAngleChange: (angle: FactAngle) => void;
   onEndFactBatch: () => void;
+  onPrepareRepeat: () => void;
+  onCancelRepeat: () => void;
+  onConfirmRepeat: (setup: BatchSetup) => void;
   onCustomTopicChange: (value: string) => void;
   onAddCustomTopic: () => void;
   onToggleTopic: (id: string) => void;
@@ -77,6 +85,57 @@ function SkeletonCard() {
 }
 
 const cardRowKey = (card: FactCardType) => card.id;
+
+function RepeatBatchControl({ setup, preview, disabledReason, onPrepare, onCancel, onConfirm }: {
+  setup: BatchSetup | null;
+  preview: BatchSetup | null;
+  disabledReason?: string;
+  onPrepare: () => void;
+  onCancel: () => void;
+  onConfirm: (setup: BatchSetup) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const generateRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) { if (preview) onCancel(); setOpen(false); } };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") { if (preview) onCancel(); setOpen(false); triggerRef.current?.focus(); } };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => { document.removeEventListener("pointerdown", onPointerDown); document.removeEventListener("keydown", onKeyDown); };
+  }, [onCancel, open, preview]);
+  useEffect(() => {
+    if (open && preview) generateRef.current?.focus();
+  }, [open, preview]);
+  const summary = preview ? summarizeBatchSetup(preview) : null;
+  return <div className="repeat-batch-control" ref={rootRef}>
+    <button ref={triggerRef} type="button" className="toolbar-icon-button repeat-batch-trigger" aria-label="Feed controls" aria-haspopup="dialog" aria-expanded={open} onClick={() => { if (open) { if (preview) onCancel(); setOpen(false); } else setOpen(true); }}><Icon name="more" size={16} /></button>
+    {open && <div className="repeat-batch-popover" role="dialog" aria-label="Feed controls">
+      {!preview ? <>
+        <button type="button" className="repeat-batch-menu-action" disabled={!setup || Boolean(disabledReason)} title={disabledReason || (!setup ? "Complete a batch before repeating its setup." : undefined)} onClick={() => { if (!setup || disabledReason) return; onPrepare(); }}>
+          <strong>Repeat this batch’s setup</strong><span>{setup ? "Use its original topics and settings with fresh facts." : "Complete a batch to save its setup here."}</span>
+        </button>
+        {disabledReason && <p className="repeat-batch-note" role="status">{disabledReason}</p>}
+      </> : <>
+        <div className="repeat-batch-preview" aria-live="polite">
+          <strong>Fresh facts · {summary?.count} cards</strong>
+          <ul>{summary?.topics.map(topic => <li key={`${topic.path}:${topic.difficulty}`}><span>{topic.path}</span><b>×{topic.count} · L{topic.difficulty}</b></li>)}</ul>
+          <p><b>Difficulty targets:</b> {summary?.difficulty}</p>
+          <p><b>Length:</b> {summary?.sentenceLength} sentences · <b>Pictures:</b> {summary?.displayMode === "picture-text" ? "On" : "Off"}</p>
+          <p><b>Fact angle:</b> {factAngleDefinition(preview.factAngle).label} · <b>Surprise Me:</b> {summary?.surpriseMe ? "On" : "Off"}</p>
+          {summary?.rabbitHole && <p><b>Rabbit hole:</b> {summary.rabbitHole}</p>}
+          <span className="repeat-batch-hint">Your current settings stay unchanged.</span>
+        </div>
+        <div className="repeat-batch-preview-actions">
+          <button ref={generateRef} type="button" className="primary-button small" disabled={Boolean(disabledReason)} title={disabledReason} onClick={() => { setOpen(false); onConfirm(preview); }}>Generate fresh facts</button>
+          <button type="button" className="text-button" onClick={() => { onCancel(); triggerRef.current?.focus(); }}>Use current setup</button>
+        </div>
+      </>}
+    </div>}
+  </div>;
+}
 
 function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, customTopic, settings, factAngle, factAngleLocked, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic, onSettingsChange, onReset, showReset }: Pick<FeedViewProps, "topics" | "query" | "catalogRevision" | "topicSearchIndex" | "customTopic" | "settings" | "factAngle" | "factAngleLocked" | "onFactAngleChange" | "onCustomTopicChange" | "onAddCustomTopic" | "onToggleTopic" | "onExpandTopic" | "onCollapseTopics" | "onWeightTopic" | "onRemoveCustomTopic" | "onSettingsChange" | "onReset" | "showReset">) {
   const [topicsOpen, setTopicsOpen] = useState(true);
@@ -120,7 +179,7 @@ function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, c
   );
 }
 
-export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, factAngle, factAngleLocked, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onQuestionInstructionPreference, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onEndFactBatch, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, factAngle, factAngleLocked, lastCompletedBatchSetup, repeatBatchPreview, repeatDisabledReason, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onQuestionInstructionPreference, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onEndFactBatch, onPrepareRepeat, onCancelRepeat, onConfirmRepeat, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
   const handleViewportRangeChange = useCallback((start: number) => {
     const lastDetourCardId = topicDetour?.slotCardIds[2];
     if (!topicDetour || !lastDetourCardId) return;
@@ -129,7 +188,7 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
   }, [cards, onTopicDetourProgress, topicDetour]);
   const renderCard = useCallback((card: FactCardType) => {
     const slot = topicDetour?.workspaceId === workspaceId ? topicDetour.slotCardIds.indexOf(card.id) : -1;
-    return <FactCard card={card} workspaceId={workspaceId} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} questionStructure={questionDrafts[card.id]?.structure} questionStructureRevision={questionDrafts[card.id]?.structureRevision} questionInstructionPreference={questionDrafts[card.id]?.instructionPreference} questionInstructionRevision={questionDrafts[card.id]?.instructionRevision} adaptationLoading={adaptationLoading === `${card.id}:simpler` || adaptationLoading === `${card.id}:deeper`} glossaryLoading={glossaryLoading === card.id} adaptationErrors={learningErrors} hasGeminiKey={hasGeminiKey} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} onQuestionStructure={onQuestionStructure} onQuestionInstructionPreference={onQuestionInstructionPreference} onAdaptExplanation={onAdaptExplanation} onExplainTerms={onExplainTerms} onCancelGlossary={onCancelGlossary} onLocationsResolved={onLocationsResolved} onOpenSettings={onOpenSettings} onThreeMore={onThreeMore} detourSlot={slot >= 0 ? slot : undefined} onDetourProgress={onTopicDetourProgress} />;
+    return <FactCard card={card} workspaceId={workspaceId} displayMode={card.displayModeOverride ?? settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} questionStructure={questionDrafts[card.id]?.structure} questionStructureRevision={questionDrafts[card.id]?.structureRevision} questionInstructionPreference={questionDrafts[card.id]?.instructionPreference} questionInstructionRevision={questionDrafts[card.id]?.instructionRevision} adaptationLoading={adaptationLoading === `${card.id}:simpler` || adaptationLoading === `${card.id}:deeper`} glossaryLoading={glossaryLoading === card.id} adaptationErrors={learningErrors} hasGeminiKey={hasGeminiKey} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} onQuestionStructure={onQuestionStructure} onQuestionInstructionPreference={onQuestionInstructionPreference} onAdaptExplanation={onAdaptExplanation} onExplainTerms={onExplainTerms} onCancelGlossary={onCancelGlossary} onLocationsResolved={onLocationsResolved} onOpenSettings={onOpenSettings} onThreeMore={onThreeMore} detourSlot={slot >= 0 ? slot : undefined} onDetourProgress={onTopicDetourProgress} />;
   }, [adaptationLoading, glossaryLoading, hasGeminiKey, learnLoading, learningErrors, onAction, onAdaptExplanation, onAskQuestion, onCancelGlossary, onExplainTerms, onLearnMore, onLocationsResolved, onOpenSettings, onQuestionDetailed, onQuestionDraft, onQuestionStructure, onQuestionInstructionPreference, onThreeMore, onTopicDetourProgress, questionDrafts, questionLoading, revealGradually, settings.displayMode, topicDetour, workspaceId]);
   return (
     <div className="feed-workspace">
@@ -140,7 +199,7 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
         <section className="feed-content-column">
           <div className="feed-toolbar">
             <div className="active-topics"><span className="toolbar-label">Your feed</span></div>
-            <DownloadSession />
+            <div className="feed-toolbar-actions"><DownloadSession /><RepeatBatchControl setup={lastCompletedBatchSetup} preview={repeatBatchPreview} disabledReason={repeatDisabledReason} onPrepare={onPrepareRepeat} onCancel={onCancelRepeat} onConfirm={onConfirmRepeat} /></div>
             {(topicDetour || topicDetourStatusNotice) && <div className="topic-detour-status" role="status" aria-live="polite"><span>{topicDetour ? topicDetour.slotCardIds.some(id => !id) ? "Preparing three cards" : `${topicDetour.topicPath.at(-1) ?? "Topic"} · ${Math.max(1, topicDetour.furthestReached + 1)} of 3` : topicDetourStatusNotice}</span>{topicDetour && <button type="button" onClick={onEndTopicDetour}>End early</button>}</div>}
           </div>
           <div className="feed-intro"><div><h1>Keep going</h1><p>One small idea at a time. Every card has a place to look next</p></div><span className="feed-count">{cards.length} cards in this session</span></div>

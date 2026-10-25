@@ -1,3 +1,6 @@
+import type { FactAngle } from "./fact-angle";
+import type { FactNoveltySignature } from "./fact-novelty";
+
 export type View = "feed" | "explore" | "videos" | "saved" | "likes" | "history" | "settings";
 
 export type DisplayMode = "picture-text" | "text";
@@ -48,6 +51,22 @@ export type FeedSettings = {
   displayMode: DisplayMode;
   sentenceLength: SentenceLength;
   surpriseMe: boolean;
+};
+
+/** A completed generation request, retained so readers can repeat its inputs. */
+export type BatchSetupSlot = {
+  id: string;
+  topicPath: string[];
+  difficulty: Difficulty;
+};
+export type BatchSetup = {
+  version: 1;
+  createdAt: string;
+  slots: BatchSetupSlot[];
+  settings: FeedSettings;
+  factAngle: FactAngle;
+  rabbitHole: string | null;
+  novelty?: FactNoveltySignature[];
 };
 
 export type WikipediaSource = {
@@ -144,6 +163,8 @@ export type FactCard = {
   topicPath: string[];
   sources: WikipediaSource[];
   image?: ImageAttribution;
+  /** Per-card presentation captured by a repeated batch; an explicit global mode change clears it. */
+  displayModeOverride?: DisplayMode;
   difficulty: Difficulty;
   /** Legacy field kept so older saved cards can be migrated without losing their visual signal. */
   obscurity?: Difficulty;

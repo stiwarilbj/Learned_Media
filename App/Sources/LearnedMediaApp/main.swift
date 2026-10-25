@@ -1126,6 +1126,7 @@ private struct GeminiModelCheckResult {
 
 private struct GeminiGenerationSlot {
     let index: Int
+    let slotId: String?
     let path: [String]
     let level: Int
     var mode: String
@@ -1833,16 +1834,37 @@ private final class GeminiClient {
         return card
     }
 
-    func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [[String: Any]], requestedCount: Int = 7, rabbitHole: String? = nil, factAngle: FactAngle = .varied, onCard: @escaping ([String: Any], Int, Int, Int) -> Void) async throws -> [String: Any] {
+    func generate(key: String, topics: [[String: Any]], settings: [String: Any], avoid: [[String: Any]], requestedCount: Int = 7, rabbitHole: String? = nil, factAngle: FactAngle = .varied, onCard: @escaping ([String: Any], Int, Int, Int, String?) -> Void) async throws -> [String: Any] {
         guard !key.isEmpty else { throw NativeError(message: "Paste your Gemini API key in Settings to generate a fresh batch.", retryable: false) }
         guard !topics.isEmpty else { throw NativeError(message: "Choose a topic first.", retryable: false) }
         let context = GenerationPromptContext(surpriseMe: settings["surpriseMe"] as? Bool ?? false, rabbitHole: rabbitHole, factAngle: factAngle)
         let targetCount = max(1, min(10, requestedCount))
         let sentenceCount = FactQuality.sentenceCount(settings["sentenceLength"])
+        let hasStableSlotIdentity = topics.contains { $0["slotId"] != nil }
+        if hasStableSlotIdentity {
+            let slotIDs = topics.compactMap { $0["slotId"] as? String }
+            guard topics.count == targetCount, slotIDs.count == topics.count, Set(slotIDs).count == slotIDs.count,
+                  slotIDs.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.count <= 200 }) else {
+                throw NativeError(message: "The batch slot assignments could not be verified.", retryable: false)
+            }
+        }
+        for topic in topics {
+            if topic["difficulty"] != nil {
+                guard let difficulty = topic["difficulty"] as? Int, (1...10).contains(difficulty) else {
+                    throw NativeError(message: "A batch difficulty target is invalid.", retryable: false)
+                }
+            }
+            if hasStableSlotIdentity {
+                guard let path = topic["path"] as? [String], !path.isEmpty, path.count <= 12,
+                      path.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.count <= 120 }) else {
+                    throw NativeError(message: "A batch topic path could not be verified.", retryable: false)
+                }
+            }
+        }
         let groupSize = 10
         var slots: [GeminiGenerationSlot] = (0..<targetCount).map { index in
             let topic = topics[index % topics.count]
-            return GeminiGenerationSlot(index: index, path: topic["path"] as? [String] ?? [], level: max(1, min(10, topic["difficulty"] as? Int ?? settings["obscurity"] as? Int ?? 5)), mode: "candidate", candidate: nil, sources: [], lastError: nil)
+            return GeminiGenerationSlot(index: index, slotId: topic["slotId"] as? String, path: topic["path"] as? [String] ?? [], level: max(1, min(10, topic["difficulty"] as? Int ?? settings["obscurity"] as? Int ?? 5)), mode: "candidate", candidate: nil, sources: [], lastError: nil)
         }
         var diagnostics = ValidationDiagnostics()
         let ledger = FactPublicationLedger(initial: avoid)
@@ -1987,7 +2009,7 @@ private final class GeminiClient {
                             await validatedEvidence.record(slots[slotIndex])
                             accepted[index] = card
                             completed += 1
-                            onCard(card, slotIndex, completed, targetCount)
+                            onCard(card, slotIndex, completed, targetCount, slots[slotIndex].slotId)
                         } catch {
                             if Task.isCancelled { group.cancelAll(); break }
                             let reason = (error as? NativeError)?.message ?? "The fact failed local citation validation."
@@ -2006,7 +2028,11 @@ private final class GeminiClient {
         guard !cards.isEmpty else {
             throw NativeError(message: slots.first(where: { accepted[$0.index] == nil })?.lastError ?? "Gemini could not complete a Wikipedia-grounded batch.", retryable: generationStatus == "rate-limited", outcomes: outcomes, status: generationStatus, validationDiagnostics: diagnostics.snapshot)
         }
-        return ["cards": cards, "validationDiagnostics": diagnostics.snapshot, "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "modelStatus": generationStatus ?? "connected", "partial": failed > 0, "failedJobs": failed, "retryable": failed > 0, "retryGuidance": failed > 0 ? "\(cards.count) facts arrived. Retry to find supported facts for the remaining slots." : ""]
+        let slotMappings: [[String: String]] = slots.compactMap { slot in
+            guard let slotId = slot.slotId, let card = accepted[slot.index], let cardId = card["id"] as? String else { return nil }
+            return ["slotId": slotId, "cardId": cardId]
+        }
+        return ["cards": cards, "slotMappings": slotMappings, "validationDiagnostics": diagnostics.snapshot, "requestedCount": targetCount, "completedCount": cards.count, "modelOutcomes": outcomes, "modelStatus": generationStatus ?? "connected", "partial": failed > 0, "failedJobs": failed, "retryable": failed > 0, "retryGuidance": failed > 0 ? "\(cards.count) facts arrived. Retry to find supported facts for the remaining slots." : ""]
     }
 
     private func glossary(key: String, card: [String: Any]) async throws -> [String: Any] {
@@ -2426,8 +2452,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let task = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let result = try await gemini.generate(key: geminiKey, topics: topics, settings: settings, avoid: avoid, requestedCount: requestedCount, rabbitHole: payload["rabbitHole"] as? String, factAngle: factAngle) { [weak self] card, slot, completed, requested in
+                    let result = try await gemini.generate(key: geminiKey, topics: topics, settings: settings, avoid: avoid, requestedCount: requestedCount, rabbitHole: payload["rabbitHole"] as? String, factAngle: factAngle) { [weak self] card, slot, completed, requested, slotId in
                         var event: [String: Any] = ["type": "generationCard", "token": token, "card": card, "completed": completed, "requested": requested]
+                        event["slot"] = slot
+                        if let slotId { event["slotId"] = slotId }
                         if let detourID, detourSlots.indices.contains(slot) {
                             event["detourId"] = detourID
                             event["detourSlot"] = detourSlots[slot]
@@ -2780,6 +2808,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             "learningProfile": cleanedCloudValue(source["learningProfile"] ?? source["profile"] ?? [:]),
             "feedStarted": source["feedStarted"] ?? source["started"] ?? false,
             "theme": source["theme"] ?? "light",
+            "lastCompletedBatchSetup": cleanedCloudValue(source["lastCompletedBatchSetup"] ?? NSNull()),
             "youtubeActivity": activity
         ]
         return ["id": raw["id"] ?? "", "name": raw["name"] ?? "Local Workspace", "createdAt": raw["createdAt"] ?? cloudNow(), "updatedAt": raw["updatedAt"] ?? cloudNow(), "state": state]

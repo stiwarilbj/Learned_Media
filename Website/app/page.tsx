@@ -14,6 +14,8 @@ import { rememberFact, mergeFactMemory, hasExactSentenceCount, normalizeSentence
 import { FactNoveltyIndex, factNoveltySignatures } from "@/lib/fact-novelty";
 import { ANSWER_STRUCTURE_POLICY_VERSION, QUESTION_INSTRUCTION_POLICY_VERSION, normalizeAnswerStructure, normalizeResolvedAnswerStructure, normalizeSavedAnswerPresentation, resolveQuestionInstructions, shouldResetSubmittedAnswerStructure } from "@/lib/answer-structure";
 import type { AnswerStructure, AnswerPresentation, QuestionInstructionPreference, ResolvedAnswerStructure } from "@/lib/types";
+import type { BatchSetup, BatchSetupSlot } from "@/lib/types";
+import { cloneBatchSetupForRepeat, createBatchSetup, isBatchSetup, missingBatchSetupSlots, summarizeBatchSetup, validBatchSlotAssignments } from "@/lib/batch-replay";
 import { createDefaultTopics, DEFAULT_SETTINGS } from "@/lib/demo-data";
 import { ALLOWED_GEMINI_MODELS, DEFAULT_CARD_GENERATION_COUNT, generateGeminiFacts, generateLearningResponse, geminiFailureDetails, interpretNaturalSearch, interpretVideoSearch, rankVideoSearchCandidates, testGeminiKey, type RankedVideoSearchResult, type VideoSearchPlan } from "@/lib/gemini";
 import { clearTopicSelections, collapseTopicBranches, flattenTopics, migrateTopicTree, removeTopicTree, selectedLeafCount, selectWeightedTopicPaths, selectionState, toggleTopicSelection, updateTopicTree } from "@/lib/topic-tree";
@@ -77,6 +79,7 @@ type PersistedState = {
   theme: "light" | "dark";
   topicCatalogVersion?: number;
   youtubeActivity?: YouTubeWorkspaceActivity;
+  lastCompletedBatchSetup?: BatchSetup;
 };
 
 type YouTubeWorkspaceActivity = YouTubeActivityState;
@@ -84,7 +87,7 @@ type YouTubeWorkspaceActivity = YouTubeActivityState;
 type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
 type CardSearchWorkerReply = { type: "ready"; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey: string; ids: string[] };
-type ActiveFactBatch = { workspaceId: string; accountId: string | null; key: string; angle: FactAngle };
+type ActiveFactBatch = { workspaceId: string; accountId: string | null; key: string; setup: BatchSetup; accepted: Record<string, string>; replay: boolean };
 type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ coverage?: YouTubeSearchCandidate["coverage"]; videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
 type YouTubeWorkerSearchRequest = { query: string; plan: VideoSearchPlan; topic: YouTubeTopic | "All"; channelId?: string; limit: number; excludedIds?: string[]; expanded?: boolean; viewKey?: string };
 type ConfirmationRequest = {
@@ -384,6 +387,7 @@ function normalizeFact(raw: Partial<FactCard> & { sourceTitle?: string; sourceUr
     topicPath: raw.topicPath?.length ? raw.topicPath : ["Surprise topic"],
     sources: sources.length ? sources : [{ title: sourceTitle, url: sourceUrl }],
     image: raw.image?.url.startsWith("/") ? undefined : raw.image,
+    displayModeOverride: raw.displayModeOverride === "text" || raw.displayModeOverride === "picture-text" ? raw.displayModeOverride : undefined,
     difficulty,
     obscurity: difficulty,
     accent: raw.accent ?? ["blue", "lilac", "mint", "sand", "coral"][index % 5] as FactCard["accent"],
@@ -435,7 +439,7 @@ function normalizeSavedState(parsed: Partial<PersistedState> | null, collapseIni
   const restoredCards = uniqueCards(realCards.map((card, index) => normalizeFact(card, index)).filter((card) => card.title.trim() && card.body.trim() && card.hook.trim() && card.topicPath.length && card.sources.length));
   const restoredProfile = normalizeLearningProfile(parsed?.learningProfile ?? {}, normalizeDifficulty(restoredSettings.obscurity));
   const restoredTheme = parsed?.theme === "dark" ? "dark" : "light";
-  return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity };
+  return { persistenceVersion: PERSISTENCE_VERSION, savedAt: parsed?.savedAt, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics: restoredTopics, settings: restoredSettings, cards: restoredCards, learningProfile: restoredProfile, feedStarted: Boolean(parsed?.feedStarted && restoredCards.length), theme: restoredTheme, youtubeActivity: parsed?.youtubeActivity, lastCompletedBatchSetup: isBatchSetup(parsed?.lastCompletedBatchSetup) ? parsed.lastCompletedBatchSetup : undefined };
 }
 
 function learningResponseCacheKey(sessionId: string, apiKey: string, action: "learn" | "question", card: FactCard, question = "", detailed = false, history: LearningMessage[] = [], structure: AnswerStructure = "automatic", instructionPreference: QuestionInstructionPreference = "written") {
@@ -485,6 +489,13 @@ export default function HomePage() {
     activeFactBatchRef.current = batch;
     setActiveFactBatchState(batch);
   }, []);
+  const [lastCompletedBatchSetup, setLastCompletedBatchSetupState] = useState<BatchSetup | null>(null);
+  const lastCompletedBatchSetupRef = useRef<BatchSetup | null>(null);
+  const updateLastCompletedBatchSetup = useCallback((setup: BatchSetup | null) => {
+    lastCompletedBatchSetupRef.current = setup;
+    setLastCompletedBatchSetupState(setup);
+  }, []);
+  const [repeatBatchPreview, setRepeatBatchPreview] = useState<BatchSetup | null>(null);
   const clearFactAngleBatch = useCallback(() => {
     updateActiveFactBatch(null);
     setSelectedFactAngle("varied");
@@ -514,7 +525,7 @@ export default function HomePage() {
   const topicDetourRef = useRef<TopicDetour | null>(null);
   const topicDetourNoticeTimer = useRef<number | null>(null);
   const activeGenerationDetourId = useRef<string | null>(null);
-  const startFeedRef = useRef<((rabbitHoleOverride?: string | null, requestedCount?: number, detourRequest?: { id: string; topicPath: string[]; slotIndexes: number[] }) => Promise<void>) | null>(null);
+  const startFeedRef = useRef<((rabbitHoleOverride?: string | null, requestedCount?: number, detourRequest?: { id: string; topicPath: string[]; slotIndexes: number[] }, replaySetup?: BatchSetup) => Promise<void>) | null>(null);
   const updateTopicDetour = useCallback((next: TopicDetour | null) => {
     if (next && topicDetourNoticeTimer.current !== null) {
       window.clearTimeout(topicDetourNoticeTimer.current);
@@ -549,7 +560,10 @@ export default function HomePage() {
   useEffect(() => {
     const owner = { workspaceId, accountId: account?.id ?? null };
     const previous = factAngleOwnerRef.current;
-    if (previous && (previous.workspaceId !== owner.workspaceId || previous.accountId !== owner.accountId)) clearFactAngleBatch();
+    if (previous && (previous.workspaceId !== owner.workspaceId || previous.accountId !== owner.accountId)) {
+      clearFactAngleBatch();
+      setRepeatBatchPreview(null);
+    }
     factAngleOwnerRef.current = owner;
   }, [account?.id, clearFactAngleBatch, workspaceId]);
   const [syncStatus, setSyncStatus] = useState<"signed-out" | "syncing" | "synced" | "offline" | "error">("signed-out");
@@ -717,8 +731,8 @@ export default function HomePage() {
     for (const card of incoming) factNoveltyIndexRef.current.add(rememberFact(card));
     if (workspaceStoreRef.current) workspaceStoreRef.current.factMemory = factMemoryRef.current;
   }, []);
-  const acceptFact = useCallback((card: FactCard, detour?: { id: string; slot: number }) => {
-    if (!hasExactSentenceCount(card.body, settings.sentenceLength)) return false;
+  const acceptFact = useCallback((card: FactCard, detour?: { id: string; slot: number }, sentenceLength = settings.sentenceLength) => {
+    if (!hasExactSentenceCount(card.body, sentenceLength)) return false;
     const next = rememberFact(card);
     if (factNoveltyIndexRef.current.findDuplicate(next)) return false;
     const activeDetour = detour && topicDetourRef.current?.id === detour.id ? topicDetourRef.current : null;
@@ -758,9 +772,10 @@ export default function HomePage() {
   }, [cards, workspaceId]);
 
   const enqueueImageHydration = useCallback((incoming: FactCard[], requestId: number, workspaceId: string) => {
-    if (displayModeRef.current !== "picture-text") return;
+    const imageCards = incoming.filter(card => (card.displayModeOverride ?? displayModeRef.current) === "picture-text");
+    if (!imageCards.length) return;
     const epoch = imageHydrationEpoch.current;
-    incoming.forEach(card => {
+    imageCards.forEach(card => {
       if (!card.sources?.[0] || card.image || imageHydrationControllers.current.has(card.id) || imageHydrationQueue.current.some(job => job.card.id === card.id)) return;
       imageHydrationQueue.current.push({ card, requestId, workspaceId, epoch });
     });
@@ -770,12 +785,12 @@ export default function HomePage() {
       try {
         while (imageHydrationQueue.current.length) {
           const job = imageHydrationQueue.current.shift()!;
-          if (job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || displayModeRef.current !== "picture-text") continue;
+          if (job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || (job.card.displayModeOverride ?? displayModeRef.current) !== "picture-text") continue;
           const controller = new AbortController();
           imageHydrationControllers.current.set(job.card.id, controller);
           try {
             const image = await resolveWikipediaImage(job.card.sources[0], controller.signal);
-            if (!image || controller.signal.aborted || job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || displayModeRef.current !== "picture-text") continue;
+            if (!image || controller.signal.aborted || job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || (job.card.displayModeOverride ?? displayModeRef.current) !== "picture-text") continue;
             setCards(current => current.some(item => item.id === job.card.id) ? current.map(item => item.id === job.card.id ? { ...item, image } : item) : current);
           } catch {
             // Images are optional and do not affect verified text cards.
@@ -875,7 +890,8 @@ export default function HomePage() {
     learningProfile,
     feedStarted,
     theme,
-    youtubeActivity: youtubeActivityOf(youtubeWorkspaceRef.current)
+    youtubeActivity: youtubeActivityOf(youtubeWorkspaceRef.current),
+    lastCompletedBatchSetup: lastCompletedBatchSetupRef.current ?? undefined
   }), [cards, feedStarted, learningProfile, settings, theme, topics]);
 
   const saveWorkspaceRecordNow = useCallback(async (id: string, name: string, snapshot: PersistedState) => {
@@ -921,6 +937,8 @@ export default function HomePage() {
     setQuestionDrafts({});
     setLearningProfile(targetState.learningProfile);
     setFeedStarted(targetState.feedStarted);
+    updateLastCompletedBatchSetup(targetState.lastCompletedBatchSetup ?? null);
+    setRepeatBatchPreview(null);
     setFeedHasMore(true);
     setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setQuery("");
@@ -932,7 +950,7 @@ export default function HomePage() {
     setYoutubeWorkspace((current) => applyYouTubeActivity(current, target.state.youtubeActivity));
     persistedStateRef.current = targetState;
     await writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The workspace changed, but the active workspace could not be saved."));
-  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow]);
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow, updateLastCompletedBatchSetup]);
 
   const createWorkspace = useCallback(async () => {
     if (!workspaceStoreRef.current) return;
@@ -959,6 +977,8 @@ export default function HomePage() {
     setQuestionDrafts({});
     setLearningProfile({});
     setFeedStarted(false);
+    updateLastCompletedBatchSetup(null);
+    setRepeatBatchPreview(null);
     setFeedHasMore(true);
     setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
     setQuery("");
@@ -966,7 +986,7 @@ export default function HomePage() {
     setYoutubeWorkspace((current) => ({ ...current, savedIds: [], history: [], playbackPositions: {}, searchText: "", selectedTopic: "All", activeTab: "discover", selectedChannelId: undefined, selectedVideoId: undefined, discoverIds: [], channelOrder: "newest" }));
     await writeWorkspaceStore(workspaceStoreRef.current).catch(() => setToast("The new workspace could not be saved. A local recovery copy was kept."));
     setToast(`${record.name} created.`);
-  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow, theme]);
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow, theme, updateLastCompletedBatchSetup]);
 
   const renameWorkspace = useCallback((targetId: string, requestedName: string) => {
     const target = workspaceStoreRef.current?.records.find((record) => record.id === targetId);
@@ -1036,6 +1056,8 @@ export default function HomePage() {
       setQuestionDrafts({});
       setLearningProfile(replacement.state.learningProfile ?? {});
       setFeedStarted(Boolean(replacement.state.feedStarted && replacementCards.length));
+      updateLastCompletedBatchSetup(replacement.state.lastCompletedBatchSetup ?? null);
+      setRepeatBatchPreview(null);
       setFeedHasMore(true);
       setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
       setQuery("");
@@ -1050,7 +1072,7 @@ export default function HomePage() {
     setWorkspaceSummaries(store.records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
     await writeWorkspaceStore(store).catch(() => setToast("The workspace was removed locally, but the new order could not be saved."));
     setToast(`${target.name} deleted.`);
-  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow]);
+  }, [cancelWorkspaceRequests, makeCurrentSnapshot, resetCustomTopicReservations, saveWorkspaceRecordNow, updateLastCompletedBatchSetup]);
 
   const requestDeleteWorkspace = useCallback((targetId: string) => {
     const store = workspaceStoreRef.current;
@@ -1125,13 +1147,18 @@ export default function HomePage() {
 
   useEffect(() => {
     displayModeRef.current = settings.displayMode;
-    if (settings.displayMode === "text") {
+    if (settings.displayMode === "text" && !cards.some(card => card.displayModeOverride === "picture-text")) {
       imageHydrationEpoch.current += 1;
       imageHydrationQueue.current = [];
       imageHydrationControllers.current.forEach(controller => controller.abort());
       imageHydrationControllers.current.clear();
     }
-  }, [settings.displayMode]);
+  }, [cards, settings.displayMode]);
+
+  useEffect(() => {
+    const imageCards = cardsRef.current.filter(card => (card.displayModeOverride ?? settings.displayMode) === "picture-text");
+    if (imageCards.length) enqueueImageHydration(imageCards, requestGeneration.current, workspaceId);
+  }, [enqueueImageHydration, settings.displayMode, workspaceId]);
 
   useEffect(() => {
     let active = true;
@@ -1187,6 +1214,7 @@ export default function HomePage() {
       setQuestionDrafts({});
       setLearningProfile(restored.learningProfile);
       setFeedStarted(restored.feedStarted);
+      updateLastCompletedBatchSetup(restored.lastCompletedBatchSetup ?? null);
       const sharedTheme = store.theme ?? restored.theme;
       store.theme = sharedTheme;
       setTheme(sharedTheme);
@@ -1201,7 +1229,7 @@ export default function HomePage() {
     void restore();
     setSupabaseConfigured(Boolean(CLOUD_URL && CLOUD_PUBLIC_KEY));
     return () => { active = false; };
-  }, [resetCustomTopicReservations]);
+  }, [resetCustomTopicReservations, updateLastCompletedBatchSetup]);
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
@@ -1358,6 +1386,8 @@ export default function HomePage() {
         setQuestionDrafts({});
         setLearningProfile(targetState.learningProfile);
         setFeedStarted(targetState.feedStarted);
+        updateLastCompletedBatchSetup(targetState.lastCompletedBatchSetup ?? null);
+        setRepeatBatchPreview(null);
         setTheme(mergedStore.theme ?? "light");
         persistedStateRef.current = targetState;
         await writeWorkspaceStore(mergedStore);
@@ -1396,11 +1426,11 @@ export default function HomePage() {
     };
     window.addEventListener("online", retry); window.addEventListener("focus", retry);
     return () => { active = false; listener.subscription.unsubscribe(); cloudAbortController.current?.abort(); window.removeEventListener("online", retry); window.removeEventListener("focus", retry); };
-  }, [hydrated, keysHydrated, resetCustomTopicReservations, scheduleCloudSave]);
+  }, [hydrated, keysHydrated, resetCustomTopicReservations, scheduleCloudSave, updateLastCompletedBatchSetup]);
 
   useEffect(() => {
     if (!hydrated) return;
-    const state: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics, settings, cards, learningProfile, feedStarted, theme, youtubeActivity: youtubeActivityOf(youtubeWorkspaceRef.current) };
+    const state: PersistedState = { persistenceVersion: PERSISTENCE_VERSION, topicCatalogVersion: TOPIC_CATALOG_VERSION, topics, settings, cards, learningProfile, feedStarted, theme, youtubeActivity: youtubeActivityOf(youtubeWorkspaceRef.current), lastCompletedBatchSetup: lastCompletedBatchSetup ?? undefined };
     persistedStateRef.current = state;
     const currentStore = workspaceStoreRef.current;
     if (currentStore) {
@@ -1421,7 +1451,7 @@ export default function HomePage() {
         }).catch(() => setToast("Your workspace could not be saved. A local recovery copy was kept."));
       }, 300);
     }
-  }, [cards, feedStarted, hydrated, learningProfile, scheduleCloudSave, settings, theme, topics]);
+  }, [cards, feedStarted, hydrated, learningProfile, lastCompletedBatchSetup, scheduleCloudSave, settings, theme, topics]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1801,15 +1831,17 @@ export default function HomePage() {
 
   const updateSettings = useCallback((next: Partial<FeedSettings>) => {
     const nextSentenceLength = next.sentenceLength === undefined ? settings.sentenceLength : normalizeSentenceLength(next.sentenceLength);
-    if (next.displayMode) {
+    if (next.displayMode && next.displayMode !== settings.displayMode) {
       displayModeRef.current = next.displayMode;
+      const cardsWithoutOverrides = cards.map(card => card.displayModeOverride ? { ...card, displayModeOverride: undefined } : card);
+      setCards(cardsWithoutOverrides);
       if (next.displayMode === "text") {
         imageHydrationEpoch.current += 1;
         imageHydrationQueue.current = [];
         imageHydrationControllers.current.forEach(controller => controller.abort());
         imageHydrationControllers.current.clear();
       } else if (next.displayMode === "picture-text") {
-        enqueueImageHydration(cards, requestGeneration.current, workspaceIdRef.current);
+        enqueueImageHydration(cardsWithoutOverrides, requestGeneration.current, workspaceIdRef.current);
       }
     }
     setSettings((current) => ({ ...current, ...next, sentenceLength: nextSentenceLength }));
@@ -1817,7 +1849,7 @@ export default function HomePage() {
       const difficulty = normalizeDifficulty(next.obscurity);
       setLearningProfile((current) => resetTopicLearningProfiles(current, difficulty));
     }
-  }, [cards, enqueueImageHydration, settings.sentenceLength]);
+  }, [cards, enqueueImageHydration, settings.displayMode, settings.sentenceLength]);
 
   const handleGoogleSignIn = useCallback(() => {
     if (!supabaseConfigured) {
@@ -1939,9 +1971,10 @@ export default function HomePage() {
     setToast(`${topic.label} removed from your topic tree.`);
   }, [topics]);
 
-  const startFeed = useCallback(async (rabbitHoleOverride?: string | null, requestedCount = pendingSlots, detourRequest?: { id: string; topicPath: string[]; slotIndexes: number[] }) => {
+  const startFeed = useCallback(async (rabbitHoleOverride?: string | null, requestedCount = pendingSlots, detourRequest?: { id: string; topicPath: string[]; slotIndexes: number[] }, replaySetup?: BatchSetup) => {
     if (generationAbortController.current) return;
-    if (!detourRequest && !selectedCount) {
+    const existing = activeFactBatchRef.current;
+    if (!detourRequest && !replaySetup && !existing && !selectedCount) {
       setToast("Choose at least one topic before generating more facts.");
       return;
     }
@@ -1952,18 +1985,41 @@ export default function HomePage() {
     }
     const accountId = account?.id ?? null;
     const batchKey = detourRequest ? `detour:${detourRequest.id}` : "feed";
-    const currentBatch = activeFactBatchRef.current;
-    let batchAngle: FactAngle;
-    if (currentBatch && currentBatch.workspaceId === workspaceIdRef.current && currentBatch.accountId === accountId && currentBatch.key === batchKey) {
-      batchAngle = currentBatch.angle;
-    } else if (currentBatch) {
+    let activeBatch = activeFactBatchRef.current;
+    let batchSetup: BatchSetup;
+    let replay = false;
+    if (activeBatch && activeBatch.workspaceId === workspaceIdRef.current && activeBatch.accountId === accountId && activeBatch.key === batchKey) {
+      batchSetup = activeBatch.setup;
+      replay = activeBatch.replay;
+    } else if (activeBatch) {
       setToast("Finish or end the current batch before starting another one.");
       return;
+    } else if (replaySetup) {
+      replay = true;
+      const replayId = `repeat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      batchSetup = cloneBatchSetupForRepeat(replaySetup, replayId);
+      activeBatch = { workspaceId: workspaceIdRef.current, accountId, key: batchKey, setup: batchSetup, accepted: {}, replay };
+      updateActiveFactBatch(activeBatch);
+      setSelectedFactAngle("varied");
     } else {
-      batchAngle = selectedFactAngleRef.current;
-      updateActiveFactBatch({ workspaceId: workspaceIdRef.current, accountId, key: batchKey, angle: batchAngle });
+      const factAngle = selectedFactAngleRef.current;
+      const activeRabbitHole = detourRequest ? null : rabbitHoleOverride !== undefined ? rabbitHoleOverride : rabbitHole;
+      const count = Math.max(1, Math.min(10, Math.round(requestedCount || DEFAULT_CARD_GENERATION_COUNT)));
+      if (detourRequest && (detourRequest.slotIndexes.length !== 3 || new Set(detourRequest.slotIndexes).size !== 3 || detourRequest.slotIndexes.some((slot) => !Number.isInteger(slot) || slot < 0 || slot >= 3))) {
+        setToast("This topic detour could not be restored safely. Please start it again.");
+        return;
+      }
+      const assignedTopics = detourRequest
+        ? detourRequest.slotIndexes.map(() => ({ path: [...detourRequest.topicPath], weight: 10, difficulty: getTopicLearningProfile(learningProfile, detourRequest.topicPath, normalizeDifficulty(settings.obscurity)).targetDifficulty }))
+        : selectWeightedTopicPaths(topics, count).map(topic => ({ ...topic, difficulty: getTopicLearningProfile(learningProfile, topic.path, normalizeDifficulty(settings.obscurity)).targetDifficulty }));
+      if (!assignedTopics.length) { setToast("Choose at least one topic before generating more facts."); return; }
+      batchSetup = createBatchSetup({ id: `${batchKey}-${Date.now()}`, slots: assignedTopics.map(({ path, difficulty }) => ({ topicPath: path, difficulty: normalizeDifficulty(difficulty, normalizeDifficulty(settings.obscurity)) })), settings: { ...settings }, factAngle, rabbitHole: activeRabbitHole });
+      activeBatch = { workspaceId: workspaceIdRef.current, accountId, key: batchKey, setup: batchSetup, accepted: {}, replay: false };
+      updateActiveFactBatch(activeBatch);
       setSelectedFactAngle("varied");
     }
+    if (replaySetup) setRepeatBatchPreview(null);
+    const batchAngle = batchSetup.factAngle;
     const angleError = (message: string) => `${factAngleDefinition(batchAngle).label} · ${message}`;
     const controller = new AbortController();
     const requestId = requestGeneration.current;
@@ -1976,31 +2032,63 @@ export default function HomePage() {
     setLoading(true);
     setToast("");
     setGenerationError("");
-    const activeRabbitHole = detourRequest ? null : rabbitHoleOverride !== undefined ? rabbitHoleOverride : rabbitHole;
-    const count = Math.max(1, Math.min(10, Math.round(requestedCount || 10)));
     const detourSlots = detourRequest?.slotIndexes ?? [];
-    const assignedTopics = detourRequest
-      ? detourSlots.map(() => ({ path: [...detourRequest.topicPath], weight: 10, difficulty: getTopicLearningProfile(learningProfile, detourRequest.topicPath, normalizeDifficulty(settings.obscurity)).targetDifficulty }))
-      : selectWeightedTopicPaths(topics, count);
+    const completedSlotIds = new Set(Object.keys(activeBatch?.accepted ?? {}));
+    const remainingBatchSlots = missingBatchSetupSlots(batchSetup, completedSlotIds);
+    const requestedBatchSlots = detourRequest ? detourSlots.map((slot) => batchSetup.slots[slot]).filter((slot): slot is BatchSetupSlot => Boolean(slot) && !completedSlotIds.has(slot.id)) : remainingBatchSlots;
+    if (!requestedBatchSlots.length) { updateActiveFactBatch(null); setLoading(false); return; }
+    const count = requestedBatchSlots.length;
+    const batchSettings = { ...batchSetup.settings };
+    const activeRabbitHole = batchSetup.rabbitHole;
+    const assignedTopics = requestedBatchSlots.map((slot) => ({ path: [...slot.topicPath], weight: 10, difficulty: slot.difficulty, slotId: slot.id }));
+    if (!validBatchSlotAssignments(batchSetup, assignedTopics)) {
+      setGenerationError(angleError("The saved batch assignments could not be verified. End this batch and start again."));
+      setFeedHasMore(false);
+      setLoading(false);
+      generationAbortController.current = null;
+      updateActiveFactBatch(null);
+      return;
+    }
+    const repeatNovelty = batchSetup.novelty ?? [];
+    const repeatNoveltyIndex = replay && repeatNovelty.length ? new FactNoveltyIndex(repeatNovelty) : null;
+    const signatureById = new Map(factNoveltySignatures(factMemoryRef.current).map(signature => [signature.id, signature] as const));
+    const avoidForRequest = [...signatureById.values(), ...repeatNovelty.filter(signature => !signatureById.has(signature.id))];
     const receivedIds = new Set<string>();
     const receivedCards = new Map<string, FactCard>();
-    const acceptGeneratedCard = (card: FactCard, eventSlot?: number) => {
+    const acceptGeneratedCard = (card: FactCard, eventSlot?: number, eventSlotId?: string) => {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return false;
+      const active = activeFactBatchRef.current;
+      if (!active || active.workspaceId !== imageWorkspaceId || active.accountId !== accountId || active.key !== batchKey) return false;
+      const localSlotIndex = Number.isInteger(eventSlot) ? eventSlot! : requestedBatchSlots.findIndex(slot => !active.accepted[slot.id]);
+      const slot = eventSlotId ? requestedBatchSlots.find(item => item.id === eventSlotId) : requestedBatchSlots[localSlotIndex];
+      if (!slot || active.accepted[slot.id] || receivedIds.has(card.id)) return false;
       let detourAcceptance: { id: string; slot: number } | undefined;
       if (detourRequest) {
         const activeDetour = topicDetourRef.current;
         if (!activeDetour || activeDetour.id !== detourRequest.id) return false;
-        const fallbackSlot = Number.isInteger(eventSlot) ? undefined : detourSlots.find(slot => activeDetour.slotCardIds[slot] == null);
-        const slot = Number.isInteger(eventSlot) ? detourSlots[eventSlot!] : fallbackSlot;
-        if (slot === undefined || !detourSlots.includes(slot) || activeDetour.slotCardIds[slot] != null) return false;
-        detourAcceptance = { id: detourRequest.id, slot };
+        const originalSlotIndex = batchSetup.slots.findIndex(item => item.id === slot.id);
+        if (originalSlotIndex < 0 || !detourSlots.includes(originalSlotIndex) || activeDetour.slotCardIds[originalSlotIndex] != null) return false;
+        detourAcceptance = { id: detourRequest.id, slot: originalSlotIndex };
       }
-      if (!acceptFact(card, detourAcceptance)) return false;
-      receivedIds.add(card.id);
-      receivedCards.set(card.id, card);
+      const acceptedCard = replay ? { ...card, displayModeOverride: batchSettings.displayMode } : card;
+      if (repeatNoveltyIndex?.findDuplicate(rememberFact(acceptedCard))) return false;
+      if (!acceptFact(acceptedCard, detourAcceptance, batchSettings.sentenceLength)) return false;
+      receivedIds.add(acceptedCard.id);
+      receivedCards.set(acceptedCard.id, acceptedCard);
+      updateActiveFactBatch({ ...active, accepted: { ...active.accepted, [slot.id]: acceptedCard.id } });
       return true;
     };
-    let finalPayload: { cards?: Partial<FactCard>[]; partial?: boolean; retryGuidance?: string } | undefined;
+    const finishBatchWhenComplete = () => {
+      const current = activeFactBatchRef.current;
+      if (!current || current.workspaceId !== imageWorkspaceId || current.accountId !== accountId || current.key !== batchKey
+        || missingBatchSetupSlots(current.setup, Object.keys(current.accepted)).length) return false;
+      const acceptedIds = new Set(Object.values(current.accepted));
+      const novelty = factNoveltySignatures(factMemoryRef.current).filter(signature => acceptedIds.has(signature.id)).slice(0, 10);
+      updateLastCompletedBatchSetup({ ...current.setup, novelty });
+      updateActiveFactBatch(null);
+      return true;
+    };
+    let finalPayload: { cards?: Partial<FactCard>[]; slotMappings?: Array<{ slotId: string; cardId: string }>; partial?: boolean; retryGuidance?: string } | undefined;
     let streamError = "";
     try {
       if (isGitHubPagesRuntime()) {
@@ -2009,11 +2097,11 @@ export default function HomePage() {
           sessionId: sessionIdRef.current,
           topicPaths: assignedTopics,
           requestedCount: count,
-          settings,
+          settings: batchSettings,
           learningProfile,
           rabbitHole: activeRabbitHole,
           factAngle: batchAngle,
-          avoid: factNoveltySignatures(factMemoryRef.current),
+          avoid: avoidForRequest,
           signal: controller.signal,
           onProgress: (event) => {
             if (controller.signal.aborted || requestGeneration.current !== requestId) return;
@@ -2028,17 +2116,18 @@ export default function HomePage() {
             }
             if (event.type !== "card") return;
             const card = normalizeFact(event.card, receivedIds.size);
-            acceptGeneratedCard(card, event.slot);
+            acceptGeneratedCard(card, event.slot, event.slotId);
           }
         });
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
-        result.cards.forEach((card, index) => { const normalized = normalizeFact(card, index); if (!receivedIds.has(normalized.id)) acceptGeneratedCard(normalized, index); });
+        const slotByCardId = new Map((result.slotMappings ?? []).map(mapping => [mapping.cardId, mapping.slotId] as const));
+        result.cards.forEach((card, index) => { const normalized = normalizeFact(card, index); if (!receivedIds.has(normalized.id)) acceptGeneratedCard(normalized, index, slotByCardId.get(normalized.id)); });
         if (detourRequest) {
           const missing = topicDetourRef.current?.id === detourRequest.id ? missingTopicDetourSlots(topicDetourRef.current) : [];
           setFeedHasMore(missing.length === 0);
           setPendingSlots(missing.length || DEFAULT_CARD_GENERATION_COUNT);
           setGenerationError(missing.length ? angleError(result.retryGuidance ?? "Some topic cards could not be verified. Retry to fill the remaining facts.") : "");
-          if (!missing.length) updateActiveFactBatch(null);
+          if (!missing.length) finishBatchWhenComplete();
           return;
         }
         if (!receivedIds.size) {
@@ -2046,23 +2135,23 @@ export default function HomePage() {
           setPendingSlots(count);
           setGenerationError(angleError("Gemini returned no new complete cards. Retry when you are ready."));
           setToast("No new complete facts arrived. Retry when you are ready.");
-        } else if (result.partial || receivedIds.size < count) {
+        } else if (missingBatchSetupSlots(batchSetup, Object.keys(activeFactBatchRef.current?.accepted ?? {})).length) {
           setFeedHasMore(false);
-          setPendingSlots(Math.max(1, count - receivedIds.size));
+          setPendingSlots(Math.max(1, missingBatchSetupSlots(batchSetup, Object.keys(activeFactBatchRef.current?.accepted ?? {})).length));
           setGenerationError(angleError(result.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards."));
           setToast(receivedIds.size + " facts arrived. Retry to fill the remaining slots.");
         } else {
           setFeedHasMore(true);
           setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
           setGenerationError("");
-          updateActiveFactBatch(null);
+          finishBatchWhenComplete();
         }
         return;
       }
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/x-ndjson", "x-gemini-api-key": apiKey.trim(), "x-learned-media-session": sessionIdRef.current },
-        body: JSON.stringify({ topics: assignedTopics, requestedCount: count, settings, learningProfile, rabbitHole: activeRabbitHole, factAngle: batchAngle, avoid: factNoveltySignatures(factMemoryRef.current) }),
+        body: JSON.stringify({ topics: assignedTopics, requestedCount: count, settings: batchSettings, learningProfile, rabbitHole: activeRabbitHole, factAngle: batchAngle, avoid: avoidForRequest }),
         signal: controller.signal
       });
       if (!response.ok) {
@@ -2072,7 +2161,7 @@ export default function HomePage() {
       await readNdjson(response, (message) => {
         if (controller.signal.aborted || requestGeneration.current !== requestId) return;
         if (message.type === "progress") {
-          const event = message.event as { type?: string; slot?: number; card?: Partial<FactCard>; outcome?: GeminiModelOutcome; status?: GeminiStatus };
+          const event = message.event as { type?: string; slot?: number; slotId?: string; card?: Partial<FactCard>; outcome?: GeminiModelOutcome; status?: GeminiStatus };
           if (event.type === "model" && event.outcome) {
             setModelChecks((current) => mergeGeminiModelOutcome(current, event.outcome!));
             if (event.outcome.status === "success") setGeminiStatus("connected");
@@ -2080,7 +2169,7 @@ export default function HomePage() {
           if (event.type === "status" && event.status) setGeminiStatus(event.status);
           if (event.type === "card" && event.card?.id && event.card.title && event.card.body && event.card.hook && event.card.topicPath?.length && event.card.sources?.length) {
             const card = normalizeFact(event.card, receivedIds.size);
-            acceptGeneratedCard(card, event.slot);
+            acceptGeneratedCard(card, event.slot, event.slotId);
           }
         } else if (message.type === "complete") {
           finalPayload = message as typeof finalPayload;
@@ -2096,13 +2185,14 @@ export default function HomePage() {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
       if (streamError) throw new Error(streamError);
       const generated = (finalPayload?.cards ?? []).filter((card) => Boolean(card.id && card.title?.trim() && card.body?.trim() && card.hook?.trim() && card.topicPath?.length && card.sources?.length)).map((card, index) => normalizeFact(card, index));
-      generated.forEach((card, index) => { if (!receivedIds.has(card.id)) acceptGeneratedCard(card, index); });
+      const slotByCardId = new Map((finalPayload?.slotMappings ?? []).map(mapping => [mapping.cardId, mapping.slotId] as const));
+      generated.forEach((card, index) => { if (!receivedIds.has(card.id)) acceptGeneratedCard(card, index, slotByCardId.get(card.id)); });
       if (detourRequest) {
         const missing = topicDetourRef.current?.id === detourRequest.id ? missingTopicDetourSlots(topicDetourRef.current) : [];
         setFeedHasMore(missing.length === 0);
         setPendingSlots(missing.length || DEFAULT_CARD_GENERATION_COUNT);
         setGenerationError(missing.length ? angleError(finalPayload?.retryGuidance ?? "Some topic cards could not be verified. Retry to fill the remaining facts.") : "");
-        if (!missing.length) updateActiveFactBatch(null);
+        if (!missing.length) finishBatchWhenComplete();
         return;
       }
       if (!receivedIds.size) {
@@ -2110,16 +2200,16 @@ export default function HomePage() {
         setPendingSlots(count);
         setGenerationError(angleError("Gemini returned no new complete cards. Retry when you are ready."));
         setToast("No new complete facts arrived. Retry when you are ready.");
-      } else if (finalPayload?.partial || receivedIds.size < count) {
+      } else if (missingBatchSetupSlots(batchSetup, Object.keys(activeFactBatchRef.current?.accepted ?? {})).length) {
         setFeedHasMore(false);
-        setPendingSlots(Math.max(1, count - receivedIds.size));
+        setPendingSlots(Math.max(1, missingBatchSetupSlots(batchSetup, Object.keys(activeFactBatchRef.current?.accepted ?? {})).length));
         setGenerationError(angleError(finalPayload?.retryGuidance ?? "Some fact slots failed. Retry to fill the remaining cards."));
         setToast(receivedIds.size + " facts arrived. Retry to fill the remaining slots.");
       } else {
         setFeedHasMore(true);
         setPendingSlots(DEFAULT_CARD_GENERATION_COUNT);
         setGenerationError("");
-        updateActiveFactBatch(null);
+        finishBatchWhenComplete();
       }
     } catch (error) {
       if (controller.signal.aborted || requestGeneration.current !== requestId) return;
@@ -2129,7 +2219,7 @@ export default function HomePage() {
       setGenerationError(angleError(message));
       setToast(angleError(message));
     } finally {
-      if (!controller.signal.aborted && requestGeneration.current === requestId && displayModeRef.current === "picture-text") enqueueImageHydration(Array.from(receivedCards.values()), requestId, imageWorkspaceId);
+      if (!controller.signal.aborted && requestGeneration.current === requestId) enqueueImageHydration(Array.from(receivedCards.values()), requestId, imageWorkspaceId);
       if (generationAbortController.current === controller) {
         generationAbortController.current = null;
         activeGenerationDetourId.current = null;
@@ -2145,8 +2235,16 @@ export default function HomePage() {
         }
       }
     }
-  }, [account?.id, apiKey, enqueueImageHydration, geminiStatus, learningProfile, pendingSlots, rabbitHole, selectedCount, setSelectedFactAngle, settings, topics, updateActiveFactBatch, updateTopicDetour]);
+  }, [account?.id, apiKey, enqueueImageHydration, geminiStatus, learningProfile, pendingSlots, rabbitHole, selectedCount, setSelectedFactAngle, settings, topics, updateActiveFactBatch, updateLastCompletedBatchSetup, updateTopicDetour]);
   startFeedRef.current = startFeed;
+
+  const prepareRepeatBatch = useCallback(() => {
+    if (!lastCompletedBatchSetup || activeFactBatchRef.current || topicDetourRef.current || generationAbortController.current) return;
+    setRepeatBatchPreview({ ...lastCompletedBatchSetup, slots: lastCompletedBatchSetup.slots.map(slot => ({ ...slot, topicPath: [...slot.topicPath] })), settings: { ...lastCompletedBatchSetup.settings }, novelty: [...(lastCompletedBatchSetup.novelty ?? [])] });
+  }, [lastCompletedBatchSetup]);
+  const confirmRepeatBatch = useCallback((setup: BatchSetup) => {
+    void startFeedRef.current?.(setup.rabbitHole, setup.slots.length, undefined, setup);
+  }, []);
 
   const startTopicDetour = useCallback((sourceCardId: string) => {
     const source = cardsRef.current.find(card => card.id === sourceCardId);
@@ -2289,8 +2387,9 @@ export default function HomePage() {
     clearFactAngleBatch();
     setTopics(blankTopics);
     setView("feed");
+    setRepeatBatchPreview(null);
     if (hydrated) {
-      writeWorkspaceState({ persistenceVersion: PERSISTENCE_VERSION, topics: blankTopics, settings, cards: [], learningProfile, feedStarted: false, theme });
+      writeWorkspaceState({ persistenceVersion: PERSISTENCE_VERSION, topics: blankTopics, settings, cards: [], learningProfile, feedStarted: false, theme, lastCompletedBatchSetup: lastCompletedBatchSetupRef.current ?? undefined });
     }
     setToast("Feed reset. Nothing will generate until you press Start again.");
     window.requestAnimationFrame(() => {
@@ -3304,7 +3403,7 @@ export default function HomePage() {
     if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onThreeMore={startTopicDetour} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} revealGradually={revealGradually} onRevealGraduallyChange={setRevealGraduallyPreference} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus === "synced" && keySyncStatus === "syncing" ? "syncing" : syncStatus === "synced" && keySyncStatus === "error" ? "error" : syncStatus} syncError={[syncError, keySyncError].filter(Boolean).join(" ")} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeProgress={youtubeProgress} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={() => { youtubeAbortController.current?.abort(); setYoutubeProgress((current) => ({ ...current, phase: "paused", paused: true })); }} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} factAngle={selectedFactAngle} onFactAngleChange={setSelectedFactAngle} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
-    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} factAngle={activeFactBatch?.angle ?? selectedFactAngle} factAngleLocked={Boolean(activeFactBatch)} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onEndFactBatch={endFactBatch} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onFactAngleChange={setSelectedFactAngle} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
+    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} factAngle={activeFactBatch?.setup.factAngle ?? selectedFactAngle} factAngleLocked={Boolean(activeFactBatch)} lastCompletedBatchSetup={lastCompletedBatchSetup} repeatBatchPreview={repeatBatchPreview} repeatDisabledReason={loading || activeFactBatch || topicDetour ? "Finish or end the current batch or topic detour before repeating." : undefined} onPrepareRepeat={prepareRepeatBatch} onCancelRepeat={() => setRepeatBatchPreview(null)} onConfirmRepeat={confirmRepeatBatch} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onEndFactBatch={endFactBatch} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onFactAngleChange={setSelectedFactAngle} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
 
   const topicSuggestions = localTopicSuggestions;

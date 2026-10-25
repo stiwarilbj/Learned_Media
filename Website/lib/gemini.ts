@@ -22,6 +22,7 @@ import { createSavedCardChronology } from "./card-chronology";
 import { createSavedCardLocations } from "./card-locations";
 import { factAngleDefinition, normalizeFactAngle, type FactAngle } from "./fact-angle";
 import { ANSWER_STRUCTURE_POLICY_VERSION, QUESTION_INSTRUCTION_POLICY_VERSION, isAnswerStructure, isQuestionInstructionPreference, normalizeAnswerResponse, resolveQuestionInstructions } from "./answer-structure";
+import { validStableBatchAssignments } from "./batch-replay";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
 const MODEL_CHECK_TIMEOUT_MS = 20_000;
@@ -97,6 +98,7 @@ type GeminiTextResponse = {
 
 type GenerationSlot = {
   index: number;
+  slotId?: string;
   path: string[];
   target: Difficulty;
   candidate?: CandidateFact;
@@ -111,12 +113,13 @@ export type GeminiProgressEvent =
   | { type: "model"; outcome: GeminiModelOutcome }
   | { type: "status"; status: GeminiStatus }
   | { type: "slot-start"; slot: number; requested: number }
-  | { type: "card"; slot: number; card: FactCard }
+  | { type: "card"; slot: number; slotId?: string; card: FactCard }
   | { type: "slot-error"; slot: number; error: string }
   | { type: "cooldown"; until: string };
 
 export type GeminiGenerationResult = {
   cards: FactCard[];
+  slotMappings: Array<{ slotId: string; cardId: string }>;
   modelOutcomes: GeminiModelOutcome[];
   requestedCount: number;
   completedCount: number;
@@ -878,18 +881,26 @@ function hasAssignedTopic(candidate: CandidateFact, path: string[]) {
   return path.every((part, index) => normalizedText(candidate.topicPath![index]) === normalizedText(part));
 }
 
-export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, factAngle: requestedFactAngle, requestedCount = DEFAULT_CARD_GENERATION_COUNT, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: Array<FactMemory | FactAvoidKey | FactNoveltySignature | string>; rabbitHole?: string | null; factAngle?: FactAngle; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
+export async function generateGeminiFacts({ apiKey, sessionId = "default-session", topicPaths, settings, learningProfile, avoid, rabbitHole, factAngle: requestedFactAngle, requestedCount = DEFAULT_CARD_GENERATION_COUNT, signal, onProgress }: { apiKey: string; sessionId?: string; topicPaths: Array<{ path: string[]; weight: number; difficulty?: Difficulty; slotId?: string }>; settings: FeedSettings; learningProfile: LearningProfile; avoid: Array<FactMemory | FactAvoidKey | FactNoveltySignature | string>; rabbitHole?: string | null; factAngle?: FactAngle; requestedCount?: number; signal?: AbortSignal; onProgress?: (event: GeminiProgressEvent) => void }): Promise<GeminiGenerationResult> {
   const factAngle = normalizeFactAngle(requestedFactAngle);
   if (!apiKey.trim()) throw new GeminiFailure("Paste your Gemini API key in Settings to generate a fresh batch.", undefined, [], undefined, false);
   if (!topicPaths.length) throw new GeminiFailure("Choose at least one topic before generating a batch.", undefined, [], undefined, false);
   const cards: FactCard[] = [];
   const outcomes: GeminiModelOutcome[] = [];
   const targetCount = Math.max(1, Math.min(MAX_FACTS_PER_BATCH, Math.round(requestedCount)));
+  if (!validStableBatchAssignments(topicPaths, targetCount)) throw new RangeError("Generation slot assignments must contain one verified path, difficulty and stable ID for every requested card.");
+  const suppliedSlotIds = topicPaths.map(topic => topic.slotId).filter((id): id is string => typeof id === "string");
+  if (suppliedSlotIds.length && (suppliedSlotIds.length !== targetCount || new Set(suppliedSlotIds).size !== suppliedSlotIds.length || suppliedSlotIds.some(id => !id.trim() || id.length > 160))) {
+    throw new RangeError("Generation slot assignments must have unique stable IDs for every requested card.");
+  }
   const sentenceCount = normalizeSentenceLength(settings.sentenceLength);
   const candidateGroupSize = MAX_CARDS_PER_GROUP;
   const slots: GenerationSlot[] = Array.from({ length: targetCount }, (_, index) => {
-    const path = topicPaths[index % topicPaths.length].path;
-    return { index, path, target: getTopicLearningProfile(learningProfile, path, normalizeDifficulty(settings.obscurity)).targetDifficulty, mode: "candidate" };
+    const assignment = topicPaths[index % topicPaths.length];
+    const path = assignment.path;
+    const explicitDifficulty = assignment.difficulty;
+    if (explicitDifficulty !== undefined && (!Number.isInteger(explicitDifficulty) || explicitDifficulty < 1 || explicitDifficulty > 10)) throw new RangeError("A batch slot has an unsupported difficulty target.");
+    return { index, slotId: assignment.slotId, path, target: explicitDifficulty ?? getTopicLearningProfile(learningProfile, path, normalizeDifficulty(settings.obscurity)).targetDifficulty, mode: "candidate" };
   });
   const priorMemory = normalizeAvoidMemory(avoid);
   const priorAvoidKeys = normalizeAvoidKeys(avoid);
@@ -897,6 +908,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   const noveltyIndex = new FactNoveltyIndex(noveltyHistory);
   const memory = [...priorMemory];
   const acceptedSlots = new Set<number>();
+  const acceptedCardBySlot = new Map<number, FactCard>();
   const diagnostics = new ValidationDiagnostics();
   const wikiCache = sharedWikipediaResolutionCache;
   let providerExhausted = false;
@@ -1110,8 +1122,9 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             if (!await uniqueForPublication(card)) throw new GeminiFailure("This information has already been shown. Trying a fresh fact.");
             rememberValidatedEvidence(sessionId, slot);
             acceptedSlots.add(slot.index);
+            acceptedCardBySlot.set(slot.index, card);
             cards.push(card);
-            onProgress?.({ type: "card", slot: slot.index, card });
+            onProgress?.({ type: "card", slot: slot.index, slotId: slot.slotId, card });
           } catch (rawError) {
             if (signal?.aborted) throw abortError();
             const error = classifyFailure(rawError);
@@ -1137,7 +1150,10 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   }
   const partial = cards.length < targetCount;
   failedSlots.forEach(slot => onProgress?.({ type: "slot-error", slot: slot.index, error: slot.lastError ?? "This fact slot could not be completed." }));
-  return { cards, validationDiagnostics: diagnostics.snapshot(), modelOutcomes: outcomes, requestedCount: targetCount, completedCount: cards.length, partial, failedJobs: failedSlots.length, retryable: partial, retryGuidance: partial ? `${cards.length} facts arrived. Retry to find supported facts for the remaining slots.` : undefined };
+  return { cards, slotMappings: slots.flatMap(slot => {
+    const card = acceptedCardBySlot.get(slot.index);
+    return slot.slotId && card ? [{ slotId: slot.slotId, cardId: card.id }] : [];
+  }), validationDiagnostics: diagnostics.snapshot(), modelOutcomes: outcomes, requestedCount: targetCount, completedCount: cards.length, partial, failedJobs: failedSlots.length, retryable: partial, retryGuidance: partial ? `${cards.length} facts arrived. Retry to find supported facts for the remaining slots.` : undefined };
 }
 
 type GlossaryLearningResponse = { glossary: SavedCardGlossary; modelOutcomes: GeminiModelOutcome[] };

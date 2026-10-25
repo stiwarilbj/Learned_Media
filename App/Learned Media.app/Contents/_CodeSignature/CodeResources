@@ -18,11 +18,15 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		7Q1COmv0P/eDATpUUgtzkI2p1tg=
+		qwh+P8pUEPMzwv+tpJFon+vgWto=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
 		0EDGsHB/SEa1TbSwRVRaUzpUFA0=
+		</data>
+		<key>Resources/frontend/batch-replay.js</key>
+		<data>
+		HK6bTsM3ssC7S7iAdr/ihIfhjAY=
 		</data>
 		<key>Resources/frontend/card-chronology.js</key>
 		<data>
@@ -102,7 +106,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		8Pwu1IBMdxrn7kaZ5Y3dw1ikLtU=
+		lRFoqdcqg/u/7s3kqckRnfOf0Q4=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -130,7 +134,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		NMaZn7mrDQ3NB7yN5oyo4g6Y1Sk=
+		YirAvaOVoPqcSYLchZC5EDhnF84=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -150,7 +154,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		+pkU4O0p81jXdNsoHQ6xBJLx5Go=
+		jLlq4FWfkXV57qQwEnx7U4uwYdU=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -236,7 +240,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			1PT3bdZxX/cDQReE8VFENhkxN4yb1zZeJGpnU/ucOho=
+			PiDWCEYyGlNXg3hkP1E4LF2ZPtqmuw965SMYHqm8OGM=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -244,6 +248,13 @@
 			<key>hash2</key>
 			<data>
 			ufRHq09utZFQhdVlBy2GHDhN68adXtU9epZaKViyvAI=
+			</data>
+		</dict>
+		<key>Resources/frontend/batch-replay.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			B7aJKimAiHdKnYSj7tIEqLIibm3EI1w3aHbehOmBhIE=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-chronology.js</key>
@@ -383,7 +394,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			3BETWQfHDZQdr3GScSzqEXV1Uq8kdcVO7/fuflfrzj4=
+			E8QR5CfMQBs0tOTfPM+is2ms4JcpzWISKfAlVR3CfoU=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -432,7 +443,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			fOljQjmoqVF+rt71Fiw0UfNzMX/jFUb7Fn7EQ0PvkEA=
+			VfqBTZOEoJ5ogtDu/UX9Ekfo81xeIZSyH0yenT/k920=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -467,7 +478,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			TfwEncAZiDoDMaXKztOseoUuAMUiaxyJoV0lIAOq7ZU=
+			e8MmBy7Orjs9cGJuUFQvPtkbXHXSeFmunSKlsevhuMY=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
