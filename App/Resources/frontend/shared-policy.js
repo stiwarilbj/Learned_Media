@@ -3649,6 +3649,7 @@ exports.partitionYouTubeVideoResults = partitionYouTubeVideoResults;
 exports.mergeYouTubeRecencyPreferences = mergeYouTubeRecencyPreferences;
 exports.selectRandomVideos = selectRandomVideos;
 exports.relatedYouTubeVideos = relatedYouTubeVideos;
+exports.createYouTubeTopicPools = createYouTubeTopicPools;
 exports.isApprovedYouTubeVideo = isApprovedYouTubeVideo;
 exports.isYouTubeShortMetadata = isYouTubeShortMetadata;
 function scheduleYouTubeProgressFrame(callback) {
@@ -3927,6 +3928,20 @@ function selectRandomVideos(videos, count, exclude = [], prioritizeRecentByChann
 function relatedYouTubeVideos(videos, current, count = 6, prioritizeRecentByChannel = {}) {
     const shared = videos.filter((video) => video.id !== current.id && isApprovedYouTubeVideo(video) && video.topics.some((topic) => current.topics.includes(topic)));
     return selectRandomVideos(shared, count, [current.id], prioritizeRecentByChannel);
+}
+function createYouTubeTopicPools(videos) {
+    const pools = new Map([["All", []]]);
+    for (const video of videos) {
+        if (!isApprovedYouTubeVideo(video))
+            continue;
+        pools.get("All").push(video);
+        for (const topic of video.topics) {
+            const matches = pools.get(topic) ?? [];
+            matches.push(video);
+            pools.set(topic, matches);
+        }
+    }
+    return pools;
 }
 function isApprovedYouTubeVideo(video) {
     if (!video.approved || hasExplicitShortMarker(video.title, video.description, video.tags ?? []))

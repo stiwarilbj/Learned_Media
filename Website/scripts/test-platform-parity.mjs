@@ -81,10 +81,40 @@ test('website YouTube progress ignores aborted imports and imports from another 
  assert.match(page,/if \(credentialOwner\.current !== owner\) \{\s*cancelWorkspaceRequests\(\);/);
  assert.match(native,/state\.account\?\.id !== result\.account\?\.id\) \{ cancelWorkspaceOperations\(\);/);
 });
-test('native discovery topic restriction uses the catalog filter',()=>{
- const context={state:{youtube:{topic:'Science',videos:[{id:'a',topics:['Science']},{id:'b',topics:['History']}]}},window:{LEARNED_MEDIA_YOUTUBE:{filter:(videos,q,topic)=>videos.filter(v=>topic==='All'||v.topics.includes(topic))}}};
- runInNewContext(extract('discoveryVideos','videoTabs')+';result=discoveryVideos();',context);
+test('native Discover reuses strict topic pools instead of rescanning the catalog',()=>{
+ const videos=[{id:'a',approved:true,title:'A',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['Science']},{id:'b',approved:true,title:'B',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['History']},{id:'short',approved:true,title:'A #Shorts clip',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['Science']}];
+ let scans=0,indexes=0;
+ const context={state:{youtube:{topic:'Science',videos}},youtubeIndexedVideos:null,youtubeVideosByTopic:new Map(),window:{LEARNED_MEDIA_YOUTUBE:{filter(){scans++;return [];}}}};
+ context.videoSearchIndex=()=>{indexes++;context.youtubeIndexedVideos=context.state.youtube.videos;context.youtubeVideosByTopic=mac.youtube.createYouTubeTopicPools(context.state.youtube.videos);};
+ runInNewContext(extract('discoveryVideos','relatedVideosFor')+';result=discoveryVideos();',context);
  assert.deepEqual(clean(context.result).map(v=>v.id),['a']);
+ assert.equal(indexes,1);assert.equal(scans,0,'the cached pool should serve Discover directly');
+});
+test('related videos are computed only for the ended workspace-video identity and use topic pools',()=>{
+ const videos=[{id:'current',approved:true,title:'Current',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['Science']},{id:'near',approved:true,title:'Nearby',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['Science']},{id:'other',approved:true,title:'Other',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['History']}];
+ let indexes=0;const context={playerEndedIdentity:'',state:{youtube:{videos,prioritizeRecentByChannel:{}}},youtubeVideosByTopic:mac.youtube.createYouTubeTopicPools(videos),videoSearchIndex(){indexes++;},shared:mac};
+ runInNewContext(extract('relatedVideosFor','videoTabs')+';before=relatedVideosFor(state.youtube.videos[0],"workspace:current");playerEndedIdentity="workspace:current";after=relatedVideosFor(state.youtube.videos[0],"workspace:current");playerEndedIdentity="other:current";stale=relatedVideosFor(state.youtube.videos[0],"workspace:current");',context);
+ assert.deepEqual(clean(context.before),[]);assert.equal(indexes,1);
+ assert.ok(context.after.some(video=>video.id==='near'));assert.ok(context.after.every(video=>video.id!=='other'));
+ assert.deepEqual(clean(context.stale),[]);assert.equal(indexes,1,'switching identities clears recs without recalculating them');
+});
+test('website defers related-video work until the active player ends',()=>{
+ const component=readFileSync(new URL('../../Website/components/learned-media/VideoWorkspace.tsx',import.meta.url),'utf8');
+ assert.match(component,/const relatedPool = useMemo\(\(\) => \{\s*if \(!ended \|\| !activeVideo\) return \[\];/);
+ assert.match(component,/const related = useMemo\(\(\) => ended && activeVideo \? relatedYouTubeVideos\(relatedPool/);
+ assert.match(component,/const activeIdentity = activeVideo \? `\$\{workspaceId\}:\$\{activeVideo\.id\}` : null;/);
+ assert.match(component,/setEndedIdentity\(`\$\{workspaceId\}:\$\{activeVideo\.id\}`\)/);
+ assert.match(component,/useEffect\(\(\) => \{ setEndedIdentity\(null\); \}, \[workspaceId\]\)/);
+});
+test('native selected-video lookup and playback checkpoints avoid full workspace saves',()=>{
+ assert.doesNotMatch(native,/state\.youtube\.videos\.find\(function \(video\) \{ return video\.id === state\.youtube\.selectedVideoId/);
+ const saveStart=native.indexOf('saveIntervalMs: 15000');const saveEnd=native.indexOf('\n        }',saveStart);const callback=native.slice(saveStart,saveEnd);
+ assert.match(callback,/saveYouTubePlaybackCheckpoint/);assert.doesNotMatch(callback,/saveState\(/);
+ assert.match(native,/function render\(\) \{\s*if\(state\.view !== "videos" && youtubeSearchController\) cancelYoutubeSearch\(\);\s*if\(state\.view === "videos"\) videoSearchIndex\(\)/);
+ const swift=readFileSync(new URL('../../App/Sources/LearnedMediaApp/main.swift',import.meta.url),'utf8');
+ assert.match(swift,/case "saveYouTubePlaybackCheckpoint"/);
+ assert.match(swift,/youtubePlaybackCheckpoints\.mergingIntoSnapshot\(workspace\.load\(\)\)/);
+ assert.match(swift,/workspace\.save\(youtubePlaybackCheckpoints\.mergingIntoSnapshot\(value\)\)/);
 });
 test('native fact memory retains string quotations and comparison signatures',()=>{
  const context={factFingerprint:()=> 'fingerprint',claimMemoryFingerprint:()=> 'claim'};

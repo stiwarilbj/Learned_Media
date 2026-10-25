@@ -127,6 +127,10 @@
     repeatMenuOpen: false,
     activeGenerationSlotIds: []
   };
+  const youtubeProgressStore = shared.youtube.createYouTubeProgressStore(state.youtubeProgress);
+  youtubeProgressStore.subscribe(updateNativeYouTubeProgressNotices);
+  const youtubeFilteredListMemo = shared.youtube.createYouTubeListMemo();
+  const youtubePartitionMemo = shared.youtube.createYouTubeListMemo();
   let nativeKeyEditing = false;
   let nativeCredentialOwner = null;
   let nativeKeySyncError = "";
@@ -159,7 +163,7 @@
         state.modelChecks = ALLOWED_GEMINI_MODELS.map(function (model) { return { model: model, status: "unchecked" }; });
         clearSessionSearchCaches(); state.connectionToken += 1; state.generationRequestToken += 1;
       }
-      if (state.youtubeKey !== keys.youtube) { state.youtubeKey = keys.youtube; state.youtubeStatus = "not-configured"; state.connectionToken += 1; }
+      if (state.youtubeKey !== keys.youtube) { invalidateNativeYouTubeSync(); state.youtubeKey = keys.youtube; state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; clearNativeYouTubeProgress(); }
       bridge("useKeys", keys).then(function () { if (restored) checkRestoredNativeKey(keys.gemini); }).catch(function () {});
       if (!nativeKeyEditing) render();
     },
@@ -260,13 +264,14 @@
   const archivedFactCards = new WeakMap();
   let queuedWorkspaceState = null;
   let stopYoutubePlayback = null;
-  let playerIdentity = "", playerShell = null, playerFrame = null, playerEnded = false;
+  let playerIdentity = "", playerShell = null, playerFrame = null, playerEndedIdentity = "";
   let videoLoadObserver = null;
   let setupCustomizeOpen = false;
   let feedCustomizeOpen = false;
   let topicSearchExpansionSuppressed = false;
   const topicSearchExpansionOverrides = new Map();
   let youtubeSyncActive = false;
+  let youtubeSyncToken = 0;
   let youtubeSearchToken = 0;
   let searchInterpretToken = 0;
   let searchInterpretTimer = null;
@@ -1563,8 +1568,11 @@
   }
   function youtubeDate(value) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? "Date unavailable" : date.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }); }
   function youtubeURL(id) { return "https://www.youtube.com/watch?v=" + encodeURIComponent(id); }
+  function youtubeOwnerID() { return state.account && state.account.id || state.cloudOwnerId || "local"; }
+  function youtubePlayerIdentity(ownerID, workspaceID, videoID) { return [ownerID, workspaceID, videoID].join("\u0000"); }
   function youtubeSave(id) { const saved = state.youtube.savedIds.indexOf(id) >= 0; state.youtube.savedIds = saved ? state.youtube.savedIds.filter(function (item) { return item !== id; }) : state.youtube.savedIds.concat(id); saveState(); render(); }
   function youtubeOpenVideo(id) {
+    playerEndedIdentity = "";
     state.youtube.selectedVideoId = id;
     state.youtube.history = [{ videoId: id, watchedAt: new Date().toISOString() }].concat(state.youtube.history.filter(function (item) { return item.videoId !== id; })).slice(0, 200);
     saveState(); render();
@@ -1598,36 +1606,61 @@
               : ["No approved videos match that yet", "Try another phrase, topic, or channel. Search stays inside the approved collection.", "search"];
       return node("div", { className: "video-empty" }, node("div", { className: "empty-orbit" }, svg(empty[2], 24)), node("h2", { text: empty[0] }), node("p", { text: empty[1] }));
     }
-    const strong = videos.filter(function(video){return !(state.youtube.smartReasons[video.id] && state.youtube.smartReasons[video.id].relevance === "broader");});
-    const broader = videos.filter(function(video){return state.youtube.smartReasons[video.id] && state.youtube.smartReasons[video.id].relevance === "broader";});
+    const groups = youtubePartitionMemo([videos, state.youtube.smartReasons], function () { return shared.youtube.partitionYouTubeVideoResults(videos, state.youtube.smartReasons); });
+    const strong = groups.strong, broader = groups.broader;
     function grid(items){const columns=window.innerWidth>900?3:window.innerWidth>620?2:1;if(items.length>24)return window.LEARNED_MEDIA_WINDOWED.create(items,{className:"video-grid",cacheKey:state.workspaceId+":videos:"+columns,columns:function(){return window.innerWidth>900?3:window.innerWidth>620?2:1;},estimatedHeight:window.innerWidth<=620?285:260,gap:13,key:function(video){return video.id;},render:youtubeVideoCard});const result=node("div",{className:"video-grid"});items.forEach(function(video){result.appendChild(youtubeVideoCard(video));});return result;}
     return node("div",{},strong.length ? grid(strong) : null,broader.length ? node("section",{ariaLabel:"Broader recommendations"},node("h3",{text:"Broader recommendations"}),grid(broader)) : null);
   }
   function youtubeImportNotice() {
     const progress = state.youtubeProgress || {};
     const sourceCount = progress.completedSources !== undefined ? (progress.completedSources || 0) + "/" + (progress.totalSources || 0) + " sources" : (progress.completedChannels || 0) + "/" + (progress.totalChannels || 58) + " channels";
-    const notice = node("div", { className: "video-import-notice", role: "status" }, node("div", {}, node("strong", { text: progress.phase === "paused" ? "Import paused" : state.youtubeStatus === "refreshing" ? "Refreshing your approved library" : "Building your approved library" }), node("span", { text: sourceCount + " · " + (progress.importedVideos || 0).toLocaleString() + " videos imported" + (state.youtubeError ? " · " + state.youtubeError : "") })));
-    notice.appendChild(node("button", { className: "ghost-button", onClick: progress.phase === "paused" ? function () { youtubeConnect(false); } : progress.phase === "complete" || progress.phase === "error" ? function () { youtubeConnect(true); } : function () { state.youtubeStatus = "paused"; state.youtubeProgress.phase = "paused"; state.connectionToken += 1; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); render(); } }, progress.phase === "paused" ? "Resume" : progress.phase === "complete" || progress.phase === "error" ? "Retry" : "Pause"));
+    const notice = node("div", { className: "video-import-notice", role: "status" }, node("div", {}, node("strong", { text: progress.phase === "paused" ? "Import paused" : state.youtubeStatus === "refreshing" ? "Refreshing your approved library" : "Building your approved library" }), node("span", { dataset: { youtubeProgressCount: "true" }, text: sourceCount + " · " + (progress.importedVideos || 0).toLocaleString() + " videos imported" + (state.youtubeError ? " · " + state.youtubeError : "") })));
+    notice.appendChild(node("button", { className: "ghost-button", onClick: progress.phase === "paused" ? function () { youtubeConnect(false); } : progress.phase === "complete" || progress.phase === "error" ? function () { youtubeConnect(true); } : function () { state.youtubeStatus = "paused"; invalidateNativeYouTubeSync(); publishNativeYouTubeProgress(Object.assign({}, state.youtubeProgress, { phase: "paused" })); state.connectionToken += 1; generationToken += 1; bridge("cancelAll", {}).catch(function () {}); render(); } }, progress.phase === "paused" ? "Resume" : progress.phase === "complete" || progress.phase === "error" ? "Retry" : "Pause"));
     return notice;
+  }
+  function updateNativeYouTubeProgressNotices() {
+    const progress = youtubeProgressStore.getSnapshot();
+    const sourceCount = progress.completedSources !== undefined ? (progress.completedSources || 0) + "/" + (progress.totalSources || 0) + " sources" : (progress.completedChannels || 0) + "/" + (progress.totalChannels || 58) + " channels";
+    document.querySelectorAll("[data-youtube-progress-count]").forEach(function (element) {
+      element.textContent = sourceCount + " · " + (progress.importedVideos || 0).toLocaleString() + " videos imported" + (state.youtubeError ? " · " + state.youtubeError : "");
+    });
+  }
+  function publishNativeYouTubeProgress(progress) {
+    state.youtubeProgress = Object.assign({}, progress);
+    youtubeProgressStore.publish(state.youtubeProgress);
+    if (progress.phase === "complete" || progress.phase === "error") render();
+  }
+  function invalidateNativeYouTubeSync() {
+    youtubeSyncToken += 1;
+    youtubeSyncActive = false;
+  }
+  function idleNativeYouTubeProgress() {
+    return { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 };
+  }
+  function clearNativeYouTubeProgress() {
+    const progress = state.youtubeProgress || {};
+    if (progress.phase === "idle" && progress.completedChannels === 0 && progress.totalChannels === window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length && progress.importedVideos === 0 && progress.completedSources === 0 && progress.totalSources === 0 && !progress.currentSource && !progress.error) return;
+    publishNativeYouTubeProgress(idleNativeYouTubeProgress());
   }
   function youtubeConnect(force) {
     const key = state.youtubeKey.trim();
     if (!key) { state.view = "settings"; showToast("Paste your YouTube API key in Settings first."); return; }
     if (youtubeSyncActive) return;
     youtubeSyncActive = true;
+    const syncToken = ++youtubeSyncToken;
     const token = ++state.connectionToken;
-    state.youtubeStatus = state.youtube.videos.length ? "refreshing" : "connecting"; state.youtubeError = ""; state.youtubeProgress = { phase: "resolving", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }; render();
-    window.LEARNED_MEDIA_YOUTUBE.sync(key, state.youtube, function (progress) { if (token !== state.connectionToken) return; state.youtubeProgress = progress; render(); }, Boolean(force), function () { return token === state.connectionToken; }).then(async function (result) {
+    state.youtubeStatus = state.youtube.videos.length ? "refreshing" : "connecting"; state.youtubeError = ""; publishNativeYouTubeProgress({ phase: "resolving", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }); render();
+    window.LEARNED_MEDIA_YOUTUBE.sync(key, state.youtube, function (progress) { if (token !== state.connectionToken) return; publishNativeYouTubeProgress(progress); }, Boolean(force), function () { return token === state.connectionToken; }).then(async function (result) {
       if (token !== state.connectionToken) return;
       await bridge("commitYouTubeImportCatalog", { catalog: Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: shared.youtube.YOUTUBE_CATALOG_VERSION, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : result.lastSyncAt }), completedSources: result.completedCheckpointSources });
       if (token !== state.connectionToken) return;
       const available = {}; result.videos.forEach(function (video) { available[video.id] = true; }); const preserved = (state.youtube.discoverIds || []).filter(function (id) { return available[id]; });
-      state.youtube = Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: shared.youtube.YOUTUBE_CATALOG_VERSION, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : (result.lastSyncAt || new Date().toISOString()), discoverIds: preserved.length ? preserved : window.LEARNED_MEDIA_YOUTUBE.shuffle(discoveryVideos(result.videos), 24, [],state.youtube.prioritizeRecentByChannel).map(function (video) { return video.id; }) }); state.youtubeStatus = result.incomplete ? "error" : "connected"; state.youtubeError = result.progress.error || ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; if (force) videoSearchIndex(true); saveState(); render(); showToast(result.incomplete ? "YouTube connected, but some approved sources need a retry." : "YouTube connected. Your approved video library is ready.");
-    }).catch(function (error) { if (token !== state.connectionToken) return; state.youtubeStatus = "error"; state.youtubeProgress.phase = "error"; state.youtubeError = error.message || "YouTube import failed."; render(); showToast(state.youtubeError); }).finally(function () { youtubeSyncActive = false; });
+      state.youtube = Object.assign({}, state.youtube, { channels: result.channels, videos: result.videos, sourceStates: result.sourceStates, catalogVersion: shared.youtube.YOUTUBE_CATALOG_VERSION, incomplete: result.incomplete, lastSyncAt: result.incomplete ? state.youtube.lastSyncAt : (result.lastSyncAt || new Date().toISOString()), discoverIds: preserved }); state.youtubeStatus = result.incomplete ? "error" : "connected"; state.youtubeError = result.progress.error || ""; state.youtube.smartIds = null; state.youtube.smartReasons = {}; state.youtube.smartRan = false; videoSearchIndex(Boolean(force)); if (!preserved.length) state.youtube.discoverIds = window.LEARNED_MEDIA_YOUTUBE.shuffle(discoveryVideos(), 24, [],state.youtube.prioritizeRecentByChannel).map(function (video) { return video.id; }); saveState(); render(); showToast(result.incomplete ? "YouTube connected, but some approved sources need a retry." : "YouTube connected. Your approved video library is ready.");
+    }).catch(function (error) { if (token !== state.connectionToken) return; state.youtubeStatus = "error"; state.youtubeError = error.message || "YouTube import failed."; publishNativeYouTubeProgress(Object.assign({}, state.youtubeProgress, { phase: "error" })); showToast(state.youtubeError); }).finally(function () { if (syncToken === youtubeSyncToken) youtubeSyncActive = false; });
   }
   const videoSearch = window.LEARNED_MEDIA_VIDEO_SEARCH;
   let youtubeSemanticWorker = null, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0, youtubeIndexPolicy = "";
-  let youtubeById = new Map(), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "";
+  let youtubeById = new Map(), youtubeVideosByTopic = new Map([["All", []]]), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "";
   let youtubeSearchPlan = null, youtubeSearchHasMore = true, youtubeSearchPaging = false, youtubePagingController = null, youtubeBrowseOrder = "newest", youtubeSearchVisibleCount = 80;
   const youtubeWorkerPending = new Map();
   function localVideoReason(candidate) { return videoSearch.videoSearchReason(candidate.video, youtubeSearchPlan || videoSearch.makeLocalVideoPlan(state.youtube.searchText), candidate.score); }
@@ -1640,6 +1673,7 @@
     const changes = window.LEARNED_MEDIA_VIDEO_METADATA.diffVideoSearchMetadata(youtubeById, state.youtube.videos);
     youtubeIndexedVideos = state.youtube.videos;
     youtubeById = new Map(youtubeIndexedVideos.map(function(video){ return [video.id,video]; }));
+    youtubeVideosByTopic = shared.youtube.createYouTubeTopicPools(youtubeIndexedVideos);
     if (hadIndex && !changes.changed && !force) return;
     const baseRevision = youtubeIndexRevision;
     youtubeIndexPolicy = policy;
@@ -1759,17 +1793,32 @@
     }else{const next=window.LEARNED_MEDIA_YOUTUBE.shuffle(discoveryVideos(),24,state.youtube.discoverIds,state.youtube.prioritizeRecentByChannel);state.youtube.discoverIds=state.youtube.discoverIds.concat(next.map(function(video){return video.id;}));render();}
   }
   function youtubeFilteredVideos(){
-    videoSearchIndex();const all=state.youtube.videos || [];
-    if(state.youtube.tab==="saved")return state.youtube.savedIds.map(function(id){return youtubeById.get(id);}).filter(Boolean);
-    if(state.youtube.tab==="history")return state.youtube.history.map(function(item){return youtubeById.get(item.videoId);}).filter(Boolean);
-    let matches;
-    if(state.youtube.searchText.trim())matches=state.youtube.smartRan ? (state.youtube.smartIds || []).map(function(id){return youtubeById.get(id);}).filter(Boolean) : [];
-    else if(state.youtube.selectedChannelId)matches=window.LEARNED_MEDIA_YOUTUBE.filter(all,"",state.youtube.topic,state.youtube.selectedChannelId);
-    else return window.LEARNED_MEDIA_YOUTUBE.filter((state.youtube.discoverIds || []).map(function(id){return youtubeById.get(id);}).filter(Boolean),"",state.youtube.topic);
-    if(state.youtube.selectedChannelId){if(state.youtube.order==="newest")matches.sort(function(a,b){return b.publishedAt.localeCompare(a.publishedAt);});else if(state.youtube.order==="oldest")matches.sort(function(a,b){return a.publishedAt.localeCompare(b.publishedAt);});else if(state.youtube.order==="random")matches=window.LEARNED_MEDIA_YOUTUBE.shuffle(matches,matches.length,[],state.youtube.prioritizeRecentByChannel);}
-    return matches;
+    videoSearchIndex();
+    return youtubeFilteredListMemo([state.workspaceId,state.youtube.tab,state.youtube.videos,state.youtube.savedIds,state.youtube.history,state.youtube.searchText,state.youtube.smartRan,state.youtube.smartIds,state.youtube.selectedChannelId,state.youtube.topic,state.youtube.order,state.youtube.discoverIds,state.youtube.prioritizeRecentByChannel,youtubeIndexRevision],function(){
+      const all=state.youtube.videos || [];
+      if(state.youtube.tab==="saved")return state.youtube.savedIds.map(function(id){return youtubeById.get(id);}).filter(Boolean);
+      if(state.youtube.tab==="history")return state.youtube.history.map(function(item){return youtubeById.get(item.videoId);}).filter(Boolean);
+      let matches;
+      if(state.youtube.searchText.trim())matches=state.youtube.smartRan ? (state.youtube.smartIds || []).map(function(id){return youtubeById.get(id);}).filter(Boolean) : [];
+      else if(state.youtube.selectedChannelId)matches=window.LEARNED_MEDIA_YOUTUBE.filter(all,"",state.youtube.topic,state.youtube.selectedChannelId);
+      else return window.LEARNED_MEDIA_YOUTUBE.filter((state.youtube.discoverIds || []).map(function(id){return youtubeById.get(id);}).filter(Boolean),"",state.youtube.topic);
+      if(state.youtube.selectedChannelId){if(state.youtube.order==="newest")matches.sort(function(a,b){return b.publishedAt.localeCompare(a.publishedAt);});else if(state.youtube.order==="oldest")matches.sort(function(a,b){return a.publishedAt.localeCompare(b.publishedAt);});else if(state.youtube.order==="random")matches=window.LEARNED_MEDIA_YOUTUBE.shuffle(matches,matches.length,[],state.youtube.prioritizeRecentByChannel);}
+      return matches;
+    });
   }
-  function discoveryVideos(videos) { return window.LEARNED_MEDIA_YOUTUBE.filter(videos || state.youtube.videos,"",state.youtube.topic); }
+  function discoveryVideos(videos) {
+    videoSearchIndex();
+    const source = videos || state.youtube.videos;
+    if (source === youtubeIndexedVideos) return youtubeVideosByTopic.get(state.youtube.topic) || [];
+    return window.LEARNED_MEDIA_YOUTUBE.filter(source,"",state.youtube.topic);
+  }
+  function relatedVideosFor(video, identity) {
+    if (playerEndedIdentity !== identity) return [];
+    videoSearchIndex();
+    const seen = new Set(), pool = [];
+    (video.topics || []).forEach(function(topic) { (youtubeVideosByTopic.get(topic) || []).forEach(function(candidate) { if(candidate.id!==video.id && !seen.has(candidate.id)){seen.add(candidate.id);pool.push(candidate);} }); });
+    return shared.youtube.relatedYouTubeVideos(pool,video,6,state.youtube.prioritizeRecentByChannel);
+  }
   function videoTabs() {
     const items=[["discover","Discover"],["channels","Channels"],["saved","Saved"],["history","History"]];
     const tabs=node("div",{className:"video-tabs",role:"tablist",ariaLabel:"Video views",onKeydown:function(event){
@@ -1783,7 +1832,9 @@
     const section = node("section", { className: "content-view video-workspace" });
     section.appendChild(videoTabs());
     section.appendChild(node("button", { className: "text-button video-back-button", onClick: function () { state.youtube.selectedVideoId = null; render(); } }, svg("chevronRight", 15), " Back to videos"));
-    const identity = state.workspaceId + ":" + video.id;
+    const ownerID = youtubeOwnerID();
+    const ownerWorkspaceId = state.workspaceId;
+    const identity = youtubePlayerIdentity(ownerID, ownerWorkspaceId, video.id);
     const reusePlayer = playerIdentity === identity && playerShell;
     const player = reusePlayer || node("div", { className: "video-player-shell" });
     let frame = reusePlayer ? playerFrame : null;
@@ -1802,20 +1853,20 @@
     playerColumn.appendChild(heading);
     playerColumn.appendChild(node("div", { className: "video-player-links" }, externalLink(youtubeURL(video.id), "Watch on YouTube", "ghost-button"), node("span", { text: (video.topics || []).join(" · ") })));
     section.appendChild(node("div", { className: "video-player-layout" }, playerColumn));
-    const related = playerEnded ? shared.youtube.relatedYouTubeVideos(state.youtube.videos,video,6,state.youtube.prioritizeRecentByChannel) : [];
+    const related = relatedVideosFor(video, identity);
     if (related.length) playerColumn.appendChild(node("section", { className: "video-related" }, node("div", { className: "section-heading" }, node("div", {}, node("span", { className: "eyebrow", text: "Up next to explore" }), node("h2", { text: "More like this" }))), youtubeList(related)));
 
     playerIdentity = identity; playerShell = player; playerFrame = frame;
     if (frame && !reusePlayer) {
-      const ownerWorkspaceId = state.workspaceId;
       const playback = window.LEARNED_MEDIA_PLAYBACK.watchYouTubePlayback(frame, {
         initialSeconds: Number(state.youtube.playbackPositions[video.id] || 0),
         saveIntervalMs: 15000,
-        onEnded:function(){if(state.workspaceId===ownerWorkspaceId && state.youtube.selectedVideoId===video.id){playerEnded=true;render();}},
+        onEnded:function(){if(state.workspaceId===ownerWorkspaceId && youtubeOwnerID()===ownerID && state.youtube.selectedVideoId===video.id){playerEndedIdentity=identity;render();}},
         onSave: function (second) {
-          if (state.workspaceId !== ownerWorkspaceId || Math.floor(state.youtube.playbackPositions[video.id] || 0) === second) return;
-          state.youtube.playbackPositions[video.id] = second;
-          saveState();
+          if (!Number.isFinite(second) || second < 0) return;
+          const normalizedSecond = Math.floor(second);
+          if (state.workspaceId === ownerWorkspaceId && youtubeOwnerID() === ownerID && Math.floor(state.youtube.playbackPositions[video.id] || 0) !== normalizedSecond) state.youtube.playbackPositions[video.id] = normalizedSecond;
+          bridge("saveYouTubePlaybackCheckpoint", { ownerID: ownerID, workspaceID: ownerWorkspaceId, videoID: video.id, seconds: normalizedSecond }).catch(function() {});
         }
       });
       stopYoutubePlayback = function () { playback.stop(); stopYoutubePlayback = null; };
@@ -1825,7 +1876,7 @@
   function videosView() {
     setTimeout(automaticYoutubeSearch,0);
     const section = node("section", { className: "content-view video-workspace" });
-    if (state.youtube.selectedVideoId) { const selected = state.youtube.videos.find(function (video) { return video.id === state.youtube.selectedVideoId; }); if (selected) return youtubeDetail(selected); }
+    if (state.youtube.selectedVideoId) { const selected = youtubeById.get(state.youtube.selectedVideoId); if (selected) return youtubeDetail(selected); }
     if (state.youtube.selectedChannelId) {
       section.appendChild(videoTabs());
       const channel = state.youtube.channels.find(function (item) { return item.id === state.youtube.selectedChannelId; });
@@ -1956,6 +2007,12 @@
   }
   function collapseTopicBranches(topics) { return shared.collapseTopicBranches(topics); }
   function cancelWorkspaceOperations() {
+    if (youtubeSyncActive || state.youtubeProgress.phase !== "idle") {
+      invalidateNativeYouTubeSync();
+      state.youtubeStatus = state.youtube.incomplete ? "error" : state.youtube.videos.length ? "connected" : "not-configured";
+      state.youtubeError = "";
+      publishNativeYouTubeProgress(idleNativeYouTubeProgress());
+    }
     for(const entry of learningTasks.values())entry.task?.cancel?.();learningTasks.clear();
     clearTopicDetourCompletionNotice();
     state.repeatBatchPreview = null;
@@ -2979,11 +3036,11 @@
     youtube.appendChild(node("div", { className: "settings-card-heading" }, node("div", { className: "settings-icon blue" }, svg("image", 19)), node("div", {}, node("h2", { text: "YouTube Videos" }), node("p", { text: "Use your own YouTube Data API key for the approved video library." })), node("span", { className: "status-dot " + (state.youtubeStatus === "connected" || state.youtubeStatus === "refreshing" ? "connected" : state.youtubeStatus === "error" ? "unavailable" : ""), text: state.youtubeStatus === "connecting" ? "Connecting" : state.youtubeStatus === "refreshing" ? "Refreshing" : state.youtubeStatus === "connected" ? "Connected" : state.youtubeStatus === "error" ? "Needs attention" : "Not configured" })));
     youtube.appendChild(node("label", { className: "field-label", text: "Paste your YouTube API key here" }));
     const youtubeRow = node("div", { className: "key-input-row" });
-    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; state.youtubeKey = event.target.value; editNativeCredential("youtube", state.youtubeKey); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; state.youtubeProgress = { phase: "idle", completedChannels: 0, totalChannels: window.LEARNED_MEDIA_YOUTUBE.CHANNELS.length, importedVideos: 0, completedSources: 0, totalSources: 0 }; bridge("cancelAll", {}).catch(function () {}); render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
+    youtubeRow.appendChild(node("input", { id: "youtube-key", type: "password", value: state.youtubeKey, placeholder: "Paste your YouTube API key here", autocomplete: "new-password", onInput: function (event) { state.keyEditEpoch += 1; invalidateNativeYouTubeSync(); state.youtubeKey = event.target.value; editNativeCredential("youtube", state.youtubeKey); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; clearNativeYouTubeProgress(); bridge("cancelAll", {}).catch(function () {}); render(); }, onKeydown: function (event) { if (event.key === "Enter") youtubeConnect(); } }));
     const youtubeActions = node("div", { className: "key-actions" });
     youtubeActions.appendChild(node("button", { className: "primary-button small", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: youtubeConnect }, state.youtubeStatus === "connecting" ? " Connecting" : state.youtubeStatus === "refreshing" ? " Refreshing" : " Connect YouTube"));
     youtubeActions.appendChild(node("button", { className: "ghost-button", disabled: state.youtubeStatus === "connecting" || state.youtubeStatus === "refreshing", onClick: function () { youtubeConnect(true); } }, "Refresh videos"));
-    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.keyEditEpoch += 1; state.youtubeKey = ""; editNativeCredential("youtube", ""); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; bridge("cancelAll", {}).catch(function () {}); showToast("Remembered YouTube key removed."); } }, "Remove key"));
+    youtubeActions.appendChild(node("button", { className: "ghost-button", onClick: function () { state.keyEditEpoch += 1; invalidateNativeYouTubeSync(); state.youtubeKey = ""; editNativeCredential("youtube", ""); state.youtubeStatus = "not-configured"; state.youtubeError = ""; state.connectionToken += 1; clearNativeYouTubeProgress(); bridge("cancelAll", {}).catch(function () {}); showToast("Remembered YouTube key removed."); } }, "Remove key"));
     youtubeRow.appendChild(youtubeActions); youtube.appendChild(youtubeRow);
     youtube.appendChild(node("div", { className: "security-note" }, svg("shield", 16), node("span", { text: "Your YouTube key is remembered in this Mac’s Keychain and privately synced when you sign in with Google." })));
     const guideCopy = node("div", { className: "api-key-guide-copy" }, node("strong", { text: "Need a YouTube key?" }), node("p", { html: "1. <a href=\"https://console.cloud.google.com/projectcreate\" target=\"_blank\">Create or select a Google Cloud project</a><br>2. <a href=\"https://console.cloud.google.com/apis/library/youtube.googleapis.com\" target=\"_blank\">Enable YouTube Data API v3</a><br>3. Open <a href=\"https://console.cloud.google.com/apis/credentials\" target=\"_blank\">Credentials</a> → Create credentials → API key and restrict it to YouTube Data API v3<br>4. Copy the key into Learned Media and connect" }));
@@ -3119,21 +3176,22 @@
   }
   function render() {
     if(state.view !== "videos" && youtubeSearchController) cancelYoutubeSearch();
-    const keepPlayer = state.view === "videos" && state.youtube.selectedVideoId && playerIdentity === state.workspaceId + ":" + state.youtube.selectedVideoId && playerShell && playerShell.isConnected;
+    if(state.view === "videos") videoSearchIndex();
+    const keepPlayer = state.view === "videos" && state.youtube.selectedVideoId && playerIdentity === youtubePlayerIdentity(youtubeOwnerID(), state.workspaceId, state.youtube.selectedVideoId) && playerShell && playerShell.isConnected;
     if (keepPlayer) {
       const heading = document.querySelector(".video-player-heading button");
       if(heading) heading.replaceChildren(svg("bookmark",15),state.youtube.savedIds.includes(state.youtube.selectedVideoId) ? " Saved" : " Save video");
       const tabs=document.querySelector(".video-tabs");if(tabs)tabs.replaceWith(videoTabs());
       const column=document.querySelector(".video-player-column");
-      if(playerEnded && column && !column.querySelector(".video-related")){
-        const current=state.youtube.videos.find(function(video){return video.id===state.youtube.selectedVideoId;});
-        const related=current && shared.youtube.relatedYouTubeVideos(state.youtube.videos,current,6,state.youtube.prioritizeRecentByChannel);
+      if(playerEndedIdentity===playerIdentity && column && !column.querySelector(".video-related")){
+        const current=youtubeById.get(state.youtube.selectedVideoId);
+        const related=current && relatedVideosFor(current,playerIdentity);
         if(related && related.length)column.appendChild(node("section",{className:"video-related"},node("h2",{text:"More like this"}),youtubeList(related)));
       }
       return;
     }
     if (stopYoutubePlayback) stopYoutubePlayback();
-    playerIdentity="";playerShell=null;playerFrame=null;playerEnded=false;
+    playerIdentity="";playerShell=null;playerFrame=null;playerEndedIdentity="";
     if(videoLoadObserver){videoLoadObserver.disconnect();videoLoadObserver=null;}
     const currentTopicTree = document.querySelector(".topic-tree");
     if (currentTopicTree) topicTreeScrollTop = currentTopicTree.scrollTop;
@@ -3859,7 +3917,7 @@
   async function signIn() {
     try {
       const result = await bridge("signIn", {});
-      if (state.account?.id !== result.account?.id) { cancelNativeDownload(); clearFactAngleBatch(); state.repeatBatchPreview = null; state.repeatMenuOpen = false; questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); questionInstructionPreferences.clear(); questionInstructionRevisions.clear(); answerOptionsOpenKey=""; }
+      if (state.account?.id !== result.account?.id) { cancelWorkspaceOperations(); cancelNativeDownload(); clearFactAngleBatch(); state.repeatBatchPreview = null; state.repeatMenuOpen = false; questionDrafts.clear(); questionStructures.clear(); questionStructureRevisions.clear(); questionInstructionPreferences.clear(); questionInstructionRevisions.clear(); answerOptionsOpenKey=""; }
       const previousOwner = state.cloudOwnerId;
       state.account = result.account;
       nativeAccountRestored = false;

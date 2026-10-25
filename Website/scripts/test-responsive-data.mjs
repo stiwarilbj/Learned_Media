@@ -19,7 +19,7 @@ const { flattenTopics, selectedLeafCount, selectWeightedTopicPaths, toggleTopicS
 const { updateTopicTree } = require("../lib/topic-tree.ts");
 const { compactTopicPreferences, restoreTopicPreferences } = require("../lib/topic-preferences.ts");
 const { createTopicSuggestionIndex, suggestTopics } = require("../lib/topic-suggestions.ts");
-const { selectRandomVideos, createYouTubeListMemo, partitionYouTubeVideoResults, createYouTubeProgressStore } = require("../lib/youtube.ts");
+const { selectRandomVideos, createYouTubeListMemo, partitionYouTubeVideoResults, createYouTubeProgressStore, createYouTubeTopicPools, filterYouTubeVideos } = require("../lib/youtube.ts");
 
 function findTopic(nodes, predicate) {
   const stack = [...nodes].reverse();
@@ -117,6 +117,29 @@ test("large video catalogs return a unique small sample without sorting the full
   assert.equal(new Set(sample.map((video) => video.id)).size, 24);
   assert.ok(!sample.some((video) => video.id === "video-0"));
   assert.ok(elapsedMs < 500, `sampling took ${elapsedMs.toFixed(1)}ms`);
+});
+
+test("topic pools match strict approved and Shorts filtering and preserve catalog order", () => {
+  const videos = Array.from({ length: 30000 }, (_, index) => ({
+    id: `topic-${index}`,
+    approved: index % 17 !== 0,
+    title: `Video ${index}`,
+    description: "",
+    tags: [],
+    channelName: "Performance Channel",
+    channelId: "channel",
+    topics: index % 3 ? ["Science", "History"] : ["History"],
+    publishedAt: "2025-01-01T00:00:00Z"
+  }));
+  videos[5] = { ...videos[5], title: "A #Shorts science clip", approved: true, topics: ["Science"] };
+  const startedAt = performance.now();
+  const pools = createYouTubeTopicPools(videos);
+  const elapsedMs = performance.now() - startedAt;
+  assert.deepEqual(pools.get("Science").map(video => video.id), filterYouTubeVideos(videos, "", "Science").map(video => video.id));
+  assert.deepEqual(pools.get("All").map(video => video.id), filterYouTubeVideos(videos, "", "All").map(video => video.id));
+  assert.equal(pools.get("Science").some(video => video.id === "topic-5"), false, "explicit Shorts stay excluded");
+  assert.equal(pools.get("History")[0].id, "topic-1", "the original catalog order is retained");
+  assert.ok(elapsedMs < 500, `building indexed topic pools took ${elapsedMs.toFixed(1)}ms`);
 });
 
 test("video result partitioning preserves order and reuses the input when there are no broader matches", () => {

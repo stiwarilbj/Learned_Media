@@ -45,4 +45,47 @@ final class ParityTests: XCTestCase {
         XCTAssertEqual((roundTrip["prioritizeRecentByChannel"] as? [String:Bool])?["Crash Course"], false)
         XCTAssertEqual(WorkspaceActivity.canonicalized(["selectedTopic":"History","topic":"Science"])["selectedTopic"] as? String,"History")
     }
+
+    func testYouTubePlaybackCheckpointIsCompactScopedAndMergedOnLoadAndSave() throws {
+        let suite = "LearnedMediaPlaybackCheckpointTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = YouTubePlaybackCheckpointStore(defaults: defaults)
+        try store.save(ownerID: "account-a", workspaceID: "workspace-a", videoID: "video-1", seconds: 42, updatedAt: Date(timeIntervalSince1970: 100))
+        try store.save(ownerID: "account-b", workspaceID: "workspace-a", videoID: "video-2", seconds: 88, updatedAt: Date(timeIntervalSince1970: 200))
+        try store.save(ownerID: "account-a", workspaceID: "workspace-b", videoID: "video-3", seconds: 17, updatedAt: Date(timeIntervalSince1970: 300))
+
+        XCTAssertEqual(store.checkpoint(ownerID: "account-a", workspaceID: "workspace-a")?.seconds, 42)
+        XCTAssertEqual(store.checkpoint(ownerID: "account-b", workspaceID: "workspace-a")?.videoID, "video-2")
+        XCTAssertNil(store.checkpoint(ownerID: "account-c", workspaceID: "workspace-a"))
+
+        let snapshot: [String: Any] = [
+            "cloudOwnerId": "account-a",
+            "workspaces": [
+                ["id": "workspace-a", "state": ["youtubeActivity": ["playbackPositions": ["older-video": 9]]]],
+                ["id": "workspace-b", "state": ["youtubeActivity": ["savedIds": ["keep"]]]]
+            ]
+        ]
+        let merged = try XCTUnwrap(store.mergingIntoSnapshot(snapshot) as? [String: Any])
+        let records = try XCTUnwrap(merged["workspaces"] as? [[String: Any]])
+        let firstState = try XCTUnwrap(records[0]["state"] as? [String: Any])
+        let firstActivity = try XCTUnwrap(firstState["youtubeActivity"] as? [String: Any])
+        let firstPositions = try XCTUnwrap(firstActivity["playbackPositions"] as? [String: Int])
+        XCTAssertEqual(firstPositions["video-1"], 42)
+        XCTAssertEqual(firstPositions["older-video"], 9)
+        let secondState = try XCTUnwrap(records[1]["state"] as? [String: Any])
+        let secondActivity = try XCTUnwrap(secondState["youtubeActivity"] as? [String: Any])
+        XCTAssertEqual(secondActivity["savedIds"] as? [String], ["keep"])
+        XCTAssertEqual((secondActivity["playbackPositions"] as? [String: Int])?["video-3"], 17)
+    }
+
+    func testYouTubePlaybackCheckpointRejectsInvalidValues() {
+        let suite = "LearnedMediaPlaybackCheckpointInvalid-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = YouTubePlaybackCheckpointStore(defaults: defaults)
+        XCTAssertThrowsError(try store.save(ownerID: "", workspaceID: "workspace", videoID: "video", seconds: 1))
+        XCTAssertThrowsError(try store.save(ownerID: "account", workspaceID: "workspace", videoID: "video", seconds: -1))
+        XCTAssertThrowsError(try store.save(ownerID: "account", workspaceID: "workspace", videoID: "video", seconds: 86_401))
+    }
 }

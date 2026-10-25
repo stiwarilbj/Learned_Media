@@ -937,6 +937,21 @@ export function relatedYouTubeVideos(videos: YouTubeVideo[], current: YouTubeVid
   return selectRandomVideos(shared, count, [current.id], prioritizeRecentByChannel);
 }
 
+/** Build approved-video pools once when the catalog changes, then reuse them for topic browsing. */
+export function createYouTubeTopicPools(videos: YouTubeVideo[]) {
+  const pools = new Map<YouTubeTopic | "All", YouTubeVideo[]>([["All", []]]);
+  for (const video of videos) {
+    if (!isApprovedYouTubeVideo(video)) continue;
+    pools.get("All")!.push(video);
+    for (const topic of video.topics) {
+      const matches = pools.get(topic) ?? [];
+      matches.push(video);
+      pools.set(topic, matches);
+    }
+  }
+  return pools;
+}
+
 export function isApprovedYouTubeVideo(video: YouTubeVideo) {
   if (!video.approved || hasExplicitShortMarker(video.title, video.description, video.tags ?? [])) return false;
   if (normalized(video.channelName) === normalized("3Blue1Brown") || video.channelId === "UCYO_jab_esuFRV4b17AJtAw") return video.special === true || Boolean(video.sourceIds?.some((sourceId) => APPROVED_3BLUE_PLAYLIST_SOURCE_IDS.has(sourceId)));

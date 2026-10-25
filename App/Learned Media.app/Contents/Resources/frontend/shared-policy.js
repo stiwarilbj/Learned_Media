@@ -3643,11 +3643,96 @@ function cardSearchText(card) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.APPROVED_INDIVIDUAL_VIDEOS = exports.DEFAULT_YOUTUBE_RECENCY_PREFERENCES = exports.APPROVED_YOUTUBE_CHANNELS = exports.YOUTUBE_CATALOG_VERSION = exports.YOUTUBE_TOPICS = void 0;
+exports.createYouTubeProgressStore = createYouTubeProgressStore;
+exports.createYouTubeListMemo = createYouTubeListMemo;
+exports.partitionYouTubeVideoResults = partitionYouTubeVideoResults;
 exports.mergeYouTubeRecencyPreferences = mergeYouTubeRecencyPreferences;
 exports.selectRandomVideos = selectRandomVideos;
 exports.relatedYouTubeVideos = relatedYouTubeVideos;
+exports.createYouTubeTopicPools = createYouTubeTopicPools;
 exports.isApprovedYouTubeVideo = isApprovedYouTubeVideo;
 exports.isYouTubeShortMetadata = isYouTubeShortMetadata;
+function scheduleYouTubeProgressFrame(callback) {
+    if (typeof requestAnimationFrame === "function")
+        return { kind: "animation", id: requestAnimationFrame(callback) };
+    return { kind: "timeout", id: setTimeout(callback, 16) };
+}
+function cancelYouTubeProgressFrame(frame) {
+    if (frame.kind === "animation" && typeof cancelAnimationFrame === "function")
+        cancelAnimationFrame(frame.id);
+    else
+        clearTimeout(frame.id);
+}
+function createYouTubeProgressStore(initial, scheduleFrame = scheduleYouTubeProgressFrame, cancelFrame = cancelYouTubeProgressFrame) {
+    let snapshot = initial;
+    let latest = initial;
+    let frame = null;
+    const listeners = new Set();
+    const flush = () => {
+        frame = null;
+        if (snapshot === latest)
+            return;
+        snapshot = latest;
+        listeners.forEach((listener) => listener());
+    };
+    const publish = (next, immediate = false) => {
+        const phaseChanged = next.phase !== latest.phase;
+        latest = next;
+        const terminal = next.phase === "idle" || next.phase === "complete" || next.phase === "paused" || next.phase === "error";
+        if (immediate || phaseChanged || terminal) {
+            if (frame)
+                cancelFrame(frame);
+            flush();
+            return;
+        }
+        if (!frame)
+            frame = scheduleFrame(flush);
+    };
+    const update = (change, immediate = false) => {
+        publish(change(latest), immediate);
+    };
+    return {
+        getSnapshot: () => snapshot,
+        getLatest: () => latest,
+        getServerSnapshot: () => initial,
+        subscribe: (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+        },
+        publish,
+        update,
+        flush
+    };
+}
+function createYouTubeListMemo() {
+    let previousKey;
+    let previousValue;
+    return (key, create) => {
+        if (previousKey && previousKey.length === key.length && key.every((value, index) => Object.is(value, previousKey[index])))
+            return previousValue;
+        previousKey = key;
+        previousValue = create();
+        return previousValue;
+    };
+}
+function partitionYouTubeVideoResults(videos, reasons) {
+    let strong;
+    let broader;
+    for (let index = 0; index < videos.length; index += 1) {
+        const video = videos[index];
+        if (reasons?.[video.id]?.relevance === "broader") {
+            if (!broader) {
+                strong = videos.slice(0, index);
+                broader = [];
+            }
+            broader.push(video);
+        }
+        else if (strong) {
+            strong.push(video);
+        }
+    }
+    return strong && broader ? { strong, broader } : { strong: videos, broader: [] };
+}
 exports.YOUTUBE_TOPICS = ["History", "Politics", "Geography", "Science", "Nature", "Mathematics", "Literature", "Sports", "Culture", "Technology"];
 exports.YOUTUBE_CATALOG_VERSION = 5;
 exports.APPROVED_YOUTUBE_CHANNELS = [
@@ -3843,6 +3928,20 @@ function selectRandomVideos(videos, count, exclude = [], prioritizeRecentByChann
 function relatedYouTubeVideos(videos, current, count = 6, prioritizeRecentByChannel = {}) {
     const shared = videos.filter((video) => video.id !== current.id && isApprovedYouTubeVideo(video) && video.topics.some((topic) => current.topics.includes(topic)));
     return selectRandomVideos(shared, count, [current.id], prioritizeRecentByChannel);
+}
+function createYouTubeTopicPools(videos) {
+    const pools = new Map([["All", []]]);
+    for (const video of videos) {
+        if (!isApprovedYouTubeVideo(video))
+            continue;
+        pools.get("All").push(video);
+        for (const topic of video.topics) {
+            const matches = pools.get(topic) ?? [];
+            matches.push(video);
+            pools.set(topic, matches);
+        }
+    }
+    return pools;
 }
 function isApprovedYouTubeVideo(video) {
     if (!video.approved || hasExplicitShortMarker(video.title, video.description, video.tags ?? []))

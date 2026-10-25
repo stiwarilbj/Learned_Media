@@ -2234,6 +2234,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let gemini = GeminiClient()
     private let keychain = KeychainStore()
     private let workspace = LocalWorkspaceStore()
+    private let youtubePlaybackCheckpoints = YouTubePlaybackCheckpointStore()
     private let videoCatalog = VideoCatalogStore()
     private let youtubeImportCheckpoints = YouTubeImportCheckpointStore()
     private let youtubeLimiter = YouTubeRequestLimiter()
@@ -2367,6 +2368,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             catch { respond(id: id, error: "YouTube key could not be remembered in Keychain.") }
         case "loadState":
             respond(id: id, result: loadState())
+        case "saveYouTubePlaybackCheckpoint":
+            do {
+                guard let ownerID = payload["ownerID"] as? String,
+                      let workspaceID = payload["workspaceID"] as? String,
+                      let videoID = payload["videoID"] as? String,
+                      let seconds = payload["seconds"] as? Int else { throw PlaybackCheckpointError.invalid }
+                try youtubePlaybackCheckpoints.save(ownerID: ownerID, workspaceID: workspaceID, videoID: videoID, seconds: seconds)
+                respond(id: id, result: true)
+            } catch { respond(id: id, error: "YouTube playback position could not be saved locally.") }
         case "loadDownloadPreference":
             respond(id: id, result: UserDefaults.standard.string(forKey: "learned-media-download-mode-v1") ?? "pdf-single")
         case "saveDownloadPreference":
@@ -3107,11 +3117,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     }
 
     private func loadState() -> Any {
-        workspace.load()
+        youtubePlaybackCheckpoints.mergingIntoSnapshot(workspace.load())
     }
 
     private func saveState(_ value: Any?) throws {
-        try workspace.save(value)
+        guard let value else { return try workspace.save(value) }
+        try workspace.save(youtubePlaybackCheckpoints.mergingIntoSnapshot(value))
     }
 
     private func signIn(id: String) {
