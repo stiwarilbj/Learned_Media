@@ -373,6 +373,7 @@ const YOUTUBE_RESPONSE_LIMITS: Readonly<Record<string, number>> = Object.freeze(
   playlistItems: 8 * MEBIBYTE,
   videos: 16 * MEBIBYTE
 });
+const YOUTUBE_ERROR_RESPONSE_LIMIT = 64 * 1024;
 
 export class YouTubeApiError extends Error {
   status?: number;
@@ -462,6 +463,51 @@ function withTimeout(signal: AbortSignal | undefined, timeoutMs = 30_000) {
 
 const youtubeDownloads = new ConditionalDownloadCache();
 
+type YouTubeApiErrorDetails = { message?: string; reason?: string };
+
+function knownYouTubeApiErrorDetails(value: unknown): YouTubeApiErrorDetails | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const error = (value as { error?: unknown }).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const data = error as { message?: unknown; errors?: unknown };
+  const message = typeof data.message === "string" && data.message.trim() ? data.message : undefined;
+  const errors = Array.isArray(data.errors) ? data.errors : [];
+  const firstError = errors[0];
+  const reason = firstError && typeof firstError === "object" && !Array.isArray(firstError)
+    && typeof (firstError as { reason?: unknown }).reason === "string" ? (firstError as { reason: string }).reason : undefined;
+  return message || reason ? { message, reason } : undefined;
+}
+
+async function readYouTubeErrorDetails(response: Response, resource: string, timeoutSignal: AbortSignal): Promise<YouTubeApiErrorDetails | undefined> {
+  const contentType = (response.headers.get("content-type") ?? "").split(";", 1)[0].trim().toLowerCase();
+  const definitelyNonJson = contentType === "text/html" || contentType === "application/xhtml+xml"
+    || /^(?:image|audio|video)\//.test(contentType);
+  if (definitelyNonJson) {
+    await response.body?.cancel().catch(() => undefined);
+    return undefined;
+  }
+
+  let raw = "";
+  try {
+    const limited = await readLimitedResponseText(response, YOUTUBE_ERROR_RESPONSE_LIMIT, `YouTube ${resource} error`);
+    raw = limited.text;
+    recordPerformance("youtube", "response_bytes_read", limited.bytesRead);
+  } catch (error) {
+    if (error instanceof ResponseTooLargeError) {
+      recordPerformance("youtube", "response_bytes_read", error.bytesRead);
+      return undefined;
+    }
+    if (timeoutSignal.aborted || error instanceof DOMException && error.name === "AbortError") {
+      throw new DOMException("YouTube error response reading was aborted.", "AbortError");
+    }
+    // The HTTP status remains useful if a proxy or connection interrupts its error body.
+    return undefined;
+  }
+
+  if (!raw.trimStart().startsWith("{")) return undefined;
+  try { return knownYouTubeApiErrorDetails(JSON.parse(raw)); } catch { return undefined; }
+}
+
 async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Record<string, string>, signal?: AbortSignal): Promise<T> {
   const url = new URL(`${YOUTUBE_API_ROOT}/${resource}`);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
@@ -476,8 +522,21 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
     const response = await performanceFetch("youtube", url, { headers: conditional.headers, cache: "no-store", signal: timeout.controller.signal });
     if (signal?.aborted) throw abortError();
     const retryDeadline = serverRetryDeadline(response.headers.get("retry-after"));
-    const reused = youtubeDownloads.notModified(cacheKey, response, conditional.previous);
-    if (response.status === 304 && reused === undefined) throw new YouTubeApiError("YouTube returned Not Modified without a validated response.", 304, "missingCachedResponse", true);
+    let reused: string | undefined;
+    if (response.status === 304) {
+      reused = youtubeDownloads.notModified(cacheKey, response, conditional.previous);
+      if (reused === undefined) throw new YouTubeApiError("YouTube returned Not Modified without a validated response.", 304, "missingCachedResponse", true);
+    } else if (!response.ok) {
+      const error = await readYouTubeErrorDetails(response, resource, timeout.controller.signal);
+      if (signal?.aborted) throw abortError();
+      if (timeout.controller.signal.aborted) throw new DOMException("YouTube request timed out.", "AbortError");
+      const reason = error?.reason;
+      const message = error?.message || `YouTube returned HTTP ${response.status}.`;
+      const quotaExhausted = reason === "quotaExceeded" || reason === "dailyLimitExceeded";
+      const rateLimited = reason === "rateLimitExceeded" || reason === "userRateLimitExceeded";
+      const retryable = !quotaExhausted && (rateLimited || response.status === 408 || response.status === 429 || response.status >= 500);
+      throw new YouTubeApiError(quotaExhausted ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable, retryDeadline);
+    }
     let raw = reused;
     let responseBytesRead = 0;
     if (raw === undefined) {
@@ -500,15 +559,6 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       youtubeDownloads.discard(cacheKey);
       throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryDeadline);
-    }
-    if (!response.ok && response.status !== 304) {
-      const error = (payload as { error?: { message?: string; errors?: Array<{ reason?: string }> } }).error;
-      const reason = error?.errors?.[0]?.reason;
-      const message = error?.message || `YouTube returned HTTP ${response.status}.`;
-      const quotaExhausted = reason === "quotaExceeded" || reason === "dailyLimitExceeded";
-      const rateLimited = reason === "rateLimitExceeded" || reason === "userRateLimitExceeded";
-      const retryable = !quotaExhausted && (rateLimited || response.status === 408 || response.status === 429 || response.status >= 500);
-      throw new YouTubeApiError(quotaExhausted ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable, retryDeadline);
     }
     const list = payload as { items?: unknown; nextPageToken?: unknown; etag?: unknown; error?: unknown } | null;
     if (reused === undefined && response.status === 200 && list && typeof list === "object" && !Array.isArray(list)
