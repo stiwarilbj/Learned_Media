@@ -666,17 +666,17 @@ private final class LocalWorkspaceStore {
         return (primary, primary.appendingPathExtension("backup"))
     }
 
-    private func readObject(at url: URL) -> Any? {
+    private func readObject(at url: URL) -> (object: Any, bytes: Data)? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
             SnapshotValidation.recordInvalidJSON(kind: .nativeStore, operation: .read); return nil
         }
-        return SnapshotValidation.validate(object, kind: .nativeStore, operation: .read) ? object : nil
+        return SnapshotValidation.validate(object, kind: .nativeStore, operation: .read) ? (object, data) : nil
     }
 
     func load() -> Any {
         guard let locations = try? urls() else { return NSNull() }
-        return readObject(at: locations.primary) ?? readObject(at: locations.backup) ?? NSNull()
+        return readObject(at: locations.primary)?.object ?? readObject(at: locations.backup)?.object ?? NSNull()
     }
 
     func save(_ value: Any?) throws {
@@ -691,8 +691,7 @@ private final class LocalWorkspaceStore {
         let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
         let locations = try urls()
         if let previous = readObject(at: locations.primary) {
-            let backup = try JSONSerialization.data(withJSONObject: previous, options: [.prettyPrinted, .sortedKeys])
-            try backup.write(to: locations.backup, options: [.atomic])
+            try previous.bytes.write(to: locations.backup, options: [.atomic])
         }
         try data.write(to: locations.primary, options: [.atomic])
     }
