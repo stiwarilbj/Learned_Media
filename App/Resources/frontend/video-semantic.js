@@ -140,6 +140,7 @@ function rankSearchResults(query, items, getText, limit = items.length) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PreparedVideoSearchCache = exports.VIDEO_SEMANTIC_VERSION = void 0;
+exports.indexVideoSearchMetadata = indexVideoSearchMetadata;
 exports.normalizeVideoQuery = normalizeVideoQuery;
 exports.makeLocalVideoPlan = makeLocalVideoPlan;
 exports.mergeVideoSearchPlans = mergeVideoSearchPlans;
@@ -157,6 +158,22 @@ exports.videoSearchReason = videoSearchReason;
 exports.shouldEnrichVideoSearch = shouldEnrichVideoSearch;
 const search_1 = require("./search");
 exports.VIDEO_SEMANTIC_VERSION = 9;
+const RESTRICTED_PLAYLIST_CHANNEL_ID = "UCYO_jab_esuFRV4b17AJtAw";
+const APPROVED_3BLUE_PLAYLIST_IDS = new Set([
+    "PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi",
+    "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy",
+]);
+function computeSpecialPlaylistEligibility(video) {
+    const restrictedChannel = video.channelId === RESTRICTED_PLAYLIST_CHANNEL_ID || normalizeVideoQuery(video.channelName) === "3blue1brown";
+    return !restrictedChannel || Boolean(video.special) || (video.sourceIds || []).some((id) => APPROVED_3BLUE_PLAYLIST_IDS.has(id.replace(/^playlist:/, "")));
+}
+/** Add worker-only eligibility metadata without changing or dropping provenance. */
+function indexVideoSearchMetadata(video) {
+    return { ...video, specialPlaylistEligible: computeSpecialPlaylistEligibility(video) };
+}
+function hasEligibleSpecialPlaylist(video) {
+    return typeof video.specialPlaylistEligible === "boolean" ? video.specialPlaylistEligible : computeSpecialPlaylistEligibility(video);
+}
 function immutablePlan(plan) {
     const input = { ...plan };
     const snapshot = {
@@ -549,7 +566,7 @@ function prepareSemanticVideoSearch(plan, topic = "All", channelId) {
 function eligiblePreparedSemanticVideo(video, prepared, excludedIds) {
     if (!video.approved || excludedIds.has(video.id) || /#shorts?\b|\byoutube shorts?\b|\bshorts video\b/i.test(video.title) || /#shorts?\b/i.test(video.description || "") || (video.tags || []).some((tag) => ["shorts", "youtube short", "youtube shorts"].includes(normalizeVideoQuery(tag))))
         return false;
-    if ((video.channelId === "UCYO_jab_esuFRV4b17AJtAw" || normalizeVideoQuery(video.channelName) === "3blue1brown") && !video.special && !(video.sourceIds || []).some((id) => ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi", "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"].includes(id.replace(/^playlist:/, ""))))
+    if (!hasEligibleSpecialPlaylist(video))
         return false;
     if (prepared.selectedChannelId && video.channelId !== prepared.selectedChannelId || prepared.planChannelId && video.channelId !== prepared.planChannelId)
         return false;
@@ -602,7 +619,7 @@ function connectedPreparedCoverage(video, prepared, global) {
 function eligibleSemanticVideo(video, plan, topic = "All", selectedChannelId, excludedIds = new Set()) {
     if (!video.approved || excludedIds.has(video.id) || /#shorts?\b|\byoutube shorts?\b|\bshorts video\b/i.test(video.title) || /#shorts?\b/i.test(video.description || "") || (video.tags || []).some((tag) => ["shorts", "youtube short", "youtube shorts"].includes(normalizeVideoQuery(tag))))
         return false;
-    if ((video.channelId === "UCYO_jab_esuFRV4b17AJtAw" || normalizeVideoQuery(video.channelName) === "3blue1brown") && !video.special && !(video.sourceIds || []).some((id) => ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi", "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"].includes(id.replace(/^playlist:/, ""))))
+    if (!hasEligibleSpecialPlaylist(video))
         return false;
     if (selectedChannelId && video.channelId !== selectedChannelId || plan.channelId && video.channelId !== plan.channelId)
         return false;

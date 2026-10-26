@@ -68,7 +68,11 @@ test('native worker sender captures compact initialization, forced rebuild, and 
  assert.match(page,/videos: nextVideos\.map\(toVideoSearchDocument\)/,'website rebuilds and initialization project documents');
  assert.match(page,/upserts: upserts\.map\(toVideoSearchDocument\)/,'website incremental updates project only changed searchable records');
  assert.match(page,/videos: initialVideos\.map\(toVideoSearchDocument\)/,'website startup projects initial records');
- assert.match(readFileSync(new URL('../../Website/workers/youtube-search.worker.ts',import.meta.url),'utf8'),/Map<string, SearchableVideoMetadata>/);
+ const webWorker=readFileSync(new URL('../../Website/workers/youtube-search.worker.ts',import.meta.url),'utf8');
+ assert.match(webWorker,/Map<string, IndexedVideoSearchMetadata>/);
+ assert.match(webWorker,/indexVideoSearchMetadata\(video\)/,'website indexes playlist eligibility on initial and incremental records');
+ const nativeWorker=readFileSync(new URL('../../App/Resources/frontend/youtube-search.worker.js',import.meta.url),'utf8');
+ assert.match(nativeWorker,/LEARNED_MEDIA_VIDEO_SEARCH\.indexVideoSearchMetadata\(video\)/,'Mac indexes the same playlist eligibility flag');
 });
 test('website worker sender captures compact initialization, forced rebuild, and changed-only upserts',()=>{
  const page=readFileSync(new URL('../../Website/app/page.tsx',import.meta.url),'utf8');

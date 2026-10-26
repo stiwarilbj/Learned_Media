@@ -252,6 +252,68 @@ test("YouTube worker preserves catalog ranking and strict filters across chunks"
   assert.ok(reply.candidates.every((candidate) => Number(candidate.videoId.slice(6)) % 5 === 0));
 });
 
+test("YouTube workers precompute restricted playlist eligibility and refresh it on provenance changes", async () => {
+  const { searchYouTubeCandidates } = require("../lib/youtube.ts");
+  const restrictedId = "UCYO_jab_esuFRV4b17AJtAw";
+  const makeVideo = (id, overrides = {}) => ({
+    id, channelId: restrictedId, channelName: "3Blue1Brown", title: "Gravitational lensing",
+    description: "A long-form astronomy lesson.", tags: ["astronomy"], topics: ["Science"],
+    publishedAt: "2024-01-01T00:00:00.000Z", durationSeconds: 600, approved: true, ...overrides
+  });
+  const original = [
+    makeVideo("allowed-one", { sourceIds: ["playlist:PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi"] }),
+    makeVideo("allowed-two", { channelId: "legacy-channel-id", channelName: "3BLUE1BROWN", sourceIds: ["PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"] }),
+    makeVideo("special", { special: true }),
+    makeVideo("wrong-source", { sourceIds: ["playlist:unapproved"] }),
+    makeVideo("wrong-name-source", { channelId: "legacy-channel-id", sourceIds: ["playlist:unapproved"] }),
+    makeVideo("ordinary-channel", { channelId: "other-channel", channelName: "3Blue1Brownish", sourceIds: ["playlist:unapproved"] })
+  ];
+  const plan = { terms: ["gravitational lensing"] };
+  const fixtures = [
+    { name: "website", load: () => loadWorker("workers/youtube-search.worker.ts"), init: (worker, data) => worker.scope.onmessage({ data }), send: (worker, data) => worker.scope.onmessage({ data }), messages: worker => worker.messages },
+    { name: "native", load: () => loadNativeYouTubeWorker(), init: (worker, data) => worker.send(data), send: (worker, data) => worker.send(data), messages: worker => worker.messages }
+  ];
+  for (const fixture of fixtures) {
+    const worker = fixture.load(), messages = fixture.messages(worker), projected = projectVideos(original);
+    let channelNameReads = 0, playlistScans = 0;
+    const observed = projected.find(video => video.id === "allowed-one");
+    Object.defineProperty(observed, "channelName", { enumerable: true, configurable: true, get() { channelNameReads++; return "3Blue1Brown"; } });
+    Object.defineProperty(observed, "sourceIds", { enumerable: true, configurable: true, value: new Proxy(observed.sourceIds, { get(target, key, receiver) { if (key === "some") playlistScans++; return Reflect.get(target, key, receiver); } }) });
+    fixture.init(worker, { type: "initialize", revision: 0, videos: projected });
+    channelNameReads = 0;
+    playlistScans = 0;
+    const search = async (revision, requestId) => {
+      fixture.send(worker, { type: "search", requestId, revision, query: "gravitational lensing", plan, topic: "All", limit: 20 });
+      return waitForMessage(messages, message => message.requestId === requestId);
+    };
+    const first = await search(0, 91);
+    const expectedFirst = searchYouTubeCandidates(original, plan, "All").map(candidate => candidate.video.id);
+    assert.deepEqual(Array.from(first.candidates, candidate => candidate.videoId), expectedFirst, `${fixture.name} preserves exact playlist filtering`);
+    assert.equal(channelNameReads, 0, `${fixture.name} repeated ranking reads no channel name for playlist eligibility`);
+    assert.equal(playlistScans, 0, `${fixture.name} repeated ranking does not rescan sourceIds`);
+
+    const unchanged = { ...projected[0], sourceIds: new Proxy([...projected[0].sourceIds], { get(target, key, receiver) { if (key === "some") playlistScans++; return Reflect.get(target, key, receiver); } }) };
+    Object.defineProperty(unchanged, "channelName", { enumerable: true, configurable: true, get() { channelNameReads++; return "3Blue1Brown"; } });
+    channelNameReads = 0;
+    playlistScans = 0;
+    fixture.send(worker, { type: "update", baseRevision: 0, revision: 1, upserts: [unchanged], removeIds: [] });
+    assert.equal(playlistScans, 1, `${fixture.name} compares the stored sourceIds once without running the eligibility scan again`);
+    assert.equal(channelNameReads, 1, `${fixture.name} compares the unchanged channel name without normalizing it again`);
+    const afterNoOp = await search(1, 92);
+    assert.deepEqual(Array.from(afterNoOp.candidates, candidate => candidate.videoId), expectedFirst, `${fixture.name} retains the prepared result when an identical record is updated`);
+
+    const revised = original.map(video => video.id === "allowed-one" ? { ...video, sourceIds: ["playlist:unapproved"] }
+      : video.id === "wrong-source" ? { ...video, sourceIds: ["playlist:PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"] }
+      : video.id === "wrong-name-source" ? { ...video, channelName: "Other Channel" }
+      : video.id === "special" ? { ...video, special: false, sourceIds: ["playlist:unapproved"] }
+      : video);
+    fixture.send(worker, { type: "update", baseRevision: 1, revision: 2, upserts: projectVideos(revised.filter(video => ["allowed-one", "wrong-source", "wrong-name-source", "special"].includes(video.id))), removeIds: [] });
+    const updated = await search(2, 93);
+    const expectedUpdated = searchYouTubeCandidates(revised, plan, "All").map(candidate => candidate.video.id);
+    assert.deepEqual(Array.from(updated.candidates, candidate => candidate.videoId), expectedUpdated, `${fixture.name} recalculates flags when source provenance or channel identity changes`);
+  }
+});
+
 test("YouTube worker cancels a previous query while scanning large catalogs", async () => {
   const { scope, messages } = loadWorker("workers/youtube-search.worker.ts");
   const videos = Array.from({ length: 1800 }, (_, index) => ({

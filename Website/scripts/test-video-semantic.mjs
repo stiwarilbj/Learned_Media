@@ -29,8 +29,11 @@ test('compact records preserve approval, Shorts, and restricted playlist provena
  const channelId='UCYO_jab_esuFRV4b17AJtAw';
  const source=[
   video('approved-playlist','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',sourceIds:['playlist:PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi']}),
+  video('approved-second-playlist','Gravitational Lensing',{channelId:'legacy-channel-id',channelName:'3BLUE1BROWN',sourceIds:['PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy']}),
   video('special-approved','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',special:true}),
   video('wrong-playlist','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',sourceIds:['playlist:unapproved-playlist']}),
+  video('wrong-name-playlist','Gravitational Lensing',{channelId:'legacy-channel-id',channelName:'3Blue1Brown',sourceIds:['playlist:unapproved-playlist']}),
+  video('unrestricted-channel','Gravitational Lensing',{channelId:'other-channel',channelName:'3Blue1Brownish',sourceIds:['playlist:unapproved-playlist']}),
   video('short-title','Gravitational Lensing #Shorts',{channelId,channelName:'3Blue1Brown',special:true}),
   video('short-tag','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',special:true,tags:['YouTube Shorts']}),
   video('not-approved','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',special:true,approved:false})
@@ -38,9 +41,14 @@ test('compact records preserve approval, Shorts, and restricted playlist provena
  const plan=engine.makeLocalVideoPlan('gravitational lensing');
  const full=engine.searchSemanticVideos(source,plan,'All');
  const compact=engine.searchSemanticVideos(source.map(metadata.toVideoSearchDocument),plan,'All');
+ const indexed=source.map(metadata.toVideoSearchDocument).map(engine.indexVideoSearchMetadata);
+ assert.deepEqual(indexed.map(item=>item.specialPlaylistEligible),[true,true,true,false,false,true,true,true,true]);
+ assert.deepEqual(indexed.map(item=>item.sourceIds),source.map(item=>item.sourceIds),'indexing retains original playlist provenance');
+ assert.deepEqual(ids(engine.searchSemanticVideos(indexed,plan,'All')),ids(full),'precomputed flags preserve direct search eligibility');
  assert.deepEqual(ids(compact),ids(full));
- assert.deepEqual(ids(compact),['approved-playlist','special-approved']);
+ assert.deepEqual(ids(compact),['approved-playlist','approved-second-playlist','special-approved','unrestricted-channel']);
  assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(source.map(metadata.toVideoSearchDocument),plan,'All'))),full);
+ assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(indexed,plan,'All'))),engine.searchSemanticVideos(indexed,plan,'All'),'generated Mac runtime honors indexed flags identically');
 });
 test('compact worker payloads preserve semantic output and reduce catalog transfer size',()=>{
  const catalog=Array.from({length:30_000},(_,index)=>video('payload-'+index,index%2?'Gravitational Lensing '+index:'Other science '+index,{description:'A complete searchable description about galaxies, astronomy, and optical observations. '.repeat(4),tags:['astronomy','science'],topics:['Science','Astronomy'],thumbnailUrl:'https://example.test/'+index+'.jpg',thumbnailWidth:1280,thumbnailHeight:720,durationLabel:'10:00',embedAvailable:true,metadataRefreshedAt:index}));

@@ -2,7 +2,7 @@
 import { SessionCache } from "@/lib/session-cache";
 import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
 import type { SearchableVideoMetadata } from "@/lib/video-metadata";
-import { insertBoundedRanked, PreparedVideoSearchCache, searchPreparedSemanticVideos } from "@/lib/video-semantic";
+import { indexVideoSearchMetadata, insertBoundedRanked, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
 
 type SearchRequest = {
   type: "search";
@@ -26,8 +26,8 @@ type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts:
 type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
-const videos = new Map<string, SearchableVideoMetadata>();
-let orderedVideos: SearchableVideoMetadata[] = [];
+const videos = new Map<string, IndexedVideoSearchMetadata>();
+let orderedVideos: IndexedVideoSearchMetadata[] = [];
 const resultCache = new SessionCache<CandidateReply[]>(80, 30 * 60 * 1000, 4 * 1024 * 1024);
 const preparedSearchCache = new PreparedVideoSearchCache(4);
 let revision = -1;
@@ -35,11 +35,11 @@ let latestRequestId = 0;
 let activeRequestId = 0;
 let indexEpoch = 0;
 
-function sameVideoRecord(previous: SearchableVideoMetadata | undefined, next: SearchableVideoMetadata): boolean {
+function sameVideoRecord(previous: IndexedVideoSearchMetadata | undefined, next: SearchableVideoMetadata): boolean {
   if (!previous) return false;
   const previousRecord = previous as unknown as Record<string, unknown>;
   const nextRecord = next as unknown as Record<string, unknown>;
-  const previousKeys = Object.keys(previousRecord);
+  const previousKeys = Object.keys(previousRecord).filter((key) => key !== "specialPlaylistEligible");
   const nextKeys = Object.keys(nextRecord);
   if (previousKeys.length !== nextKeys.length) return false;
   for (const key of previousKeys) {
@@ -52,7 +52,7 @@ function sameVideoRecord(previous: SearchableVideoMetadata | undefined, next: Se
   return true;
 }
 
-function mapMatchesOrderedVideos(map: Map<string, SearchableVideoMetadata>, ordered: SearchableVideoMetadata[]): boolean {
+function mapMatchesOrderedVideos(map: Map<string, IndexedVideoSearchMetadata>, ordered: IndexedVideoSearchMetadata[]): boolean {
   if (map.size !== ordered.length) return false;
   let index = 0;
   for (const [id, video] of map) {
@@ -62,7 +62,7 @@ function mapMatchesOrderedVideos(map: Map<string, SearchableVideoMetadata>, orde
   return true;
 }
 
-function mapsHaveSameEntries(left: Map<string, SearchableVideoMetadata>, right: Map<string, SearchableVideoMetadata>): boolean {
+function mapsHaveSameEntries(left: Map<string, IndexedVideoSearchMetadata>, right: Map<string, IndexedVideoSearchMetadata>): boolean {
   if (left.size !== right.size) return false;
   const leftEntries = left.entries(), rightEntries = right.entries();
   while (true) {
@@ -140,7 +140,10 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
   if (request.type === "initialize") {
     indexEpoch++;
     videos.clear();
-    for (const video of request.videos) videos.set(video.id, video);
+    for (const video of request.videos) {
+      const indexed = indexVideoSearchMetadata(video);
+      videos.set(indexed.id, indexed);
+    }
     orderedVideos = Array.from(videos.values());
     revision = request.revision;
     latestRequestId = 0;
@@ -164,10 +167,10 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
     for (const id of request.removeIds) videos.delete(id);
     for (const video of request.upserts) {
       const previous = videos.get(video.id);
-      if (!sameVideoRecord(previous, video)) videos.set(video.id, video);
+      if (!sameVideoRecord(previous, video)) videos.set(video.id, indexVideoSearchMetadata(video));
     }
     if (request.orderIds) {
-      const ordered = new Map<string, SearchableVideoMetadata>();
+      const ordered = new Map<string, IndexedVideoSearchMetadata>();
       for (const id of request.orderIds) {
         const video = videos.get(id);
         if (video) ordered.set(id, video);

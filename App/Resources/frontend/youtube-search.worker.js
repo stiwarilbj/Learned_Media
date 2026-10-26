@@ -2,14 +2,32 @@
 importScripts("video-semantic.js");
 let videos = [], byId = new Map(), revision = -1, latest = 0;
 const preparedSearchCache = new LEARNED_MEDIA_VIDEO_SEARCH.PreparedVideoSearchCache(4);
+const indexVideo = video => LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata(video);
+const sameVideoRecord = (previous, next) => {
+  if (!previous) return false;
+  const previousKeys = Object.keys(previous).filter(key => key !== "specialPlaylistEligible");
+  const nextKeys = Object.keys(next);
+  if (previousKeys.length !== nextKeys.length) return false;
+  for (const key of previousKeys) {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) return false;
+    const left = previous[key], right = next[key];
+    if (Array.isArray(left) && Array.isArray(right)) {
+      if (left.length !== right.length || left.some((value, index) => value !== right[index])) return false;
+    } else if (!Object.is(left, right)) return false;
+  }
+  return true;
+};
 onmessage = async function(event) {
   const request = event.data;
-  if (request.type === "initialize") { videos = request.videos; byId = new Map(videos.map(video=>[video.id,video])); revision = request.revision; latest++; preparedSearchCache.clear(); return; }
+  if (request.type === "initialize") { videos = request.videos.map(indexVideo); byId = new Map(videos.map(video=>[video.id,video])); revision = request.revision; latest++; preparedSearchCache.clear(); return; }
   if (request.type === "update") {
     latest++;
     if (revision < 0 || request.baseRevision !== revision) { postMessage({type:"rebuild",revision:request.revision}); return; }
     for (const id of request.removeIds) byId.delete(id);
-    for (const video of request.upserts) byId.set(video.id, video);
+    for (const video of request.upserts) {
+      const previous = byId.get(video.id);
+      if (!sameVideoRecord(previous, video)) byId.set(video.id, indexVideo(video));
+    }
     videos = request.orderIds ? request.orderIds.flatMap(id => { const video = byId.get(id); return video ? [video] : []; }) : Array.from(byId.values());
     if (request.orderIds) byId = new Map(videos.map(video => [video.id, video]));
     revision = request.revision; preparedSearchCache.clear(); return;
