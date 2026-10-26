@@ -569,40 +569,100 @@ private struct WikipediaImageInfoResponse: Decodable, Sendable {
 private struct MetadataValue: Decodable, Sendable { let value: String? }
 
 private actor WikipediaRequestLimiter {
-    private struct Waiter {
+    private final class Waiter {
         let id: UUID
         let priority: Int
-        let order: Int
         let continuation: CheckedContinuation<Void, Error>
+        var active = true
+
+        init(id: UUID, priority: Int, continuation: CheckedContinuation<Void, Error>) {
+            self.id = id
+            self.priority = priority
+            self.continuation = continuation
+        }
+    }
+    private struct WaitQueue {
+        var entries: [Waiter] = []
+        var head = 0
+        var inactiveCount = 0
+        var activeCount = 0
     }
     private var permits = 4
-    private var waiters: [Waiter] = []
-    private var nextOrder = 0
+    private var queues: [Int: WaitQueue] = [:]
+    private var waitersByID: [UUID: Waiter] = [:]
+    private var activeWaiterCount = 0
 
     func acquire(priority: Int = 0) async throws {
         try Task.checkCancellation()
-        if permits > 0 { permits -= 1; return }
+        if permits > 0 && activeWaiterCount == 0 { permits -= 1; return }
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
-                waiters.append(Waiter(id: id, priority: priority, order: nextOrder, continuation: continuation))
-                nextOrder += 1
+                let waiter = Waiter(id: id, priority: priority, continuation: continuation)
+                var queue = queues[priority] ?? WaitQueue()
+                queue.entries.append(waiter)
+                queue.activeCount += 1
+                queues[priority] = queue
+                waitersByID[id] = waiter
+                activeWaiterCount += 1
             }
         } onCancel: {
             Task { await self.cancel(id) }
         }
     }
     private func cancel(_ id: UUID) {
-        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
-        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+        guard let waiter = waitersByID.removeValue(forKey: id), waiter.active else { return }
+        waiter.active = false
+        activeWaiterCount -= 1
+        if var queue = queues[waiter.priority] {
+            queue.activeCount -= 1
+            queue.inactiveCount += 1
+            compact(&queue, priority: waiter.priority)
+        }
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+    private func compact(_ queue: inout WaitQueue, priority: Int) {
+        guard queue.activeCount > 0 else {
+            queues[priority] = nil
+            return
+        }
+        let compactWhen = queue.head >= 64 && queue.head * 2 >= queue.entries.count
+            || queue.inactiveCount >= 64 && queue.inactiveCount * 2 >= queue.entries.count
+        guard compactWhen else {
+            queues[priority] = queue
+            return
+        }
+        queue.entries = queue.entries[queue.head...].filter(\.active)
+        queue.head = 0
+        queue.inactiveCount = 0
+        queues[priority] = queue
+    }
+    private func nextWaiter() -> Waiter? {
+        for priority in queues.keys.sorted() {
+            guard var queue = queues[priority] else { continue }
+            while queue.head < queue.entries.count {
+                let waiter = queue.entries[queue.head]
+                queue.head += 1
+                queue.inactiveCount += 1
+                guard waiter.active else {
+                    compact(&queue, priority: priority)
+                    continue
+                }
+                waiter.active = false
+                queue.activeCount -= 1
+                activeWaiterCount -= 1
+                waitersByID[waiter.id] = nil
+                compact(&queue, priority: priority)
+                return waiter
+            }
+            queues[priority] = nil
+        }
+        return nil
     }
     func release() {
-        if let nextIndex = waiters.indices.min(by: { left, right in
-            let a = waiters[left], b = waiters[right]
-            return a.priority == b.priority ? a.order < b.order : a.priority < b.priority
-        }) {
-            waiters.remove(at: nextIndex).continuation.resume()
+        if let waiter = nextWaiter() {
+            waiter.continuation.resume()
         } else { permits += 1 }
     }
 }

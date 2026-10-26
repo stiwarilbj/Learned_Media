@@ -6,40 +6,84 @@ const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
 const MAX_CONCURRENT_WIKIPEDIA_REQUESTS = 4;
 const WIKIPEDIA_REQUEST_TIMEOUT_MS = 20_000;
 let wikipediaInFlight = 0;
-let wikipediaWaiterOrder = 0;
-type WikipediaWaiter = { priority: number; order: number; resolve: () => void; reject: (error: Error) => void; signal?: AbortSignal; onAbort: () => void };
-const wikipediaWaiters: WikipediaWaiter[] = [];
+let wikipediaWaiterCount = 0;
+type WikipediaWaiter = { priority: number; active: boolean; resolve: () => void; reject: (error: Error) => void; signal?: AbortSignal; onAbort: () => void };
+type WikipediaWaitQueue = { entries: WikipediaWaiter[]; head: number; inactiveCount: number; activeCount: number };
+const wikipediaWaitQueues = new Map<number, WikipediaWaitQueue>();
+
+function compactWikipediaQueue(priority: number, queue: WikipediaWaitQueue) {
+  if (queue.activeCount === 0) {
+    wikipediaWaitQueues.delete(priority);
+    return;
+  }
+  const compactWhen = queue.head >= 64 && queue.head * 2 >= queue.entries.length
+    || queue.inactiveCount >= 64 && queue.inactiveCount * 2 >= queue.entries.length;
+  if (!compactWhen) return;
+  queue.entries = queue.entries.slice(queue.head).filter((waiter) => waiter.active);
+  queue.head = 0;
+  queue.inactiveCount = 0;
+}
+
+function nextWikipediaWaiter() {
+  for (const priority of Array.from(wikipediaWaitQueues.keys()).sort((left, right) => left - right)) {
+    const queue = wikipediaWaitQueues.get(priority);
+    if (!queue) continue;
+    while (queue.head < queue.entries.length) {
+      const waiter = queue.entries[queue.head++];
+      queue.inactiveCount += 1;
+      if (!waiter.active) {
+        compactWikipediaQueue(priority, queue);
+        continue;
+      }
+      waiter.active = false;
+      queue.activeCount -= 1;
+      wikipediaWaiterCount -= 1;
+      waiter.signal?.removeEventListener("abort", waiter.onAbort);
+      compactWikipediaQueue(priority, queue);
+      return waiter;
+    }
+    wikipediaWaitQueues.delete(priority);
+  }
+  return undefined;
+}
 
 async function acquireWikipediaSlot(signal?: AbortSignal, priority = 0) {
   if (signal?.aborted) throw new DOMException("Wikipedia request canceled.", "AbortError");
-  if (wikipediaInFlight < MAX_CONCURRENT_WIKIPEDIA_REQUESTS && wikipediaWaiters.length === 0) { wikipediaInFlight += 1; return; }
+  if (wikipediaInFlight < MAX_CONCURRENT_WIKIPEDIA_REQUESTS && wikipediaWaiterCount === 0) { wikipediaInFlight += 1; return; }
   await new Promise<void>((resolve, reject) => {
-    const waiter: WikipediaWaiter = {
+    let waiter: WikipediaWaiter;
+    waiter = {
       priority,
-      order: wikipediaWaiterOrder++,
+      active: true,
       resolve: () => { signal?.removeEventListener("abort", waiter.onAbort); resolve(); },
       reject,
       signal,
       onAbort: () => {
-        const index = wikipediaWaiters.indexOf(waiter);
-        if (index >= 0) wikipediaWaiters.splice(index, 1);
+        if (!waiter.active) return;
+        waiter.active = false;
+        wikipediaWaiterCount -= 1;
+        const queue = wikipediaWaitQueues.get(priority);
+        if (queue) {
+          queue.activeCount -= 1;
+          queue.inactiveCount += 1;
+          compactWikipediaQueue(priority, queue);
+        }
         reject(new DOMException("Wikipedia request canceled.", "AbortError"));
       }
     };
-    wikipediaWaiters.push(waiter);
+    const queue = wikipediaWaitQueues.get(priority) ?? { entries: [], head: 0, inactiveCount: 0, activeCount: 0 };
+    queue.entries.push(waiter);
+    queue.activeCount += 1;
+    wikipediaWaitQueues.set(priority, queue);
+    wikipediaWaiterCount += 1;
     signal?.addEventListener("abort", waiter.onAbort, { once: true });
     if (signal?.aborted) waiter.onAbort();
   });
 }
 
 function releaseWikipediaSlot() {
-  const nextIndex = wikipediaWaiters.reduce<number | undefined>((best, current, index) => {
-    if (best === undefined) return index;
-    const previous = wikipediaWaiters[best];
-    return current.priority < previous.priority || current.priority === previous.priority && current.order < previous.order ? index : best;
-  }, undefined);
-  if (nextIndex === undefined) { wikipediaInFlight = Math.max(0, wikipediaInFlight - 1); return; }
-  const [next] = wikipediaWaiters.splice(nextIndex, 1);
+  const next = nextWikipediaWaiter();
+  if (!next) { wikipediaInFlight = Math.max(0, wikipediaInFlight - 1); return; }
   next.resolve();
 }
 
