@@ -21,6 +21,13 @@ actor ConditionalDownloadCache {
     }
     private var entries: [String: Entry] = [:]
     private let budget = 4 * 1024 * 1024
+    private let httpDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return formatter
+    }()
 
     func prepare(_ request: URLRequest, credential: String = "") -> Prepared {
         let context = ["Accept", "Origin", "X-Origin", "Referer", "User-Agent"].map { request.value(forHTTPHeaderField: $0) ?? "" }.joined(separator: "\u{0}")
@@ -78,11 +85,7 @@ actor ConditionalDownloadCache {
 
     private func modificationDate(_ value: String?) -> String? {
         guard let value, value.count <= 128, !value.contains("\r"), !value.contains("\n") else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
-        guard let date = formatter.date(from: value) else { return nil }
-        return formatter.string(from: date)
+        guard let date = httpDateFormatter.date(from: value) else { return nil }
+        return httpDateFormatter.string(from: date)
     }
 }

@@ -1197,12 +1197,31 @@ private actor ValidatedCardEvidenceCache {
     }
 }
 
+private enum NativeDateFormatting {
+    static let iso8601UTC = Date.ISO8601FormatStyle(includingFractionalSeconds: false, timeZone: TimeZone(secondsFromGMT: 0)!)
+}
+
+private actor RetryAfterDateParser {
+    private let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter
+    }()
+
+    func date(from value: String) -> Date? {
+        formatter.date(from: value)
+    }
+}
+
 private final class GeminiClient {
     private let session = URLSession(configuration: .ephemeral)
     private let wikipedia = WikipediaClient()
     private let validatedEvidence = ValidatedCardEvidenceCache()
     private let scheduler = ModelScheduler()
     private let structuredCache = RequestWorkCache<GeminiStructuredResult>()
+    private let retryAfterDateParser = RetryAfterDateParser()
 
     func reset() async {
         await scheduler.acquireRequest(priority: 0)
@@ -1223,20 +1242,16 @@ private final class GeminiClient {
         await wikipedia.coordinates(titles: titles)
     }
 
-    private func isoNow() -> String { ISO8601DateFormatter().string(from: Date()) }
+    private func isoNow(_ date: Date = Date()) -> String { NativeDateFormatting.iso8601UTC.format(date) }
 
     private func isCredentialFailure(_ message: String) -> Bool {
         message.range(of: "401|403|API key|permission|unauthorized|forbidden", options: [.caseInsensitive, .regularExpression]) != nil
     }
 
-    private func retryAfter(_ response: HTTPURLResponse, data: Data) -> TimeInterval? {
+    private func retryAfter(_ response: HTTPURLResponse, data: Data) async -> TimeInterval? {
         if let value = response.value(forHTTPHeaderField: "Retry-After"), let seconds = TimeInterval(value), seconds > 0 { return seconds }
         if let value = response.value(forHTTPHeaderField: "Retry-After") {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(secondsFromGMT: 0)
-            formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-            if let date = formatter.date(from: value), date > Date() { return date.timeIntervalSinceNow }
+            if let date = await retryAfterDateParser.date(from: value), date > Date() { return date.timeIntervalSinceNow }
         }
         let detail = String(data: data, encoding: .utf8) ?? ""
         if let pattern = try? NSRegularExpression(pattern: #"retryDelay["']?\s*:\s*["'](\d+(?:\.\d+)?)s"#, options: .caseInsensitive),
@@ -1327,7 +1342,7 @@ private final class GeminiClient {
             let detail = ((object?["error"] as? [String: Any])?["message"] as? String) ?? "Gemini returned HTTP \(http.statusCode)."
             let scope = quotaScope(http.statusCode, detail: String(data: data, encoding: .utf8) ?? detail)
             let retryable = [408, 409, 429].contains(http.statusCode) || http.statusCode >= 500
-            throw NativeError(message: "Gemini HTTP \(http.statusCode): \(detail)", retryable: retryable, statusCode: http.statusCode, retryAfter: retryAfter(http, data: data), quotaScope: scope)
+            throw NativeError(message: "Gemini HTTP \(http.statusCode): \(detail)", retryable: retryable, statusCode: http.statusCode, retryAfter: await retryAfter(http, data: data), quotaScope: scope)
         }
         let payload: GeminiTextResponse
         do {
@@ -1451,8 +1466,6 @@ private final class GeminiClient {
         let message = outcomes.isEmpty ? "All available Gemini models are cooling down. Retry after the displayed retry time." : "Every available Gemini model failed \(exhaustion). \(lastError?.message ?? "Retry after checking the model status in Settings.")"
         throw NativeError(message: message, retryable: status == "rate-limited", outcomes: outcomes, status: status)
     }
-
-    private func isoNow(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
 
     private func checkModel(key: String, model: String, onCheck: @escaping ([String: Any], Int) -> Void) async -> GeminiModelCheckResult {
         let started = Date()
@@ -2669,7 +2682,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         return (url, key)
     }
 
-    private func cloudNow() -> String { ISO8601DateFormatter().string(from: Date()) }
+    private func cloudNow() -> String { NativeDateFormatting.iso8601UTC.format(Date()) }
 
     private func cloudSession() async throws -> CloudSession {
         if let pending = sessionRefresh { return try await pending.value }
