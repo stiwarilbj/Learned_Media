@@ -294,6 +294,7 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cache
   const abortFromCaller = () => controller.abort();
   const timeout = setTimeout(() => controller.abort(), WIKIPEDIA_REQUEST_TIMEOUT_MS);
   signal?.addEventListener("abort", abortFromCaller, { once: true });
+  let body: string;
   try {
     if (signal?.aborted) throw new DOMException("Wikipedia request canceled.", "AbortError");
     const response = await performanceFetch("wikipedia", url, {
@@ -302,7 +303,7 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cache
       signal: controller.signal
     });
     if (!response.ok) return null;
-    return await response.json() as T;
+    body = await response.text();
   } catch (error) {
     if (signal?.aborted) throw error;
     return null;
@@ -310,6 +311,12 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cache
     clearTimeout(timeout);
     signal?.removeEventListener("abort", abortFromCaller);
     releaseWikipediaSlot();
+  }
+
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    return null;
   }
 }
 
