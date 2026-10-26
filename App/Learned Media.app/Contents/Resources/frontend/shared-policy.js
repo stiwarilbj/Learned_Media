@@ -3643,6 +3643,7 @@ function cardSearchText(card) {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.APPROVED_INDIVIDUAL_VIDEOS = exports.DEFAULT_YOUTUBE_RECENCY_PREFERENCES = exports.APPROVED_YOUTUBE_CHANNELS = exports.YOUTUBE_CATALOG_VERSION = exports.YOUTUBE_TOPICS = void 0;
+exports.mergeYouTubeActivity = mergeYouTubeActivity;
 exports.createYouTubeProgressStore = createYouTubeProgressStore;
 exports.createYouTubeListMemo = createYouTubeListMemo;
 exports.partitionYouTubeVideoResults = partitionYouTubeVideoResults;
@@ -3650,8 +3651,43 @@ exports.mergeYouTubeRecencyPreferences = mergeYouTubeRecencyPreferences;
 exports.selectRandomVideos = selectRandomVideos;
 exports.relatedYouTubeVideos = relatedYouTubeVideos;
 exports.createYouTubeTopicPools = createYouTubeTopicPools;
+exports.createYouTubeChannelPools = createYouTubeChannelPools;
 exports.isApprovedYouTubeVideo = isApprovedYouTubeVideo;
 exports.isYouTubeShortMetadata = isYouTubeShortMetadata;
+function mergeYouTubeActivity(legacy = {}, canonical = {}) {
+    const merged = { ...legacy, ...canonical };
+    const uniqueStrings = (primary, secondary) => {
+        const values = [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])];
+        return Array.from(new Set(values.filter((value) => typeof value === "string" && value.length > 0)));
+    };
+    const savedIds = uniqueStrings(canonical.savedIds, legacy.savedIds);
+    if (savedIds.length || Array.isArray(canonical.savedIds) || Array.isArray(legacy.savedIds))
+        merged.savedIds = savedIds;
+    const history = [
+        ...(Array.isArray(canonical.history) ? canonical.history : []),
+        ...(Array.isArray(legacy.history) ? legacy.history : [])
+    ];
+    const seenHistory = new Set();
+    const mergedHistory = history.filter((entry) => {
+        const id = typeof entry?.videoId === "string" ? entry.videoId : "";
+        if (!id)
+            return true;
+        if (seenHistory.has(id))
+            return false;
+        seenHistory.add(id);
+        return true;
+    });
+    if (mergedHistory.length || Array.isArray(canonical.history) || Array.isArray(legacy.history))
+        merged.history = mergedHistory.slice(0, 200);
+    for (const field of ["playbackPositions", "prioritizeRecentByChannel"]) {
+        const before = legacy[field];
+        const after = canonical[field];
+        if (before && typeof before === "object" && !Array.isArray(before) || after && typeof after === "object" && !Array.isArray(after)) {
+            merged[field] = { ...(before && typeof before === "object" && !Array.isArray(before) ? before : {}), ...(after && typeof after === "object" && !Array.isArray(after) ? after : {}) };
+        }
+    }
+    return merged;
+}
 function scheduleYouTubeProgressFrame(callback) {
     if (typeof requestAnimationFrame === "function")
         return { kind: "animation", id: requestAnimationFrame(callback) };
@@ -3940,6 +3976,17 @@ function createYouTubeTopicPools(videos) {
             matches.push(video);
             pools.set(topic, matches);
         }
+    }
+    return pools;
+}
+function createYouTubeChannelPools(videos) {
+    const pools = new Map();
+    for (const video of videos) {
+        if (!isApprovedYouTubeVideo(video))
+            continue;
+        const matches = pools.get(video.channelId) ?? [];
+        matches.push(video);
+        pools.set(video.channelId, matches);
     }
     return pools;
 }

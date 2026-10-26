@@ -44,6 +44,20 @@ public final class YouTubePlaybackCheckpointStore: @unchecked Sendable {
         return checkpoint
     }
 
+    public func checkpoints(ownerID: String, workspaceIDs: [String]) -> [String: [String: Any]] {
+        guard !ownerID.isEmpty else { return [:] }
+        var result: [String: [String: Any]] = [:]
+        for workspaceID in Set(workspaceIDs).prefix(250) where !workspaceID.isEmpty && workspaceID.utf8.count <= 256 {
+            guard let value = checkpoint(ownerID: ownerID, workspaceID: workspaceID) else { continue }
+            result[workspaceID] = [
+                "videoID": value.videoID,
+                "seconds": value.seconds,
+                "updatedAt": value.updatedAt.timeIntervalSince1970
+            ]
+        }
+        return result
+    }
+
     /// Overlays only the local latest position; the sidecar is never added to the cloud schema.
     public func mergingIntoSnapshot(_ value: Any) -> Any {
         guard var envelope = value as? [String: Any], let records = envelope["workspaces"] as? [[String: Any]] else { return value }
@@ -54,13 +68,17 @@ public final class YouTubePlaybackCheckpointStore: @unchecked Sendable {
         var changed = false
         let merged = records.map { rawRecord -> [String: Any] in
             guard let workspaceID = rawRecord["id"] as? String,
-                  let checkpoint = checkpoint(ownerID: ownerID, workspaceID: workspaceID) else { return rawRecord }
+                  !workspaceID.isEmpty else { return rawRecord }
             var record = rawRecord
             var state = record["state"] as? [String: Any] ?? [:]
-            var activity = state["youtubeActivity"] as? [String: Any] ?? [:]
+            let legacyActivity = state["youtube"] as? [String: Any] ?? [:]
+            let canonicalActivity = state["youtubeActivity"] as? [String: Any] ?? [:]
+            var activity = Self.mergeActivity(legacy: legacyActivity, canonical: canonicalActivity)
+            let checkpoint = checkpoint(ownerID: ownerID, workspaceID: workspaceID)
+            guard !activity.isEmpty || checkpoint != nil else { return rawRecord }
             var positions = activity["playbackPositions"] as? [String: Any] ?? [:]
-            positions[checkpoint.videoID] = checkpoint.seconds
-            activity["playbackPositions"] = positions
+            if let checkpoint { positions[checkpoint.videoID] = checkpoint.seconds }
+            if !positions.isEmpty || activity["playbackPositions"] != nil { activity["playbackPositions"] = positions }
             state["youtubeActivity"] = activity
             record["state"] = state
             changed = true
@@ -68,6 +86,31 @@ public final class YouTubePlaybackCheckpointStore: @unchecked Sendable {
         }
         if changed { envelope["workspaces"] = merged }
         return envelope
+    }
+
+    private static func mergeActivity(legacy: [String: Any], canonical: [String: Any]) -> [String: Any] {
+        var result = legacy.merging(canonical) { _, newer in newer }
+        let savedIDs = (canonical["savedIds"] as? [String] ?? []) + (legacy["savedIds"] as? [String] ?? [])
+        if canonical["savedIds"] != nil || legacy["savedIds"] != nil {
+            var seen = Set<String>()
+            result["savedIds"] = savedIDs.filter { seen.insert($0).inserted }
+        }
+        let history = (canonical["history"] as? [[String: Any]] ?? []) + (legacy["history"] as? [[String: Any]] ?? [])
+        if canonical["history"] != nil || legacy["history"] != nil {
+            var seen = Set<String>()
+            result["history"] = history.filter { entry in
+                guard let videoID = entry["videoId"] as? String, !videoID.isEmpty else { return true }
+                return seen.insert(videoID).inserted
+            }.prefix(200).map { $0 }
+        }
+        for field in ["playbackPositions", "prioritizeRecentByChannel"] {
+            let old = legacy[field] as? [String: Any] ?? [:]
+            let new = canonical[field] as? [String: Any] ?? [:]
+            if legacy[field] != nil || canonical[field] != nil {
+                result[field] = old.merging(new) { _, newer in newer }
+            }
+        }
+        return result
     }
 
     private func key(ownerID: String, workspaceID: String) -> String {

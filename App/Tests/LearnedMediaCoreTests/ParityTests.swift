@@ -54,16 +54,24 @@ final class ParityTests: XCTestCase {
         try store.save(ownerID: "account-a", workspaceID: "workspace-a", videoID: "video-1", seconds: 42, updatedAt: Date(timeIntervalSince1970: 100))
         try store.save(ownerID: "account-b", workspaceID: "workspace-a", videoID: "video-2", seconds: 88, updatedAt: Date(timeIntervalSince1970: 200))
         try store.save(ownerID: "account-a", workspaceID: "workspace-b", videoID: "video-3", seconds: 17, updatedAt: Date(timeIntervalSince1970: 300))
+        try store.save(ownerID: "account-a", workspaceID: "workspace-legacy", videoID: "video-legacy", seconds: 63, updatedAt: Date(timeIntervalSince1970: 400))
 
         XCTAssertEqual(store.checkpoint(ownerID: "account-a", workspaceID: "workspace-a")?.seconds, 42)
         XCTAssertEqual(store.checkpoint(ownerID: "account-b", workspaceID: "workspace-a")?.videoID, "video-2")
         XCTAssertNil(store.checkpoint(ownerID: "account-c", workspaceID: "workspace-a"))
+        XCTAssertEqual(store.checkpoints(ownerID: "account-a", workspaceIDs: ["workspace-a", "workspace-legacy", "workspace-missing"]).count, 2)
+        XCTAssertNil(store.checkpoints(ownerID: "account-b", workspaceIDs: ["workspace-a"])["workspace-legacy"])
 
         let snapshot: [String: Any] = [
             "cloudOwnerId": "account-a",
             "workspaces": [
                 ["id": "workspace-a", "state": ["youtubeActivity": ["playbackPositions": ["older-video": 9]]]],
-                ["id": "workspace-b", "state": ["youtubeActivity": ["savedIds": ["keep"]]]]
+                ["id": "workspace-b", "state": ["youtubeActivity": ["savedIds": ["keep"]]]],
+                ["id": "workspace-legacy", "state": [
+                    "youtube": ["savedIds": ["legacy-saved", "shared-saved"], "history": [["videoId": "legacy-history"], ["videoId": "shared-history", "watchedAt": "old"]], "playbackPositions": ["older-video": 7, "legacy-video": 6], "prioritizeRecentByChannel": ["Crash Course": true]],
+                    "youtubeActivity": ["savedIds": ["canonical-saved", "shared-saved"], "history": [["videoId": "canonical-history"], ["videoId": "shared-history", "watchedAt": "new"]], "playbackPositions": ["older-video": 8, "canonical-video": 5], "prioritizeRecentByChannel": ["Crash Course": false, "Mental Floss": false]]
+                ]],
+                ["id": "workspace-legacy-no-checkpoint", "state": ["youtube": ["savedIds": ["legacy-without-checkpoint"], "playbackPositions": ["older-video": 11]]]]
             ]
         ]
         let merged = try XCTUnwrap(store.mergingIntoSnapshot(snapshot) as? [String: Any])
@@ -77,6 +85,23 @@ final class ParityTests: XCTestCase {
         let secondActivity = try XCTUnwrap(secondState["youtubeActivity"] as? [String: Any])
         XCTAssertEqual(secondActivity["savedIds"] as? [String], ["keep"])
         XCTAssertEqual((secondActivity["playbackPositions"] as? [String: Int])?["video-3"], 17)
+        let legacyState = try XCTUnwrap(records[2]["state"] as? [String: Any])
+        let legacyActivity = try XCTUnwrap(legacyState["youtubeActivity"] as? [String: Any])
+        XCTAssertEqual(legacyActivity["savedIds"] as? [String], ["canonical-saved", "shared-saved", "legacy-saved"])
+        let restoredHistory = try XCTUnwrap(legacyActivity["history"] as? [[String: String]])
+        XCTAssertEqual(restoredHistory.map { $0["videoId"] }, ["canonical-history", "shared-history", "legacy-history"])
+        XCTAssertEqual(restoredHistory[1]["watchedAt"], "new")
+        let restoredPositions = try XCTUnwrap(legacyActivity["playbackPositions"] as? [String: Int])
+        XCTAssertEqual(restoredPositions["older-video"], 8)
+        XCTAssertEqual(restoredPositions["legacy-video"], 6)
+        XCTAssertEqual(restoredPositions["canonical-video"], 5)
+        XCTAssertEqual((legacyActivity["playbackPositions"] as? [String: Int])?["video-legacy"], 63)
+        XCTAssertEqual((legacyActivity["prioritizeRecentByChannel"] as? [String: Bool])?["Crash Course"], false)
+        XCTAssertEqual((legacyActivity["prioritizeRecentByChannel"] as? [String: Bool])?["Mental Floss"], false)
+        let legacyWithoutCheckpoint = try XCTUnwrap(records[3]["state"] as? [String: Any])
+        let legacyWithoutCheckpointActivity = try XCTUnwrap(legacyWithoutCheckpoint["youtubeActivity"] as? [String: Any])
+        XCTAssertEqual(legacyWithoutCheckpointActivity["savedIds"] as? [String], ["legacy-without-checkpoint"])
+        XCTAssertEqual((legacyWithoutCheckpointActivity["playbackPositions"] as? [String: Int])?["older-video"], 11)
     }
 
     func testYouTubePlaybackCheckpointRejectsInvalidValues() {

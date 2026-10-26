@@ -19,7 +19,7 @@ const { flattenTopics, selectedLeafCount, selectWeightedTopicPaths, toggleTopicS
 const { updateTopicTree } = require("../lib/topic-tree.ts");
 const { compactTopicPreferences, restoreTopicPreferences } = require("../lib/topic-preferences.ts");
 const { createTopicSuggestionIndex, suggestTopics } = require("../lib/topic-suggestions.ts");
-const { selectRandomVideos, createYouTubeListMemo, partitionYouTubeVideoResults, createYouTubeProgressStore, createYouTubeTopicPools, filterYouTubeVideos } = require("../lib/youtube.ts");
+const { selectRandomVideos, createYouTubeListMemo, partitionYouTubeVideoResults, createYouTubeProgressStore, createYouTubeTopicPools, createYouTubeChannelPools, filterYouTubeVideos } = require("../lib/youtube.ts");
 
 function findTopic(nodes, predicate) {
   const stack = [...nodes].reverse();
@@ -140,6 +140,30 @@ test("topic pools match strict approved and Shorts filtering and preserve catalo
   assert.equal(pools.get("Science").some(video => video.id === "topic-5"), false, "explicit Shorts stay excluded");
   assert.equal(pools.get("History")[0].id, "topic-1", "the original catalog order is retained");
   assert.ok(elapsedMs < 500, `building indexed topic pools took ${elapsedMs.toFixed(1)}ms`);
+});
+
+test("channel pools match strict approval and Shorts filtering and preserve catalog order", () => {
+  const videos = Array.from({ length: 30000 }, (_, index) => ({
+    id: `channel-${index}`,
+    approved: index % 17 !== 0,
+    title: `Video ${index}`,
+    description: "",
+    tags: [],
+    channelName: "Performance Channel",
+    channelId: `channel-${index % 10}`,
+    topics: ["Science"],
+    publishedAt: "2025-01-01T00:00:00Z"
+  }));
+  videos[5] = { ...videos[5], title: "A #Shorts science clip", approved: true };
+  const startedAt = performance.now();
+  const pools = createYouTubeChannelPools(videos);
+  const elapsedMs = performance.now() - startedAt;
+  for (const [channelId, pool] of pools) {
+    assert.deepEqual(pool.map(video => video.id), filterYouTubeVideos(videos, "", "All", channelId).map(video => video.id));
+    assert.equal(pool.some(video => video.title.includes("#Shorts")), false);
+  }
+  assert.equal(pools.get("channel-5").length, 2823);
+  assert.ok(elapsedMs < 500, `building indexed channel pools took ${elapsedMs.toFixed(1)}ms`);
 });
 
 test("video result partitioning preserves order and reuses the input when there are no broader matches", () => {

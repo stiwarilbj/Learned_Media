@@ -18,7 +18,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		MDSmoVjZCy4Sm5V3Zd9LJVjMDVc=
+		2VMFt7jNRSm5Y8p73ObfXN1h69Q=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -134,7 +134,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		XdcuqVqQ/41DSdgcGekO1vZmRgA=
+		ZGMPTUqFv+QuUFNwtVLT45NjW3Y=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -142,7 +142,7 @@
 		</data>
 		<key>Resources/frontend/shared-policy.js</key>
 		<data>
-		dk2pBDCOO/NfD5urNlzy/C1vrqs=
+		NLXs8PjB5kngQecK2Fs/kHvRw5I=
 		</data>
 		<key>Resources/frontend/snapshot-validation.js</key>
 		<data>
@@ -240,7 +240,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			4lR+Fyj0YElroXmKUj7SvLolq9TRzaFjyojWOPxlCcM=
+			daNqP4FiTKdq+VtuiHiHBOfVlqXuDXmuYhtELIfWiMg=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -443,7 +443,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			yZEi8QpXrvMAmbHpxqbHLPpK6DkpxbGJnL8FK0hRrxQ=
+			jtNopbOWDOq1qNwzpy02ab5sfpnOjTGXSgqsh+s1C2s=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -457,7 +457,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			4RBS2jpZId3K7b+/Xa4w4yBuxbu4IYKU9ijahMUVZmo=
+			tKaIrmhOMZB/HlGWZUzK1JFDxzWOaH3LxWch0OnJFW0=
 			</data>
 		</dict>
 		<key>Resources/frontend/snapshot-validation.js</key>

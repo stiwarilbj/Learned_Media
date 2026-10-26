@@ -33,6 +33,19 @@ test('every approved identity, individual video and recency default is identical
  for(const key of ['APPROVED_YOUTUBE_CHANNELS','APPROVED_INDIVIDUAL_VIDEOS','DEFAULT_YOUTUBE_RECENCY_PREFERENCES','YOUTUBE_TOPICS','YOUTUBE_CATALOG_VERSION'])assert.deepEqual(clean(mac.youtube[key]),clean(youtube[key]));
  assert.ok(mac.youtube.APPROVED_INDIVIDUAL_VIDEOS.some(v=>(v.videoId || v.id)==='QTQVZuBV9oA'));
 });
+test('approved channel pools and lossless YouTube activity merging match on web and Mac',()=>{
+ const videos=Array.from({length:30000},(_,index)=>({id:String(index),approved:index%17!==0,title:index===15?'A #Shorts clip':'Video '+index,description:'',tags:[],channelName:'Channel',channelId:'c'+index%10,topics:index%2?['Science']:['History'],publishedAt:'2025-01-01'}));
+ const websitePools=youtube.createYouTubeChannelPools(videos),nativePools=mac.youtube.createYouTubeChannelPools(videos);
+ const poolIDs=pools=>Array.from(pools,([channelId,pool])=>[channelId,pool.map(video=>video.id)]);
+ assert.deepEqual(clean(poolIDs(nativePools)),clean(poolIDs(websitePools)));
+ for(const [channelId,pool] of websitePools){
+  assert.deepEqual(pool.map(video=>video.id),youtube.filterYouTubeVideos(videos,'','All',channelId).map(video=>video.id));
+  assert.ok(pool.every(video=>youtube.isApprovedYouTubeVideo(video)));
+ }
+ const legacy={savedIds:['legacy','shared'],history:[{videoId:'old'},{videoId:'same',watchedAt:'old'}],playbackPositions:{older:3,shared:4},prioritizeRecentByChannel:{'Crash Course':true,'History Matters':true}};
+ const canonical={savedIds:['new','shared'],history:[{videoId:'newer'},{videoId:'same',watchedAt:'new'}],playbackPositions:{older:8,current:9},prioritizeRecentByChannel:{'Crash Course':false,'Mental Floss':false}};
+ assert.deepEqual(clean(mac.youtube.mergeYouTubeActivity(legacy,canonical)),clean(youtube.mergeYouTubeActivity(legacy,canonical)));
+});
 test('large video grouping and progress batching match on website and Mac',()=>{
  const videos=Array.from({length:30000},(_,id)=>({id:String(id)}));
  const reasons={"7":{relevance:'broader'},"20000":{relevance:'broader'}};
@@ -89,6 +102,74 @@ test('native Discover reuses strict topic pools instead of rescanning the catalo
  runInNewContext(extract('discoveryVideos','relatedVideosFor')+';result=discoveryVideos();',context);
  assert.deepEqual(clean(context.result).map(v=>v.id),['a']);
  assert.equal(indexes,1);assert.equal(scans,0,'the cached pool should serve Discover directly');
+});
+test('native channel and Discover lists stay stable across unrelated activity changes',()=>{
+ const videos=Array.from({length:30000},(_,index)=>({id:String(index),approved:index%17!==0,title:index===5?'A #Shorts clip':'Video '+index,description:'',tags:[],channelName:'Channel',channelId:'c'+index%10,topics:['Science'],publishedAt:new Date(Date.UTC(2025,0,index%28+1)).toISOString()}));
+ const state={workspaceId:'workspace',youtube:{videos,savedIds:[],history:[],tab:'channels',searchText:'',smartRan:false,selectedChannelId:'c5',topic:'Science',order:'random',discoverIds:['5','15','25'],prioritizeRecentByChannel:{}}};
+ let shuffles=0,filters=0;
+ const context={state,youtubeIndexRevision:1,youtubeFilteredListMemo:mac.youtube.createYouTubeListMemo(),youtubeById:new Map(videos.map(video=>[video.id,video])),youtubeVideosByChannel:mac.youtube.createYouTubeChannelPools(videos),videoSearchIndex(){},window:{LEARNED_MEDIA_YOUTUBE:{filter(list,query,topic,channel){filters++;return youtube.filterYouTubeVideos(list,query,topic,channel);},shuffle(list){shuffles++;return [...list].reverse();}}}};
+ runInNewContext(extract('youtubeFilteredVideos','discoveryVideos')+';api={youtubeFilteredVideos};',context);
+ const first=context.api.youtubeFilteredVideos();
+ assert.equal(first.length,youtube.filterYouTubeVideos(videos,'','Science','c5').length);
+ state.youtube.savedIds=['5'];state.youtube.history=[{videoId:'15'}];
+ assert.equal(context.api.youtubeFilteredVideos(),first,'saving and viewing history must not invalidate a channel list');
+ assert.equal(shuffles,1,'a random channel must not reshuffle after saving a video');
+ assert.equal(filters,1,'an indexed channel list must not rescan its 30,000-video catalog');
+ state.youtube.tab='discover';state.youtube.selectedChannelId=undefined;
+ const discover=context.api.youtubeFilteredVideos();
+ state.youtube.savedIds=['25'];state.youtube.history=[{videoId:'5'}];
+ assert.equal(context.api.youtubeFilteredVideos(),discover,'Saved and History changes must not invalidate Discover');
+ assert.equal(filters,2,'Discover must filter only its loaded IDs after building indexed pools');
+});
+test('native playback preserves the channel/search origin and completed search identity',()=>{
+ const anchor={dataset:{videoId:'anchor'},getBoundingClientRect:()=>({top:125,bottom:225})};
+ const root={scrollTop:700,getBoundingClientRect:()=>({top:0,bottom:800})};
+ const state={account:{id:'account'},workspaceId:'workspace',cloudOwnerId:'account',view:'videos',key:'fixture',youtube:{selectedVideoId:null,selectedChannelId:'channel',activeTab:'channels',searchText:'black holes',topic:'Science',order:'random',history:[]}};
+ const context={state,document:{querySelector:()=>root,querySelectorAll:()=>[anchor]},getComputedStyle:()=>({overflowY:'auto'}),window:{scrollY:0,innerHeight:800},saveState(){},render(){},youtubeOwnerID:()=>state.account.id,scopedCacheKey:()=>"completed-search",videoSearch:{normalizeVideoQuery:value=>value.trim().toLowerCase()},videoSearchIndex(){},youtubeIndexRevision:1,youtubeSearchController:null,youtubeSmartSearchCalls:0,youtubeSmartSearch(){context.youtubeSmartSearchCalls++;},cancelYoutubeSearch(){context.youtubeSearchController=null;},youtubeSearchAutoKey:'completed-search'};
+ const autoStart=native.indexOf('  function automaticYoutubeSearch('),autoEnd=native.indexOf('\n  async function showMoreYoutube',autoStart);
+ const code='let playerEndedIdentity="",youtubeBrowseReturn=null;'+extract('youtubeOpenVideo','youtubeOpenChannel')+extract('youtubeBackToVideos','videoTabs')+native.slice(autoStart,autoEnd)+';api={youtubeOpenVideo,youtubeBackToVideos,automaticYoutubeSearch,get browseReturn(){return youtubeBrowseReturn;}};';
+ runInNewContext(code,context);
+ context.api.youtubeOpenVideo('first');
+ assert.equal(state.youtube.selectedChannelId,'channel');
+ assert.equal(state.youtube.searchText,'black holes');
+ const originalReturn=context.api.browseReturn;
+ assert.equal(originalReturn.anchorVideoID,'anchor');assert.equal(originalReturn.anchorOffset,125);
+ context.api.youtubeOpenVideo('related');
+ assert.equal(context.api.browseReturn,originalReturn,'related navigation should keep the original browse anchor');
+ context.api.youtubeBackToVideos();
+ assert.equal(state.youtube.selectedVideoId,null);
+ assert.equal(state.youtube.selectedChannelId,'channel');
+ assert.equal(state.youtube.searchText,'black holes');
+ state.youtube.selectedVideoId='first';
+ context.api.automaticYoutubeSearch();
+ assert.equal(context.youtubeSearchAutoKey,'completed-search','opening the player keeps a completed search identity');
+ state.youtube.selectedVideoId=null;
+ context.api.automaticYoutubeSearch();
+ assert.equal(context.youtubeSmartSearchCalls,0,'returning to completed results must not restart search');
+ context.youtubeSearchAutoKey='completed-search';context.youtubeSearchController={};
+ state.youtube.selectedVideoId='first';context.api.automaticYoutubeSearch();
+ assert.equal(context.youtubeSearchAutoKey,'','only canceled unfinished work should be eligible to resume');
+ state.youtube.selectedVideoId=null;context.api.automaticYoutubeSearch();
+ assert.equal(context.youtubeSmartSearchCalls,1,'canceled unfinished search can resume when returning');
+});
+test('native checkpoint restoration prefers newer local playback and retains legacy activity',()=>{
+ const record={id:'workspace',state:{youtube:{savedIds:['legacy'],history:[{videoId:'legacy-history'}],playbackPositions:{'old-video':4}},youtubeActivity:{savedIds:['canonical'],history:[{videoId:'canonical-history'}],playbackPositions:{'old-video':8}}}};
+ const context={shared:mac,record,youtubeLivePlaybackCheckpoints:new Map([['account\0workspace',{videoID:'live-video',seconds:90,updatedAt:300}]]),Object,Number,String};
+ const code=extract('mergeNativePlaybackCheckpoints','currentWorkspaceSnapshot')+';result=mergeNativePlaybackCheckpoints([record],"account",{workspace:{videoID:"saved-video",seconds:12,updatedAt:200}});';
+ runInNewContext(code,context);
+ const activity=context.result[0].state.youtubeActivity;
+ assert.deepEqual(clean(activity.savedIds),['canonical','legacy']);
+ assert.deepEqual(clean(activity.history.map(item=>item.videoId)),['canonical-history','legacy-history']);
+ assert.deepEqual(clean(activity.playbackPositions),{'old-video':8,'live-video':90});
+});
+test('website player navigation preserves channel origin and separates All channels from Back to videos',()=>{
+ const page=readFileSync(new URL('../../Website/app/page.tsx',import.meta.url),'utf8'),component=readFileSync(new URL('../../Website/components/learned-media/VideoWorkspace.tsx',import.meta.url),'utf8');
+ assert.match(page,/return \{ \.\.\.current, selectedVideoId: id, history \}/,'opening a video should not discard the originating channel and query');
+ assert.match(page,/onBack=\{backFromVideo\}/);assert.match(page,/onBackFromChannel=\{backFromChannel\}/);
+ assert.match(page,/anchorVideoId: anchor\?\.dataset\.videoId/);assert.match(page,/origin\.anchorVideoId/);
+ assert.match(component,/data-video-id=\{video\.id\}/);
+ assert.match(component,/onClick=\{onBackFromChannel\}>[\s\S]*?All channels/);
+ assert.match(component,/onClick=\{\(\) => \{ setEndedIdentity\(null\); onBack\(\); \}\}>[\s\S]*?Back to videos/);
 });
 test('related videos are computed only for the ended workspace-video identity and use topic pools',()=>{
  const videos=[{id:'current',approved:true,title:'Current',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['Science']},{id:'near',approved:true,title:'Nearby',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['Science']},{id:'other',approved:true,title:'Other',description:'',tags:[],channelName:'Channel',channelId:'c',publishedAt:'2025-01-01',topics:['History']}];

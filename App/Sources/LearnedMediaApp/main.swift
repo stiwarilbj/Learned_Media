@@ -2368,6 +2368,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             catch { respond(id: id, error: "YouTube key could not be remembered in Keychain.") }
         case "loadState":
             respond(id: id, result: loadState())
+        case "loadYouTubePlaybackCheckpoints":
+            guard let ownerID = payload["ownerID"] as? String,
+                  let workspaceIDs = payload["workspaceIDs"] as? [String],
+                  !ownerID.isEmpty, workspaceIDs.count <= 250 else {
+                respond(id: id, error: "Invalid playback checkpoint request.")
+                return
+            }
+            if ownerID == "local" {
+                respond(id: id, result: youtubePlaybackCheckpoints.checkpoints(ownerID: ownerID, workspaceIDs: workspaceIDs))
+            } else {
+                Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        let session = try await cloudSession()
+                        guard session.userID == ownerID else { throw NativeError(message: "Account changed. Playback restoration was canceled.", retryable: false) }
+                        respond(id: id, result: youtubePlaybackCheckpoints.checkpoints(ownerID: ownerID, workspaceIDs: workspaceIDs))
+                    } catch { respond(id: id, error: "Playback positions could not be restored for this account.") }
+                }
+            }
         case "saveYouTubePlaybackCheckpoint":
             do {
                 guard let ownerID = payload["ownerID"] as? String,

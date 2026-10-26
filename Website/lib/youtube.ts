@@ -92,6 +92,40 @@ export type YouTubeWorkspaceState = {
 
 export type YouTubeActivityState = Pick<YouTubeWorkspaceState, "savedIds" | "history" | "playbackPositions" | "searchText" | "selectedTopic" | "activeTab" | "selectedChannelId" | "selectedVideoId" | "discoverIds" | "channelOrder" | "prioritizeRecentByChannel">;
 
+/** Merge a legacy activity blob into its canonical replacement without losing entries. */
+export function mergeYouTubeActivity(legacy: Record<string, any> = {}, canonical: Record<string, any> = {}) {
+  const merged = { ...legacy, ...canonical };
+  const uniqueStrings = (primary: unknown, secondary: unknown) => {
+    const values = [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])];
+    return Array.from(new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0)));
+  };
+  const savedIds = uniqueStrings(canonical.savedIds, legacy.savedIds);
+  if (savedIds.length || Array.isArray(canonical.savedIds) || Array.isArray(legacy.savedIds)) merged.savedIds = savedIds;
+
+  const history = [
+    ...(Array.isArray(canonical.history) ? canonical.history : []),
+    ...(Array.isArray(legacy.history) ? legacy.history : [])
+  ];
+  const seenHistory = new Set<string>();
+  const mergedHistory = history.filter((entry: any) => {
+    const id = typeof entry?.videoId === "string" ? entry.videoId : "";
+    if (!id) return true;
+    if (seenHistory.has(id)) return false;
+    seenHistory.add(id);
+    return true;
+  });
+  if (mergedHistory.length || Array.isArray(canonical.history) || Array.isArray(legacy.history)) merged.history = mergedHistory.slice(0, 200);
+
+  for (const field of ["playbackPositions", "prioritizeRecentByChannel"]) {
+    const before = legacy[field];
+    const after = canonical[field];
+    if (before && typeof before === "object" && !Array.isArray(before) || after && typeof after === "object" && !Array.isArray(after)) {
+      merged[field] = { ...(before && typeof before === "object" && !Array.isArray(before) ? before : {}), ...(after && typeof after === "object" && !Array.isArray(after) ? after : {}) };
+    }
+  }
+  return merged;
+}
+
 export type YouTubeImportProgress = {
   phase: "idle" | "resolving" | "importing" | "complete" | "paused" | "error";
   completedChannels: number;
@@ -948,6 +982,18 @@ export function createYouTubeTopicPools(videos: YouTubeVideo[]) {
       matches.push(video);
       pools.set(topic, matches);
     }
+  }
+  return pools;
+}
+
+/** Build approved channel pools once so channel browsing does not rescan the full catalog. */
+export function createYouTubeChannelPools(videos: YouTubeVideo[]) {
+  const pools = new Map<string, YouTubeVideo[]>();
+  for (const video of videos) {
+    if (!isApprovedYouTubeVideo(video)) continue;
+    const matches = pools.get(video.channelId) ?? [];
+    matches.push(video);
+    pools.set(video.channelId, matches);
   }
   return pools;
 }

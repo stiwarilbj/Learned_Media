@@ -36,6 +36,7 @@ type VideoWorkspaceProps = {
   onOpenVideo: (id: string) => void;
   onOpenChannel: (id: string) => void;
   onBack: () => void;
+  onBackFromChannel: () => void;
   onSaveVideo: (id: string) => void;
   onPlaybackPosition: (id: string, seconds: number, workspaceId: string) => void;
   playbackFlushRef: MutableRefObject<(() => void) | null>;
@@ -86,7 +87,7 @@ function YouTubePlayer({ video, workspaceId, initialSeconds, onPlaybackPosition,
 }
 
 const VideoCard = memo(function VideoCard({ video, saved, reason, onOpenVideo, onSaveVideo }: { video: YouTubeVideo; saved: boolean; reason?: RankedVideoSearchResult; onOpenVideo: (id: string) => void; onSaveVideo: (id: string) => void }) {
-  return <article className="video-card">
+  return <article className="video-card" data-video-id={video.id}>
     <button type="button" className="video-card-main" onClick={() => onOpenVideo(video.id)} aria-label={`Watch ${video.title}`}>
       <div className="video-thumbnail">{video.thumbnailUrl ? <img src={video.thumbnailUrl} alt="" loading="lazy" decoding="async" width="320" height="180" /> : <span><Icon name="image" size={22} /></span>}<small>{video.durationLabel}</small></div>
       <div className="video-card-copy"><h3>{video.title}</h3><p>{video.channelName}</p><time dateTime={video.publishedAt}>{formatDate(video.publishedAt)}</time></div>
@@ -132,7 +133,7 @@ function VideoTabs({ activeTab, savedCount, onTabChange }: { activeTab: YouTubeW
   }}>{([["discover", "Discover"], ["channels", "Channels"], ["saved", "Saved"], ["history", "History"]] as const).map(([tab, label]) => <button type="button" role="tab" aria-selected={activeTab === tab} tabIndex={activeTab === tab ? 0 : -1} className={activeTab === tab ? "active" : ""} key={tab} onClick={() => onTabChange(tab)}>{label}{tab === "saved" && savedCount ? <small>{savedCount}</small> : null}</button>)}</div>;
 }
 
-export function VideoWorkspace({ workspaceId, workspace, videoById, channelById, videosByChannel, videosByTopic, youtubeStatus, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, searchHasMore, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onSaveVideo, onPlaybackPosition, playbackFlushRef, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
+export function VideoWorkspace({ workspaceId, workspace, videoById, channelById, videosByChannel, videosByTopic, youtubeStatus, error, searchResults, searchReasons, smartSearchLoading, searchPhase, smartSearchRan, searchHasMore, onOpenSettings, onTabChange, onSearchChange, onSmartSearch, onCancelSearch, onTopicChange, onShuffle, onShowMore, onOpenVideo, onOpenChannel, onBack, onBackFromChannel, onSaveVideo, onPlaybackPosition, playbackFlushRef, onChannelOrder, onPauseImport, onResumeImport, onRetryImport, onRefreshVideos }: VideoWorkspaceProps) {
   const [endedIdentity, setEndedIdentity] = useState<string | null>(null);
   const showMoreRef = useRef<HTMLDivElement>(null);
   const savedIds = useMemo(() => new Set(workspace.savedIds), [workspace.savedIds]);
@@ -200,7 +201,7 @@ export function VideoWorkspace({ workspaceId, workspace, videoById, channelById,
   </section>;
 
   if (activeChannel) return <section className="content-view video-workspace">
-    <button type="button" className="text-button video-back-button" onClick={onBack}><Icon name="chevronRight" size={15} /> All channels</button>
+    <button type="button" className="text-button video-back-button" onClick={onBackFromChannel}><Icon name="chevronRight" size={15} /> All channels</button>
     <div className="view-heading video-heading"><div><span className="eyebrow">Channel catalog</span><h1>{activeChannel.name}</h1><p>{activeChannel.videoCount.toLocaleString()} imported videos from this approved channel</p></div></div>
     <VideoTabs activeTab={workspace.activeTab} savedCount={workspace.savedIds.length} onTabChange={onTabChange} />
     <div className="video-controls"><label className="video-search"><Icon name="search" size={16} /><input type="search" value={workspace.searchText} onChange={(event) => onSearchChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onSmartSearch(); } }} placeholder="Search this channel" aria-label="Search this channel" enterKeyHint="search" /></label><button type="button" className="ghost-button" onClick={onSmartSearch} disabled={smartSearchLoading || !workspace.searchText.trim()} title="Search by meaning in the approved catalog">{smartSearchLoading ? "Searching" : "Smart search"}</button><select value={workspace.channelOrder} onChange={(event) => onChannelOrder(event.target.value as YouTubeWorkspaceState["channelOrder"])} aria-label="Sort channel videos"><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="random">Random</option></select></div>
