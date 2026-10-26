@@ -2846,6 +2846,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                 guard let self else { return }
                 do {
                     guard let catalog = payload["catalog"] as? [String: Any] else { throw NativeError(message: "Invalid YouTube catalog.", retryable: false) }
+                    let sources = payload["completedSources"] as? [String] ?? []
+                    let receipts = payload["completedRefreshes"] as? [[String: Any]] ?? []
+                    guard sources.count == receipts.count else { throw NativeError(message: "Incomplete YouTube refresh.", retryable: true) }
+                    for (index, receipt) in receipts.enumerated() {
+                        guard receipt["sourceId"] as? String == sources[index],
+                              let identity = receipt["identity"] as? String,
+                              let generation = receipt["generation"] as? String else { throw NativeError(message: "Invalid YouTube refresh.", retryable: true) }
+                        try await youtubeImportCheckpoints.assertCompleted(sources[index], identity: identity, generation: generation)
+                    }
                     try await videoCatalog.save(catalog)
                     // Catalog replacement is durable before any staged pages retire.
                     for sourceID in payload["completedSources"] as? [String] ?? [] { try? await youtubeImportCheckpoints.clear(sourceID) }

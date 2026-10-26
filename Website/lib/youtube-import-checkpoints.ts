@@ -8,6 +8,7 @@ export type YouTubeImportPage = {
   version: number;
   sourceId: string;
   identity: string;
+  refreshGeneration: string;
   index: number;
   requestToken: string;
   nextPageToken: string | null;
@@ -37,16 +38,23 @@ function validVideo(video: YouTubeVideo, sourceId: string) {
     && Array.isArray(video.sourceIds) && video.sourceIds.includes(sourceId);
 }
 
+// getRandomValues also works in the native file-based WebKit frontend.
+function newRefreshGeneration() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /** A page's validated records and cursor form one durable envelope. */
 export async function openImportCheckpoint(store: YouTubeImportPageStore | undefined, sourceId: string, identity: string, committedAt?: string, cancellation?: BackgroundCancellation) {
   checkBackgroundCancellation(cancellation);
   const pages = store ? await store.load(sourceId) : [];
+  let generation = pages[0]?.refreshGeneration ?? newRefreshGeneration();
   let nextPageToken: string | null = "";
   const tokens = new Set<string>();
   const videos = new Map<string, YouTubeVideo>();
   let valid = true;
   await forEachBackground(pages, (page, index) => {
     if (!page || page.version !== YOUTUBE_IMPORT_CHECKPOINT_VERSION || page.sourceId !== sourceId || page.identity !== identity
+      || typeof page.refreshGeneration !== "string" || !page.refreshGeneration.length || page.refreshGeneration.length > 128 || page.refreshGeneration !== generation
       || page.index !== index || index > 99_999_999 || nextPageToken === null || page.requestToken !== nextPageToken || tokens.has(page.requestToken)
       || !Number.isFinite(Date.parse(page.savedAt)) || (committedAt && Date.parse(page.savedAt) <= Date.parse(committedAt))
       || !(page.nextPageToken === null || typeof page.nextPageToken === "string" && page.nextPageToken.length > 0 && page.nextPageToken.length <= 4096)
@@ -59,7 +67,7 @@ export async function openImportCheckpoint(store: YouTubeImportPageStore | undef
   if (!valid) {
     checkBackgroundCancellation(cancellation);
     await store?.clear(sourceId);
-    pages.length = 0; tokens.clear(); videos.clear(); nextPageToken = "";
+    pages.length = 0; tokens.clear(); videos.clear(); nextPageToken = ""; generation = newRefreshGeneration();
   }
   function assertPageRequestAllowed() {
     checkBackgroundCancellation(cancellation);
@@ -73,6 +81,11 @@ export async function openImportCheckpoint(store: YouTubeImportPageStore | undef
     return requestToken;
   }
   return {
+    completedRefresh() {
+      checkBackgroundCancellation(cancellation);
+      if (nextPageToken !== null || !pages.length) throw new Error("The YouTube refresh is incomplete. Previous playlist associations were retained.");
+      return { sourceId, identity, generation, complete: true as const, videos: [...videos.values()] };
+    },
     get nextPageToken() { return nextPageToken; },
     get videos() { return [...videos.values()]; },
     assertPageRequestAllowed,
@@ -80,11 +93,23 @@ export async function openImportCheckpoint(store: YouTubeImportPageStore | undef
     async append(records: YouTubeVideo[], next: string | null) {
       const requestToken = validateNextPageToken(next);
       if (records.length > 50 || !records.every(video => validVideo(video, sourceId))) throw new Error("YouTube returned invalid import metadata. The checkpoint was not advanced.");
-      const page: YouTubeImportPage = { version: YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, index: pages.length,
+      const page: YouTubeImportPage = { version: YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, refreshGeneration: generation, index: pages.length,
         requestToken, nextPageToken: next, videos: records, savedAt: new Date().toISOString() };
       // Advance memory/progress only after the entire envelope commits.
       await store?.save(page);
       pages.push(page); tokens.add(page.requestToken); records.forEach(video => videos.set(video.id, video)); nextPageToken = next;
     }
   };
+}
+
+export type CompletedYouTubeRefresh = ReturnType<Awaited<ReturnType<typeof openImportCheckpoint>>["completedRefresh"]>;
+export type YouTubeRefreshReceipt = Pick<CompletedYouTubeRefresh, "sourceId" | "identity" | "generation">;
+
+/** Recheck durable completion before publishing a destructive catalog replacement. */
+export async function verifyYouTubeRefreshes(receipts: readonly YouTubeRefreshReceipt[], store: YouTubeImportPageStore, cancellation?: BackgroundCancellation) {
+  for (const receipt of receipts) {
+    const checkpoint = await openImportCheckpoint(store, receipt.sourceId, receipt.identity, undefined, cancellation);
+    if (checkpoint.completedRefresh().generation !== receipt.generation) throw new Error("The YouTube refresh changed before publication. Previous playlist associations were retained.");
+  }
+  checkBackgroundCancellation(cancellation);
 }

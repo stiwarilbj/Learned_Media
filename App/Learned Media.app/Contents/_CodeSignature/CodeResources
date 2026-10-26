@@ -18,7 +18,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		ZRFSxXUgCvgwzST0v7SINeqCPR0=
+		4DvWHrQQjawzJvkLkblTALOthU4=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -134,7 +134,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		9burnOk2CMO+O72HQExLWHJSd1E=
+		wYeCQhCNNCZk7UFqsB4/W3A0/8o=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -186,7 +186,7 @@
 		</data>
 		<key>Resources/frontend/video-source-index.js</key>
 		<data>
-		mr1nYg6W+EqalSA6lp5+KWi0hTs=
+		VaCpJYvmQb+ukcDxdgyHrPWql94=
 		</data>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<data>
@@ -202,11 +202,11 @@
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
-		mNEMThADT1bFJpak5YhONylH1ZE=
+		ia05+yHzSt12puG+AaQuxqi3Ht4=
 		</data>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<data>
-		zm/CsLcjtiyNB/HIUelc35KvbE4=
+		XqmgIcVzVmqR9TINYmA/8THmwZY=
 		</data>
 		<key>Resources/frontend/youtube-playback.js</key>
 		<data>
@@ -244,7 +244,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			VizorATItxJr9YuCSJczTq0NWi9/47Nqz6wdLrjDDYk=
+			GsPqLohpLbfJg3Q+IciABGvfl5BnOhPAWPd7yUX5zyk=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -447,7 +447,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			OpoAFEYmqKhmPZ5DyzzeznM2Wx3t5gTQrH2VSmPVMXA=
+			WnRovvFcy3XKBG7ynOUt9wLDWp7F8EwaiBstTIXiiN4=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -538,7 +538,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			drbYBZX5kaTPHB32CqCtl2+/4udldY8pDXHRuuQbjaE=
+			wIGy7Gq6WilsZuOLw0Hso17qnceGf/ycPDFVU7yXLlQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/war-history-catalog.js</key>
@@ -566,14 +566,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			gvUR75W0SJ3w40En54+XvuTxBGzydgekNucXfd+VnAk=
+			fNh7WjJ4Spnind+BnWMvFU3HMXIFSriTQf2+GkaICss=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			T7onuA7QryYPPfg9sruCs28s76NlhIaunjhh0Uc2Un8=
+			bSMPsGE8+KMSajJTBprKFJHicYlN6ZekVwpQRDPBY8A=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-playback.js</key>

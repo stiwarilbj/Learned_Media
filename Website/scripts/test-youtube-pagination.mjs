@@ -50,9 +50,9 @@ function harness(platform, store = createStore()) {
   let run;
   if (platform === "web") {
     const client = new youtube.YouTubeClient("fixture", request);
-    run = (signal) => client.importPlaylist(channel, "fixture", sourceId, metadata, signal, undefined, store);
+    run = (signal) => client.importPlaylist(channel, "fixture", sourceId, metadata, signal, undefined, store).then(refresh => refresh.videos);
   } else {
-    const context = vm.createContext({ console, setTimeout, clearTimeout, performance, DOMException,
+    const context = vm.createContext({ console, setTimeout, clearTimeout, performance, DOMException, crypto: globalThis.crypto,
       LEARNED_MEDIA_BACKGROUND: background,
       LEARNED_MEDIA_SHARED: { youtube: { APPROVED_YOUTUBE_CHANNELS: [], APPROVED_INDIVIDUAL_VIDEOS: [], YOUTUBE_TOPICS: [], DEFAULT_YOUTUBE_RECENCY_PREFERENCES: {},
         YOUTUBE_CATALOG_VERSION: youtube.YOUTUBE_CATALOG_VERSION, isApprovedYouTubeVideo: () => true, isYouTubeShortMetadata: () => false } },
@@ -63,7 +63,7 @@ function harness(platform, store = createStore()) {
     const catalog = readFileSync(path.join(root, "../App/Resources/frontend/youtube-catalog.js"), "utf8")
       .replace("window.LEARNED_MEDIA_YOUTUBE = {", "window.__testImportPlaylist = importPlaylist; window.LEARNED_MEDIA_YOUTUBE = {");
     vm.runInContext(catalog, context);
-    run = (signal) => context.__testImportPlaylist(channel, "fixture", sourceId, "fixture", metadata, store, undefined, () => signal?.throwIfAborted());
+    run = (signal) => context.__testImportPlaylist(channel, "fixture", sourceId, "fixture", metadata, store, undefined, () => signal?.throwIfAborted()).then(refresh => refresh.videos);
   }
   return { store, requests, metadataCalls, run, respond: entries => { responses = new Map(entries); } };
 }
@@ -126,5 +126,41 @@ for (const platform of ["web", "mac"]) {
     await assert.rejects(h.run(controller.signal), { name: "AbortError" });
     assert.equal(h.requests.length, 0);
     assert.equal((await h.store.load(sourceId)).length, 0);
+  });
+}
+
+for (const platform of ["web", "mac"]) {
+  test(`${platform}: interrupted generation retains published membership until terminal resume`, async () => {
+    const sources = require(path.join(root, "lib/video-source-index.ts"));
+    const h = harness(platform); h.respond([["", { nextPageToken: "A" }]]);
+    await assert.rejects(h.run(), /unexpected token A/);
+    const saved = await h.store.load(sourceId), identity = saved[0].identity;
+    const generation = saved[0].refreshGeneration;
+    assert.ok(generation);
+    const partial = await checkpoints.openImportCheckpoint(h.store, sourceId, identity);
+    assert.throws(() => partial.completedRefresh(), /incomplete/);
+    const prior = [{ ...metadataItem("old"), id: "old", sourceIds: [sourceId], approved: true }];
+    const safe = await sources.mergeVideoSourceRefreshes(prior, [{ sourceId, generation, complete: false, videos: partial.videos }], () => true);
+    assert.ok(safe.some(video => video.id === "old"));
+    await assert.rejects(checkpoints.verifyYouTubeRefreshes([{ sourceId, identity, generation }], h.store), /incomplete/);
+    assert.equal((await h.store.load(sourceId)).length, 1);
+    const resumed = harness(platform, h.store); resumed.respond([["A", {}]]); await resumed.run();
+    const completed = (await checkpoints.openImportCheckpoint(h.store, sourceId, identity)).completedRefresh();
+    assert.equal(completed.generation, generation);
+    await checkpoints.verifyYouTubeRefreshes([completed], h.store);
+    const final = await sources.mergeVideoSourceRefreshes(prior, [completed], () => true);
+    assert.ok(!final.some(video => video.id === "old"));
+    assert.equal(final.length, 2);
+    await assert.rejects(checkpoints.verifyYouTubeRefreshes([{ ...completed, generation: "superseded" }], h.store), /changed before publication/);
+  });
+  test(`${platform}: legacy staged pages restart without authorizing removals`, async () => {
+    const h = harness(platform); h.respond([["", { nextPageToken: "A" }]]); await assert.rejects(h.run());
+    const pages = await h.store.load(sourceId);
+    delete pages[0].refreshGeneration; await h.store.save(pages[0]);
+    const retry = harness(platform, h.store); retry.respond([["", {}]]); await retry.run();
+    assert.deepEqual(retry.requests, [""]);
+    const next = await h.store.load(sourceId);
+    assert.ok(next[0].refreshGeneration);
+    assert.equal(next.length, 1);
   });
 }

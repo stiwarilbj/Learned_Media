@@ -35,17 +35,26 @@ function baseline(previous, refreshes, active) {
   return [...merged.values()].filter(allowed);
 }
 for (const [platform, api] of [["web", web], ["Mac", context.LEARNED_MEDIA_VIDEO_SOURCES]]) {
+  test(`${platform}: incomplete and unmarked refreshes only add membership`, async () => {
+    for (const metadata of [{}, { complete: false, generation: "partial" }, { complete: true }, { complete: true, generation: "" }]) {
+      const previous = [video("old", ["playlist:A"]), video("shared", ["playlist:A", "playlist:B"])];
+      const result = await api.mergeVideoSourceRefreshes(previous, [{ sourceId: "playlist:A", videos: [video("new", ["playlist:A"])], ...metadata }], allowed);
+      assert.deepEqual(clean(result.map(item => item.id)), ["old", "shared", "new"]);
+      assert.deepEqual(clean(result[1].sourceIds), ["playlist:A", "playlist:B"]);
+      assert.equal(previous.length, 2);
+    }
+  });
   test(`${platform}: playlist refresh preserves overlaps, order, provenance and unaffected records`, async () => {
     const original = [video("shared", ["playlist:A", "playlist:B"]), video("removed", ["playlist:A"]), video("untouched", ["channel:C"]), video("pinned", ["playlist:A", "individual:pinned"])];
     const frozen = clean(original);
-    const changes = [{ sourceId: "playlist:A", videos: [video("shared", ["playlist:A"], { title: "Updated title" }), video("new", ["playlist:A"])] }];
+    const changes = [{ sourceId: "playlist:A", complete: true, generation: "fixture", videos: [video("shared", ["playlist:A"], { title: "Updated title" }), video("new", ["playlist:A"])] }];
     const result = await api.mergeVideoSourceRefreshes(original, changes, allowed);
     assert.deepEqual(clean(result), baseline(original, changes));
     assert.equal(result.find(item => item.id === "untouched"), original[2]);
     assert.deepEqual(original, frozen, "refresh must not mutate the original records or lookup");
     assert.deepEqual(clean(await api.catalogSourceMembership(original)), { version: 1, entries: [["playlist:A", ["shared", "removed", "pinned"]], ["playlist:B", ["shared"]], ["channel:C", ["untouched"]], ["individual:pinned", ["pinned"]]] });
-    const emptied = await api.mergeVideoSourceRefreshes(result, [{ sourceId: "playlist:A", videos: [] }], allowed);
-    assert.deepEqual(clean(emptied), clean(baseline(result, [{ sourceId: "playlist:A", videos: [] }])));
+    const emptied = await api.mergeVideoSourceRefreshes(result, [{ sourceId: "playlist:A", complete: true, generation: "fixture", videos: [] }], allowed);
+    assert.deepEqual(clean(emptied), clean(baseline(result, [{ sourceId: "playlist:A", complete: true, generation: "fixture", videos: [] }])));
   });
   test(`${platform}: 30,000 records match full-scan refresh rules without rescanning unrelated provenance`, async () => {
     let reads = 0;
@@ -56,7 +65,7 @@ for (const [platform, api] of [["web", web], ["Mac", context.LEARNED_MEDIA_VIDEO
     await api.catalogSourceMembership(previous); reads = 0;
     await api.catalogSourceMembership(previous);
     assert.equal(reads, 0, "an unchanged catalog reuses its source lookup");
-    const refreshes = [{ sourceId: "playlist:1", videos: [video("1", ["playlist:1"]), video("fresh", ["playlist:1"])] }];
+    const refreshes = [{ sourceId: "playlist:1", complete: true, generation: "fixture", videos: [video("1", ["playlist:1"]), video("fresh", ["playlist:1"])] }];
     const result = await api.mergeVideoSourceRefreshes(previous, refreshes, allowed);
     assert.ok(reads < 3000, `only affected membership should be examined, got ${reads}`);
     assert.deepEqual(clean(result), baseline(previous, refreshes));
@@ -73,13 +82,13 @@ for (const [platform, api] of [["web", web], ["Mac", context.LEARNED_MEDIA_VIDEO
     const previous = [video("a", ["playlist:A"])];
     const saved = clean(await api.catalogSourceMembership(previous));
     let checks = 0;
-    await assert.rejects(api.mergeVideoSourceRefreshes(previous, [{ sourceId: "playlist:A", videos: [] }], allowed, undefined, () => { if (++checks === 5) throw new Error("Canceled"); }), /Canceled/);
+    await assert.rejects(api.mergeVideoSourceRefreshes(previous, [{ sourceId: "playlist:A", complete: true, generation: "fixture", videos: [] }], allowed, undefined, () => { if (++checks === 5) throw new Error("Canceled"); }), /Canceled/);
     assert.deepEqual(clean(await api.catalogSourceMembership(previous)), saved);
-    assert.deepEqual(clean(await api.mergeVideoSourceRefreshes(previous, [{ sourceId: "playlist:A", videos: [] }], allowed)), []);
+    assert.deepEqual(clean(await api.mergeVideoSourceRefreshes(previous, [{ sourceId: "playlist:A", complete: true, generation: "fixture", videos: [] }], allowed)), []);
   });
   test(`${platform}: record reuse carries the prepared lookup through new snapshot arrays`, async () => {
     const previous = [video("a", ["playlist:A"]), video("b", ["playlist:B"])];
-    const next = await api.mergeVideoSourceRefreshes(previous, [{ sourceId: "playlist:A", videos: [video("new", ["playlist:A"])] }], allowed);
+    const next = await api.mergeVideoSourceRefreshes(previous, [{ sourceId: "playlist:A", complete: true, generation: "fixture", videos: [video("new", ["playlist:A"])] }], allowed);
     const reused = await api.reuseIndexedVideoRecords(previous, next);
     assert.notEqual(reused, next, "exercise the record-reuse helper's fresh array");
     let reads = 0;
@@ -105,7 +114,7 @@ for (const [platform, api] of [["web", web], ["Mac", context.LEARNED_MEDIA_VIDEO
 test("catalog commits publish membership atomically with record references and stage only changed records", async () => {
   const original = [video("a", ["playlist:A"]), video("b", ["playlist:B"])];
   const first = await storage.planCatalogCommit({ channels: [], videos: original }, [], undefined);
-  const next = await web.mergeVideoSourceRefreshes(original, [{ sourceId: "playlist:A", videos: [video("new", ["playlist:A"])] }], allowed);
+  const next = await web.mergeVideoSourceRefreshes(original, [{ sourceId: "playlist:A", complete: true, generation: "fixture", videos: [video("new", ["playlist:A"])] }], allowed);
   const second = await storage.planCatalogCommit({ channels: [], videos: next }, original, first.manifest);
   assert.deepEqual(second.upserts.map(record => record.video.id), ["new"]);
   assert.equal(second.manifest.entries[0][1], first.manifest.entries[1][1], "unaffected record key is retained");
@@ -138,7 +147,7 @@ test("website import controller applies only successful refreshes and retains re
   const original = [video("removed", [target]), video("failed-source", [failed]), video("unrelated", [sourceIds.find(id => id.startsWith("channel:"))])];
   const client = new youtube.YouTubeClient("fixture", () => { throw new Error("Unexpected network request"); });
   const calls = [];
-  client.importPlaylist = async (_channel, _playlist, sourceId) => { calls.push(sourceId); if (sourceId === failed) throw new Error("Temporary source failure"); return [video("new", [sourceId])]; };
+  client.importPlaylist = async (_channel, _playlist, sourceId) => { calls.push(sourceId); if (sourceId === failed) throw new Error("Temporary source failure"); return { sourceId, identity: "fixture", generation: "fixture", complete: true, videos: [video("new", [sourceId])] }; };
   const result = await client.syncApprovedCatalog(channels, undefined, undefined, { existingVideos: original, sourceStates });
   assert.deepEqual(new Set(calls), new Set([target, failed]));
   assert.deepEqual(result.videos.map(item => item.id), ["failed-source", "unrelated", "new"]);
@@ -159,7 +168,7 @@ test("Mac import controller uses the shared lookup and preserves failed playlist
   const source = readFileSync(new URL("../../App/Resources/frontend/youtube-catalog.js", import.meta.url), "utf8")
     .replace("window.LEARNED_MEDIA_YOUTUBE = {", "window.__replacePlaylist = fn => { importPlaylist = fn; }; window.LEARNED_MEDIA_YOUTUBE = {");
   vm.runInContext(source, native);
-  native.__replacePlaylist(async (_channel, _playlist, sourceId) => { if (sourceId === "playlist:B") throw new Error("Temporary source failure"); return [video("new", [sourceId])]; });
+  native.__replacePlaylist(async (_channel, _playlist, sourceId) => { if (sourceId === "playlist:B") throw new Error("Temporary source failure"); return { sourceId, identity: "fixture", generation: "fixture", complete: true, videos: [video("new", [sourceId])] }; });
   const original = [video("removed", ["playlist:A"]), video("failed-source", ["playlist:B"])];
   const result = await native.LEARNED_MEDIA_YOUTUBE.sync("fixture", { videos: original, channels: [{ id: "fixture", name: seed.name }] }, () => {}, true, () => true);
   assert.deepEqual(clean(result.videos).map(item => item.id), ["failed-source", "new"]);

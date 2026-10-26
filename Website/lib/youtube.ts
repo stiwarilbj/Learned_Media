@@ -6,7 +6,7 @@ import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportC
 import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
 import { checkBackgroundCancellation, forEachBackground, yieldBackground } from "./background-work";
-import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageIdentity, openImportCheckpoint, type YouTubeImportPageStore } from "./youtube-import-checkpoints";
+import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageIdentity, openImportCheckpoint, type YouTubeImportPageStore, type CompletedYouTubeRefresh } from "./youtube-import-checkpoints";
 import { mergeVideoSourceRefreshes, reuseIndexedVideoRecords } from "./video-source-index";
 import { restoreStoredCatalog, videoRecordRange, type StoredVideo } from "./youtube-catalog-storage";
 import { ConditionalDownloadCache } from "./conditional-download";
@@ -68,6 +68,7 @@ export type YouTubeSourceState = {
   lastSuccessfulSyncAt?: string;
   lastAttemptedSyncAt?: string;
   importedVideoCount?: number;
+  refreshGeneration?: string;
   error?: string;
 };
 
@@ -788,7 +789,7 @@ export class YouTubeClient {
       if (onPage) onPage(checkpoint.videos.length);
       await yieldBackground(signal);
     }
-    return checkpoint.videos;
+    return checkpoint.completedRefresh();
   }
 
   private mapPlaylistPage(items: Awaited<ReturnType<VideoMetadataLoader>>, channel: YouTubeChannelRecord, sourceId: string) {
@@ -878,12 +879,12 @@ export class YouTubeClient {
       if (!due) {
         progress.completedSources = (progress.completedSources ?? 0) + 1;
         onProgress?.({ ...progress });
-        return { job, videos: [] as YouTubeVideo[], scanned: false, ok: true };
+        return { job, videos: [] as YouTubeVideo[], refresh: undefined, scanned: false, ok: true };
       }
       try {
-        let videos: YouTubeVideo[];
-        if (job.kind === "uploads") videos = await this.importChannel(job.channel!, metadata, signal, undefined, options.pages, prior?.lastSuccessfulSyncAt);
-        else if (job.kind === "playlist") videos = await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, metadata, signal, undefined, options.pages, prior?.lastSuccessfulSyncAt);
+        let refresh: CompletedYouTubeRefresh;
+        if (job.kind === "uploads") refresh = await this.importChannel(job.channel!, metadata, signal, undefined, options.pages, prior?.lastSuccessfulSyncAt);
+        else if (job.kind === "playlist") refresh = await this.importPlaylist(job.channel!, job.playlistId!, job.sourceId, metadata, signal, undefined, options.pages, prior?.lastSuccessfulSyncAt);
         else {
           const checkpoint = await openImportCheckpoint(options.pages, job.sourceId, importPageIdentity(YOUTUBE_CATALOG_VERSION, job.seed!.creator, job.seed!.videoId ?? job.seed!.title), prior?.lastSuccessfulSyncAt, signal);
           if (checkpoint.nextPageToken !== null) {
@@ -891,33 +892,35 @@ export class YouTubeClient {
             if (signal?.aborted) throw abortError();
             await checkpoint.append(specialVideo ? [{ ...specialVideo, sourceIds: [job.sourceId] }] : [], null);
           }
-          videos = checkpoint.videos;
+          refresh = checkpoint.completedRefresh();
         }
         checkBackgroundCancellation(signal);
+        if (refresh.sourceId !== job.sourceId || !refresh.complete) throw new Error("The YouTube refresh is incomplete.");
+        const videos = refresh.videos;
         progress.importedVideos += videos.length;
         progress.completedSources = (progress.completedSources ?? 0) + 1;
-        sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "ready", lastSuccessfulSyncAt: new Date().toISOString(), lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: videos.length };
+        sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "ready", refreshGeneration: refresh.generation, lastSuccessfulSyncAt: new Date().toISOString(), lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: videos.length };
         onProgress?.({ ...progress });
-        return { job, videos, scanned: true, ok: true };
+        return { job, videos, refresh, scanned: true, ok: true };
       } catch (error) {
         checkBackgroundCancellation(signal);
         const message = error instanceof Error ? error.message : `Could not import ${job.label}.`;
         errors.push(message);
         progress.error = errors.slice(0, 3).join(" · ");
         progress.completedSources = (progress.completedSources ?? 0) + 1;
-        sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "error", lastSuccessfulSyncAt: prior?.lastSuccessfulSyncAt, lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: prior?.importedVideoCount, error: message };
+        sourceStates[job.sourceId] = { sourceId: job.sourceId, label: job.label, kind: job.kind, status: "error", refreshGeneration: prior?.refreshGeneration, lastSuccessfulSyncAt: prior?.lastSuccessfulSyncAt, lastAttemptedSyncAt: new Date().toISOString(), importedVideoCount: prior?.importedVideoCount, error: message };
         onProgress?.({ ...progress });
-        return { job, videos: [] as YouTubeVideo[], scanned: false, ok: false };
+        return { job, videos: [] as YouTubeVideo[], refresh: undefined, scanned: false, ok: false };
       }
     });
     const playlistSourceIds = new Set(APPROVED_YOUTUBE_CHANNELS.flatMap((seed) => seed.playlistIds ?? []).map((id) => `playlist:${id}`));
     const threeBlue = APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown");
     const allowed = await mergeVideoSourceRefreshes(existingVideos,
-      imported.filter(result => result.scanned && result.ok).map(result => ({ sourceId: result.job.sourceId, videos: result.videos })),
+      imported.filter(result => result.scanned && result.ok).map(result => result.refresh!),
       video => Boolean(threeBlue && (normalized(video.channelName) === normalized(threeBlue.name) || video.channelId === threeBlue.channelId)
         ? video.special === true || video.sourceIds?.some(sourceId => playlistSourceIds.has(sourceId)) : video.approved),
-      verified.length === APPROVED_YOUTUBE_CHANNELS.length ? new Set(jobs.map(job => job.sourceId)) : undefined, signal);
-    if (verified.length === APPROVED_YOUTUBE_CHANNELS.length) {
+      errors.length === 0 && verified.length === APPROVED_YOUTUBE_CHANNELS.length ? new Set(jobs.map(job => job.sourceId)) : undefined, signal);
+    if (errors.length === 0 && verified.length === APPROVED_YOUTUBE_CHANNELS.length) {
       const activeSourceIds = new Set(jobs.map(job => job.sourceId));
       Object.keys(sourceStates).forEach(sourceId => { if (!activeSourceIds.has(sourceId)) delete sourceStates[sourceId]; });
     }
@@ -931,6 +934,7 @@ export class YouTubeClient {
     progress.error = complete ? undefined : (progress.error ?? "Some approved video sources need a retry.");
     onProgress?.({ ...progress });
     return { channels: channelsWithCounts, videos: unique, sourceStates, incomplete: !complete, progress,
+      completedRefreshes: imported.filter(result => result.scanned && result.ok).map(result => ({ sourceId: result.refresh!.sourceId, generation: result.refresh!.generation, identity: result.refresh!.identity })),
       completedCheckpointSources: imported.filter(result => result.scanned && result.ok).map(result => result.job.sourceId) };
   }
 }
@@ -1233,7 +1237,7 @@ export async function importCoordinatedYouTubeCatalog(apiKey: string, signal: Ab
     const workspace: YouTubeWorkspaceState = { ...snapshot, channels: result.channels, videos: result.videos, sourceStates: result.sourceStates,
       catalogVersion: result.incomplete ? snapshot.catalogVersion : YOUTUBE_CATALOG_VERSION, libraryIncomplete: result.incomplete,
       lastSyncAt: result.incomplete ? snapshot.lastSyncAt : new Date().toISOString() };
-    await owner.commit(youtubeCatalogOf(workspace), result.completedCheckpointSources, snapshot.videos);
+    await owner.commit(youtubeCatalogOf(workspace), result.completedCheckpointSources, snapshot.videos, result.completedRefreshes);
     return { workspace, error: result.progress.error };
   });
   if (signal.aborted) throw abortError();

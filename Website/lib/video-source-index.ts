@@ -84,7 +84,10 @@ export async function restoreCatalogSourceMembership(videos: readonly YouTubeVid
   else await sourceIndex(videos, cancellation);
 }
 
-export type VideoSourceRefresh = { sourceId: string; videos: readonly YouTubeVideo[] };
+export type VideoSourceRefresh = { sourceId: string; videos: readonly YouTubeVideo[]; generation?: string; complete?: boolean };
+export function isCompleteVideoSourceRefresh(refresh: VideoSourceRefresh) {
+  return refresh.complete === true && typeof refresh.generation === "string" && refresh.generation.length > 0 && refresh.generation.length <= 128;
+}
 
 /** Update only old/new members of refreshed sources; copy sets only when edited. */
 export async function mergeVideoSourceRefreshes(
@@ -120,7 +123,7 @@ export async function mergeVideoSourceRefreshes(
     const imported = new Set<string>();
     await forEachBackground(refresh.videos, video => { imported.add(video.id); }, cancellation);
     // Iterate the old immutable set even when removal creates a writable copy.
-    await forEachBackground(index.members.get(refresh.sourceId) ?? [], id => {
+    if (isCompleteVideoSourceRefresh(refresh)) await forEachBackground(index.members.get(refresh.sourceId) ?? [], id => {
       if (!imported.has(id)) removeSource(id, refresh.sourceId);
     }, cancellation);
     await forEachBackground(refresh.videos, video => {

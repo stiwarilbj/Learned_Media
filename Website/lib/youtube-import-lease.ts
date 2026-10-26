@@ -1,5 +1,5 @@
 // The catalog and lease share a store so ownership checks and commits are atomic.
-import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageKey, importPagePrefix, type YouTubeImportPage, type YouTubeImportPageStore } from "./youtube-import-checkpoints";
+import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageKey, importPagePrefix, type YouTubeImportPage, type YouTubeImportPageStore, type YouTubeRefreshReceipt, verifyYouTubeRefreshes } from "./youtube-import-checkpoints";
 import { planCatalogCommit, VIDEO_WRITE_BATCH_SIZE, videoRecordRange, type YouTubeCatalog } from "./youtube-catalog-storage";
 import type { YouTubeVideo } from "./youtube";
 import { forEachBackground, yieldBackground } from "./background-work";
@@ -12,7 +12,7 @@ const POLL_MS = 2_000;
 type Lease<P> = { owner: string; expiresAt: number; progress?: P };
 type Commit = { id: string };
 type OpenDatabase = () => Promise<IDBDatabase>;
-export type ImportOwnership = { signal: AbortSignal; assertOwned: () => Promise<void>; pages: YouTubeImportPageStore; commit: (catalog: YouTubeCatalog, completedSources?: string[], previousVideos?: YouTubeVideo[]) => Promise<void> };
+export type ImportOwnership = { signal: AbortSignal; assertOwned: () => Promise<void>; pages: YouTubeImportPageStore; commit: (catalog: YouTubeCatalog, completedSources?: string[], previousVideos?: YouTubeVideo[], completedRefreshes?: YouTubeRefreshReceipt[]) => Promise<void> };
 
 function pageRange(sourceId?: string) {
   const prefix = sourceId === undefined ? YOUTUBE_IMPORT_PAGE_PREFIX : importPagePrefix(sourceId);
@@ -134,7 +134,14 @@ export async function withYouTubeImportLease<P, T>(openDatabase: OpenDatabase, s
         save: async page => { await check(false, store => { store.put(page, importPageKey(page)); }); },
         clear: async sourceId => { await check(false, store => { store.delete(pageRange(sourceId)); }); }
       },
-      commit: async (catalog, completedSources = [], previousVideos = []) => {
+      commit: async (catalog, completedSources = [], previousVideos = [], completedRefreshes = []) => {
+        if (completedSources.length !== completedRefreshes.length || completedSources.some((source, index) => source !== completedRefreshes[index].sourceId)) throw new Error("The YouTube refresh completion is missing. Previous catalog retained.");
+        await verifyYouTubeRefreshes(completedRefreshes, {
+          has: async () => false,
+          load: async sourceId => (await check(false, store => store.getAll(pageRange(sourceId)))).result as YouTubeImportPage[],
+          save: async () => { throw new Error("Cannot change a refresh during publication."); },
+          clear: async () => { throw new Error("The YouTube refresh checkpoint is invalid. Previous catalog retained."); }
+        }, controller.signal);
         const stored = (await check(false, store => store.get("catalog"))).result;
         const plan = await planCatalogCommit(catalog, previousVideos, stored, controller.signal);
         for (let start = 0; start < plan.upserts.length; start += VIDEO_WRITE_BATCH_SIZE) {

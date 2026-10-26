@@ -5,8 +5,12 @@ import Foundation
 /// The next cursor is derived from the contiguous page chain, never a second file.
 actor YouTubeImportCheckpointStore {
     private let files = FileManager.default
+    private let directory: URL?
+
+    init(directory: URL? = nil) { self.directory = directory }
 
     private func root() throws -> URL {
+        if let directory { return directory }
         let base = try files.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         return base.appendingPathComponent("Learned Media/youtube-import-pages-v1", isDirectory: true)
     }
@@ -47,6 +51,7 @@ actor YouTubeImportCheckpointStore {
     func save(_ page: [String: Any]) throws {
         guard page["version"] as? Int == 1, let sourceID = page["sourceId"] as? String,
               let identity = page["identity"] as? String, !identity.isEmpty, identity.utf8.count <= 4096,
+              let generation = page["refreshGeneration"] as? String, !generation.isEmpty, generation.utf8.count <= 128,
               let index = page["index"] as? Int, (0...99_999_999).contains(index),
               let token = page["requestToken"] as? String, token.utf8.count <= 4096,
               page["nextPageToken"] is NSNull || (page["nextPageToken"] as? String).map({ !$0.isEmpty && $0.utf8.count <= 4096 }) == true,
@@ -67,10 +72,32 @@ actor YouTubeImportCheckpointStore {
             let previousURL = directory.appendingPathComponent(String(format: "%08d.json", index - 1))
             guard let previous = try JSONSerialization.jsonObject(with: Data(contentsOf: previousURL)) as? [String: Any],
                   previous["identity"] as? String == identity, previous["sourceId"] as? String == sourceID,
+                  previous["refreshGeneration"] as? String == generation,
                   previous["nextPageToken"] as? String == token else { throw invalid() }
         }
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: target, options: [.atomic])
+    }
+
+    /// Only a contiguous terminal generation can replace published membership.
+    func assertCompleted(_ sourceID: String, identity: String, generation: String) throws {
+        let pages = try load(sourceID)
+        guard !pages.isEmpty, !generation.isEmpty, generation.utf8.count <= 128 else { throw invalid() }
+        var expected: String? = ""
+        var seen = Set<String>()
+        for (index, page) in pages.enumerated() {
+            guard let token = expected, seen.insert(token).inserted,
+                  page["version"] as? Int == 1, page["sourceId"] as? String == sourceID,
+                  page["identity"] as? String == identity, page["refreshGeneration"] as? String == generation,
+                  page["index"] as? Int == index, page["requestToken"] as? String == token else { throw invalid() }
+            if page["nextPageToken"] is NSNull { expected = nil }
+            else {
+                guard let next = page["nextPageToken"] as? String, !next.isEmpty,
+                      next.utf8.count <= 4096, !seen.contains(next) else { throw invalid() }
+                expected = next
+            }
+        }
+        guard expected == nil else { throw invalid() }
     }
 
     func clear(_ sourceID: String) throws {

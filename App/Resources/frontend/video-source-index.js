@@ -5,6 +5,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.reuseIndexedVideoRecords = reuseIndexedVideoRecords;
 exports.catalogSourceMembership = catalogSourceMembership;
 exports.restoreCatalogSourceMembership = restoreCatalogSourceMembership;
+exports.isCompleteVideoSourceRefresh = isCompleteVideoSourceRefresh;
 exports.mergeVideoSourceRefreshes = mergeVideoSourceRefreshes;
 const video_metadata_1 = require("./video-metadata");
 const background_work_1 = require("./background-work");
@@ -99,6 +100,9 @@ async function restoreCatalogSourceMembership(videos, stored, cancellation) {
     else
         await sourceIndex(videos, cancellation);
 }
+function isCompleteVideoSourceRefresh(refresh) {
+    return refresh.complete === true && typeof refresh.generation === "string" && refresh.generation.length > 0 && refresh.generation.length <= 128;
+}
 /** Update only old/new members of refreshed sources; copy sets only when edited. */
 async function mergeVideoSourceRefreshes(previous, refreshes, allowed, activeSources, cancellation) {
     const base = await sourceIndex(previous, cancellation);
@@ -137,10 +141,11 @@ async function mergeVideoSourceRefreshes(previous, refreshes, allowed, activeSou
         const imported = new Set();
         await (0, background_work_1.forEachBackground)(refresh.videos, video => { imported.add(video.id); }, cancellation);
         // Iterate the old immutable set even when removal creates a writable copy.
-        await (0, background_work_1.forEachBackground)(index.members.get(refresh.sourceId) ?? [], id => {
-            if (!imported.has(id))
-                removeSource(id, refresh.sourceId);
-        }, cancellation);
+        if (isCompleteVideoSourceRefresh(refresh))
+            await (0, background_work_1.forEachBackground)(index.members.get(refresh.sourceId) ?? [], id => {
+                if (!imported.has(id))
+                    removeSource(id, refresh.sourceId);
+            }, cancellation);
         await (0, background_work_1.forEachBackground)(refresh.videos, video => {
             const old = index.videos.get(video.id);
             replace(video.id, { ...old, ...video, sourceIds: Array.from(new Set([...(old?.sourceIds ?? []), refresh.sourceId])) });
