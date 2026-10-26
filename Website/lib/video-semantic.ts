@@ -14,6 +14,109 @@ export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts:
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
 export const VIDEO_SEMANTIC_VERSION = 9;
 
+type PreparedConceptGroup = Readonly<{ label?: string; terms: readonly string[]; connectedTerms: readonly string[]; related?: readonly string[]; required?: boolean }>;
+export type ImmutableVideoSearchPlan = Omit<Readonly<VideoSearchPlan>, "terms" | "include" | "alternatives" | "exclude" | "topics" | "topicHints" | "conceptGroups" | "anyOf"> & {
+  terms?: readonly string[];
+  include?: readonly string[];
+  alternatives?: readonly string[];
+  exclude?: readonly string[];
+  topics?: readonly string[];
+  topicHints?: readonly string[];
+  conceptGroups?: readonly Readonly<{ label?: string; terms: readonly string[]; related?: readonly string[]; required?: boolean }>[];
+  anyOf?: readonly (readonly number[])[];
+};
+export type PreparedVideoSearch = Readonly<{
+  plan: ImmutableVideoSearchPlan;
+  topic: string;
+  selectedChannelId?: string;
+  groups: readonly PreparedConceptGroup[];
+  coverageClauses: readonly (readonly number[])[];
+  exclusionGroups: readonly (readonly string[])[];
+  allGroupIndexes: readonly number[];
+  requiredGroupCount: number;
+  related: readonly string[];
+  exactTitleTerms: readonly string[];
+  normalizedTopics: readonly string[];
+  topicHints: readonly string[];
+  planChannelId?: string;
+  hasDateBounds: boolean;
+  minDateTime?: number;
+  maxDateTime?: number;
+  minDurationSeconds?: number;
+  maxDurationSeconds?: number;
+  sort?: VideoSearchPlan["sort"];
+  filterOnly: boolean;
+}>;
+
+function immutablePlan(plan: VideoSearchPlan): ImmutableVideoSearchPlan {
+  const input = { ...plan };
+  const snapshot: VideoSearchPlan = {
+    ...input,
+    terms: input.terms ? [...input.terms] : undefined,
+    include: input.include ? [...input.include] : undefined,
+    alternatives: input.alternatives ? [...input.alternatives] : undefined,
+    exclude: input.exclude ? [...input.exclude] : undefined,
+    topics: input.topics ? [...input.topics] : undefined,
+    topicHints: input.topicHints ? [...input.topicHints] : undefined,
+    conceptGroups: input.conceptGroups?.map(group => ({ ...group, terms: [...group.terms], related: group.related ? [...group.related] : undefined })),
+    anyOf: input.anyOf?.map(clause => [...clause]),
+  };
+  for (const value of [snapshot.terms, snapshot.include, snapshot.alternatives, snapshot.exclude, snapshot.topics, snapshot.topicHints, snapshot.anyOf]) {
+    if (value) {
+      if (Array.isArray(value)) for (const item of value) if (Array.isArray(item)) Object.freeze(item);
+      Object.freeze(value);
+    }
+  }
+  for (const group of snapshot.conceptGroups ?? []) {
+    Object.freeze(group.terms);
+    if (group.related) Object.freeze(group.related);
+    Object.freeze(group);
+  }
+  if (snapshot.conceptGroups) Object.freeze(snapshot.conceptGroups);
+  return Object.freeze(snapshot) as unknown as ImmutableVideoSearchPlan;
+}
+
+function stableSearchKey(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableSearchKey).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).filter(key => record[key] !== undefined).sort().map(key => `${JSON.stringify(key)}:${stableSearchKey(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/** A small per-search cache so chunking and pagination reuse the same compiled filters. */
+export class PreparedVideoSearchCache {
+  private readonly entries = new Map<string, PreparedVideoSearch>();
+  private revision?: string | number;
+  private scope?: string;
+  constructor(private readonly maxEntries = 4) {}
+
+  get(plan: VideoSearchPlan, topic = "All", channelId?: string, catalogRevision: string | number = 0, scope = "") {
+    if (this.revision !== catalogRevision || this.scope !== scope) {
+      this.entries.clear();
+      this.revision = catalogRevision;
+      this.scope = scope;
+    }
+    const key = stableSearchKey([VIDEO_SEMANTIC_VERSION, catalogRevision, scope, plan, topic, channelId]);
+    const cached = this.entries.get(key);
+    if (cached) {
+      this.entries.delete(key);
+      this.entries.set(key, cached);
+      return cached;
+    }
+    const prepared = prepareSemanticVideoSearch(plan, topic, channelId);
+    if (this.maxEntries > 0) {
+      this.entries.set(key, prepared);
+      while (this.entries.size > this.maxEntries) this.entries.delete(this.entries.keys().next().value!);
+    }
+    return prepared;
+  }
+
+  clear() { this.entries.clear(); }
+  get size() { return this.entries.size; }
+}
+
 // Only equivalent phrases belong in a required group. Neighbouring subjects are not synonyms.
 const CONCEPTS = [
   ["united states", "usa", "american"], ["information technology", "computer technology"],
@@ -251,6 +354,92 @@ function requiredGroups(plan: VideoSearchPlan): NonNullable<VideoSearchPlan["con
   if (plan.conceptGroups?.length) return [...plan.conceptGroups, ...(plan.include || []).filter((term) => !plan.conceptGroups!.some((group) => group.terms.some((variant) => normalizeVideoQuery(variant) === normalizeVideoQuery(term)))).map((term) => ({terms:expand(term),required:true}))];
   return [...(plan.terms || []).map(term => ({terms:expand(term),required:true})), ...(plan.include || []).map((term) => ({terms:expand(term),required:true}))];
 }
+
+export function prepareSemanticVideoSearch(plan: VideoSearchPlan, topic = "All", channelId?: string): PreparedVideoSearch {
+  const snapshot = immutablePlan(plan);
+  const groups = Object.freeze(requiredGroups(snapshot as unknown as VideoSearchPlan).map(group => {
+    const terms = [...new Set(group.terms.slice(0, 12).flatMap(expand))];
+    return Object.freeze({
+      ...group,
+      terms: Object.freeze(terms),
+      // connectedCoverage historically expanded the already-expanded terms again.
+      connectedTerms: Object.freeze([...new Set(terms.flatMap(expand))]),
+      related: group.related ? Object.freeze([...group.related]) : undefined,
+    });
+  }));
+  const required = groups.flatMap((group, index) => group.required !== false && group.terms.length ? [index] : []);
+  const coverageClauses = Object.freeze(snapshot.anyOf?.length
+    ? snapshot.anyOf.map(clause => Object.freeze([...clause.filter(index => groups[index]?.required !== false), ...required.filter(index => !snapshot.anyOf!.some(other => other.includes(index)))]))
+    : [Object.freeze(required)]);
+  return Object.freeze({
+    plan: snapshot,
+    topic,
+    selectedChannelId: channelId,
+    groups,
+    coverageClauses,
+    exclusionGroups: Object.freeze((snapshot.exclude || []).map(term => Object.freeze([...new Set(expand(term))]))),
+    allGroupIndexes: Object.freeze(groups.map((_, index) => index)),
+    requiredGroupCount: required.length,
+    related: Object.freeze([...(snapshot.alternatives || []), ...groups.flatMap(group => group.related || [])].slice(0, 96)),
+    exactTitleTerms: Object.freeze((snapshot.terms || []).map(normalizeVideoQuery)),
+    normalizedTopics: Object.freeze((snapshot.topics || []).map(normalizeVideoQuery)),
+    topicHints: Object.freeze([...(snapshot.topicHints || [])]),
+    planChannelId: snapshot.channelId,
+    hasDateBounds: Boolean(snapshot.minDate || snapshot.maxDate),
+    minDateTime: snapshot.minDate ? Date.parse(snapshot.minDate) : undefined,
+    maxDateTime: snapshot.maxDate ? Date.parse(snapshot.maxDate) : undefined,
+    minDurationSeconds: snapshot.minDurationSeconds,
+    maxDurationSeconds: snapshot.maxDurationSeconds,
+    sort: snapshot.sort,
+    filterOnly: !groups.length && Boolean(snapshot.channelId || channelId || topic !== "All" || snapshot.minDate || snapshot.maxDate || snapshot.minDurationSeconds !== undefined || snapshot.maxDurationSeconds !== undefined || snapshot.sort && snapshot.sort !== "relevance"),
+  });
+}
+
+function eligiblePreparedSemanticVideo(video: Video, prepared: PreparedVideoSearch, excludedIds: ReadonlySet<string>) {
+  if (!video.approved || excludedIds.has(video.id) || /#shorts?\b|\byoutube shorts?\b|\bshorts video\b/i.test(video.title) || /#shorts?\b/i.test(video.description || "") || (video.tags || []).some((tag) => ["shorts", "youtube short", "youtube shorts"].includes(normalizeVideoQuery(tag)))) return false;
+  if ((video.channelId === "UCYO_jab_esuFRV4b17AJtAw" || normalizeVideoQuery(video.channelName) === "3blue1brown") && !video.special && !(video.sourceIds || []).some((id) => ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi","PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"].includes(id.replace(/^playlist:/,"")))) return false;
+  if (prepared.selectedChannelId && video.channelId !== prepared.selectedChannelId || prepared.planChannelId && video.channelId !== prepared.planChannelId) return false;
+  if (prepared.topic !== "All" && !(video.topics || []).includes(prepared.topic)) return false;
+  if (prepared.normalizedTopics.length && !(video.topics || []).some(topic => prepared.normalizedTopics.includes(normalizeVideoQuery(topic)))) return false;
+  if (prepared.hasDateBounds) {
+    const uploaded = Date.parse(video.publishedAt);
+    if (!Number.isFinite(uploaded) || prepared.minDateTime !== undefined && uploaded < prepared.minDateTime || prepared.maxDateTime !== undefined && uploaded > prepared.maxDateTime) return false;
+  }
+  if ((prepared.minDurationSeconds !== undefined || prepared.maxDurationSeconds !== undefined) && !Number.isFinite(video.durationSeconds)) return false;
+  if (prepared.minDurationSeconds !== undefined && video.durationSeconds < prepared.minDurationSeconds || prepared.maxDurationSeconds !== undefined && video.durationSeconds > prepared.maxDurationSeconds) return false;
+  const fields = fieldsFor(video);
+  return !prepared.exclusionGroups.some(group => group.some(variant => fields.some(field => matchesTerm(variant, field))));
+}
+
+function coverageForPrepared(groups: readonly PreparedConceptGroup[], matchedConcepts: number[], clauses: readonly (readonly number[])[]): VideoConceptCoverage {
+  const matched = new Set(matchedConcepts);
+  const missing = clauses.map(clause => clause.filter(index => !matched.has(index))).sort((a, b) => a.length - b.length)[0] || [];
+  return { matchedConcepts, missingConcepts: missing, complete: !missing.length };
+}
+
+function matchedPreparedGroups(fields: Field[], groups: readonly PreparedConceptGroup[]) {
+  const matched: number[] = [];
+  for (let index = 0; index < groups.length; index++) {
+    const group = groups[index];
+    if (group.connectedTerms.some(term => fields.some(field => matchesTerm(term, field)))) matched.push(index);
+  }
+  return matched;
+}
+
+function connectedPreparedCoverage(video: Video, prepared: PreparedVideoSearch, global: VideoConceptCoverage) {
+  const { groups } = prepared;
+  if (!global.complete || prepared.requiredGroupCount < 2) return { coverage: global, bonus: 0, fields: undefined as Field[] | undefined };
+  const titleFields = [fieldsFor(video)[0]];
+  const titleCoverage = coverageForPrepared(groups, matchedPreparedGroups(titleFields, groups), prepared.coverageClauses);
+  if (titleCoverage.complete) return { coverage: titleCoverage, bonus: 30, fields: titleFields };
+  let best = { coverage: { ...global, complete: false, matchedConcepts: [] as number[], missingConcepts: [...prepared.allGroupIndexes] }, bonus: 0, fields: undefined as Field[] | undefined };
+  for (const unit of nearbyUnits(video)) {
+    const coverage = coverageForPrepared(groups, matchedPreparedGroups(unit.fields, groups), prepared.coverageClauses);
+    if (coverage.complete && !best.coverage.complete || coverage.complete === best.coverage.complete && (coverage.missingConcepts.length < best.coverage.missingConcepts.length || coverage.missingConcepts.length === best.coverage.missingConcepts.length && unit.bonus > best.bonus)) best = { coverage, bonus: unit.bonus, fields: unit.fields };
+  }
+  return best;
+}
+
 export function eligibleSemanticVideo(video: Video, plan: VideoSearchPlan, topic = "All", selectedChannelId?: string, excludedIds = new Set<string>()) {
   if (!video.approved || excludedIds.has(video.id) || /#shorts?\b|\byoutube shorts?\b|\bshorts video\b/i.test(video.title) || /#shorts?\b/i.test(video.description || "") || (video.tags || []).some((tag) => ["shorts", "youtube short", "youtube shorts"].includes(normalizeVideoQuery(tag)))) return false;
   if ((video.channelId === "UCYO_jab_esuFRV4b17AJtAw" || normalizeVideoQuery(video.channelName) === "3blue1brown") && !video.special && !(video.sourceIds || []).some((id) => ["PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi","PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy"].includes(id.replace(/^playlist:/,"")))) return false;
@@ -286,12 +475,12 @@ export function compareSemanticCandidates<T extends Video>(a: SemanticCandidate<
   if (sort === "oldest") return a.video.publishedAt.localeCompare(b.video.publishedAt) || b.score-a.score;
   return b.score-a.score;
 }
-export function searchSemanticVideos<T extends Video>(videos: T[], plan: VideoSearchPlan, topic = "All", channelId?: string, limit = 80, excluded: string[] = []): SemanticCandidate<T>[] {
-  const excludedIds = new Set(excluded), groups = requiredGroups(plan).map((group) => ({...group, terms: [...new Set(group.terms.slice(0,12).flatMap(expand))]}));
-  const related = [...(plan.alternatives || []), ...groups.flatMap(group => group.related || [])].slice(0,96);
+const emptyExcludedIds: ReadonlySet<string> = new Set<string>();
+export function searchPreparedSemanticVideos<T extends Video>(videos: T[], prepared: PreparedVideoSearch, limit = 80, excludedIds: ReadonlySet<string> = emptyExcludedIds): SemanticCandidate<T>[] {
+  const { groups, related } = prepared;
   const results: SemanticCandidate<T>[] = [];
   for (const video of videos) {
-    if (!eligibleSemanticVideo(video,plan,topic,channelId,excludedIds)) continue;
+    if (!eligiblePreparedSemanticVideo(video, prepared, excludedIds)) continue;
     const fields = fieldsFor(video), evidence: Array<{field:Field;term:string;score:number}> = [];
     const matchedConcepts: number[] = [];
     for (const [groupIndex, group] of groups.entries()) {
@@ -299,10 +488,9 @@ export function searchSemanticVideos<T extends Video>(videos: T[], plan: VideoSe
       matches.sort((a,b) => b.score-a.score);
       if (matches.length) { evidence.push(matches[0]); matchedConcepts.push(groupIndex); }
     }
-    const filterOnly = !groups.length && Boolean(plan.channelId || channelId || topic !== "All" || plan.minDate || plan.maxDate || plan.minDurationSeconds !== undefined || plan.maxDurationSeconds !== undefined || plan.sort && plan.sort !== "relevance");
-    const connected = connectedCoverage(video,groups,plan.anyOf,coverageFor(groups, matchedConcepts, plan.anyOf));
+    const connected = connectedPreparedCoverage(video, prepared, coverageForPrepared(groups, matchedConcepts, prepared.coverageClauses));
     const coverage = connected.coverage;
-    if (!coverage.complete || !evidence.length && !filterOnly) continue;
+    if (!coverage.complete || !evidence.length && !prepared.filterOnly) continue;
     if (connected.fields) {
       evidence.length=0;
       for (const group of groups) {
@@ -311,22 +499,33 @@ export function searchSemanticVideos<T extends Video>(videos: T[], plan: VideoSe
       }
     }
     const title = fields[0].text;
-    const exactTitle = (plan.terms || []).some((term) => contains(title,normalizeVideoQuery(term)));
-    const relatedBonus = Math.min(3, related.filter(term => fields.some(field => matchesTerm(term, field))).length);
-    const hint = (video.topics || []).some((topic) => (plan.topicHints || []).includes(topic));
+    const exactTitle = prepared.exactTitleTerms.some((term) => contains(title,term));
+    let relatedBonus = 0;
+    for (const term of related) {
+      if (fields.some(field => matchesTerm(term, field)) && ++relatedBonus === 3) break;
+    }
+    const hint = (video.topics || []).some((topic) => prepared.topicHints.includes(topic));
     results.push({video,coverage,score:100*evidence.length + evidence.reduce((sum,item)=>sum+item.score,0)+(exactTitle?10:0)+(hint?1:0)+relatedBonus+connected.bonus,matchedFields:[...new Set(evidence.map((item)=>item.field.name))],supportingText:[...new Set(evidence.map((item)=>passage(item.field,item.term)))].slice(0,8)});
   }
-  return results.sort((a,b)=>compareSemanticCandidates(a,b,plan.sort)).slice(0,Math.max(1,limit));
+  return results.sort((a,b)=>compareSemanticCandidates(a,b,prepared.sort)).slice(0,Math.max(1,limit));
+}
+export function searchSemanticVideos<T extends Video>(videos: T[], plan: VideoSearchPlan, topic = "All", channelId?: string, limit = 80, excluded: string[] = []): SemanticCandidate<T>[] {
+  const prepared = prepareSemanticVideoSearch(plan, topic, channelId);
+  return searchPreparedSemanticVideos(videos, prepared, limit, excluded.length ? new Set(excluded) : emptyExcludedIds);
 }
 export async function searchSemanticVideosYielding<T extends Video>(videos: T[], plan: VideoSearchPlan, topic = "All", channelId?: string, limit = 80, excluded: string[] = [], signal?: AbortSignal) {
+  const prepared = prepareSemanticVideoSearch(plan, topic, channelId);
+  return searchPreparedSemanticVideosYielding(videos, prepared, limit, excluded.length ? new Set(excluded) : emptyExcludedIds, signal);
+}
+export async function searchPreparedSemanticVideosYielding<T extends Video>(videos: T[], prepared: PreparedVideoSearch, limit = 80, excludedIds: ReadonlySet<string> = emptyExcludedIds, signal?: AbortSignal) {
   const matches: SemanticCandidate<T>[] = [];
   for (let start=0;start<videos.length;start+=160) {
     if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
-    matches.push(...searchSemanticVideos(videos.slice(start,start+160),plan,topic,channelId,limit,excluded));
+    matches.push(...searchPreparedSemanticVideos(videos.slice(start,start+160),prepared,limit,excludedIds));
     if (start+160<videos.length) await new Promise((resolve)=>setTimeout(resolve,0));
   }
   if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
-  return matches.sort((a,b)=>compareSemanticCandidates(a,b,plan.sort)).slice(0,limit);
+  return matches.sort((a,b)=>compareSemanticCandidates(a,b,prepared.sort)).slice(0,limit);
 }
 
 /** Explain only evidence found in searchable metadata; model prose never establishes a match. */

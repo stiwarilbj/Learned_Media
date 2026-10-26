@@ -1695,6 +1695,7 @@
     }).catch(function (error) { if (token !== state.connectionToken) return; state.youtubeStatus = "error"; state.youtubeError = error.message || "YouTube import failed."; publishNativeYouTubeProgress(Object.assign({}, state.youtubeProgress, { phase: "error" })); showToast(state.youtubeError); }).finally(function () { if (syncToken === youtubeSyncToken) youtubeSyncActive = false; });
   }
   const videoSearch = window.LEARNED_MEDIA_VIDEO_SEARCH;
+  const preparedVideoSearchCache = new videoSearch.PreparedVideoSearchCache(4);
   let youtubeSemanticWorker = null, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0, youtubeIndexPolicy = "";
   let youtubeById = new Map(), youtubeVideosByTopic = new Map([["All", []]]), youtubeVideosByChannel = new Map(), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "";
   let youtubeBrowseReturn = null, restoreYoutubeBrowseScroll = false, resetYoutubePlayerScroll = false;
@@ -1717,6 +1718,7 @@
     const baseRevision = youtubeIndexRevision;
     youtubeIndexPolicy = policy;
     youtubeIndexRevision++;
+    preparedVideoSearchCache.clear();
     youtubeSmartSearchCache.clear();
     for (const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video catalog changed during search."));
     youtubeWorkerPending.clear();
@@ -1742,10 +1744,13 @@
         const abort=function(){ youtubeWorkerPending.delete(requestId); youtubeSemanticWorker && youtubeSemanticWorker.postMessage({type:"cancel"}); reject(new DOMException("Search canceled","AbortError")); };
         signal.addEventListener("abort",abort,{once:true});
         youtubeWorkerPending.set(requestId,{resolve:function(value){signal.removeEventListener("abort",abort);resolve(value);},reject:function(error){signal.removeEventListener("abort",abort);reject(error);}});
-        youtubeSemanticWorker.postMessage({type:"search",requestId:requestId,revision:youtubeIndexRevision,plan:plan,topic:state.youtube.topic,channelId:state.youtube.selectedChannelId,limit:limit,excludedIds:excluded || []});
+        youtubeSemanticWorker.postMessage({type:"search",requestId:requestId,revision:youtubeIndexRevision,plan:plan,topic:state.youtube.topic,channelId:state.youtube.selectedChannelId,limit:limit,excludedIds:excluded || [],viewKey:String(state.workspaceId)+":"+String(state.account && state.account.id || "local")});
       }); } catch(error){ if(signal.aborted || /catalog changed/.test(error.message)) throw error; }
     }
-    return videoSearch.searchSemanticVideosYielding(state.youtube.videos,plan,state.youtube.topic,state.youtube.selectedChannelId,limit,excluded || [],signal);
+    const scope=String(state.workspaceId)+":"+String(state.account && state.account.id || "local");
+    const prepared=preparedVideoSearchCache.get(plan,state.youtube.topic,state.youtube.selectedChannelId,youtubeIndexRevision,scope);
+    const excludedIds=excluded && excluded.length ? new Set(excluded) : new Set();
+    return videoSearch.searchPreparedSemanticVideosYielding(state.youtube.videos,prepared,limit,excludedIds,signal);
   }
   function changeVideoSearch(value) {
     if(videoSearch.normalizeVideoQuery(value)!==videoSearch.normalizeVideoQuery(state.youtube.searchText)) {

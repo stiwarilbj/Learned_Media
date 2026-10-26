@@ -64,6 +64,43 @@ test('yielding fallback cancels obsolete scans and preserves ordering',async()=>
  await assert.rejects(work,{name:'AbortError'});
  assert.deepEqual(await engine.searchSemanticVideosYielding(catalog,plan),engine.searchSemanticVideos(catalog,plan));
 });
+test('prepared ranking preserves complete candidate output and reuses preparation across pages',()=>{
+ const plans=[
+  engine.makeLocalVideoPlan('black holes and bending starlight'),
+  engine.makeLocalVideoPlan('black holes or bending starlight'),
+  engine.makeLocalVideoPlan('bending starlight uploaded since 2023 under 11 minutes without black holes'),
+  {conceptGroups:[{label:'light',terms:['bending starlight','gravitational lensing'],related:['galaxy']},{label:'holes',terms:['black holes']}],anyOf:[[0,1]],alternatives:['cosmic mirrors'],topics:['Science'],channelId:'c1',sort:'newest'}
+ ];
+ for(const plan of plans){
+  const prepared=engine.prepareSemanticVideoSearch(plan,'Science','c1');
+  const expected=engine.searchSemanticVideos(videos,plan,'Science','c1',80,['hole']);
+  assert.deepEqual(engine.searchPreparedSemanticVideos(videos,prepared,80,new Set(['hole'])),expected);
+  const nativePrepared=native.LEARNED_MEDIA_VIDEO_SEARCH.prepareSemanticVideoSearch(plan,'Science','c1');
+  assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos(videos,nativePrepared,80,new Set(['hole'])))),expected);
+ }
+ const catalog=Array.from({length:241},(_,i)=>video('prepared-'+i,'Gravitational Lensing '+i));
+ const plan=engine.makeLocalVideoPlan('bending starlight'),cache=new engine.PreparedVideoSearchCache(4);
+ const prepared=cache.get(plan,'All',undefined,12,'workspace-a');
+ assert.strictEqual(cache.get({...plan},'All',undefined,12,'workspace-a'),prepared,'same plan reuses its compiled search');
+ let seen=[];
+ for(let page=0;page<4;page++){
+  const next=engine.searchPreparedSemanticVideos(catalog,prepared,80,new Set(seen));
+  seen.push(...ids(next));
+ }
+ assert.equal(seen.length,241);assert.equal(new Set(seen).size,241);
+ assert.notStrictEqual(cache.get(plan,'History',undefined,12,'workspace-a'),prepared,'topic changes compile a distinct search');
+ assert.equal(cache.size,2);
+ cache.get(plan,'All',undefined,13,'workspace-a');assert.equal(cache.size,1,'catalog revision invalidates old prepared entries');
+ cache.get(plan,'All',undefined,13,'workspace-b');assert.equal(cache.size,1,'workspace scope changes invalidate old prepared entries');
+});
+test('yielding fallback prepares query properties once before scanning chunks',async()=>{
+ const catalog=Array.from({length:2400},(_,i)=>video('prepared-chunk-'+i,'Gravitational Lensing '+i));
+ let conceptGroupReads=0;
+ const plan={terms:['bending starlight']};
+ Object.defineProperty(plan,'conceptGroups',{enumerable:true,get(){conceptGroupReads++;return undefined;}});
+ await engine.searchSemanticVideosYielding(catalog,plan);
+ assert.equal(conceptGroupReads,1,'the immutable input snapshot reads the caller plan once regardless of chunk count');
+});
 test('sorting and pagination honor the whole catalog and exact duration boundaries',()=>{
  const catalog=Array.from({length:200},(_,i)=>video('item-'+i,'Gravitational Lensing '+i,{publishedAt:new Date(Date.UTC(2020,0,1+i)).toISOString()}));
  const plan={...engine.makeLocalVideoPlan('bending starlight'),sort:'newest'};

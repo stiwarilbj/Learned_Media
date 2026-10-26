@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import { SessionCache } from "@/lib/session-cache";
-import { searchYouTubeCandidates, type YouTubeSearchPlanLike, type YouTubeTopic, type YouTubeVideo } from "@/lib/youtube";
+import type { YouTubeSearchPlanLike, YouTubeTopic, YouTubeVideo } from "@/lib/youtube";
+import { PreparedVideoSearchCache, searchPreparedSemanticVideos } from "@/lib/video-semantic";
 
 type SearchRequest = {
   type: "search";
@@ -26,6 +27,7 @@ type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; 
 const workerScope = self as DedicatedWorkerGlobalScope;
 const videos = new Map<string, YouTubeVideo>();
 const resultCache = new SessionCache<CandidateReply[]>(80, 30 * 60 * 1000, 4 * 1024 * 1024);
+const preparedSearchCache = new PreparedVideoSearchCache(4);
 let revision = -1;
 let latestRequestId = 0;
 let activeRequestId = 0;
@@ -57,6 +59,8 @@ async function search(request: SearchRequest) {
   }
 
   const orderedVideos = [...videos.values()];
+  const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, revision, request.viewKey ?? "worker");
+  const excludedIds = request.excludedIds?.length ? new Set(request.excludedIds) : new Set<string>();
   const direct: Array<{ candidate: CandidateReply; index: number }> = [];
   const fallback: Array<{ candidate: CandidateReply; index: number }> = [];
   const chunkSize = 600;
@@ -64,7 +68,7 @@ async function search(request: SearchRequest) {
     if (request.requestId !== latestRequestId || request.revision !== revision || epoch !== indexEpoch) return;
     const batch = orderedVideos.slice(start, start + chunkSize);
     const positions = new Map(batch.map((video, index) => [video.id, start + index]));
-    const matches = searchYouTubeCandidates(batch, request.plan, request.topic, request.channelId, request.limit, request.excludedIds ?? [], Boolean(request.expanded));
+    const matches = searchPreparedSemanticVideos(batch, prepared, request.limit, excludedIds);
     for (const match of matches) {
       const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: positions.get(match.video.id)! };
       (match.matchedFields.includes("semantic-fallback") ? fallback : direct).push(entry);
@@ -77,7 +81,7 @@ async function search(request: SearchRequest) {
   const source = direct.length ? direct : fallback;
   source.sort((left, right) => {
     const a = videos.get(left.candidate.videoId)!, b = videos.get(right.candidate.videoId)!;
-    const dateOrder = request.plan.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : request.plan.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
+    const dateOrder = prepared.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : prepared.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
     return dateOrder || right.candidate.score - left.candidate.score || left.index - right.index;
   });
   const candidates = source.slice(0, Math.max(1, request.limit)).map(({ candidate }) => candidate);
@@ -98,6 +102,7 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
     latestRequestId = 0;
     activeRequestId = 0;
     resultCache.clear();
+    preparedSearchCache.clear();
     workerScope.postMessage({ type: "ready", revision } satisfies Reply);
   } else if (request.type === "update") {
     indexEpoch++;
@@ -121,6 +126,7 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
     }
     revision = request.revision;
     resultCache.clear();
+    preparedSearchCache.clear();
     if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision } satisfies Reply);
   } else if (request.type === "cancel") {
     if (request.requestId === latestRequestId) {

@@ -33,7 +33,7 @@ import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-pr
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys, saveAccountKey, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, createYouTubeChannelPools, createYouTubeTopicPools, importCoordinatedYouTubeCatalog, hasPendingYouTubeImport, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, mergeYouTubeRecencyPreferences, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
-import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, searchSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
+import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, PreparedVideoSearchCache, searchPreparedSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
 import { diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVideoRecordsYielding } from "@/lib/video-metadata";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import { normalizeSpotlightSources } from "@/lib/source-spotlight";
@@ -657,6 +657,7 @@ export default function HomePage() {
   const youtubeSearchAutomaticSignature = useRef("");
   const youtubeSearchActiveKey = useRef("");
   const youtubeSearchPlan = useRef<VideoSearchPlan | null>(null);
+  const youtubePreparedSearchCache = useRef(new PreparedVideoSearchCache(4));
   const youtubeSearchMoreAbort = useRef<AbortController | null>(null);
   const youtubeSearchResultsRef = useRef<YouTubeVideo[]>([]);
   const youtubeBrowsingOrder = useRef<YouTubeWorkspaceState["channelOrder"]>("newest");
@@ -3111,10 +3112,11 @@ export default function HomePage() {
       const query = current.searchText.trim();
       const plan = youtubeSearchPlan.current;
       const existing = youtubeSearchResultsRef.current;
-      const request = { query, plan, topic: current.selectedTopic, channelId: current.selectedChannelId, limit: 80, excludedIds: existing.map((video) => video.id) };
+      const viewKey = `${workspaceId}:${account?.id ?? "local"}`;
+      const request = { query, plan, topic: current.selectedTopic, channelId: current.selectedChannelId, limit: 80, excludedIds: existing.map((video) => video.id), viewKey };
       const work = youtubeSearchWorker.current
         ? requestYouTubeWorkerSearch(request, controller.signal).then((reply) => reply.type === "results" ? reply.candidates.flatMap((candidate) => { const video = youtubeIndexes.videoById.get(candidate.videoId); return video ? [{ ...candidate, video }] : []; }) : [])
-        : searchSemanticVideosYielding(current.videos, plan, current.selectedTopic, current.selectedChannelId, 80, request.excludedIds, controller.signal);
+        : searchPreparedSemanticVideosYielding(current.videos, youtubePreparedSearchCache.current.get(plan, current.selectedTopic, current.selectedChannelId, revision, `${account?.id ?? "local"}:${workspaceId}`), 80, new Set(request.excludedIds), controller.signal);
       void work.then((next) => {
         if (controller.signal.aborted || revision !== youtubeSearchWorkerRevision.current || query !== youtubeWorkspaceRef.current.searchText.trim()) return;
         const merged = [...existing, ...next.map((candidate) => candidate.video)];
@@ -3127,7 +3129,7 @@ export default function HomePage() {
     }
     const next = selectRandomVideos(youtubeTopicPool(current.selectedTopic), 24, current.discoverIds, current.prioritizeRecentByChannel);
     if (next.length) updateYouTubeWorkspace((workspace) => ({ ...workspace, activeTab: "discover", discoverIds: [...workspace.discoverIds, ...next.map((video) => video.id)] }));
-  }, [requestYouTubeWorkerSearch, updateYouTubeWorkspace, youtubeIndexes.videoById, youtubeTopicPool]);
+  }, [account?.id, requestYouTubeWorkerSearch, updateYouTubeWorkspace, workspaceId, youtubeIndexes.videoById, youtubeTopicPool]);
 
   const setYouTubeRecentBias = useCallback((channelName: string, enabled: boolean) => {
     updateYouTubeWorkspace((current) => {
@@ -3188,13 +3190,13 @@ export default function HomePage() {
       if (cached && (automatic || cached.results.length || cached.expanded || !apiKey.trim() || geminiStatus !== "connected")) { plan = cached.plan; publish(cached.results, cached.reasons); return; }
       const getCandidates = async (candidatePlan: VideoSearchPlan, limit = 80) => {
         try {
-          const reply = await requestYouTubeWorkerSearch({ query: queryText, plan: candidatePlan, topic: workspace.selectedTopic, channelId: workspace.selectedChannelId, limit }, controller.signal);
+          const reply = await requestYouTubeWorkerSearch({ query: queryText, plan: candidatePlan, topic: workspace.selectedTopic, channelId: workspace.selectedChannelId, limit, viewKey: `${workspaceId}:${account?.id ?? "local"}` }, controller.signal);
           if (reply.type !== "results") return [];
           return reply.candidates.flatMap((candidate) => { const video = youtubeIndexes.videoById.get(candidate.videoId); return video ? [{ video, coverage: candidate.coverage, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText }] : []; });
         } catch (error) {
           if (controller.signal.aborted) throw error;
           if (revision !== youtubeSearchWorkerRevision.current) { controller.abort(); throw error; }
-          return searchSemanticVideosYielding(workspace.videos, candidatePlan, workspace.selectedTopic, workspace.selectedChannelId, limit, [], controller.signal);
+          return searchPreparedSemanticVideosYielding(workspace.videos, youtubePreparedSearchCache.current.get(candidatePlan, workspace.selectedTopic, workspace.selectedChannelId, revision, `${account?.id ?? "local"}:${workspaceId}`), limit, new Set(), controller.signal);
         }
       };
       const reason = (candidate: YouTubeSearchCandidate): RankedVideoSearchResult => videoSearchReason(candidate.video, plan, candidate.score);
@@ -3254,7 +3256,7 @@ export default function HomePage() {
     } finally {
       if (youtubeSearchAbortController.current === controller) { youtubeSearchAbortController.current = null; youtubeSearchActiveKey.current = ""; setYoutubeSmartSearchLoading(false); }
     }
-  }, [apiKey, geminiStatus, recordGeminiFailure, recordGeminiOutcomes, requestYouTubeWorkerSearch, youtubeIndexes.videoById]);
+  }, [account?.id, apiKey, geminiStatus, recordGeminiFailure, recordGeminiOutcomes, requestYouTubeWorkerSearch, workspaceId, youtubeIndexes.videoById]);
 
   const cancelSmartVideoSearch = useCallback(() => {
     youtubeSearchAbortController.current?.abort();

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { test } from "node:test";
+import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
@@ -36,6 +37,19 @@ function loadWorker(filename) {
   };
   new Function("require", "module", "exports", "self", "setTimeout", source)(importFromWorker, module, module.exports, scope, workerSetTimeout);
   return { scope, messages, get workerYieldCount() { return workerYieldCount; } };
+}
+
+function loadNativeYouTubeWorker() {
+  const messages = [];
+  const context = { postMessage: (message) => messages.push(message), setTimeout };
+  context.globalThis = context;
+  context.importScripts = (filename) => {
+    const runtime = readFileSync(path.join(root, "..", "App", "Resources", "frontend", filename), "utf8");
+    vm.runInNewContext(runtime, context);
+  };
+  const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
+  vm.runInNewContext(source, context);
+  return { messages, send: (data) => context.onmessage({ data }) };
 }
 
 async function waitForMessage(messages, predicate, timeoutMs = 8000) {
@@ -208,12 +222,69 @@ test("YouTube worker yields while ranking 30,000 videos and preserves the top re
   }));
   const plan = { terms: ["modern physics"] };
   scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
-  scope.onmessage({ data: { type: "search", requestId: 41, revision: 0, query: "modern physics", plan, topic: "All", limit: 80 } });
+  scope.onmessage({ data: { type: "search", requestId: 41, revision: 0, query: "modern physics", plan, topic: "All", limit: 80, viewKey: "large-catalog" } });
   const reply = await waitForMessage(messages, (message) => message.type === "results" && message.requestId === 41, 20_000);
   const expected = searchYouTubeCandidates(videos, plan, "All", undefined, 80).map((candidate) => candidate.video.id);
   assert.equal(worker.workerYieldCount > 1, true);
   assert.equal(reply.candidates.length, 80);
   assert.deepEqual(reply.candidates.map((candidate) => candidate.videoId), expected);
+
+  scope.onmessage({ data: { type: "search", requestId: 42, revision: 0, query: "modern physics", plan, topic: "All", limit: 80, excludedIds: expected, viewKey: "large-catalog" } });
+  const nextPage = await waitForMessage(messages, (message) => message.type === "results" && message.requestId === 42, 20_000);
+  const expectedNextPage = searchYouTubeCandidates(videos, plan, "All", undefined, 80, expected).map((candidate) => candidate.video.id);
+  assert.equal(nextPage.candidates.length, 80);
+  assert.deepEqual(nextPage.candidates.map((candidate) => candidate.videoId), expectedNextPage);
+  assert.ok(nextPage.candidates.every((candidate) => !expected.includes(candidate.videoId)));
+});
+
+test("YouTube worker prepares one immutable plan for every chunk in a request", async () => {
+  const { scope, messages } = loadWorker("workers/youtube-search.worker.ts");
+  const videos = Array.from({ length: 1_450 }, (_, index) => ({
+    id: `prepared-worker-${index}`, channelId: "channel-a", channelName: "Approved Channel",
+    title: `Gravitational lensing documentary ${index}`, description: "A long-form approved documentary.",
+    tags: ["gravitational lensing"], publishedAt: "2024-01-01T00:00:00.000Z", durationSeconds: 600,
+    durationLabel: "10:00", embedAvailable: true, topics: ["Science"], approved: true
+  }));
+  let conceptGroupReads = 0;
+  const plan = { terms: ["bending starlight"] };
+  Object.defineProperty(plan, "conceptGroups", { enumerable: true, get() { conceptGroupReads += 1; return undefined; } });
+  scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
+  scope.onmessage({ data: { type: "search", requestId: 45, revision: 0, query: "bending starlight", plan, topic: "Science", limit: 80, viewKey: "workspace-a" } });
+  const reply = await waitForMessage(messages, message => message.type === "results" && message.requestId === 45);
+  assert.ok(reply.candidates.length > 0);
+  assert.equal(conceptGroupReads, 3, "one worker cache-key read and one immutable preparation, independent of chunk count");
+
+  const firstPageIds = reply.candidates.map(candidate => candidate.videoId);
+  scope.onmessage({ data: { type: "search", requestId: 46, revision: 0, query: "bending starlight", plan, topic: "Science", limit: 80, excludedIds: firstPageIds, viewKey: "workspace-a" } });
+  const nextPage = await waitForMessage(messages, message => message.type === "results" && message.requestId === 46);
+  assert.ok(nextPage.candidates.length > 0);
+  assert.ok(nextPage.candidates.every(candidate => !firstPageIds.includes(candidate.videoId)));
+  assert.equal(conceptGroupReads, 5, "the next page builds its own excluded-ID set but reuses the immutable prepared search");
+});
+
+test("native YouTube worker reuses a prepared search across paginated requests", async () => {
+  const worker = loadNativeYouTubeWorker();
+  const videos = Array.from({ length: 1_450 }, (_, index) => ({
+    id: `native-prepared-${index}`, channelId: "channel-a", channelName: "Approved Channel",
+    title: `Gravitational lensing documentary ${index}`, description: "A long-form approved documentary.",
+    tags: ["gravitational lensing"], publishedAt: "2024-01-01T00:00:00.000Z", durationSeconds: 600,
+    topics: ["Science"], approved: true
+  }));
+  let conceptGroupReads = 0;
+  const plan = { terms: ["bending starlight"] };
+  Object.defineProperty(plan, "conceptGroups", { enumerable: true, get() { conceptGroupReads += 1; return undefined; } });
+  worker.send({ type: "initialize", revision: 0, videos });
+  worker.send({ type: "search", requestId: 61, revision: 0, plan, topic: "Science", limit: 80, viewKey: "workspace-a" });
+  const firstPage = await waitForMessage(worker.messages, message => message.requestId === 61);
+  const firstPageIds = firstPage.candidates.map(candidate => candidate.videoId);
+  assert.ok(firstPageIds.length > 0);
+  assert.equal(conceptGroupReads, 2, "the Mac worker snapshots the plan only on the first page");
+
+  worker.send({ type: "search", requestId: 62, revision: 0, plan, topic: "Science", limit: 80, excludedIds: firstPageIds, viewKey: "workspace-a" });
+  const secondPage = await waitForMessage(worker.messages, message => message.requestId === 62);
+  assert.ok(secondPage.candidates.length > 0);
+  assert.ok(secondPage.candidates.every(candidate => !firstPageIds.includes(candidate.videoId)));
+  assert.equal(conceptGroupReads, 3, "the Mac worker reuses prepared terms and resolves new page exclusions independently");
 });
 
 test("topic semantic worker returns meaning matches and ancestor paths, rejecting obsolete queries", async () => {

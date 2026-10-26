@@ -18,7 +18,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		2VMFt7jNRSm5Y8p73ObfXN1h69Q=
+		s/TLu6UbP/6TvK+su43L1AvSCKE=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -134,7 +134,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		ZGMPTUqFv+QuUFNwtVLT45NjW3Y=
+		VJu7zbzQJgV+0YEb1hN1PXsH4JQ=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -182,7 +182,7 @@
 		</data>
 		<key>Resources/frontend/video-semantic.js</key>
 		<data>
-		r5d7gpXZLLRWcAdmfaLS1PgshvQ=
+		denLHDJVkrd3xv2EoV6aG21lgRI=
 		</data>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<data>
@@ -210,7 +210,7 @@
 		</data>
 		<key>Resources/frontend/youtube-search.worker.js</key>
 		<data>
-		0URKVpOc4H+njwdhn2ZYyxAwpNs=
+		+UN8Cb1WNn3ADudBWnqbOYhp47U=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -240,7 +240,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			daNqP4FiTKdq+VtuiHiHBOfVlqXuDXmuYhtELIfWiMg=
+			Jwdrg0HMSGb1on4TCTG5M0JX0nOHV7E1u05rT21ZX3M=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -443,7 +443,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			jtNopbOWDOq1qNwzpy02ab5sfpnOjTGXSgqsh+s1C2s=
+			DyFIF3FbxpNm4+gCNJYvaRNvIRfmhbrAZcnEONxEwCY=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -527,7 +527,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			jMPwpEPhLnHhwW84fCBI29IGnTGfvAVfdK89NSF9IYw=
+			3mK3aZzsx4zSmZTJVBsBJ7IdjVWoM9w/BMNPmMpIm7g=
 			</data>
 		</dict>
 		<key>Resources/frontend/war-history-catalog.js</key>
@@ -576,7 +576,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			af+65GFE/0Vqax7ejoFyPGpjSqaPefvmatGUVhnKl7k=
+			HWwpQ0KymGTqWQ3binHtcAhmO0DGLD2wtta+tncJhdg=
 			</data>
 		</dict>
 	</dict>
