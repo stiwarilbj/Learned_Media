@@ -1044,8 +1044,8 @@ export async function hasPendingYouTubeImport() {
   const db = await openYouTubeDb();
   return new Promise<boolean>((resolve, reject) => {
     const request = db.transaction("workspace", "readonly").objectStore("workspace")
-      .count(IDBKeyRange.bound(YOUTUBE_IMPORT_PAGE_PREFIX, `${YOUTUBE_IMPORT_PAGE_PREFIX}\uffff`));
-    request.onsuccess = () => resolve(request.result > 0);
+      .openKeyCursor(IDBKeyRange.bound(YOUTUBE_IMPORT_PAGE_PREFIX, `${YOUTUBE_IMPORT_PAGE_PREFIX}\uffff`));
+    request.onsuccess = () => resolve(request.result !== null);
     request.onerror = () => reject(request.error);
   });
 }
