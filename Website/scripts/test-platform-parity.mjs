@@ -274,6 +274,37 @@ test('card search includes the same original text on both platforms',()=>{
  const card={title:'Tōhoku',hook:'An observation',body:'Complete original body.',topicPath:['Science'],sources:[{title:'Earthquake'}]};
  assert.equal(mac.cards.cardSearchText(card),require('../lib/card-search-text.ts').cardSearchText(card));
 });
+test('card-search callers register scoped ordered eligibility and reuse its revision while typing',()=>{
+ const page=readFileSync(new URL('../../Website/app/page.tsx',import.meta.url),'utf8');
+ assert.match(page,/cardSearchEligibilityScope = JSON\.stringify\(\[account\?\.id \?\? "local", workspaceId, view\]\)/);
+ assert.match(page,/type: "register-eligibility"[^\n]*eligibilityRevision: eligibility\.revision, ids: eligibility\.ids/);
+ assert.match(page,/type: "search"[^\n]*eligibilityRevision: eligibility\.revision, viewKey: view/);
+ assert.doesNotMatch(page.slice(page.indexOf('const cardSearchEligibilityScope'),page.indexOf('const cardById')),/eligibleIds/,'website queries carry the list revision rather than eligible IDs');
+
+ const start=native.indexOf('  let nativeCardWorker='),end=native.indexOf('  function collectionView(',start);
+ assert.ok(start>=0&&end>start,'locate the native card-search caller');
+ const messages=[];
+ class FakeWorker{postMessage(message){messages.push(message);}terminate(){}}
+ const state={account:{id:'account-a'},workspaceId:'workspace-a',view:'feed',query:'first query',cards:[{id:'one',title:'First fact',saved:true},{id:'two',title:'Second fact',saved:false}]};
+ const context={state,shared:{search:{normalizeSearchText:value=>String(value).toLowerCase().trim(),searchScoreNormalized:()=>0},cards:{cardSearchText:card=>card.title}},Worker:FakeWorker,render(){}};
+ runInNewContext(native.slice(start,end)+';api={searchedCards};',context);
+ context.api.searchedCards('feed');
+ const firstRegistration=messages.find(message=>message.type==='register-eligibility');
+ const firstSearch=messages.find(message=>message.type==='search');
+ assert.deepEqual(clean(firstRegistration.ids),['one','two']);
+ assert.equal(firstSearch.eligibilityRevision,firstRegistration.eligibilityRevision);
+ state.query='second query';context.api.searchedCards('feed');
+ assert.equal(messages.filter(message=>message.type==='register-eligibility').length,1,'typing another query does not resend the list');
+ assert.equal(messages.filter(message=>message.type==='search').length,2);
+ assert.equal(messages.at(-1).eligibilityRevision,firstRegistration.eligibilityRevision);
+ assert.equal(messages.at(-1).eligibleIds,undefined);
+ context.api.searchedCards('saved');
+ const registrations=messages.filter(message=>message.type==='register-eligibility');
+ assert.equal(registrations.length,2,'switching collection registers a separate list');
+ assert.deepEqual(clean(registrations.at(-1).ids),['one']);
+ assert.notEqual(registrations.at(-1).eligibilityScope,firstRegistration.eligibilityScope);
+ assert.match(registrations.at(-1).eligibilityScope,/account-a.*workspace-a.*saved/);
+});
 test('bridge status and detail preferences are independent and scoped',()=>{
  assert.match(native,/card\.questionDetailed=!card\.questionDetailed/);
  assert.match(native,/Answer options/);

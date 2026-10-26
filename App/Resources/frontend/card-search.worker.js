@@ -1,5 +1,5 @@
 // Generated card-search worker.
-const search={},cache={},diagnostics={};(function(exports){"use strict";
+const searchHelpers={},cache={},diagnostics={};(function(exports){"use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.performanceFetch = exports.performanceDiagnostics = void 0;
 exports.recordPerformance = recordPerformance;
@@ -199,7 +199,7 @@ function rankSearchResults(query, items, getText, limit = items.length) {
         .slice(0, limit)
         .map((entry) => entry.item);
 }
-})(search);(function(exports,require){"use strict";
+})(searchHelpers);(function(exports,require){"use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SessionCache = void 0;
 exports.approximateCacheBytes = approximateCacheBytes;
@@ -380,7 +380,7 @@ function reusableStructuredValue(value, schema) {
         default: return true;
     }
 }
-})(cache,()=>diagnostics);const exports={},require=name=>name.includes('session-cache')?cache:search;
+})(cache,()=>diagnostics);const exports={},require=name=>name.includes('session-cache')?cache:searchHelpers;
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /// <reference lib="webworker" />
@@ -389,6 +389,7 @@ const search_1 = require("@/lib/search");
 const workerScope = self;
 const documents = new Map();
 const resultCache = new session_cache_1.SessionCache(100, 30 * 60 * 1000, 4 * 1024 * 1024);
+let activeEligibility = null;
 let revision = -1;
 let latestRequestId = 0;
 function addDocuments(items) {
@@ -404,19 +405,24 @@ function yieldToWorker() {
 async function search(request) {
     if (request.revision !== revision)
         return;
+    const eligibility = activeEligibility;
+    if (!eligibility || eligibility.scope !== request.eligibilityScope || eligibility.revision !== request.eligibilityRevision) {
+        workerScope.postMessage({ type: "eligibility-stale", requestId: request.requestId, revision, eligibilityScope: request.eligibilityScope, eligibilityRevision: request.eligibilityRevision });
+        return;
+    }
     latestRequestId = request.requestId;
     const normalizedQuery = (0, search_1.normalizeSearchText)(request.query);
-    const key = `${revision}\u0000${request.viewKey}\u0000${normalizedQuery}\u0000${request.eligibleIds.join("\u0001")}`;
+    const key = `${revision}\u0000${request.eligibilityScope}\u0000${request.eligibilityRevision}\u0000${normalizedQuery}\u0000${request.viewKey}`;
     const cached = resultCache.get(key);
     if (cached) {
-        workerScope.postMessage({ type: "results", requestId: request.requestId, revision, query: request.query, viewKey: request.viewKey, ids: cached });
+        workerScope.postMessage({ type: "results", requestId: request.requestId, revision, query: request.query, eligibilityScope: eligibility.scope, eligibilityRevision: eligibility.revision, viewKey: request.viewKey, ids: cached });
         return;
     }
     const ranked = [];
-    for (let index = 0; index < request.eligibleIds.length; index += 1) {
-        if (request.requestId !== latestRequestId)
+    for (let index = 0; index < eligibility.ids.length; index += 1) {
+        if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
             return;
-        const id = request.eligibleIds[index];
+        const id = eligibility.ids[index];
         const text = documents.get(id);
         if (text === undefined)
             continue;
@@ -425,16 +431,16 @@ async function search(request) {
             ranked.push({ id, index, score });
         if (index > 0 && index % 400 === 0) {
             await yieldToWorker();
-            if (request.requestId !== latestRequestId || request.revision !== revision)
+            if (request.requestId !== latestRequestId || request.revision !== revision || activeEligibility !== eligibility)
                 return;
         }
     }
-    if (request.requestId !== latestRequestId)
+    if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
         return;
     ranked.sort((left, right) => right.score - left.score || left.index - right.index);
     const ids = ranked.map(({ id }) => id);
     cacheResult(key, ids);
-    workerScope.postMessage({ type: "results", requestId: request.requestId, revision, query: request.query, viewKey: request.viewKey, ids });
+    workerScope.postMessage({ type: "results", requestId: request.requestId, revision, query: request.query, eligibilityScope: eligibility.scope, eligibilityRevision: eligibility.revision, viewKey: request.viewKey, ids });
 }
 workerScope.onmessage = (event) => {
     const request = event.data;
@@ -443,6 +449,7 @@ workerScope.onmessage = (event) => {
         addDocuments(request.documents);
         revision = request.revision;
         latestRequestId = 0;
+        activeEligibility = null;
         resultCache.clear();
         workerScope.postMessage({ type: "ready", revision });
     }
@@ -453,6 +460,14 @@ workerScope.onmessage = (event) => {
         addDocuments(request.upserts);
         revision = request.revision;
         resultCache.clear();
+    }
+    else if (request.type === "register-eligibility") {
+        if (request.revision !== revision)
+            return;
+        if (activeEligibility?.scope === request.eligibilityScope && activeEligibility.revision === request.eligibilityRevision)
+            return;
+        activeEligibility = { scope: request.eligibilityScope, revision: request.eligibilityRevision, ids: request.ids.slice() };
+        latestRequestId += 1;
     }
     else if (request.type === "cancel") {
         latestRequestId = request.requestId;

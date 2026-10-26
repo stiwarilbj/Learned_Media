@@ -87,6 +87,19 @@ function loadNativeYouTubeWorker({ observeMaps = false, searchOverride } = {}) {
   return { messages, workerMaps, context, send: (data) => context.onmessage({ data }) };
 }
 
+function loadNativeCardWorker() {
+  const messages = [];
+  const context = {
+    self: { postMessage: (message) => messages.push(message) },
+    setTimeout,
+    Map
+  };
+  context.globalThis = context;
+  const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "card-search.worker.js"), "utf8");
+  vm.runInNewContext(source, context);
+  return { messages, send: (data) => context.self.onmessage({ data }) };
+}
+
 async function waitForMessage(messages, predicate, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -167,23 +180,49 @@ test("topic worker reuses normalized searches while returning the current query 
   assert.deepEqual(cached.suggestions, first.suggestions);
 });
 
-test("card worker keeps rank order, honors eligibility, and abandons obsolete search batches", async () => {
+test("website and native card workers keep rank order, reuse scoped eligibility revisions, and cancel obsolete searches", async () => {
   const { rankSearchResults } = require("../lib/search.ts");
-  const { scope, messages } = loadWorker("workers/card-search.worker.ts");
   const documents = Array.from({ length: 1600 }, (_, index) => ({
     id: `card-${index}`,
     text: index % 3 === 0 ? `Ancient astronomy and history fact ${index}` : `Modern science story ${index}`
   }));
-  scope.onmessage({ data: { type: "initialize", revision: 0, documents } });
-  scope.onmessage({ data: { type: "search", requestId: 10, revision: 0, query: "ancient astronomy", eligibleIds: documents.map((item) => item.id), viewKey: "feed" } });
-  scope.onmessage({ data: { type: "search", requestId: 11, revision: 0, query: "modern science", eligibleIds: documents.filter((_, index) => index % 2 === 0).map((item) => item.id), viewKey: "saved" } });
-  const reply = await waitForMessage(messages, (message) => message.type === "results" && message.requestId === 11);
-  assert.equal(reply.viewKey, "saved");
-  assert.ok(reply.ids.length > 0);
-  assert.ok(reply.ids.every((id) => Number(id.slice(5)) % 2 === 0));
-  const eligible = documents.filter((_, index) => index % 2 === 0);
-  assert.deepEqual(reply.ids, rankSearchResults("modern science", eligible, (item) => item.text).map((item) => item.id));
-  assert.equal(messages.some((message) => message.type === "results" && message.requestId === 10), false);
+  const fixtures = [
+    { name: "website", load: () => loadWorker("workers/card-search.worker.ts"), send: (worker, data) => worker.scope.onmessage({ data }), messages: (worker) => worker.messages },
+    { name: "native", load: loadNativeCardWorker, send: (worker, data) => worker.send(data), messages: (worker) => worker.messages }
+  ];
+  for (const fixture of fixtures) {
+    const worker = fixture.load(), messages = fixture.messages(worker);
+    fixture.send(worker, { type: "initialize", revision: 0, documents });
+    const feedIds = documents.map((item) => item.id), savedIds = documents.filter((_, index) => index % 2 === 0).map((item) => item.id);
+    fixture.send(worker, { type: "register-eligibility", revision: 0, eligibilityScope: "account-a/workspace-a/feed", eligibilityRevision: 1, ids: feedIds });
+    fixture.send(worker, { type: "search", requestId: 10, revision: 0, query: "ancient astronomy", eligibilityScope: "account-a/workspace-a/feed", eligibilityRevision: 1, viewKey: "feed" });
+    fixture.send(worker, { type: "register-eligibility", revision: 0, eligibilityScope: "account-a/workspace-a/saved", eligibilityRevision: 2, ids: savedIds });
+    fixture.send(worker, { type: "search", requestId: 11, revision: 0, query: "modern science", eligibilityScope: "account-a/workspace-a/saved", eligibilityRevision: 2, viewKey: "saved" });
+    const reply = await waitForMessage(messages, (message) => message.type === "results" && message.requestId === 11);
+    assert.equal(reply.viewKey, "saved", fixture.name);
+    assert.equal(reply.eligibilityScope, "account-a/workspace-a/saved", fixture.name);
+    assert.equal(reply.eligibilityRevision, 2, fixture.name);
+    assert.ok(reply.ids.length > 0, fixture.name);
+    assert.ok(reply.ids.every((id) => Number(id.slice(5)) % 2 === 0), fixture.name);
+    const eligible = documents.filter((_, index) => index % 2 === 0);
+    assert.deepEqual(Array.from(reply.ids), rankSearchResults("modern science", eligible, (item) => item.text).map((item) => item.id), fixture.name);
+    assert.equal(messages.some((message) => message.type === "results" && message.requestId === 10), false, `${fixture.name} abandons an obsolete eligibility scope`);
+
+    fixture.send(worker, { type: "search", requestId: 12, revision: 0, query: "MODERN science", eligibilityScope: "account-a/workspace-a/saved", eligibilityRevision: 2, viewKey: "saved" });
+    const cached = await waitForMessage(messages, (message) => message.type === "results" && message.requestId === 12);
+    assert.equal(cached.query, "MODERN science", `${fixture.name} returns the current casing for a normalized cached query`);
+    assert.deepEqual(Array.from(cached.ids), Array.from(reply.ids), `${fixture.name} reuses the registered list for another query`);
+
+    const reorderedIds = [...savedIds].reverse();
+    fixture.send(worker, { type: "register-eligibility", revision: 0, eligibilityScope: "account-a/workspace-a/saved", eligibilityRevision: 3, ids: reorderedIds });
+    fixture.send(worker, { type: "search", requestId: 13, revision: 0, query: "modern science", eligibilityScope: "account-a/workspace-a/saved", eligibilityRevision: 3, viewKey: "saved" });
+    const reordered = await waitForMessage(messages, (message) => message.type === "results" && message.requestId === 13);
+    assert.deepEqual(Array.from(reordered.ids), rankSearchResults("modern science", [...eligible].reverse(), (item) => item.text).map((item) => item.id), `${fixture.name} membership order gets its own revision and remains the score tie-breaker`);
+
+    fixture.send(worker, { type: "search", requestId: 14, revision: 0, query: "modern science", eligibilityScope: "account-b/workspace-a/saved", eligibilityRevision: 3, viewKey: "saved" });
+    const stale = await waitForMessage(messages, (message) => message.type === "eligibility-stale" && message.requestId === 14);
+    assert.equal(stale.eligibilityScope, "account-b/workspace-a/saved", `${fixture.name} cannot reuse another account's registered IDs`);
+  }
 });
 
 test("YouTube worker preserves catalog ranking and strict filters across chunks", async () => {

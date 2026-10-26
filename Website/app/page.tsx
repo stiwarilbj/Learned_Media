@@ -87,7 +87,7 @@ type YouTubeWorkspaceActivity = YouTubeActivityState;
 
 type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
-type CardSearchWorkerReply = { type: "ready"; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey: string; ids: string[] };
+type CardSearchWorkerReply = { type: "ready"; revision: number } | { type: "eligibility-stale"; requestId: number; revision: number; eligibilityScope: string; eligibilityRevision: number } | { type: "results"; requestId: number; revision: number; query: string; eligibilityScope: string; eligibilityRevision: number; viewKey: string; ids: string[] };
 type ActiveFactBatch = { workspaceId: string; accountId: string | null; key: string; setup: BatchSetup; accepted: Record<string, string>; replay: boolean };
 type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ coverage?: YouTubeSearchCandidate["coverage"]; videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
 type YouTubeWorkerSearchRequest = { query: string; plan: VideoSearchPlan; topic: YouTubeTopic | "All"; channelId?: string; limit: number; excludedIds?: string[]; expanded?: boolean; viewKey?: string };
@@ -100,6 +100,13 @@ type ConfirmationRequest = {
 
 const compactStateCache = new WeakMap<PersistedState, PersistedState>();
 const compactRecordCache = new WeakMap<AppWorkspaceRecord, AppWorkspaceRecord>();
+
+function sameOrderedCardIds(left: string[], right: string[]) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return false;
+  return true;
+}
 
 function compactStateForLocalStorage(state: PersistedState) {
   const cached = compactStateCache.get(state);
@@ -610,6 +617,7 @@ export default function HomePage() {
   const [cardSearchWorkerReadyState, setCardSearchWorkerReadyState] = useState(false);
   const [cardSearchWorkerFailed, setCardSearchWorkerFailed] = useState(false);
   const [cardSearchIndexRevision, setCardSearchIndexRevision] = useState(0);
+  const [cardSearchEligibilityEpoch, setCardSearchEligibilityEpoch] = useState(0);
   const [cardSearchReply, setCardSearchReply] = useState<CardSearchWorkerReply | null>(null);
   const [youtubeSearchWorkerReadyState, setYoutubeSearchWorkerReadyState] = useState(false);
   const [youtubeSearchWorkerFailed, setYoutubeSearchWorkerFailed] = useState(false);
@@ -631,6 +639,9 @@ export default function HomePage() {
   const cardSearchRevision = useRef(0);
   const cardSearchRequestId = useRef(0);
   const cardSearchSignature = useRef("");
+  const cardSearchEligibilityRevision = useRef(0);
+  const cardSearchEligibilityScopes = useRef(new Map<string, { revision: number; ids: string[] }>());
+  const cardSearchActiveEligibility = useRef<{ scope: string; revision: number } | null>(null);
   const youtubeSearchWorker = useRef<Worker | null>(null);
   const youtubeSearchWorkerReady = useRef(false);
   const youtubeSearchWorkerReadyWaiters = useRef<Array<() => void>>([]);
@@ -1640,6 +1651,8 @@ export default function HomePage() {
     catch { setCardSearchWorkerFailed(true); return; }
     cardSearchWorker.current = worker;
     cardSearchSignature.current = "";
+    cardSearchEligibilityScopes.current.clear();
+    cardSearchActiveEligibility.current = null;
     const initialCards = cardsRef.current;
     cardSearchIndexedCards.current = new Map(initialCards.map((card) => [card.id, { card, text: cardSearchText(card) }]));
     worker.onmessage = (event: MessageEvent<CardSearchWorkerReply>) => {
@@ -1648,6 +1661,12 @@ export default function HomePage() {
         cardSearchWorkerReady.current = true;
         setCardSearchWorkerReadyState(true);
         syncCardSearchIndex(cardsRef.current);
+      } else if (reply.type === "eligibility-stale") {
+        if (reply.requestId === cardSearchRequestId.current) {
+          cardSearchActiveEligibility.current = null;
+          cardSearchSignature.current = "";
+          setCardSearchEligibilityEpoch((epoch) => epoch + 1);
+        }
       } else if (reply.requestId === cardSearchRequestId.current && reply.query.trim() === currentQueryRef.current.trim()) {
         setCardSearchReply(reply);
       }
@@ -3394,6 +3413,12 @@ export default function HomePage() {
     void smartVideoSearch(true);
   }, [apiKey, deferredVideoSearchText, hydrated, smartVideoSearch, view, youtubeSearchBaseKey, youtubeWorkspace.activeTab, youtubeWorkspace.selectedChannelId, youtubeWorkspace.selectedVideoId]);
 
+  const cardSearchEligibilityScope = JSON.stringify([account?.id ?? "local", workspaceId, view]);
+  const cardSearchEligibleIds = useMemo(() => {
+    const eligibleCards = view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : cards;
+    return eligibleCards.map((card) => card.id);
+  }, [cards, view]);
+
   useEffect(() => {
     const text = query.trim();
     if (!text || !hydrated || !cardSearchWorkerReadyState || (view !== "feed" && view !== "saved" && view !== "likes" && view !== "history")) {
@@ -3403,20 +3428,36 @@ export default function HomePage() {
       }
       return;
     }
-    const eligibleCards = view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : cards;
-    const eligibleIds = eligibleCards.map((card) => card.id);
-    const signature = JSON.stringify([cardSearchRevision.current, view, text, eligibleIds]);
+    let eligibility = cardSearchEligibilityScopes.current.get(cardSearchEligibilityScope);
+    if (!eligibility || !sameOrderedCardIds(eligibility.ids, cardSearchEligibleIds)) {
+      eligibility = { revision: ++cardSearchEligibilityRevision.current, ids: cardSearchEligibleIds };
+      cardSearchEligibilityScopes.current.delete(cardSearchEligibilityScope);
+      cardSearchEligibilityScopes.current.set(cardSearchEligibilityScope, eligibility);
+      while (cardSearchEligibilityScopes.current.size > 12) cardSearchEligibilityScopes.current.delete(cardSearchEligibilityScopes.current.keys().next().value!);
+    } else {
+      cardSearchEligibilityScopes.current.delete(cardSearchEligibilityScope);
+      cardSearchEligibilityScopes.current.set(cardSearchEligibilityScope, eligibility);
+    }
+    const activeEligibility = cardSearchActiveEligibility.current;
+    if (!activeEligibility || activeEligibility.scope !== cardSearchEligibilityScope || activeEligibility.revision !== eligibility.revision) {
+      cardSearchWorker.current?.postMessage({ type: "register-eligibility", revision: cardSearchRevision.current, eligibilityScope: cardSearchEligibilityScope, eligibilityRevision: eligibility.revision, ids: eligibility.ids });
+      cardSearchActiveEligibility.current = { scope: cardSearchEligibilityScope, revision: eligibility.revision };
+    }
+    const signature = JSON.stringify([cardSearchRevision.current, cardSearchEligibilityScope, text, eligibility.revision]);
     if (cardSearchSignature.current === signature) return;
     cardSearchSignature.current = signature;
     const requestId = ++cardSearchRequestId.current;
-    cardSearchWorker.current?.postMessage({ type: "search", requestId, revision: cardSearchRevision.current, query: text, eligibleIds, viewKey: view });
-  }, [cardSearchIndexRevision, cardSearchWorkerReadyState, cards, hydrated, query, view]);
+    cardSearchWorker.current?.postMessage({ type: "search", requestId, revision: cardSearchRevision.current, query: text, eligibilityScope: cardSearchEligibilityScope, eligibilityRevision: eligibility.revision, viewKey: view });
+  }, [account?.id, cardSearchEligibilityEpoch, cardSearchEligibilityScope, cardSearchEligibleIds, cardSearchIndexRevision, cardSearchWorkerReadyState, hydrated, query, view, workspaceId]);
 
   const cardById = useMemo(() => new Map(cards.map((card) => [card.id, card])), [cards]);
   const collectionBase = useMemo(() => view === "saved" ? cards.filter((card) => card.saved) : view === "likes" ? cards.filter((card) => card.liked) : view === "history" ? cards : [], [cards, view]);
   const cardSearchResult = cardSearchReply?.type === "results" ? cardSearchReply : null;
+  const currentCardSearchEligibility = cardSearchEligibilityScopes.current.get(cardSearchEligibilityScope);
   const matchingCardIds = cardSearchResult
     && cardSearchResult.revision === cardSearchIndexRevision
+    && cardSearchResult.eligibilityScope === cardSearchEligibilityScope
+    && cardSearchResult.eligibilityRevision === currentCardSearchEligibility?.revision
     && cardSearchResult.viewKey === view
     ? cardSearchResult.ids
     : null;

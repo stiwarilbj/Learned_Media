@@ -3002,7 +3002,7 @@
     const feedCards = state.cards;
     column.appendChild(node("div", { className: "feed-intro" }, node("div", {}, node("h1", { text: "Keep going." }), node("p", { text: "One small idea at a time. Every card has a place to look next." })), node("span", { className: "feed-count", text: feedCards.length + " cards in this session" })));
     const list = node("div", { className: "fact-feed" });
-    let visibleCards=searchedCards(feedCards);
+    let visibleCards=searchedCards("feed");
     if(state.topicDetour && state.query){const pinned=new Set([state.topicDetour.sourceCardId].concat(state.topicDetour.slotCardIds));const matches=new Set(visibleCards.map(function(card){return card.id;}));visibleCards=feedCards.filter(function(card){return pinned.has(card.id)||matches.has(card.id);});}
     if(visibleCards.length>20)list.appendChild(window.LEARNED_MEDIA_WINDOWED.create(visibleCards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement}));
     else visibleCards.forEach(function(card){list.appendChild(cardElement(card));});
@@ -3170,24 +3170,55 @@
     const grid=node("div",{className:"explore-grid"});
     shared.EXPLORE_CATEGORIES.forEach(function(category){const topics=node("div",{className:"explore-topics"});category.topics.forEach(function(label){topics.appendChild(node("button",{onClick:function(){chooseExploreTopic(label);}},label,svg("arrow",13)));});grid.appendChild(node("article",{className:"explore-card "+category.tone},node("div",{className:"explore-card-top"},node("span",{className:"explore-symbol"},svg(category.label==="Science"?"flask":category.label==="History"?"history":category.label==="Geography"?"compass":"sparkles",18)),svg("arrow",18)),node("h2",{text:category.label}),node("p",{text:category.description}),topics));});section.appendChild(grid);return section;
   }
-  let nativeCardWorker=null,nativeCardRevision=0,nativeCardJob=0,nativeCardSearchKey="",nativeCardResultKey="",nativeCardResultIds=[];
-  const nativeIndexedCards=new Map();
-  function searchedCards(cards){
-    const query=shared.search.normalizeSearchText(state.query);if(!query){if(nativeCardSearchKey){nativeCardSearchKey="";nativeCardJob++;nativeCardWorker?.postMessage?.({type:"cancel",requestId:nativeCardJob});}return cards;}
+  let nativeCardWorker=null,nativeCardRevision=0,nativeCardJob=0,nativeCardSearchKey="",nativeCardResultKey="",nativeCardResultIds=[],nativeCardEligibilityRevision=0,nativeCardActiveEligibility=null;
+  const nativeIndexedCards=new Map(),nativeCardEligibilityScopes=new Map();
+  function sameCardIds(left,right){if(left===right)return true;if(left.length!==right.length)return false;for(let index=0;index<left.length;index++)if(left[index]!==right[index])return false;return true;}
+  function cardSearchCollection(kind){
+    const scope=JSON.stringify([state.account&&state.account.id||"local",state.workspaceId,kind]);
+    let snapshot=nativeCardEligibilityScopes.get(scope);
+    if(snapshot&&snapshot.source===state.cards){nativeCardEligibilityScopes.delete(scope);nativeCardEligibilityScopes.set(scope,snapshot);return snapshot;}
+    const cards=kind==="saved"?state.cards.filter(function(card){return card.saved;}):kind==="likes"?state.cards.filter(function(card){return card.liked;}):state.cards;
+    const ids=cards.map(function(card){return card.id;}),changed=!snapshot||!sameCardIds(snapshot.ids,ids);
+    snapshot={source:state.cards,cards:cards,ids:changed?ids:snapshot.ids,revision:changed?++nativeCardEligibilityRevision:snapshot.revision,scope:scope};
+    nativeCardEligibilityScopes.delete(scope);nativeCardEligibilityScopes.set(scope,snapshot);
+    while(nativeCardEligibilityScopes.size>12)nativeCardEligibilityScopes.delete(nativeCardEligibilityScopes.keys().next().value);
+    return snapshot;
+  }
+  function searchedCards(kind){
+    const eligibility=cardSearchCollection(kind),cards=eligibility.cards,query=shared.search.normalizeSearchText(state.query);
+    if(!query){if(nativeCardSearchKey){nativeCardSearchKey="";nativeCardJob++;nativeCardWorker?.postMessage?.({type:"cancel",requestId:nativeCardJob});}return cards;}
     const upserts=[],removeIds=[],live=new Set(state.cards.map(function(card){return card.id;}));
     for(const card of state.cards){const text=shared.cards.cardSearchText(card);if(nativeIndexedCards.get(card.id)!==text){nativeIndexedCards.set(card.id,text);upserts.push({id:card.id,text:text});}}
     for(const id of nativeIndexedCards.keys())if(!live.has(id)){nativeIndexedCards.delete(id);removeIds.push(id);}
     if(upserts.length || removeIds.length)nativeCardRevision++;
     if(nativeCardWorker===null && typeof Worker!=="undefined"){
-      try{nativeCardWorker=new Worker("card-search.worker.js");nativeCardWorker.onmessage=function(event){const result=event.data;if(result.type==="results" && result.requestId===nativeCardJob && result.revision===nativeCardRevision && result.viewKey===nativeCardSearchKey){nativeCardResultKey=nativeCardSearchKey;nativeCardResultIds=result.ids;render();}};nativeCardWorker.onerror=function(){nativeCardWorker.terminate();nativeCardWorker=false;nativeCardSearchKey="";render();};nativeCardWorker.postMessage({type:"initialize",revision:nativeCardRevision,documents:Array.from(nativeIndexedCards,function(entry){return {id:entry[0],text:entry[1]};})});}catch{nativeCardWorker=false;}
+      try{
+        nativeCardWorker=new Worker("card-search.worker.js");
+        nativeCardWorker.onmessage=function(event){
+          const result=event.data;
+          if(result.type==="eligibility-stale" && result.requestId===nativeCardJob){nativeCardActiveEligibility=null;nativeCardSearchKey="";render();return;}
+          if(result.type==="results" && result.requestId===nativeCardJob && result.revision===nativeCardRevision && result.viewKey===nativeCardSearchKey && result.eligibilityScope===nativeCardActiveEligibility?.scope && result.eligibilityRevision===nativeCardActiveEligibility?.revision){nativeCardResultKey=nativeCardSearchKey;nativeCardResultIds=result.ids;render();}
+        };
+        nativeCardWorker.onerror=function(){nativeCardWorker.terminate();nativeCardWorker=false;nativeCardSearchKey="";nativeCardActiveEligibility=null;render();};
+        nativeCardWorker.postMessage({type:"initialize",revision:nativeCardRevision,documents:Array.from(nativeIndexedCards,function(entry){return {id:entry[0],text:entry[1]};})});
+        nativeCardActiveEligibility=null;
+      }catch{nativeCardWorker=false;}
     }else if(nativeCardWorker && (upserts.length || removeIds.length))nativeCardWorker.postMessage({type:"update",revision:nativeCardRevision,upserts:upserts,removeIds:removeIds});
-    const key=JSON.stringify([state.workspaceId,state.view,nativeCardRevision,query,cards.map(function(card){return card.id;})]);
-    if(key!==nativeCardSearchKey){nativeCardSearchKey=key;const id=++nativeCardJob;if(nativeCardWorker)nativeCardWorker.postMessage({type:"search",requestId:id,revision:nativeCardRevision,query:state.query,eligibleIds:cards.map(function(card){return card.id;}),viewKey:key});else (async function(){const result=[];for(let index=0;index<cards.length;index++){if(id!==nativeCardJob)return;const card=cards[index],score=shared.search.searchScoreNormalized(query,shared.search.normalizeSearchText(nativeIndexedCards.get(card.id)||""));if(score>0)result.push({id:card.id,index:index,score:score});if(index%100===99)await new Promise(function(resolve){setTimeout(resolve,0);});}if(id===nativeCardJob){result.sort(function(a,b){return b.score-a.score || a.index-b.index;});nativeCardResultIds=result.map(function(item){return item.id;});nativeCardResultKey=key;render();}})();}
+    if(nativeCardWorker&&(!nativeCardActiveEligibility||nativeCardActiveEligibility.scope!==eligibility.scope||nativeCardActiveEligibility.revision!==eligibility.revision)){
+      nativeCardWorker.postMessage({type:"register-eligibility",revision:nativeCardRevision,eligibilityScope:eligibility.scope,eligibilityRevision:eligibility.revision,ids:eligibility.ids});
+      nativeCardActiveEligibility={scope:eligibility.scope,revision:eligibility.revision};
+    }
+    const key=JSON.stringify([state.account&&state.account.id||"local",state.workspaceId,kind,nativeCardRevision,query,eligibility.revision]);
+    if(key!==nativeCardSearchKey){
+      nativeCardSearchKey=key;const id=++nativeCardJob;
+      if(nativeCardWorker)nativeCardWorker.postMessage({type:"search",requestId:id,revision:nativeCardRevision,query:state.query,eligibilityScope:eligibility.scope,eligibilityRevision:eligibility.revision,viewKey:key});
+      else (async function(){const result=[];for(let index=0;index<cards.length;index++){if(id!==nativeCardJob)return;const card=cards[index],score=shared.search.searchScoreNormalized(query,shared.search.normalizeSearchText(nativeIndexedCards.get(card.id)||""));if(score>0)result.push({id:card.id,index:index,score:score});if(index%100===99)await new Promise(function(resolve){setTimeout(resolve,0);});}if(id===nativeCardJob){result.sort(function(a,b){return b.score-a.score || a.index-b.index;});nativeCardResultIds=result.map(function(item){return item.id;});nativeCardResultKey=key;render();}})();
+    }
     if(nativeCardResultKey!==key)return [];
     const byId=new Map(cards.map(function(card){return [card.id,card];}));return nativeCardResultIds.map(function(id){return byId.get(id);}).filter(Boolean);
   }
   function collectionView(kind) {
-    const cards = searchedCards(kind === "saved" ? state.cards.filter(function (card) { return card.saved; }) : kind === "likes" ? state.cards.filter(function (card) { return card.liked; }) : state.cards);
+    const cards = searchedCards(kind);
     const label = kind.charAt(0).toUpperCase() + kind.slice(1);
     const section = node("section", { className: "content-view" });
     section.appendChild(node("div", { className: "view-heading" }, node("div", {}, node("span", { className: "eyebrow", text: label }), node("h1", { text: "Your " + label.toLowerCase() + " discoveries." }), node("p", { text: "Keep the ideas that made you pause." }))));

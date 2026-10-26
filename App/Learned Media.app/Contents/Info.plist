@@ -8,8 +8,8 @@
   <key>CFBundleName</key><string>Learned Media</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0.0</string>
-  <key>CFBundleVersion</key><string>20261026041727</string>
-  <key>LMReleaseIdentifier</key><string>8738e13eb9eb56eddf83679d79d2e6bf550331e13d0fcb51d8479a662f5d43e4</string>
+  <key>CFBundleVersion</key><string>20261026043025</string>
+  <key>LMReleaseIdentifier</key><string>b76529d23aea32050c0802001f20e6ae26de64882c6c052eb5a4a4c6cfca53db</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
