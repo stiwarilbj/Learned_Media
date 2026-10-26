@@ -7,9 +7,12 @@ const MAX_CONCURRENT_WIKIPEDIA_REQUESTS = 4;
 const WIKIPEDIA_REQUEST_TIMEOUT_MS = 20_000;
 let wikipediaInFlight = 0;
 let wikipediaWaiterCount = 0;
-type WikipediaWaiter = { priority: number; active: boolean; resolve: () => void; reject: (error: Error) => void; signal?: AbortSignal; onAbort: () => void };
+type WikipediaWaiter = { priority: number; origin: string; active: boolean; resolve: () => void; reject: (error: Error) => void; signal?: AbortSignal; onAbort: () => void };
 type WikipediaWaitQueue = { entries: WikipediaWaiter[]; head: number; inactiveCount: number; activeCount: number };
 const wikipediaWaitQueues = new Map<number, WikipediaWaitQueue>();
+const wikipediaNotBeforeByOrigin = new Map<string, number>();
+let wikipediaCooldownTimer: ReturnType<typeof setTimeout> | undefined;
+let wikipediaCooldownTimerAt = Number.POSITIVE_INFINITY;
 
 function compactWikipediaQueue(priority: number, queue: WikipediaWaitQueue) {
   if (queue.activeCount === 0) {
@@ -24,36 +27,90 @@ function compactWikipediaQueue(priority: number, queue: WikipediaWaitQueue) {
   queue.inactiveCount = 0;
 }
 
-function nextWikipediaWaiter() {
+function cancelWikipediaCooldownTimer() {
+  if (wikipediaCooldownTimer !== undefined) clearTimeout(wikipediaCooldownTimer);
+  wikipediaCooldownTimer = undefined;
+  wikipediaCooldownTimerAt = Number.POSITIVE_INFINITY;
+}
+
+function scheduleWikipediaCooldownWake(at: number | undefined) {
+  if (wikipediaInFlight >= MAX_CONCURRENT_WIKIPEDIA_REQUESTS || wikipediaWaiterCount === 0 || at === undefined) {
+    cancelWikipediaCooldownTimer();
+    return;
+  }
+  if (wikipediaCooldownTimer !== undefined && wikipediaCooldownTimerAt === at) return;
+  cancelWikipediaCooldownTimer();
+  wikipediaCooldownTimerAt = at;
+  const expectedAt = at;
+  const delay = Math.max(0, at - performance.now());
+  wikipediaCooldownTimer = setTimeout(() => {
+    if (wikipediaCooldownTimerAt !== expectedAt) return;
+    wikipediaCooldownTimer = undefined;
+    wikipediaCooldownTimerAt = Number.POSITIVE_INFINITY;
+    dispatchWikipediaWaiters();
+  }, Math.min(delay, 2_147_483_647));
+}
+
+function nextWikipediaWaiter(now = performance.now()) {
+  let earliestCooldown: number | undefined;
   for (const priority of Array.from(wikipediaWaitQueues.keys()).sort((left, right) => left - right)) {
     const queue = wikipediaWaitQueues.get(priority);
     if (!queue) continue;
-    while (queue.head < queue.entries.length) {
-      const waiter = queue.entries[queue.head++];
-      queue.inactiveCount += 1;
-      if (!waiter.active) {
-        compactWikipediaQueue(priority, queue);
+    while (queue.head < queue.entries.length && !queue.entries[queue.head].active) queue.head += 1;
+    let selectedIndex = -1;
+    for (let index = queue.head; index < queue.entries.length; index += 1) {
+      const waiter = queue.entries[index];
+      if (!waiter.active) continue;
+      const notBefore = wikipediaNotBeforeByOrigin.get(waiter.origin) ?? 0;
+      if (notBefore > now) {
+        earliestCooldown = earliestCooldown === undefined ? notBefore : Math.min(earliestCooldown, notBefore);
         continue;
       }
-      waiter.active = false;
-      queue.activeCount -= 1;
-      wikipediaWaiterCount -= 1;
-      waiter.signal?.removeEventListener("abort", waiter.onAbort);
-      compactWikipediaQueue(priority, queue);
-      return waiter;
+      selectedIndex = index;
+      break;
     }
-    wikipediaWaitQueues.delete(priority);
+    if (selectedIndex < 0) {
+      compactWikipediaQueue(priority, queue);
+      continue;
+    }
+    const waiter = queue.entries[selectedIndex];
+    waiter.active = false;
+    queue.activeCount -= 1;
+    queue.inactiveCount += 1;
+    wikipediaWaiterCount -= 1;
+    waiter.signal?.removeEventListener("abort", waiter.onAbort);
+    if (selectedIndex === queue.head) {
+      while (queue.head < queue.entries.length && !queue.entries[queue.head].active) queue.head += 1;
+    }
+    compactWikipediaQueue(priority, queue);
+    return { waiter, earliestCooldown };
   }
-  return undefined;
+  return { waiter: undefined, earliestCooldown };
 }
 
-async function acquireWikipediaSlot(signal?: AbortSignal, priority = 0) {
+function dispatchWikipediaWaiters() {
+  while (wikipediaInFlight < MAX_CONCURRENT_WIKIPEDIA_REQUESTS) {
+    const next = nextWikipediaWaiter();
+    if (!next.waiter) {
+      scheduleWikipediaCooldownWake(next.earliestCooldown);
+      return;
+    }
+    wikipediaInFlight += 1;
+    next.waiter.resolve();
+  }
+  cancelWikipediaCooldownTimer();
+}
+
+async function acquireWikipediaSlot(signal?: AbortSignal, priority = 0, origin = WIKIPEDIA_API) {
   if (signal?.aborted) throw new DOMException("Wikipedia request canceled.", "AbortError");
-  if (wikipediaInFlight < MAX_CONCURRENT_WIKIPEDIA_REQUESTS && wikipediaWaiterCount === 0) { wikipediaInFlight += 1; return; }
+  const notBefore = wikipediaNotBeforeByOrigin.get(origin) ?? 0;
+  if (notBefore <= performance.now()) wikipediaNotBeforeByOrigin.delete(origin);
+  if (wikipediaInFlight < MAX_CONCURRENT_WIKIPEDIA_REQUESTS && wikipediaWaiterCount === 0 && notBefore <= performance.now()) { wikipediaInFlight += 1; return; }
   await new Promise<void>((resolve, reject) => {
     let waiter: WikipediaWaiter;
     waiter = {
       priority,
+      origin,
       active: true,
       resolve: () => { signal?.removeEventListener("abort", waiter.onAbort); resolve(); },
       reject,
@@ -69,6 +126,7 @@ async function acquireWikipediaSlot(signal?: AbortSignal, priority = 0) {
           compactWikipediaQueue(priority, queue);
         }
         reject(new DOMException("Wikipedia request canceled.", "AbortError"));
+        dispatchWikipediaWaiters();
       }
     };
     const queue = wikipediaWaitQueues.get(priority) ?? { entries: [], head: 0, inactiveCount: 0, activeCount: 0 };
@@ -78,13 +136,35 @@ async function acquireWikipediaSlot(signal?: AbortSignal, priority = 0) {
     wikipediaWaiterCount += 1;
     signal?.addEventListener("abort", waiter.onAbort, { once: true });
     if (signal?.aborted) waiter.onAbort();
+    else dispatchWikipediaWaiters();
   });
 }
 
 function releaseWikipediaSlot() {
-  const next = nextWikipediaWaiter();
-  if (!next) { wikipediaInFlight = Math.max(0, wikipediaInFlight - 1); return; }
-  next.resolve();
+  wikipediaInFlight = Math.max(0, wikipediaInFlight - 1);
+  dispatchWikipediaWaiters();
+}
+
+function retryAfterMilliseconds(value: string | null): number | undefined {
+  const retryAfter = value?.trim();
+  if (!retryAfter) return undefined;
+  if (/^\d+(?:\.\d+)?$/.test(retryAfter)) {
+    const seconds = Number(retryAfter);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : undefined;
+  }
+  const timestamp = Date.parse(retryAfter);
+  if (!Number.isFinite(timestamp)) return undefined;
+  const delay = timestamp - Date.now();
+  return delay > 0 ? delay : undefined;
+}
+
+function noteWikipediaCooldown(origin: string, value: string | null) {
+  const delay = retryAfterMilliseconds(value);
+  if (delay === undefined) return;
+  const deadline = performance.now() + delay;
+  const previous = wikipediaNotBeforeByOrigin.get(origin) ?? 0;
+  if (deadline > previous) wikipediaNotBeforeByOrigin.set(origin, deadline);
+  dispatchWikipediaWaiters();
 }
 
 type SearchResponse = {
@@ -288,7 +368,8 @@ function apiUrl(params: Record<string, string>) {
 
 async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cacheResponse = true): Promise<T | null> {
   const queuedAt = performance.now();
-  await acquireWikipediaSlot(signal, priority);
+  const origin = new URL(url).origin;
+  await acquireWikipediaSlot(signal, priority, origin);
   recordPerformance("wikipedia", "queue_ms", Math.max(0, performance.now() - queuedAt));
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort();
@@ -302,7 +383,12 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cache
       ...(cacheResponse ? { next: { revalidate: 3600 } } : { cache: "no-store" as const }),
       signal: controller.signal
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      if (response.status === 429 || response.status === 503) {
+        noteWikipediaCooldown(response.url ? new URL(response.url).origin : origin, response.headers.get("Retry-After"));
+      }
+      return null;
+    }
     body = await response.text();
   } catch (error) {
     if (signal?.aborted) throw error;

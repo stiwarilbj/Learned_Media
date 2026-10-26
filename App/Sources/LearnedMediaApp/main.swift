@@ -572,12 +572,14 @@ private actor WikipediaRequestLimiter {
     private final class Waiter {
         let id: UUID
         let priority: Int
+        let origin: String
         let continuation: CheckedContinuation<Void, Error>
         var active = true
 
-        init(id: UUID, priority: Int, continuation: CheckedContinuation<Void, Error>) {
+        init(id: UUID, priority: Int, origin: String, continuation: CheckedContinuation<Void, Error>) {
             self.id = id
             self.priority = priority
+            self.origin = origin
             self.continuation = continuation
         }
     }
@@ -591,21 +593,26 @@ private actor WikipediaRequestLimiter {
     private var queues: [Int: WaitQueue] = [:]
     private var waitersByID: [UUID: Waiter] = [:]
     private var activeWaiterCount = 0
+    private let clock = ContinuousClock()
+    private var notBeforeByOrigin: [String: ContinuousClock.Instant] = [:]
+    private var cooldownWakeTask: Task<Void, Never>?
+    private var cooldownWakeDeadline: ContinuousClock.Instant?
 
-    func acquire(priority: Int = 0) async throws {
+    func acquire(priority: Int = 0, origin: String) async throws {
         try Task.checkCancellation()
-        if permits > 0 && activeWaiterCount == 0 { permits -= 1; return }
+        if permits > 0 && activeWaiterCount == 0 && cooldownDeadline(for: origin, now: clock.now) == nil { permits -= 1; return }
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
-                let waiter = Waiter(id: id, priority: priority, continuation: continuation)
+                let waiter = Waiter(id: id, priority: priority, origin: origin, continuation: continuation)
                 var queue = queues[priority] ?? WaitQueue()
                 queue.entries.append(waiter)
                 queue.activeCount += 1
                 queues[priority] = queue
                 waitersByID[id] = waiter
                 activeWaiterCount += 1
+                dispatchWaiters()
             }
         } onCancel: {
             Task { await self.cancel(id) }
@@ -621,6 +628,7 @@ private actor WikipediaRequestLimiter {
             compact(&queue, priority: waiter.priority)
         }
         waiter.continuation.resume(throwing: CancellationError())
+        dispatchWaiters()
     }
     private func compact(_ queue: inout WaitQueue, priority: Int) {
         guard queue.activeCount > 0 else {
@@ -638,33 +646,115 @@ private actor WikipediaRequestLimiter {
         queue.inactiveCount = 0
         queues[priority] = queue
     }
-    private func nextWaiter() -> Waiter? {
+    private func cooldownDeadline(for origin: String, now: ContinuousClock.Instant) -> ContinuousClock.Instant? {
+        guard let deadline = notBeforeByOrigin[origin] else { return nil }
+        guard deadline > now else { notBeforeByOrigin[origin] = nil; return nil }
+        return deadline
+    }
+
+    private func nextWaiter(now: ContinuousClock.Instant) -> (waiter: Waiter?, earliestCooldown: ContinuousClock.Instant?) {
+        var earliestCooldown: ContinuousClock.Instant?
         for priority in queues.keys.sorted() {
             guard var queue = queues[priority] else { continue }
-            while queue.head < queue.entries.count {
-                let waiter = queue.entries[queue.head]
-                queue.head += 1
-                queue.inactiveCount += 1
-                guard waiter.active else {
-                    compact(&queue, priority: priority)
+            while queue.head < queue.entries.count && !queue.entries[queue.head].active { queue.head += 1 }
+            guard queue.activeCount > 0 else {
+                queues[priority] = nil
+                continue
+            }
+            var selectedIndex: Int?
+            for index in queue.head..<queue.entries.count {
+                let waiter = queue.entries[index]
+                guard waiter.active else { continue }
+                if let deadline = cooldownDeadline(for: waiter.origin, now: now) {
+                    earliestCooldown = earliestCooldown.map { min($0, deadline) } ?? deadline
                     continue
                 }
-                waiter.active = false
-                queue.activeCount -= 1
-                activeWaiterCount -= 1
-                waitersByID[waiter.id] = nil
-                compact(&queue, priority: priority)
-                return waiter
+                selectedIndex = index
+                break
             }
-            queues[priority] = nil
+            guard let selectedIndex else {
+                compact(&queue, priority: priority)
+                continue
+            }
+            let waiter = queue.entries[selectedIndex]
+            waiter.active = false
+            queue.activeCount -= 1
+            queue.inactiveCount += 1
+            activeWaiterCount -= 1
+            waitersByID[waiter.id] = nil
+            if selectedIndex == queue.head {
+                while queue.head < queue.entries.count && !queue.entries[queue.head].active { queue.head += 1 }
+            }
+            compact(&queue, priority: priority)
+            return (waiter, earliestCooldown)
         }
-        return nil
+        return (nil, earliestCooldown)
     }
-    func release() {
-        if let waiter = nextWaiter() {
+
+    private func dispatchWaiters() {
+        while permits > 0 {
+            let next = nextWaiter(now: clock.now)
+            guard let waiter = next.waiter else {
+                scheduleCooldownWake(at: next.earliestCooldown)
+                return
+            }
+            permits -= 1
             waiter.continuation.resume()
-        } else { permits += 1 }
+        }
+        scheduleCooldownWake(at: nil)
     }
+
+    private func scheduleCooldownWake(at deadline: ContinuousClock.Instant?) {
+        guard permits > 0, activeWaiterCount > 0, let deadline else {
+            cooldownWakeTask?.cancel()
+            cooldownWakeTask = nil
+            cooldownWakeDeadline = nil
+            return
+        }
+        guard cooldownWakeDeadline != deadline else { return }
+        cooldownWakeTask?.cancel()
+        cooldownWakeDeadline = deadline
+        let clock = self.clock
+        cooldownWakeTask = Task { [weak self] in
+            do { try await clock.sleep(until: deadline) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            await self?.cooldownDidExpire(deadline)
+        }
+    }
+
+    private func cooldownDidExpire(_ deadline: ContinuousClock.Instant) {
+        guard cooldownWakeDeadline == deadline else { return }
+        cooldownWakeTask = nil
+        cooldownWakeDeadline = nil
+        let now = clock.now
+        for origin in Array(notBeforeByOrigin.keys) where (notBeforeByOrigin[origin] ?? now) <= now {
+            notBeforeByOrigin[origin] = nil
+        }
+        dispatchWaiters()
+    }
+
+    func applyCooldown(origin: String, seconds: TimeInterval) {
+        guard seconds.isFinite, seconds > 0 else { return }
+        let milliseconds = Int64(min(seconds * 1_000, Double(Int64.max / 4)).rounded(.up))
+        let deadline = clock.now.advanced(by: .milliseconds(milliseconds))
+        if let current = notBeforeByOrigin[origin], current >= deadline { return }
+        notBeforeByOrigin[origin] = deadline
+        dispatchWaiters()
+    }
+
+    func release() {
+        permits += 1
+        dispatchWaiters()
+    }
+}
+
+private func wikipediaOrigin(_ url: URL) -> String {
+    let scheme = (url.scheme ?? "https").lowercased()
+    let host = (url.host ?? "").lowercased()
+    let defaultPort = scheme == "https" ? 443 : (scheme == "http" ? 80 : nil)
+    let portSuffix = url.port.flatMap { $0 == defaultPort ? nil : ":\($0)" } ?? ""
+    return "\(scheme)://\(host)\(portSuffix)"
 }
 
 private actor YouTubeRequestLimiter {
@@ -760,6 +850,7 @@ private final class LocalWorkspaceStore {
 private final class WikipediaClient: @unchecked Sendable {
     private let session = URLSession(configuration: .ephemeral)
     private let limiter = WikipediaRequestLimiter()
+    private let retryAfterDateParser = RetryAfterDateParser()
     private let pageCache = WikipediaPageCache()
     private let downloads = ConditionalDownloadCache()
     private func request<T: Decodable>(_ url: URL, priority: Int = 0) async throws -> T {
@@ -767,8 +858,9 @@ private final class WikipediaClient: @unchecked Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("LearnedMedia/1.0 (knowledge-feed)", forHTTPHeaderField: "User-Agent")
         let conditional = await downloads.prepare(request)
+        let origin = wikipediaOrigin(url)
         let queuedAt = ProcessInfo.processInfo.systemUptime
-        try await limiter.acquire(priority: priority)
+        try await limiter.acquire(priority: priority, origin: origin)
         PerformanceDiagnostics.shared.record(.wikipedia, .queueMs, max(0, ProcessInfo.processInfo.systemUptime - queuedAt) * 1_000)
         let data: Data
         let response: URLResponse
@@ -779,6 +871,12 @@ private final class WikipediaClient: @unchecked Sendable {
         } catch {
             await limiter.release()
             throw error
+        }
+        if let http = response as? HTTPURLResponse,
+           http.statusCode == 429 || http.statusCode == 503,
+           let value = http.value(forHTTPHeaderField: "Retry-After"),
+           let delay = await retryAfterDateParser.delay(from: value) {
+            await limiter.applyCooldown(origin: wikipediaOrigin(http.url ?? url), seconds: delay)
         }
         await limiter.release()
         PerformanceDiagnostics.shared.record(.wikipedia, .responseBytesRead, Double(data.count))
@@ -1272,6 +1370,14 @@ private actor RetryAfterDateParser {
 
     func date(from value: String) -> Date? {
         formatter.date(from: value)
+    }
+
+    func delay(from value: String, relativeTo now: Date = Date()) -> TimeInterval? {
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let seconds = TimeInterval(value), seconds.isFinite, seconds > 0 { return seconds }
+        guard let date = formatter.date(from: value) else { return nil }
+        let delay = date.timeIntervalSince(now)
+        return delay.isFinite && delay > 0 ? delay : nil
     }
 }
 
