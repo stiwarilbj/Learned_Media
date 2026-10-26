@@ -476,6 +476,20 @@ export function compareSemanticCandidates<T extends Video>(a: SemanticCandidate<
   if (sort === "oldest") return a.video.publishedAt.localeCompare(b.video.publishedAt) || b.score-a.score;
   return b.score-a.score;
 }
+/** Insert into an already ranked result list while retaining only its best N entries. */
+export function insertBoundedRanked<T>(items: T[], candidate: T, limit: number, compare: (left: T, right: T) => number) {
+  const maximum = Math.max(0, Math.floor(limit));
+  if (!maximum) return;
+  if (items.length >= maximum && compare(candidate, items[items.length - 1]) >= 0) return;
+  let low = 0, high = items.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (compare(items[middle], candidate) <= 0) low = middle + 1;
+    else high = middle;
+  }
+  items.splice(low, 0, candidate);
+  if (items.length > maximum) items.pop();
+}
 const emptyExcludedIds: ReadonlySet<string> = new Set<string>();
 export function searchPreparedSemanticVideos<T extends Video>(videos: T[], prepared: PreparedVideoSearch, limit = 80, excludedIds: ReadonlySet<string> = emptyExcludedIds): SemanticCandidate<T>[] {
   const { groups, related } = prepared;

@@ -148,6 +148,7 @@ exports.eligibleSemanticVideo = eligibleSemanticVideo;
 exports.videoConceptCoverage = videoConceptCoverage;
 exports.semanticCoverage = semanticCoverage;
 exports.compareSemanticCandidates = compareSemanticCandidates;
+exports.insertBoundedRanked = insertBoundedRanked;
 exports.searchPreparedSemanticVideos = searchPreparedSemanticVideos;
 exports.searchSemanticVideos = searchSemanticVideos;
 exports.searchSemanticVideosYielding = searchSemanticVideosYielding;
@@ -642,6 +643,25 @@ function compareSemanticCandidates(a, b, sort) {
     if (sort === "oldest")
         return a.video.publishedAt.localeCompare(b.video.publishedAt) || b.score - a.score;
     return b.score - a.score;
+}
+/** Insert into an already ranked result list while retaining only its best N entries. */
+function insertBoundedRanked(items, candidate, limit, compare) {
+    const maximum = Math.max(0, Math.floor(limit));
+    if (!maximum)
+        return;
+    if (items.length >= maximum && compare(candidate, items[items.length - 1]) >= 0)
+        return;
+    let low = 0, high = items.length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (compare(items[middle], candidate) <= 0)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    items.splice(low, 0, candidate);
+    if (items.length > maximum)
+        items.pop();
 }
 const emptyExcludedIds = new Set();
 function searchPreparedSemanticVideos(videos, prepared, limit = 80, excludedIds = emptyExcludedIds) {

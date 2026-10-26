@@ -2,7 +2,7 @@
 import { SessionCache } from "@/lib/session-cache";
 import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
 import type { SearchableVideoMetadata } from "@/lib/video-metadata";
-import { PreparedVideoSearchCache, searchPreparedSemanticVideos } from "@/lib/video-semantic";
+import { insertBoundedRanked, PreparedVideoSearchCache, searchPreparedSemanticVideos } from "@/lib/video-semantic";
 
 type SearchRequest = {
   type: "search";
@@ -102,8 +102,15 @@ async function search(request: SearchRequest) {
   const catalog = orderedVideos;
   const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, revision, request.viewKey ?? "worker");
   const excludedIds = request.excludedIds?.length ? new Set(request.excludedIds) : new Set<string>();
-  const direct: Array<{ candidate: CandidateReply; index: number }> = [];
-  const fallback: Array<{ candidate: CandidateReply; index: number }> = [];
+  type RankedCandidateEntry = { candidate: CandidateReply; index: number };
+  const direct: RankedCandidateEntry[] = [];
+  const fallback: RankedCandidateEntry[] = [];
+  const resultLimit = Math.max(1, Math.floor(request.limit));
+  const compareEntries = (left: RankedCandidateEntry, right: RankedCandidateEntry) => {
+    const a = catalog[left.index], b = catalog[right.index];
+    const dateOrder = prepared.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : prepared.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
+    return dateOrder || right.candidate.score - left.candidate.score || left.index - right.index;
+  };
   const chunkSize = 600;
   for (let start = 0; start < catalog.length; start += chunkSize) {
     if (request.requestId !== latestRequestId || request.revision !== revision || epoch !== indexEpoch) return;
@@ -112,7 +119,7 @@ async function search(request: SearchRequest) {
     const matches = searchPreparedSemanticVideos(batch, prepared, request.limit, excludedIds);
     for (const match of matches) {
       const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: positions.get(match.video.id)! };
-      (match.matchedFields.includes("semantic-fallback") ? fallback : direct).push(entry);
+      insertBoundedRanked(match.matchedFields.includes("semantic-fallback") ? fallback : direct, entry, resultLimit, compareEntries);
     }
     if (start + chunkSize < catalog.length) {
       await yieldToWorker();
@@ -120,12 +127,7 @@ async function search(request: SearchRequest) {
     }
   }
   const source = direct.length ? direct : fallback;
-  source.sort((left, right) => {
-    const a = catalog[left.index], b = catalog[right.index];
-    const dateOrder = prepared.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : prepared.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
-    return dateOrder || right.candidate.score - left.candidate.score || left.index - right.index;
-  });
-  const candidates = source.slice(0, Math.max(1, request.limit)).map(({ candidate }) => candidate);
+  const candidates = source.map(({ candidate }) => candidate);
   remember(key, candidates);
   if (request.requestId === latestRequestId && request.revision === revision) {
     if (activeRequestId === request.requestId) activeRequestId = 0;

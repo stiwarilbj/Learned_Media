@@ -17,14 +17,25 @@ onmessage = async function(event) {
   if (request.type === "cancel") { latest++; return; }
   const token = ++latest, currentRevision = revision;
   if (request.revision !== revision) return;
+  const catalog = videos;
   const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, revision, request.viewKey || "native-worker");
   const excludedIds = request.excludedIds && request.excludedIds.length ? new Set(request.excludedIds) : new Set();
-  const candidates = [];
-  for (let start=0; start<videos.length; start+=160) {
+  const direct = [], fallback = [], resultLimit = Math.max(1, Math.floor(request.limit));
+  const compareEntries = (left,right) => LEARNED_MEDIA_VIDEO_SEARCH.compareSemanticCandidates(left.candidate,right.candidate,prepared.sort) || left.index-right.index;
+  for (let start=0; start<catalog.length; start+=160) {
     if (token !== latest || revision !== currentRevision) return;
-    const batch = LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos(videos.slice(start,start+160), prepared, request.limit, excludedIds);
-    for (const candidate of batch) candidates.push({ videoId:candidate.video.id, score:candidate.score, matchedFields:candidate.matchedFields, supportingText:candidate.supportingText });
-    if (start+160 < videos.length) await new Promise(resolve=>setTimeout(resolve,0));
+    const batch = catalog.slice(start,start+160);
+    const positions = new Map(batch.map((video,index)=>[video.id,start+index]));
+    const matches = LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos(batch, prepared, request.limit, excludedIds);
+    for (const candidate of matches) {
+      const entry = { candidate, index:positions.get(candidate.video.id) };
+      LEARNED_MEDIA_VIDEO_SEARCH.insertBoundedRanked(candidate.matchedFields.includes("semantic-fallback") ? fallback : direct, entry, resultLimit, compareEntries);
+    }
+    if (start+160 < catalog.length) await new Promise(resolve=>setTimeout(resolve,0));
   }
-  if (token === latest && revision === currentRevision) postMessage({ requestId:request.requestId, revision, candidates:candidates.sort((a,b)=>LEARNED_MEDIA_VIDEO_SEARCH.compareSemanticCandidates({video:byId.get(a.videoId),score:a.score},{video:byId.get(b.videoId),score:b.score},prepared.sort)).slice(0,request.limit) });
+  if (token === latest && revision === currentRevision) {
+    const source = direct.length ? direct : fallback;
+    const candidates = source.map(({candidate})=>({videoId:candidate.video.id,score:candidate.score,matchedFields:candidate.matchedFields,supportingText:candidate.supportingText}));
+    postMessage({ requestId:request.requestId, revision, candidates });
+  }
 };

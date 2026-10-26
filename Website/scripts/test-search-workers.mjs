@@ -18,6 +18,7 @@ Module._extensions[".ts"] = (module, filename) => {
   module._compile(compiled, filename);
 };
 const { toVideoSearchDocument } = require("../lib/video-metadata.ts");
+const { insertBoundedRanked } = require("../lib/video-semantic.ts");
 const projectVideos = (videos) => videos.map(toVideoSearchDocument);
 
 function importFromWorker(specifier) {
@@ -25,7 +26,7 @@ function importFromWorker(specifier) {
   return require(path.join(root, `${specifier.slice(2)}.ts`));
 }
 
-function loadWorker(filename, { observeMaps = false } = {}) {
+function loadWorker(filename, { observeMaps = false, searchOverride } = {}) {
   const messages = [];
   let workerYieldCount = 0;
   const workerMaps = [];
@@ -50,11 +51,16 @@ function loadWorker(filename, { observeMaps = false } = {}) {
     if (delay === 0) workerYieldCount += 1;
     return setTimeout(callback, delay);
   };
-  new Function("require", "module", "exports", "self", "setTimeout", "Map", source)(importFromWorker, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
+  const workerImport = (specifier) => {
+    const imported = importFromWorker(specifier);
+    if (specifier === "@/lib/video-semantic" && searchOverride) return { ...imported, searchPreparedSemanticVideos: searchOverride(imported.searchPreparedSemanticVideos) };
+    return imported;
+  };
+  new Function("require", "module", "exports", "self", "setTimeout", "Map", source)(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
-function loadNativeYouTubeWorker({ observeMaps = false } = {}) {
+function loadNativeYouTubeWorker({ observeMaps = false, searchOverride } = {}) {
   const messages = [];
   const workerMaps = [];
   class ObservedMap extends Map {
@@ -77,7 +83,8 @@ function loadNativeYouTubeWorker({ observeMaps = false } = {}) {
   };
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
   vm.runInNewContext(source, context);
-  return { messages, workerMaps, send: (data) => context.onmessage({ data }) };
+  if (searchOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos = searchOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos);
+  return { messages, workerMaps, context, send: (data) => context.onmessage({ data }) };
 }
 
 async function waitForMessage(messages, predicate, timeoutMs = 8000) {
@@ -89,6 +96,62 @@ async function waitForMessage(messages, predicate, timeoutMs = 8000) {
   }
   throw new Error("Timed out waiting for a search worker response.");
 }
+
+test("bounded ranking retains only the requested top results and preserves tie order", () => {
+  const ranked = [];
+  const candidates = Array.from({ length: 20_000 }, (_, index) => ({ score: (index * 7919) % 997, index }));
+  const compare = (left, right) => right.score - left.score || left.index - right.index;
+  for (const candidate of candidates) {
+    insertBoundedRanked(ranked, candidate, 80, compare);
+    assert.ok(ranked.length <= 80);
+  }
+  assert.deepEqual(ranked, [...candidates].sort(compare).slice(0, 80));
+  const tied = [];
+  for (let index = 0; index < 200; index++) insertBoundedRanked(tied, { score: 1, index }, 7, compare);
+  assert.deepEqual(tied.map((item) => item.index), [0, 1, 2, 3, 4, 5, 6]);
+});
+
+test("YouTube workers keep bounded direct and fallback pools with date and position ordering", async () => {
+  const searchOverride = () => (videos, _prepared, _limit, excludedIds) => videos
+    .filter((video) => !excludedIds.has(video.id))
+    .map((video) => ({
+      video,
+      coverage: { matchedConcepts: [], missingConcepts: [], complete: true },
+      score: video.durationSeconds,
+      matchedFields: video.tags,
+      supportingText: []
+    }));
+  const directScores = new Map([[901, 50], [950, 50], [1000, 1], [1100, 100]]);
+  const makeVideos = () => Array.from({ length: 1_300 }, (_, index) => {
+    const tags = directScores.has(index) ? ["title"] : ["semantic-fallback"];
+    const year = index === 0 ? 2030 : index === 1100 ? 2020 : index === 1000 ? 2025 : index === 901 || index === 950 ? 2024 : 2022;
+    return {
+      id: `rank-${index}`, channelId: "channel-a", channelName: "Approved Channel", title: `Ranking test ${index}`,
+      description: "Searchable description.", tags, publishedAt: `${year}-01-01T00:00:00.000Z`, durationSeconds: directScores.get(index) ?? 10_000 - index,
+      topics: ["Science"], approved: true
+    };
+  });
+  const fixtures = [
+    { name: "website", load: () => loadWorker("workers/youtube-search.worker.ts", { searchOverride }), send: (worker, data) => worker.scope.onmessage({ data }), messages: (worker) => worker.messages },
+    { name: "native", load: () => loadNativeYouTubeWorker({ searchOverride }), send: (worker, data) => worker.send(data), messages: (worker) => worker.messages }
+  ];
+  for (const fixture of fixtures) {
+    const worker = fixture.load(), messages = fixture.messages(worker), videos = makeVideos();
+    fixture.send(worker, { type: "initialize", revision: 0, videos: projectVideos(videos) });
+    const search = async (requestId, sort, excludedIds = []) => {
+      fixture.send(worker, { type: "search", requestId, revision: 0, query: "ranking test", plan: { terms: ["ranking test"], sort }, topic: "All", limit: 2, excludedIds, viewKey: `bounded-${sort}` });
+      return waitForMessage(messages, (message) => message.type === "results" ? message.requestId === requestId : message.requestId === requestId);
+    };
+    const newest = await search(1, "newest");
+    assert.deepEqual(Array.from(newest.candidates, (candidate) => candidate.videoId), ["rank-1000", "rank-901"], `${fixture.name} keeps direct results, newest date, then score and original position`);
+    const laterDirect = await search(2, "newest", ["rank-1000", "rank-901"]);
+    assert.deepEqual(Array.from(laterDirect.candidates, (candidate) => candidate.videoId), ["rank-950", "rank-1100"], `${fixture.name} pagination retains lower-ranked direct results before fallback results`);
+    const fallbackPage = await search(3, "newest", ["rank-1000", "rank-901", "rank-950", "rank-1100"]);
+    assert.deepEqual(Array.from(fallbackPage.candidates, (candidate) => candidate.videoId), ["rank-0", "rank-1"], `${fixture.name} reaches fallback results after all direct IDs are excluded`);
+    const oldest = await search(4, "oldest");
+    assert.deepEqual(Array.from(oldest.candidates, (candidate) => candidate.videoId), ["rank-1100", "rank-901"], `${fixture.name} preserves oldest-first ordering and original-position ties`);
+  }
+});
 
 test("topic worker reuses normalized searches while returning the current query and request ID", async () => {
   const { scope, messages } = loadWorker("workers/topic-search.worker.ts");
