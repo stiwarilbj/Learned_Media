@@ -2,7 +2,7 @@
 import { SessionCache } from "@/lib/session-cache";
 import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
 import type { SearchableVideoMetadata } from "@/lib/video-metadata";
-import { indexVideoSearchMetadata, insertBoundedRanked, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
+import { indexVideoSearchMetadata, validateVideoSearchCatalogUpdate, insertBoundedRanked, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
 
 type SearchRequest = {
   type: "search";
@@ -26,11 +26,14 @@ type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts:
 type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
-const videos = new Map<string, IndexedVideoSearchMetadata>();
-let orderedVideos: IndexedVideoSearchMetadata[] = [];
+type CatalogSnapshot = Readonly<{
+  videos: Map<string, IndexedVideoSearchMetadata>;
+  ordered: IndexedVideoSearchMetadata[];
+  revision: number;
+}>;
+let snapshot: CatalogSnapshot = { videos: new Map(), ordered: [], revision: -1 };
 const resultCache = new SessionCache<CandidateReply[]>(80, 30 * 60 * 1000, 4 * 1024 * 1024);
 const preparedSearchCache = new PreparedVideoSearchCache(4);
-let revision = -1;
 let latestRequestId = 0;
 let activeRequestId = 0;
 let indexEpoch = 0;
@@ -62,14 +65,29 @@ function mapMatchesOrderedVideos(map: Map<string, IndexedVideoSearchMetadata>, o
   return true;
 }
 
-function mapsHaveSameEntries(left: Map<string, IndexedVideoSearchMetadata>, right: Map<string, IndexedVideoSearchMetadata>): boolean {
-  if (left.size !== right.size) return false;
-  const leftEntries = left.entries(), rightEntries = right.entries();
-  while (true) {
-    const a = leftEntries.next(), b = rightEntries.next();
-    if (a.done || b.done) return a.done === b.done;
-    if (a.value[0] !== b.value[0] || a.value[1] !== b.value[1]) return false;
+/** Stage independently; failures cannot alter a captured or active snapshot. */
+function stageCatalog(request: Extract<Request, { type: "initialize" | "update" }>): CatalogSnapshot {
+  validateVideoSearchCatalogUpdate(request.revision, request.type === "initialize" ? request.videos : request.upserts,
+    request.type === "update" ? request.removeIds : [], request.type === "update" ? request.orderIds : undefined);
+  let staged = request.type === "initialize" ? new Map<string, IndexedVideoSearchMetadata>() : snapshot.videos;
+  const writable = () => { if (staged === snapshot.videos) staged = new Map(staged); return staged; };
+  if (request.type === "initialize") {
+    for (const video of request.videos) staged.set(video.id, indexVideoSearchMetadata(video));
+  } else {
+    for (const id of request.removeIds) if (staged.has(id)) writable().delete(id);
+    for (const video of request.upserts) {
+      if (!sameVideoRecord(staged.get(video.id), video)) writable().set(video.id, indexVideoSearchMetadata(video));
+    }
+    if (request.orderIds) {
+      const ordered = new Map<string, IndexedVideoSearchMetadata>();
+      for (const id of request.orderIds) { const video = staged.get(id); if (video) ordered.set(id, video); }
+      staged = ordered;
+    }
   }
+  // Equal records/order retain the existing snapshot data, including no-op updates.
+  const unchanged = mapMatchesOrderedVideos(staged, snapshot.ordered);
+  return { videos: unchanged ? snapshot.videos : staged,
+    ordered: unchanged ? snapshot.ordered : Array.from(staged.values()), revision: request.revision };
 }
 
 function remember(key: string, candidates: CandidateReply[]) {
@@ -85,7 +103,8 @@ function yieldToWorker() {
 }
 
 async function search(request: SearchRequest) {
-  if (request.revision !== revision) return;
+  if (request.revision !== snapshot.revision) return;
+  const captured = snapshot;
   latestRequestId = request.requestId;
   activeRequestId = request.requestId;
   const epoch = indexEpoch;
@@ -93,14 +112,14 @@ async function search(request: SearchRequest) {
   const cached = resultCache.get(key);
   if (cached) {
     if (activeRequestId === request.requestId) activeRequestId = 0;
-    workerScope.postMessage({ type: "results", requestId: request.requestId, revision, query: request.query, viewKey: request.viewKey, candidates: cached } satisfies Reply);
+    workerScope.postMessage({ type: "results", requestId: request.requestId, revision: captured.revision, query: request.query, viewKey: request.viewKey, candidates: cached } satisfies Reply);
     return;
   }
 
   // The retained snapshot is replaced on catalog changes, never mutated, so
   // yielded searches keep stable positions even if a newer update arrives.
-  const catalog = orderedVideos;
-  const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, revision, request.viewKey ?? "worker");
+  const catalog = captured.ordered;
+  const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, captured.revision, request.viewKey ?? "worker");
   const excludedIds = request.excludedIds?.length ? new Set(request.excludedIds) : new Set<string>();
   type RankedCandidateEntry = { candidate: CandidateReply; index: number };
   const direct: RankedCandidateEntry[] = [];
@@ -113,7 +132,7 @@ async function search(request: SearchRequest) {
   };
   const chunkSize = 600;
   for (let start = 0; start < catalog.length; start += chunkSize) {
-    if (request.requestId !== latestRequestId || request.revision !== revision || epoch !== indexEpoch) return;
+    if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
     const batch = catalog.slice(start, start + chunkSize);
     const positions = new Map(batch.map((video, index) => [video.id, start + index]));
     const matches = searchPreparedSemanticVideos(batch, prepared, request.limit, excludedIds);
@@ -123,37 +142,23 @@ async function search(request: SearchRequest) {
     }
     if (start + chunkSize < catalog.length) {
       await yieldToWorker();
-      if (request.requestId !== latestRequestId || request.revision !== revision || epoch !== indexEpoch) return;
+      if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
     }
   }
   const source = direct.length ? direct : fallback;
   const candidates = source.map(({ candidate }) => candidate);
   remember(key, candidates);
-  if (request.requestId === latestRequestId && request.revision === revision) {
+  if (request.requestId === latestRequestId && request.revision === snapshot.revision) {
     if (activeRequestId === request.requestId) activeRequestId = 0;
-    workerScope.postMessage({ type: "results", requestId: request.requestId, revision, query: request.query, viewKey: request.viewKey, candidates } satisfies Reply);
+    workerScope.postMessage({ type: "results", requestId: request.requestId, revision: captured.revision, query: request.query, viewKey: request.viewKey, candidates } satisfies Reply);
   }
 }
 
 workerScope.onmessage = (event: MessageEvent<Request>) => {
   const request = event.data;
-  if (request.type === "initialize") {
-    indexEpoch++;
-    videos.clear();
-    for (const video of request.videos) {
-      const indexed = indexVideoSearchMetadata(video);
-      videos.set(indexed.id, indexed);
-    }
-    orderedVideos = Array.from(videos.values());
-    revision = request.revision;
-    latestRequestId = 0;
-    activeRequestId = 0;
-    resultCache.clear();
-    preparedSearchCache.clear();
-    workerScope.postMessage({ type: "ready", revision } satisfies Reply);
-  } else if (request.type === "update") {
-    indexEpoch++;
-    if (revision < 0 || request.baseRevision !== revision) {
+  if (request.type === "initialize" || request.type === "update") {
+    if (request.type === "update" && (snapshot.revision < 0 || request.baseRevision !== snapshot.revision)) {
+      indexEpoch++;
       const staleRequestId = activeRequestId;
       activeRequestId = 0;
       latestRequestId += 1;
@@ -161,32 +166,22 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
       workerScope.postMessage({ type: "rebuild", revision: request.revision } satisfies Reply);
       return;
     }
+    let staged: CatalogSnapshot;
+    try { staged = stageCatalog(request); }
+    catch {
+      workerScope.postMessage({ type: "rebuild", revision: request.revision } satisfies Reply);
+      return;
+    }
     const staleRequestId = activeRequestId;
+    // One publication point: map, ordered index and revision become visible together.
+    snapshot = staged;
+    indexEpoch++;
     activeRequestId = 0;
     latestRequestId += 1;
-    for (const id of request.removeIds) videos.delete(id);
-    for (const video of request.upserts) {
-      const previous = videos.get(video.id);
-      if (!sameVideoRecord(previous, video)) videos.set(video.id, indexVideoSearchMetadata(video));
-    }
-    if (request.orderIds) {
-      const ordered = new Map<string, IndexedVideoSearchMetadata>();
-      for (const id of request.orderIds) {
-        const video = videos.get(id);
-        if (video) ordered.set(id, video);
-      }
-      if (!mapsHaveSameEntries(videos, ordered)) {
-        videos.clear();
-        for (const [id, video] of ordered) videos.set(id, video);
-      }
-      if (!mapMatchesOrderedVideos(ordered, orderedVideos)) orderedVideos = Array.from(ordered.values());
-    } else if (!mapMatchesOrderedVideos(videos, orderedVideos)) {
-      orderedVideos = Array.from(videos.values());
-    }
-    revision = request.revision;
     resultCache.clear();
     preparedSearchCache.clear();
-    if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision } satisfies Reply);
+    if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision: snapshot.revision } satisfies Reply);
+    if (request.type === "initialize") workerScope.postMessage({ type: "ready", revision: snapshot.revision } satisfies Reply);
   } else if (request.type === "cancel") {
     if (request.requestId === latestRequestId) {
       latestRequestId += 1;

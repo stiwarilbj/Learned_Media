@@ -26,7 +26,7 @@ function importFromWorker(specifier) {
   return require(path.join(root, `${specifier.slice(2)}.ts`));
 }
 
-function loadWorker(filename, { observeMaps = false, searchOverride } = {}) {
+function loadWorker(filename, { observeMaps = false, searchOverride, indexOverride } = {}) {
   const messages = [];
   let workerYieldCount = 0;
   const workerMaps = [];
@@ -53,14 +53,16 @@ function loadWorker(filename, { observeMaps = false, searchOverride } = {}) {
   };
   const workerImport = (specifier) => {
     const imported = importFromWorker(specifier);
-    if (specifier === "@/lib/video-semantic" && searchOverride) return { ...imported, searchPreparedSemanticVideos: searchOverride(imported.searchPreparedSemanticVideos) };
+    if (specifier === "@/lib/video-semantic") return { ...imported,
+      searchPreparedSemanticVideos: searchOverride ? searchOverride(imported.searchPreparedSemanticVideos) : imported.searchPreparedSemanticVideos,
+      indexVideoSearchMetadata: indexOverride ? indexOverride(imported.indexVideoSearchMetadata) : imported.indexVideoSearchMetadata };
     return imported;
   };
-  new Function("require", "module", "exports", "self", "setTimeout", "Map", source)(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
+  new Function("require", "module", "exports", "self", "setTimeout", "Map", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot;" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
-function loadNativeYouTubeWorker({ observeMaps = false, searchOverride } = {}) {
+function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOverride } = {}) {
   const messages = [];
   const workerMaps = [];
   class ObservedMap extends Map {
@@ -82,8 +84,9 @@ function loadNativeYouTubeWorker({ observeMaps = false, searchOverride } = {}) {
     vm.runInNewContext(runtime, context);
   };
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
-  vm.runInNewContext(source, context);
+  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot;", context);
   if (searchOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos = searchOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos);
+  if (indexOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata = indexOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata);
   return { messages, workerMaps, context, send: (data) => context.onmessage({ data }) };
 }
 
@@ -298,7 +301,7 @@ test("YouTube workers precompute restricted playlist eligibility and refresh it 
     playlistScans = 0;
     fixture.send(worker, { type: "update", baseRevision: 0, revision: 1, upserts: [unchanged], removeIds: [] });
     assert.equal(playlistScans, 1, `${fixture.name} compares the stored sourceIds once without running the eligibility scan again`);
-    assert.equal(channelNameReads, 1, `${fixture.name} compares the unchanged channel name without normalizing it again`);
+    assert.equal(channelNameReads, 2, `${fixture.name} validates and compares the unchanged channel name without normalizing it again`);
     const afterNoOp = await search(1, 92);
     assert.deepEqual(Array.from(afterNoOp.candidates, candidate => candidate.videoId), expectedFirst, `${fixture.name} retains the prepared result when an identical record is updated`);
 
@@ -414,7 +417,7 @@ test("YouTube worker yields while ranking 30,000 videos and preserves the top re
   }));
   const plan = { terms: ["modern physics"] };
   scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
-  const catalogMap = worker.workerMaps[0];
+  const catalogMap = scope.inspectCatalog().videos;
   assert.equal(catalogMap.valuesCallCount, 1, "initialization creates the retained ordered snapshot once");
   scope.onmessage({ data: { type: "search", requestId: 41, revision: 0, query: "modern physics", plan, topic: "All", limit: 80, viewKey: "large-catalog" } });
   const reply = await waitForMessage(messages, (message) => message.type === "results" && message.requestId === 41, 20_000);
@@ -463,7 +466,7 @@ test("YouTube worker refreshes its ordered snapshot only when records or order c
   });
   const videos = [makeVideo("A", { title: "Older duplicate" }), makeVideo("B"), makeVideo("C"), makeVideo("A")];
   scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
-  const catalogMap = worker.workerMaps[0];
+  const catalogMap = scope.inspectCatalog().videos;
   assert.equal(catalogMap.size, 3);
   assert.equal(catalogMap.valuesCallCount, 1);
 
@@ -483,28 +486,28 @@ test("YouTube worker refreshes its ordered snapshot only when records or order c
   assert.equal(catalogMap.valuesCallCount, 1);
 
   scope.onmessage({ data: { type: "update", baseRevision: 2, revision: 3, upserts: projectVideos([makeVideo("B", { sourceIds: ["approved-upload:B"] })]), removeIds: [] } });
-  assert.equal(catalogMap.valuesCallCount, 2, "a replaced record refreshes the ordered snapshot");
+  assert.notEqual(scope.inspectCatalog().videos, catalogMap, "a replaced record publishes a new map");
   const replaced = await search(3, 72);
   assert.deepEqual(replaced.candidates.map(candidate => candidate.videoId), ["A", "B", "C"], "replacement preserves its original tie position");
 
   scope.onmessage({ data: { type: "update", baseRevision: 3, revision: 4, upserts: projectVideos([makeVideo("D")]), removeIds: [] } });
-  assert.equal(catalogMap.valuesCallCount, 3);
+  assert.equal(catalogMap.valuesCallCount, 1, "the captured original map remains untouched");
   assert.deepEqual((await search(4, 73)).candidates.map(candidate => candidate.videoId), ["A", "B", "C", "D"], "new records append");
 
   scope.onmessage({ data: { type: "update", baseRevision: 4, revision: 5, upserts: [], removeIds: ["B"] } });
-  assert.equal(catalogMap.valuesCallCount, 4);
+  assert.equal(catalogMap.valuesCallCount, 1, "the captured original map remains untouched");
   assert.deepEqual((await search(5, 74)).candidates.map(candidate => candidate.videoId), ["A", "C", "D"]);
 
   scope.onmessage({ data: { type: "update", baseRevision: 5, revision: 6, upserts: [], removeIds: [], orderIds: ["D", "A", "D", "C"] } });
-  assert.equal(catalogMap.valuesCallCount, 4, "explicit ordering builds from the ordered update rather than copying map values");
+  assert.equal(catalogMap.valuesCallCount, 1, "explicit ordering does not mutate the captured map");
   assert.deepEqual((await search(6, 75)).candidates.map(candidate => candidate.videoId), ["D", "A", "C"], "explicit order follows Map deduplication and insertion semantics");
 
   scope.onmessage({ data: { type: "update", baseRevision: 6, revision: 7, upserts: [], removeIds: [], orderIds: ["D", "A", "C"] } });
-  assert.equal(catalogMap.valuesCallCount, 4, "an unchanged explicit order keeps the existing snapshot");
+  assert.equal(catalogMap.valuesCallCount, 1, "an unchanged explicit order leaves old snapshots untouched");
   assert.deepEqual((await search(7, 76)).candidates.map(candidate => candidate.videoId), ["D", "A", "C"]);
 
   scope.onmessage({ data: { type: "update", baseRevision: 7, revision: 8, upserts: [], removeIds: [], orderIds: ["C", "D"] } });
-  assert.equal(catalogMap.valuesCallCount, 4);
+  assert.equal(catalogMap.valuesCallCount, 1, "the captured original map remains untouched");
   assert.deepEqual((await search(8, 77)).candidates.map(candidate => candidate.videoId), ["C", "D"], "explicit order drops records omitted by the caller");
 });
 
@@ -524,21 +527,21 @@ test("YouTube worker preserves catalog order for tied matches spanning chunk bou
 test("YouTube worker handles an empty catalog and refreshes it when the first records arrive", async () => {
   const worker = loadWorker("workers/youtube-search.worker.ts", { observeMaps: true });
   worker.scope.onmessage({ data: { type: "initialize", revision: 0, videos: [] } });
-  const catalogMap = worker.workerMaps[0];
-  assert.equal(catalogMap.valuesCallCount, 1);
+  const catalogMap = worker.scope.inspectCatalog().videos;
+  assert.equal(catalogMap.valuesCallCount, 0);
   worker.scope.onmessage({ data: { type: "search", requestId: 79, revision: 0, query: "history", plan: { terms: ["history"] }, topic: "All", limit: 10 } });
   const empty = await waitForMessage(worker.messages, message => message.type === "results" && message.requestId === 79);
   assert.deepEqual(empty.candidates, []);
-  assert.equal(catalogMap.valuesCallCount, 1, "searching an empty catalog does not create another snapshot");
+  assert.equal(catalogMap.valuesCallCount, 0, "searching an empty catalog does not create another snapshot");
 
   const first = { id: "first", channelId: "channel-a", channelName: "Approved Channel", title: "History documentary", description: "Long-form", tags: ["history"], publishedAt: "2024-01-01T00:00:00.000Z", durationSeconds: 600, durationLabel: "10:00", embedAvailable: true, topics: ["History"], approved: true };
   const second = { ...first, id: "second" };
   worker.scope.onmessage({ data: { type: "update", baseRevision: 0, revision: 1, upserts: projectVideos([first, second]), removeIds: [] } });
-  assert.equal(catalogMap.valuesCallCount, 2);
+  assert.equal(catalogMap.valuesCallCount, 0);
   worker.scope.onmessage({ data: { type: "search", requestId: 80, revision: 1, query: "history", plan: { terms: ["history"] }, topic: "All", limit: 10 } });
   const populated = await waitForMessage(worker.messages, message => message.type === "results" && message.requestId === 80);
   assert.deepEqual(populated.candidates.map(candidate => candidate.videoId), ["first", "second"]);
-  assert.equal(catalogMap.valuesCallCount, 2);
+  assert.equal(catalogMap.valuesCallCount, 0);
 });
 
 test("YouTube worker prepares one immutable plan for every chunk in a request", async () => {
@@ -580,20 +583,20 @@ test("native YouTube worker reuses a prepared search across paginated requests",
   worker.send({ type: "initialize", revision: 0, videos: projectVideos(videos) });
   const catalogMap = worker.workerMaps.find(map => map.size === videos.length && map.has(videos[0].id));
   assert.ok(catalogMap, "the native worker maintains an ID map beside its retained ordered array");
-  assert.equal(catalogMap.valuesCallCount, 0);
+  assert.equal(catalogMap.valuesCallCount, 1);
   worker.send({ type: "search", requestId: 61, revision: 0, plan, topic: "Science", limit: 80, viewKey: "workspace-a" });
   const firstPage = await waitForMessage(worker.messages, message => message.requestId === 61);
   const firstPageIds = firstPage.candidates.map(candidate => candidate.videoId);
   assert.ok(firstPageIds.length > 0);
   assert.equal(conceptGroupReads, 2, "the Mac worker snapshots the plan only on the first page");
-  assert.equal(catalogMap.valuesCallCount, 0, "native search scans the retained array rather than rebuilding it from map values");
+  assert.equal(catalogMap.valuesCallCount, 1, "native search scans the retained array rather than rebuilding it from map values");
 
   worker.send({ type: "search", requestId: 62, revision: 0, plan, topic: "Science", limit: 80, excludedIds: firstPageIds, viewKey: "workspace-a" });
   const secondPage = await waitForMessage(worker.messages, message => message.requestId === 62);
   assert.ok(secondPage.candidates.length > 0);
   assert.ok(secondPage.candidates.every(candidate => !firstPageIds.includes(candidate.videoId)));
   assert.equal(conceptGroupReads, 3, "the Mac worker reuses prepared terms and resolves new page exclusions independently");
-  assert.equal(catalogMap.valuesCallCount, 0, "native pagination also keeps using the retained catalog array");
+  assert.equal(catalogMap.valuesCallCount, 1, "native pagination also keeps using the retained catalog array");
 });
 
 test("topic semantic worker returns meaning matches and ancestor paths, rejecting obsolete queries", async () => {
@@ -614,3 +617,50 @@ test("topic semantic worker invalidates catalog caches when custom topics change
   scope.onmessage({data:{type:"search",requestId:2,query:"quantum gardens",semanticTerms:[],catalogRevision:10}});
   const after=await waitForMessage(messages,m=>m.requestId===2);assert.equal(after.completeCoverage,true);assert.ok(after.matchedIds.includes("custom-garden"));
 });
+
+for (const platform of ["website", "native"]) {
+  test(`${platform} publishes complete catalog snapshots and rolls back validation/indexing failures`, async () => {
+    const indexOverride = index => video => { if (video.id === "explode") throw new Error("Index preparation failed"); return index(video); };
+    const worker = platform === "website" ? loadWorker("workers/youtube-search.worker.ts", { indexOverride }) : loadNativeYouTubeWorker({ indexOverride });
+    const send = data => platform === "website" ? worker.scope.onmessage({ data }) : worker.send(data);
+    const inspect = () => platform === "website" ? worker.scope.inspectCatalog() : worker.context.inspectCatalog();
+    const ordered = value => value.ordered || value.videos;
+    const map = value => value.byId || value.videos;
+    const make = id => ({ id, channelId: "channel", channelName: "Channel", title: "History documentary", description: "Historical research", tags: ["history"], topics: ["History"], publishedAt: "2024-01-01", durationSeconds: 600, approved: true });
+    const original = Array.from({ length: 1800 }, (_, i) => make(`atomic-${i}`));
+    send({ type: "initialize", revision: 0, videos: original });
+    const initial = inspect(), oldOrdered = ordered(initial), oldMap = map(initial);
+    send({ type: "search", revision: 0, requestId: 800, query: "history", plan: { terms: ["history"] }, topic: "All", limit: 80 });
+    send({ type: "update", baseRevision: 0, revision: 1, removeIds: [original[0].id], upserts: [make("new"), { ...make("invalid"), sourceIds: [null] }] });
+    assert.equal(inspect(), initial, "invalid trailing metadata cannot publish earlier removals or upserts");
+    assert.ok(worker.messages.some(message => message.type === "rebuild" && message.revision === 1));
+    const oldResults = await waitForMessage(worker.messages, message => message.requestId === 800 && message.candidates);
+    assert.equal(oldResults.revision, 0);
+    assert.equal(oldResults.candidates[0].videoId, original[0].id, "running search keeps its captured valid catalog after failed staging");
+
+    send({ type: "update", baseRevision: 0, revision: 1, removeIds: [original[0].id], upserts: [make("new"), make("explode")] });
+    assert.equal(inspect(), initial, "a failure during indexing discards the partially built map");
+    assert.equal(oldMap.size, original.length);
+    assert.equal(oldMap.has("new"), false);
+    send({ type: "initialize", revision: 9, videos: [make("new"), make("explode")] });
+    assert.equal(inspect(), initial, "failed full initialization also retains the previous snapshot");
+
+    const updated = { ...make(original[1].id), title: "Updated history documentary", sourceIds: ["playlist:approved"] };
+    send({ type: "update", baseRevision: 0, revision: 1, removeIds: [original[0].id], upserts: [updated, make("new")], orderIds: ["new", original[1].id, original[2].id] });
+    const next = inspect();
+    assert.equal(next.revision, 1);
+    assert.notEqual(map(next), oldMap);
+    assert.notEqual(ordered(next), oldOrdered);
+    assert.deepEqual(Array.from(ordered(next), video => video.id), ["new", original[1].id, original[2].id]);
+    for (const video of ordered(next)) assert.equal(map(next).get(video.id), video, "ordered and search-index records share the staged map entries");
+    assert.equal(oldMap.get(original[1].id).title, original[1].title, "published old records remain unchanged");
+    assert.equal(oldOrdered.length, original.length);
+    send({ type: "update", baseRevision: 1, revision: 2, upserts: [updated], removeIds: [], orderIds: ["new", original[1].id, original[2].id] });
+    assert.equal(ordered(inspect()), ordered(next), "unchanged records/order reuse the retained array");
+    assert.equal(map(inspect()), map(next), "unchanged update also reuses the map");
+    send({ type: "search", revision: 2, requestId: 801, query: "history", plan: { terms: ["history"] }, topic: "All", limit: 80 });
+    const current = await waitForMessage(worker.messages, message => message.requestId === 801 && message.candidates);
+    assert.equal(current.revision, 2);
+    assert.deepEqual(new Set(Array.from(current.candidates, candidate => candidate.videoId)), new Set(["new", original[1].id, original[2].id]));
+  });
+}

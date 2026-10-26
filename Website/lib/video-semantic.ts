@@ -61,6 +61,20 @@ function computeSpecialPlaylistEligibility(video: SearchableVideoMetadata) {
   return !restrictedChannel || Boolean(video.special) || (video.sourceIds || []).some((id) => APPROVED_3BLUE_PLAYLIST_IDS.has(id.replace(/^playlist:/, "")));
 }
 
+/** Validate a whole worker update before touching its published catalog. */
+export function validateVideoSearchCatalogUpdate(revision: number, documents: SearchableVideoMetadata[], removeIds: string[] = [], orderIds?: string[]) {
+  const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
+  if (!Number.isSafeInteger(revision) || revision < 0 || !Array.isArray(documents) || !strings(removeIds) || (orderIds !== undefined && !strings(orderIds))) throw new Error("Invalid video catalog update.");
+  for (const video of documents) {
+    if (!video || typeof video.id !== "string" || !video.id.length
+      || ![video.channelId, video.channelName, video.title, video.description, video.publishedAt].every(value => typeof value === "string")
+      || !strings(video.tags) || !strings(video.topics) || typeof video.approved !== "boolean"
+      || !Number.isFinite(video.durationSeconds) || video.durationSeconds < 0
+      || (video.special !== undefined && typeof video.special !== "boolean")
+      || (video.sourceIds !== undefined && !strings(video.sourceIds))) throw new Error("Invalid video search document.");
+  }
+}
+
 /** Add worker-only eligibility metadata without changing or dropping provenance. */
 export function indexVideoSearchMetadata(video: SearchableVideoMetadata): IndexedVideoSearchMetadata {
   return { ...video, specialPlaylistEligible: computeSpecialPlaylistEligibility(video) };
