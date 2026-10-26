@@ -8,7 +8,7 @@ import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaArticle, resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
 import { hashFactKey, difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
-import { FactNoveltyIndex, isRepeatedFact as noveltyRepeatedFact, selectPriorFactClaims, type FactNoveltySignature, type NoveltyInput } from "./fact-novelty";
+import { FactNoveltyIndex, isRepeatedFact as noveltyRepeatedFact, preparePriorFactTopicQuery, PriorFactClaimSelector, type FactNoveltySignature, type NoveltyInput, type PriorFactTopicQuery } from "./fact-novelty";
 import { factSpecificityReason, FactSpecificityError } from "./fact-specificity";
 import type { YouTubeSearchCandidate } from "./youtube";
 import { canonicalRequestIdentity, reusableStructuredValue, requestCacheKey, SessionCache, type RequestIdentity } from "./session-cache";
@@ -98,11 +98,16 @@ type GeminiTextResponse = {
   modelVersion?: string;
 };
 
-type GenerationSlot = {
+type GenerationAssignment = Readonly<{
   index: number;
   slotId?: string;
-  path: string[];
+  weight: number;
+  path: readonly string[];
   target: Difficulty;
+  priorClaimTopic: PriorFactTopicQuery;
+}>;
+
+type GenerationSlot = GenerationAssignment & {
   candidate?: CandidateFact;
   sources?: ResolvedWikipediaSource[];
   mode: "candidate" | "grounding" | "combined";
@@ -110,6 +115,23 @@ type GenerationSlot = {
   candidateOutputFloor?: number;
   groundingOutputFloor?: number;
 };
+
+type GenerationOperationContext = Readonly<{
+  targetCount: number;
+  sentenceCount: number;
+  assignments: readonly GenerationAssignment[];
+  suppliedTopicQueries: readonly PriorFactTopicQuery[];
+  selectedTopicPaths: readonly (readonly string[])[];
+  settings: Readonly<FeedSettings>;
+  rabbitHole: string | null | undefined;
+  factAngle: FactAngle;
+  angle: Readonly<ReturnType<typeof factAngleDefinition>>;
+  difficultyRubrics: Readonly<Partial<Record<Difficulty, string>>>;
+  priorMemory: readonly FactMemory[];
+  compactNoveltySignatures: readonly FactNoveltySignature[];
+  noveltyHistory: readonly NoveltyInput[];
+  priorAvoidKeys: readonly string[];
+}>;
 
 export type GeminiProgressEvent =
   | { type: "model"; outcome: GeminiModelOutcome }
@@ -707,6 +729,89 @@ function normalizeAvoidKeys(avoid: Array<FactMemory | FactAvoidKey | FactNovelty
   return keys;
 }
 
+function isFactNoveltySignature(value: FactMemory | FactAvoidKey | FactNoveltySignature | string): value is FactNoveltySignature {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "fact-novelty";
+}
+
+function snapshotNoveltySignature(value: FactNoveltySignature): FactNoveltySignature {
+  return Object.freeze({
+    ...value,
+    detailMarkers: Object.freeze([...value.detailMarkers]),
+    topicPath: Object.freeze([...value.topicPath]),
+    evidenceKeys: Object.freeze([...value.evidenceKeys])
+  }) as unknown as FactNoveltySignature;
+}
+
+function snapshotFactMemory(value: FactMemory): FactMemory {
+  return Object.freeze({
+    ...value,
+    topicPath: Object.freeze([...value.topicPath]),
+    sourceUrls: Object.freeze([...value.sourceUrls]),
+    ...(value.evidence ? { evidence: Object.freeze([...value.evidence]) } : {}),
+    ...(value.evidenceKeys ? { evidenceKeys: Object.freeze([...value.evidenceKeys]) } : {}),
+    ...(value.evidenceSections ? { evidenceSections: Object.freeze([...value.evidenceSections]) } : {})
+  }) as unknown as FactMemory;
+}
+
+function createGenerationOperationContext(input: {
+  topicPaths: Array<{ path: string[]; weight: number; difficulty?: Difficulty; slotId?: string }>;
+  targetCount: number;
+  sentenceCount: number;
+  settings: FeedSettings;
+  learningProfile: LearningProfile;
+  avoid: Array<FactMemory | FactAvoidKey | FactNoveltySignature | string>;
+  rabbitHole?: string | null;
+  factAngle: FactAngle;
+}): GenerationOperationContext {
+  const settings = Object.freeze({ ...input.settings });
+  const fallbackDifficulty = normalizeDifficulty(settings.obscurity);
+  const selectedTopicPaths = Object.freeze(input.topicPaths.map(topic => Object.freeze([...topic.path])));
+  const suppliedTopicQueries = Object.freeze(selectedTopicPaths.map(path => preparePriorFactTopicQuery(path)));
+  const targetByInput = new Map<number, Difficulty>();
+  const assignments = Object.freeze(Array.from({ length: input.targetCount }, (_, index) => {
+    const suppliedIndex = index % input.topicPaths.length;
+    const supplied = input.topicPaths[suppliedIndex];
+    const path = selectedTopicPaths[suppliedIndex];
+    let target = targetByInput.get(suppliedIndex);
+    if (target === undefined) {
+      target = supplied.difficulty ?? getTopicLearningProfile(input.learningProfile, [...path], fallbackDifficulty).targetDifficulty;
+      targetByInput.set(suppliedIndex, target);
+    }
+    if (!Number.isInteger(target) || target < 1 || target > 10) throw new RangeError("A batch slot has an unsupported difficulty target.");
+    return Object.freeze({
+      index,
+      slotId: supplied.slotId,
+      weight: supplied.weight,
+      path,
+      target,
+      priorClaimTopic: suppliedTopicQueries[suppliedIndex]
+    });
+  }));
+  const difficultyRubrics: Partial<Record<Difficulty, string>> = {};
+  for (const assignment of assignments) difficultyRubrics[assignment.target] ??= difficultyRubric(assignment.target);
+  const priorMemory = Object.freeze(normalizeAvoidMemory(input.avoid).map(snapshotFactMemory));
+  const compactNoveltySignatures = Object.freeze(input.avoid.filter(isFactNoveltySignature).map(snapshotNoveltySignature));
+  const noveltyHistory = Object.freeze([...priorMemory, ...compactNoveltySignatures]) as readonly NoveltyInput[];
+  const priorAvoidKeys = Object.freeze([...normalizeAvoidKeys(input.avoid)]);
+  const angle = Object.freeze({ ...factAngleDefinition(input.factAngle) });
+  return Object.freeze({
+    targetCount: input.targetCount,
+    sentenceCount: input.sentenceCount,
+    assignments,
+    suppliedTopicQueries,
+    selectedTopicPaths,
+    settings,
+    rabbitHole: input.rabbitHole,
+    factAngle: input.factAngle,
+    angle,
+    difficultyRubrics: Object.freeze(difficultyRubrics),
+    priorMemory,
+    compactNoveltySignatures,
+    noveltyHistory,
+    priorAvoidKeys
+  });
+}
+
 function factAvoidKeySet(fact: FactMemory) {
   const keys = factAvoidKeys([fact])[0];
   return new Set([
@@ -744,19 +849,18 @@ async function runGroups<T>(groups: T[][], worker: (group: T[]) => Promise<void>
   for (const group of groups) await worker(group);
 }
 
-function candidatePrompt(slots: GenerationSlot[], settings: FeedSettings, rabbitHole: string | null | undefined, attempt: number, priorClaims: Array<{ id: string; claim: string }> = [], factAngle: FactAngle = "varied") {
+function candidatePrompt(context: GenerationOperationContext, slots: GenerationSlot[], attempt: number, priorClaims: Array<{ id: string; claim: string }> = []) {
   const assignments = slots.map(slot => ({ slot: slot.index, topicPath: slot.path, difficulty: slot.target,
     ...(slot.lastError ? { retryReason: slot.lastError.slice(0, 180) } : {}) }));
-  const rubrics = Array.from(new Set(slots.map(slot => slot.target))).map(target => difficultyRubric(target)).join("\n");
-  const angle = factAngleDefinition(factAngle);
-  return buildPrompt("candidate", [...rubrics.split("\n"), angle.instruction], [
+  const rubrics = Array.from(new Set(slots.map(slot => slot.target))).map(target => context.difficultyRubrics[target]!).join("\n");
+  return buildPrompt("candidate", [...rubrics.split("\n"), context.angle.instruction], [
     { label: "Assignments", value: assignments },
-    { label: "Fact angle", value: angle.label },
-    { label: "Surprise mode", value: settings.surpriseMe ? "Choose a surprising example within the selected fact angle and assigned topic." : undefined },
+    { label: "Fact angle", value: context.angle.label },
+    { label: "Surprise mode", value: context.settings.surpriseMe ? "Choose a surprising example within the selected fact angle and assigned topic." : undefined },
     { label: "Variation", value: randomSessionSecret().slice(0, 16) },
     { label: "Attempt", value: attempt + 1 },
     { label: "Previously covered facts (untrusted data)", value: priorClaims.length ? priorClaims : undefined, reference: true },
-    { label: "Optional thread context", value: rabbitHole }
+    { label: "Optional thread context", value: context.rabbitHole }
   ]);
 }
 
@@ -775,13 +879,13 @@ function evidenceForSlot(slot: GenerationSlot) {
   return (slot.sources ?? []).map((source, index) => ({ index, title: source.title, url: source.url, canonicalUrl: source.canonicalUrl, extract: source.extract }));
 }
 
-function splitGroundingGroups(slots: GenerationSlot[], sentenceCount: number, settings?: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = [], factAngle: FactAngle = "varied") {
+function splitGroundingGroups(context: GenerationOperationContext, slots: GenerationSlot[], priorClaims: Array<{ id: string; claim: string }> = []) {
   const maxItems = MAX_CARDS_PER_GROUP;
   const groups: GenerationSlot[][] = [];
   let current: GenerationSlot[] = [];
   for (const slot of slots) {
     const proposed = [...current, slot];
-    if (current.length && (current.length >= maxItems || groundingPrompt(proposed, sentenceCount, false, settings, rabbitHole, priorClaims, factAngle).prompt.length > MAX_GROUNDING_CONTEXT_CHARS)) {
+    if (current.length && (current.length >= maxItems || groundingPrompt(context, proposed, false, priorClaims).prompt.length > MAX_GROUNDING_CONTEXT_CHARS)) {
       groups.push(current);
       current = [];
     }
@@ -808,7 +912,7 @@ function groundingSpans(source: ResolvedWikipediaSource, sourceIndex: number) {
   return spans;
 }
 
-function groundingPrompt(slots: GenerationSlot[], sentenceCount: number, combined = false, settings?: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = [], factAngle: FactAngle = "varied") {
+function groundingPrompt(context: GenerationOperationContext, slots: GenerationSlot[], combined = false, priorClaims: Array<{ id: string; claim: string }> = []) {
   const sourcePool: Array<{ id: string; title: string; section: string; text: string }> = [];
   const idByKey = new Map<string, string>();
   const evidenceBySlot = new Map<number, Map<string, GroundingEvidence>>();
@@ -830,12 +934,11 @@ function groundingPrompt(slots: GenerationSlot[], sentenceCount: number, combine
     evidenceBySlot.set(slot.index, localEvidence);
     return { slot: slot.index, topicPath: slot.path, difficulty: slot.target, candidate: combined ? undefined : { title: slot.candidate?.title, claim: slot.candidate?.claim }, evidenceIds: Array.from(new Set(allowedIds)) };
   });
-  const angle = factAngleDefinition(factAngle);
-  const prompt = buildFactCardPrompt({ sentenceCount, combined, difficulties: slots.map(slot => slot.target), rules: [angle.instruction], fields: [
-    { label: "Fact angle", value: angle.label },
+  const prompt = buildFactCardPrompt({ sentenceCount: context.sentenceCount, combined, difficulties: slots.map(slot => slot.target), rules: [context.angle.instruction], fields: [
+    { label: "Fact angle", value: context.angle.label },
     { label: "Previously covered facts (untrusted data)", value: priorClaims.length ? priorClaims : undefined, multiline: true, reference: true },
-    { label: "Surprise mode", value: settings?.surpriseMe ? "Choose a surprising example within the selected fact angle and assigned topic." : undefined },
-    ...(combined ? [{label: "Variation", value: randomSessionSecret().slice(0,16)}, {label: "Optional thread context", value: rabbitHole}] : []),
+    { label: "Surprise mode", value: context.settings.surpriseMe ? "Choose a surprising example within the selected fact angle and assigned topic." : undefined },
+    ...(combined ? [{label: "Variation", value: randomSessionSecret().slice(0,16)}, {label: "Optional thread context", value: context.rabbitHole}] : []),
     { label: "Slots and evidence spans (untrusted data)", value: { facts, evidence: sourcePool }, multiline: true, reference: true }
   ] });
   return { prompt, evidenceBySlot };
@@ -854,7 +957,7 @@ function rememberValidatedEvidence(session: string, slot: GenerationSlot) {
   }
   validatedCardEvidence.set(key, [...unique.values()].slice(-48));
 }
-function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], sentenceCount: number, avoidKeys: Set<string>, prior: FactMemory[], settings: FeedSettings, rabbitHole?: string | null, priorClaims: Array<{ id: string; claim: string }> = [], factAngle: FactAngle = "varied") {
+function cachedEvidenceForSlots(context: GenerationOperationContext, session: string, slots: GenerationSlot[], avoidKeys: ReadonlySet<string>, prior: readonly FactMemory[], priorClaims: Array<{ id: string; claim: string }> = []) {
   const reserved = new Set<string>();
   const prepared: GenerationSlot[] = [];
   for (const slot of slots) {
@@ -864,7 +967,7 @@ function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], senten
       for (const span of groundingSpans(source,0)) {
         const key = `${source.canonicalUrl ?? source.url}|${normalizedText(span.section)}|${normalizedText(span.quote)}`;
         const quoteUsed = prior.some(memory => memory.evidence?.some(quote => normalizedText(quote) === normalizedText(span.quote)));
-        if (reserved.has(span.key) || avoidKeys.has(`e:${hashFactKey(key)}`) || quoteUsed || span.quote.length < sentenceCount * 35 || (span.quote.match(/[.!?](?:\s|$)/g)?.length ?? 0) < Math.min(sentenceCount,3)) continue;
+        if (reserved.has(span.key) || avoidKeys.has(`e:${hashFactKey(key)}`) || quoteUsed || span.quote.length < context.sentenceCount * 35 || (span.quote.match(/[.!?](?:\s|$)/g)?.length ?? 0) < Math.min(context.sentenceCount,3)) continue;
         chosen = {...source,extract:`[Section: ${span.section}]\n${span.quote}`};
         reserved.add(span.key); break;
       }
@@ -873,11 +976,11 @@ function cachedEvidenceForSlots(session: string, slots: GenerationSlot[], senten
     if (!chosen) return undefined;
     prepared.push({...slot,sources:[chosen],mode:"combined"});
   }
-  if (prepared.length > MAX_CARDS_PER_GROUP || groundingPrompt(prepared,sentenceCount,true,settings,rabbitHole,priorClaims,factAngle).prompt.length > MAX_GROUNDING_CONTEXT_CHARS) return undefined;
+  if (prepared.length > MAX_CARDS_PER_GROUP || groundingPrompt(context, prepared, true, priorClaims).prompt.length > MAX_GROUNDING_CONTEXT_CHARS) return undefined;
   return prepared;
 }
 
-function hasAssignedTopic(candidate: CandidateFact, path: string[]) {
+function hasAssignedTopic(candidate: CandidateFact, path: readonly string[]) {
   if (!candidate.topicPath?.length) return false;
   if (candidate.topicPath.length < path.length) return false;
   return path.every((part, index) => normalizedText(candidate.topicPath![index]) === normalizedText(part));
@@ -897,18 +1000,14 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
   }
   const sentenceCount = normalizeSentenceLength(settings.sentenceLength);
   const candidateGroupSize = MAX_CARDS_PER_GROUP;
-  const slots: GenerationSlot[] = Array.from({ length: targetCount }, (_, index) => {
-    const assignment = topicPaths[index % topicPaths.length];
-    const path = assignment.path;
-    const explicitDifficulty = assignment.difficulty;
-    if (explicitDifficulty !== undefined && (!Number.isInteger(explicitDifficulty) || explicitDifficulty < 1 || explicitDifficulty > 10)) throw new RangeError("A batch slot has an unsupported difficulty target.");
-    return { index, slotId: assignment.slotId, path, target: explicitDifficulty ?? getTopicLearningProfile(learningProfile, path, normalizeDifficulty(settings.obscurity)).targetDifficulty, mode: "candidate" };
-  });
-  const priorMemory = normalizeAvoidMemory(avoid);
-  const priorAvoidKeys = normalizeAvoidKeys(avoid);
-  const noveltyHistory: NoveltyInput[] = [...priorMemory, ...avoid.filter((item): item is FactNoveltySignature => typeof item === "object" && item !== null && "kind" in item && item.kind === "fact-novelty")];
-  const noveltyIndex = new FactNoveltyIndex(noveltyHistory);
+  const context = createGenerationOperationContext({ topicPaths, targetCount, sentenceCount, settings, learningProfile, avoid, rabbitHole, factAngle });
+  const slots: GenerationSlot[] = context.assignments.map(assignment => ({ ...assignment, mode: "candidate" }));
+  const priorMemory = context.priorMemory;
+  const priorAvoidKeys = new Set(context.priorAvoidKeys);
+  const noveltyIndex = new FactNoveltyIndex(context.noveltyHistory);
   const memory = [...priorMemory];
+  const priorClaimSelector = new PriorFactClaimSelector(context.noveltyHistory);
+  for (const prior of context.priorMemory) priorClaimSelector.add(prior);
   const acceptedSlots = new Set<number>();
   const acceptedCardBySlot = new Map<number, FactCard>();
   const diagnostics = new ValidationDiagnostics();
@@ -930,17 +1029,19 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       const exactKeys = [...factAvoidKeySet(next)].filter(key => !key.startsWith("e:"));
       if (noveltyIndex.findDuplicate(next) || exactKeys.some(key => priorAvoidKeys.has(key))) return false;
       memory.push(next);
+      priorClaimSelector.add(next);
       noveltyIndex.add(next);
       return true;
     } finally { unlock(); }
   };
-  const markRetry = (slot: GenerationSlot, message: string, round: number, retryGrounding: boolean, validation = true) => {
-    slot.lastError = validation ? diagnostics.record("grounding", slot.index, message) : message;
+  const markRetry = (context: GenerationOperationContext, slot: GenerationSlot, message: string, round: number, retryGrounding: boolean, validation = true) => {
+    const assignment = context.assignments[slot.index];
+    slot.lastError = validation ? diagnostics.record("grounding", assignment.index, message) : message;
     slot.mode = retryGrounding && round === 0 ? "grounding" : "candidate";
   };
 
-  const initialPriorClaims = selectPriorFactClaims(noveltyHistory, topicPaths.map(topic => topic.path));
-  const cachedSlots = cachedEvidenceForSlots(sessionId, slots, sentenceCount, priorAvoidKeys, priorMemory, settings, rabbitHole, initialPriorClaims, factAngle);
+  const initialPriorClaims = priorClaimSelector.selectPrepared(context.suppliedTopicQueries, 12, 2400, context.noveltyHistory.length);
+  const cachedSlots = cachedEvidenceForSlots(context, sessionId, slots, priorAvoidKeys, priorMemory, initialPriorClaims);
   if (cachedSlots) cachedSlots.forEach((slot,index) => { slots[index] = slot; });
   for (let round = cachedSlots ? -1 : 0; round < MAX_CANDIDATE_RETRIES && acceptedSlots.size < targetCount; round += 1) {
     if (signal?.aborted) throw abortError();
@@ -958,7 +1059,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
       const startEvidenceLookup = (slot: GenerationSlot, candidate: CandidateFact) => {
         const identity = candidateIdentity(candidate);
         if (streamedCandidates.has(slot.index) || !candidate.title?.trim() || !candidate.claim?.trim() || !hasAssignedTopic(candidate, slot.path) || factSpecificityReason(candidate.claim)) return;
-        const noveltyCandidate: NoveltyInput = { id: `stream-${round}-${slot.index}`, title: candidate.title, claim: candidate.claim, body: "", topicPath: candidate.topicPath ?? slot.path };
+        const noveltyCandidate: NoveltyInput = { id: `stream-${round}-${slot.index}`, title: candidate.title, claim: candidate.claim, body: "", topicPath: candidate.topicPath ?? [...slot.path] };
         if (noveltyIndex.findDuplicate(noveltyCandidate) || candidatesThisRound.findDuplicate(noveltyCandidate) || streamedNoveltyCandidates.some(previous => noveltyRepeatedFact(noveltyCandidate, previous))) {
           prefetchRejected.add(slot.index);
           return;
@@ -968,8 +1069,8 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
         streamedCandidates.set(slot.index, { identity, promise });
       };
       try {
-        const priorClaims = selectPriorFactClaims([...noveltyHistory, ...memory], group.map(slot => slot.path));
-        const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(group, settings, rabbitHole, round, priorClaims, factAngle), candidateSchema(group.length), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
+        const priorClaims = priorClaimSelector.selectPrepared(group.map(slot => slot.priorClaimTopic));
+        const result = await requestStructured<{ facts?: CandidateFact[] }>(apiKey, sessionId, candidatePrompt(context, group, round, priorClaims), candidateSchema(group.length), "candidate", GENERATION_TIMEOUT_MS, signal, emit, {
           maxOutputTokens: Math.max(4096, ...group.map(slot => slot.candidateOutputFloor ?? 0)),
           streaming: true,
           onStreamAttemptStart: () => {
@@ -1006,7 +1107,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
             slot.sources = [];
             continue;
           }
-          const noveltyCandidate: NoveltyInput = { id: `candidate-${round}-${slot.index}`, title: candidate.title, claim: candidate.claim, body: "", topicPath: candidate.topicPath ?? slot.path };
+          const noveltyCandidate: NoveltyInput = { id: `candidate-${round}-${slot.index}`, title: candidate.title, claim: candidate.claim, body: "", topicPath: candidate.topicPath ?? [...slot.path] };
           if (prefetchRejected.has(slot.index) || noveltyIndex.findDuplicate(noveltyCandidate) || candidatesThisRound.findDuplicate(noveltyCandidate)) {
             slot.lastError = diagnostics.record("candidate", slot.index, "This candidate repeats a fact already covered in your history or this batch.");
             slot.mode = "candidate";
@@ -1041,14 +1142,15 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
     });
 
     const groundingSlots = slots.filter(slot => !acceptedSlots.has(slot.index) && (slot.mode === "combined" || slot.mode === "grounding" && slot.candidate) && slot.sources?.length);
-    const groundingGroups = splitGroundingGroups(groundingSlots, sentenceCount, settings, rabbitHole, selectPriorFactClaims([...noveltyHistory, ...memory], groundingSlots.map(slot => slot.path)), factAngle).flatMap(group => group.some(slot => slot.groundingOutputFloor === MAX_OUTPUT_CAPACITY) ? group.map(slot => [slot]) : [group]);
+    const groupingClaims = priorClaimSelector.selectPrepared(groundingSlots.map(slot => slot.priorClaimTopic));
+    const groundingGroups = splitGroundingGroups(context, groundingSlots, groupingClaims).flatMap(group => group.some(slot => slot.groundingOutputFloor === MAX_OUTPUT_CAPACITY) ? group.map(slot => [slot]) : [group]);
     await runGroups(groundingGroups, async group => {
       if (providerExhausted) return;
       if (signal?.aborted) throw abortError();
       try {
         const combined = group.every(slot => slot.mode === "combined");
-        const priorClaims = selectPriorFactClaims([...noveltyHistory, ...memory], group.map(slot => slot.path));
-        const grounding = groundingPrompt(group, sentenceCount, combined, settings, rabbitHole, priorClaims, factAngle);
+        const priorClaims = priorClaimSelector.selectPrepared(group.map(slot => slot.priorClaimTopic));
+        const grounding = groundingPrompt(context, group, combined, priorClaims);
         const maxOutputTokens = Math.min(65_536, Math.max(8192, group.length * sentenceCount * 500, ...group.map(slot => slot.groundingOutputFloor ?? 0)));
         const result = await requestStructured<{ facts?: GroundedFact[] }>(apiKey, sessionId, grounding.prompt, groundedSchema(sentenceCount, combined), "grounding", GENERATION_TIMEOUT_MS, signal, emit, { maxOutputTokens });
         const floor = truncatedOutputFloor(result.outcomes);
@@ -1064,16 +1166,15 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
               slot.candidate = {title:fact.title,claim:fact.claim,topicPath:fact.topicPath};
             }
             if (fact.status === "needs_evidence") {
-              markRetry(slot, "The supplied passages do not support this card’s specific main claim; more evidence is needed.", round, false);
+              markRetry(context, slot, "The supplied passages do not support this card’s specific main claim; more evidence is needed.", round, false);
               continue;
             }
             if (fact.status === "angle_unavailable") {
-              const label = factAngleDefinition(factAngle).label;
-              markRetry(slot, fact.missingEvidence?.trim() || `The supplied evidence cannot support a main fact that fits the ${label} angle.`, round, false);
+              markRetry(context, slot, fact.missingEvidence?.trim() || `The supplied evidence cannot support a main fact that fits the ${context.angle.label} angle.`, round, false);
               continue;
             }
             if (fact.status === "duplicate") {
-              markRetry(slot, `This fact repeats ${fact.duplicateOf || "another covered fact"}.`, round, false);
+              markRetry(context, slot, `This fact repeats ${fact.duplicateOf || "another covered fact"}.`, round, false);
               continue;
             }
             if (fact.status !== "grounded") throw new GeminiFailure("The grounded result is missing a valid evidence status.");
@@ -1108,12 +1209,12 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
               sentenceCount,
               claim: localFact.claim.trim(),
               evidence: localFact.evidence.map(item => ({ ...item, sourceIndex: chosenIndexes.indexOf(item.sourceIndex) })),
-              topicPath: slot.path,
+              topicPath: [...slot.path],
               sources: cardSources(linkedSources),
               difficulty: slot.target,
               obscurity: slot.target,
               accent: ["blue", "lilac", "mint", "sand", "coral"][slot.index % 5] as FactCard["accent"],
-              surprise: settings.surpriseMe && !topicPaths.some(({ path }) => slot.candidate?.topicPath?.join(" ").startsWith(path.join(" "))),
+              surprise: context.settings.surpriseMe && !context.selectedTopicPaths.some(path => slot.candidate?.topicPath?.join(" ").startsWith(path.join(" "))),
               createdAt: generatedAt,
               provenance: { provider: "gemini" as const, model: result.resolvedModel ?? result.model, generatedAt }
             };
@@ -1130,7 +1231,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
           } catch (rawError) {
             if (signal?.aborted) throw abortError();
             const error = classifyFailure(rawError);
-            markRetry(slot, error.message, round, !combined && !(rawError instanceof FactSpecificityError) && !/already been shown|repeats another|duplicate/i.test(error.message));
+            markRetry(context, slot, error.message, round, !combined && !(rawError instanceof FactSpecificityError) && !/already been shown|repeats another|duplicate/i.test(error.message));
           }
         }
       } catch (rawError) {
@@ -1138,7 +1239,7 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
         const error = classifyFailure(rawError);
         if (isCredentialFailure(error)) throw error;
         if (error.outcomes.length || /available Gemini models|every available Gemini model/i.test(error.message)) providerExhausted = true;
-        for (const slot of group) markRetry(slot, error.message, round, round >= 0, false);
+        for (const slot of group) markRetry(context, slot, error.message, round, round >= 0, false);
       }
     });
     if (providerExhausted) break;

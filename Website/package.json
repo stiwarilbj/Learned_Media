@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "build:github-pages": "node scripts/build-github-pages.mjs",
-    "test:generation": "node scripts/build-native-prompts.mjs --check && node scripts/test-generation.mjs",
+    "test:generation": "node scripts/build-native-prompts.mjs --check && node scripts/test-generation.mjs && node scripts/test-generation-context.mjs",
     "test:gemini-schema-cache": "node --test scripts/test-gemini-schema-cache.mjs",
     "test:retry-timing": "node --test scripts/test-retry-timing.mjs",
     "test:source-spotlight": "node scripts/test-source-spotlight.mjs",

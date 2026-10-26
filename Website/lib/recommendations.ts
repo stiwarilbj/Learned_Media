@@ -29,7 +29,7 @@ export function migrateLegacyDifficulty(value: unknown): Difficulty {
   return normalizeDifficulty(numeric <= 5 ? numeric * 2 : numeric);
 }
 
-export function topicKey(topicPath: string[]) {
+export function topicKey(topicPath: readonly string[]) {
   return topicPath.map((part) => part.trim().toLowerCase()).filter(Boolean).join("::") || "surprise-topic";
 }
 
@@ -52,7 +52,7 @@ function total(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 }
 
-export function getTopicLearningProfile(profile: LearningProfile, topicPath: string[], fallbackDifficulty: Difficulty = DEFAULT_DIFFICULTY): TopicLearningProfile {
+export function getTopicLearningProfile(profile: LearningProfile, topicPath: readonly string[], fallbackDifficulty: Difficulty = DEFAULT_DIFFICULTY): TopicLearningProfile {
   return normalizeTopicLearningProfile(profile[topicKey(topicPath)], fallbackDifficulty);
 }
 

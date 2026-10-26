@@ -205,12 +205,25 @@ function prepare(value: NoveltyInput, index = 0): Prepared {
   };
 }
 
-function overlap(a: Set<string>, b: Set<string>) {
+function overlap(a: ReadonlySet<string>, b: ReadonlySet<string>) {
   const smaller = a.size <= b.size ? a : b;
   const larger = smaller === a ? b : a;
   let shared = 0;
   for (const token of smaller) if (larger.has(token)) shared++;
   return { containment: shared / Math.max(1, smaller.size), jaccard: shared / Math.max(1, a.size + b.size - shared), shared };
+}
+
+export type PriorFactTopicQuery = Readonly<{
+  normalizedLabels: readonly string[];
+  tokens: ReadonlySet<string>;
+}>;
+
+/** Pre-normalize an assigned topic path once for every prior-claim selection in a batch. */
+export function preparePriorFactTopicQuery(path: readonly string[]): PriorFactTopicQuery {
+  return Object.freeze({
+    normalizedLabels: Object.freeze(path.map(normalizeText)),
+    tokens: tokenSet(path.join(" "))
+  });
 }
 
 function incompatible(a: Prepared, b: Prepared) {
@@ -272,7 +285,7 @@ export class FactNoveltyIndex {
   private readonly terms = new Map<string, Set<Prepared>>();
   private readonly topics = new Map<string, Set<Prepared>>();
 
-  constructor(initial: NoveltyInput[] = []) { initial.forEach((record, index) => this.add(record, index)); }
+  constructor(initial: readonly NoveltyInput[] = []) { initial.forEach((record, index) => this.add(record, index)); }
 
   add(value: NoveltyInput, index = this.records.length) {
     const item = prepare(value, index);
@@ -312,22 +325,50 @@ export class FactNoveltyIndex {
   get size() { return this.records.length; }
 }
 
-export function selectPriorFactClaims(records: NoveltyInput[], topicPaths: string[][], maxCount = 12, maxCharacters = 2400) {
-  const prepared = records.map((record, index) => ({ record: prepare(record, index), index }));
-  const topicTokens = topicPaths.map(path => tokenSet(path.join(" ")));
-  const ranked = prepared.map(({ record, index }) => {
-    let score = 0;
-    for (let pathIndex = 0; pathIndex < record.topicPath.length; pathIndex++) {
-      const label = record.topicPath[pathIndex];
-      for (const path of topicPaths) {
-        if (normalizeText(path.at(-1) ?? "") === label) score += 3;
-        else if (path.some(part => normalizeText(part) === label)) score += 1;
+export class PriorFactClaimSelector {
+  private readonly prepared: Array<{ record: Prepared; index: number }> = [];
+
+  constructor(records: readonly NoveltyInput[] = []) {
+    for (const record of records) this.add(record);
+  }
+
+  add(value: NoveltyInput) {
+    const index = this.prepared.length;
+    this.prepared.push({ record: prepare(value, index), index });
+  }
+
+  select(topicPaths: readonly (readonly string[])[], maxCount = 12, maxCharacters = 2400) {
+    return this.selectPrepared(topicPaths.map(preparePriorFactTopicQuery), maxCount, maxCharacters);
+  }
+
+  selectPrepared(topicQueries: readonly PriorFactTopicQuery[], maxCount = 12, maxCharacters = 2400, recordLimit = this.prepared.length) {
+    const ranked: Array<{ record: Prepared; index: number; score: number }> = [];
+    const compare = (left: { score: number; index: number }, right: { score: number; index: number }) => right.score - left.score || right.index - left.index;
+    for (const { record, index } of this.prepared) {
+      if (index >= recordLimit) break;
+      let score = 0;
+      for (const label of record.topicPath) {
+        for (const query of topicQueries) {
+          if (query.normalizedLabels.at(-1) === label) score += 3;
+          else if (query.normalizedLabels.includes(label)) score += 1;
+        }
       }
+      for (const query of topicQueries) score += overlap(record.claimTokens, query.tokens).containment * 2;
+      if (score <= 0) continue;
+
+      const entry = { record, index, score };
+      let position = 0;
+      while (position < ranked.length && compare(ranked[position], entry) <= 0) position++;
+      if (position >= maxCount) continue;
+      ranked.splice(position, 0, entry);
+      if (ranked.length > maxCount) ranked.pop();
     }
-    for (const query of topicTokens) score += overlap(record.claimTokens, query).containment * 2;
-    return { record, index, score };
-  }).filter(item => item.score > 0).sort((a, b) => b.score - a.score || b.index - a.index);
-  const selected = ranked.slice(0, maxCount).map(({ record }) => ({ id: record.id.slice(0, 48), claim: record.promptClaim }));
-  while (selected.length && JSON.stringify(selected).length > maxCharacters) selected.pop();
-  return selected;
+    const selected = ranked.map(({ record }) => ({ id: record.id.slice(0, 48), claim: record.promptClaim }));
+    while (selected.length && JSON.stringify(selected).length > maxCharacters) selected.pop();
+    return selected;
+  }
+}
+
+export function selectPriorFactClaims(records: NoveltyInput[], topicPaths: string[][], maxCount = 12, maxCharacters = 2400) {
+  return new PriorFactClaimSelector(records).select(topicPaths, maxCount, maxCharacters);
 }
