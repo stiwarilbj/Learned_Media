@@ -2,12 +2,30 @@
 (function(scope) { const require = () => scope.LEARNED_MEDIA_BACKGROUND; const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.toVideoSearchDocument = toVideoSearchDocument;
 exports.videoSearchFingerprint = videoSearchFingerprint;
 exports.sameVideoSearchMetadata = sameVideoSearchMetadata;
 exports.reuseUnchangedVideoRecords = reuseUnchangedVideoRecords;
 exports.reuseUnchangedVideoRecordsYielding = reuseUnchangedVideoRecordsYielding;
 exports.diffVideoSearchMetadata = diffVideoSearchMetadata;
 const background_work_1 = require("./background-work");
+/** Project a full catalog record to the exact document shape sent to search workers. */
+function toVideoSearchDocument(video) {
+    return {
+        id: video.id,
+        channelId: video.channelId,
+        channelName: video.channelName,
+        title: video.title,
+        description: video.description,
+        tags: video.tags,
+        topics: video.topics,
+        publishedAt: video.publishedAt,
+        durationSeconds: video.durationSeconds,
+        approved: video.approved,
+        ...(video.special === undefined ? {} : { special: video.special }),
+        ...(video.sourceIds === undefined ? {} : { sourceIds: video.sourceIds }),
+    };
+}
 const fingerprints = new WeakMap();
 const searchScalars = ["id", "channelId", "channelName", "title", "description", "publishedAt", "durationSeconds", "approved", "special"];
 const searchArrays = ["tags", "topics", "sourceIds"];

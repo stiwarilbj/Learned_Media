@@ -1732,8 +1732,8 @@
       } catch(_) { youtubeSemanticWorkerFailed=true; }
     }
     if(youtubeSemanticWorker) youtubeSemanticWorker.postMessage(newWorker || force
-      ? {type:"initialize",videos:youtubeIndexedVideos,revision:youtubeIndexRevision}
-      : {type:"update",baseRevision:baseRevision,upserts:changes.upserts,removeIds:changes.removeIds,orderIds:changes.orderIds,revision:youtubeIndexRevision});
+      ? {type:"initialize",videos:youtubeIndexedVideos.map(window.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument),revision:youtubeIndexRevision}
+      : {type:"update",baseRevision:baseRevision,upserts:changes.upserts.map(window.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument),removeIds:changes.removeIds,orderIds:changes.orderIds,revision:youtubeIndexRevision});
   }
   async function localVideoCandidates(plan, limit, signal, excluded) {
     videoSearchIndex();

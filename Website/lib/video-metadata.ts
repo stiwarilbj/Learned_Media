@@ -16,6 +16,24 @@ export type SearchableVideoMetadata = {
   sourceIds?: string[];
 };
 
+/** Project a full catalog record to the exact document shape sent to search workers. */
+export function toVideoSearchDocument(video: SearchableVideoMetadata): SearchableVideoMetadata {
+  return {
+    id: video.id,
+    channelId: video.channelId,
+    channelName: video.channelName,
+    title: video.title,
+    description: video.description,
+    tags: video.tags,
+    topics: video.topics,
+    publishedAt: video.publishedAt,
+    durationSeconds: video.durationSeconds,
+    approved: video.approved,
+    ...(video.special === undefined ? {} : { special: video.special }),
+    ...(video.sourceIds === undefined ? {} : { sourceIds: video.sourceIds }),
+  };
+}
+
 const fingerprints = new WeakMap<SearchableVideoMetadata, string>();
 const searchScalars = ["id", "channelId", "channelName", "title", "description", "publishedAt", "durationSeconds", "approved", "special"] as const;
 const searchArrays = ["tags", "topics", "sourceIds"] as const;

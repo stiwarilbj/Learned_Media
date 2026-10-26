@@ -6,11 +6,59 @@ import {test} from 'node:test';
 const require=createRequire(import.meta.url), Module=require('node:module'), ts=require('typescript');
 Module._extensions['.ts']=(module,filename)=>module._compile(ts.transpileModule(readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,filename);
 const engine=require('../lib/video-semantic.ts');
+const metadata=require('../lib/video-metadata.ts');
 const native={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/video-semantic.js',import.meta.url),'utf8'),native);
+const nativeMetadata={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/video-metadata.js',import.meta.url),'utf8'),nativeMetadata);
 const defaults={channelId:'c1',channelName:'Approved Science',description:'',tags:[],topics:['Science'],publishedAt:'2024-05-01T12:00:00Z',durationSeconds:600,approved:true};
 const video=(id,title,extra={})=>({...defaults,id,title,...extra});
 const videos=[video('lens','Gravitational Lensing Explained'),video('description','Cosmic Mirrors',{description:'Massive galaxies create gravitational lensing of distant objects.'}),video('generic','Science Facts'),video('both','Black Holes and Gravitational Lensing'),video('hole','Black Holes Explained'),video('short','Gravitational Lensing #shorts'),video('unapproved','Gravitational Lensing',{approved:false}),video('channel','Gravitational Lensing',{channelId:'c2'}),video('sponsor','Science Facts',{description:'Our sponsor offers gravitational lensing shirts. Subscribe for more!'})];
 const ids=(values)=>values.map(x=>x.video.id);
+const workerFieldNames=['id','channelId','channelName','title','description','tags','topics','publishedAt','durationSeconds','approved','special','sourceIds'];
+test('search worker projection keeps full searchable fields and drops display-only metadata',()=>{
+ const source=video('projected','Tōhoku earthquake field notes',{description:'Complete description with exact spacing.  '.repeat(20),tags:['Earthquake','地震'],topics:['Science','Geography'],special:true,sourceIds:['playlist:approved'],thumbnailUrl:'https://example.test/thumb.jpg',thumbnailWidth:1280,thumbnailHeight:720,durationLabel:'10:00',embedAvailable:true,metadataRefreshedAt:123,privateImportNote:'keep in main catalog'});
+ const projected=metadata.toVideoSearchDocument(source);
+ assert.deepEqual(Object.keys(projected),workerFieldNames);
+ for(const key of workerFieldNames) assert.deepEqual(projected[key],source[key],key+' is copied without changing searchable content');
+ assert.strictEqual(projected.tags,source.tags);assert.strictEqual(projected.topics,source.topics);assert.strictEqual(projected.sourceIds,source.sourceIds);
+ assert.equal(source.thumbnailUrl,'https://example.test/thumb.jpg','projection does not mutate the full catalog record');
+ assert.deepEqual(JSON.parse(JSON.stringify(nativeMetadata.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument(source))),projected);
+ const optional=metadata.toVideoSearchDocument(video('without-optionals','History of astronomy'));
+ assert.deepEqual(Object.keys(optional),workerFieldNames.slice(0,10),'undefined optional fields are omitted from the structured-clone payload');
+});
+test('compact records preserve approval, Shorts, and restricted playlist provenance filters',()=>{
+ const channelId='UCYO_jab_esuFRV4b17AJtAw';
+ const source=[
+  video('approved-playlist','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',sourceIds:['playlist:PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi']}),
+  video('special-approved','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',special:true}),
+  video('wrong-playlist','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',sourceIds:['playlist:unapproved-playlist']}),
+  video('short-title','Gravitational Lensing #Shorts',{channelId,channelName:'3Blue1Brown',special:true}),
+  video('short-tag','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',special:true,tags:['YouTube Shorts']}),
+  video('not-approved','Gravitational Lensing',{channelId,channelName:'3Blue1Brown',special:true,approved:false})
+ ];
+ const plan=engine.makeLocalVideoPlan('gravitational lensing');
+ const full=engine.searchSemanticVideos(source,plan,'All');
+ const compact=engine.searchSemanticVideos(source.map(metadata.toVideoSearchDocument),plan,'All');
+ assert.deepEqual(ids(compact),ids(full));
+ assert.deepEqual(ids(compact),['approved-playlist','special-approved']);
+ assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(source.map(metadata.toVideoSearchDocument),plan,'All'))),full);
+});
+test('compact worker payloads preserve semantic output and reduce catalog transfer size',()=>{
+ const catalog=Array.from({length:30_000},(_,index)=>video('payload-'+index,index%2?'Gravitational Lensing '+index:'Other science '+index,{description:'A complete searchable description about galaxies, astronomy, and optical observations. '.repeat(4),tags:['astronomy','science'],topics:['Science','Astronomy'],thumbnailUrl:'https://example.test/'+index+'.jpg',thumbnailWidth:1280,thumbnailHeight:720,durationLabel:'10:00',embedAvailable:true,metadataRefreshedAt:index}));
+ const compact=catalog.map(metadata.toVideoSearchDocument);
+ const fullBytes=Buffer.byteLength(JSON.stringify(catalog)),compactBytes=Buffer.byteLength(JSON.stringify(compact));
+ assert.ok(compactBytes<fullBytes,`compact worker payload should be smaller (${compactBytes} < ${fullBytes} bytes)`);
+ const plan=engine.makeLocalVideoPlan('gravitational lensing');
+ const fullResults=engine.searchSemanticVideos(catalog,plan,'All',undefined,80).map(result=>({id:result.video.id,score:result.score,coverage:result.coverage,matchedFields:result.matchedFields,supportingText:result.supportingText}));
+ const compactResults=engine.searchSemanticVideos(compact,plan,'All',undefined,80).map(result=>({id:result.video.id,score:result.score,coverage:result.coverage,matchedFields:result.matchedFields,supportingText:result.supportingText}));
+ assert.deepEqual(compactResults,fullResults,'IDs, order, scores, coverage, matches, and supporting passages are unchanged');
+ const nativeResults=JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(compact,plan,'All',undefined,80).map(result=>({id:result.video.id,score:result.score,coverage:result.coverage,matchedFields:result.matchedFields,supportingText:result.supportingText}))));
+ assert.deepEqual(nativeResults,fullResults,'the generated Mac semantic runtime ranks compact documents identically');
+ if(typeof structuredClone==='function'){
+  const started=performance.now();structuredClone(catalog);const fullCloneMs=performance.now()-started;
+  const compactStarted=performance.now();structuredClone(compact);const compactCloneMs=performance.now()-compactStarted;
+  console.log(`30,000 video worker payload: ${fullBytes} -> ${compactBytes} bytes; structuredClone measured ${fullCloneMs.toFixed(1)} ms full / ${compactCloneMs.toFixed(1)} ms compact (no timing threshold).`);
+ }
+});
 test('paraphrases retrieve metadata evidence without literal wording or generic topic matches',()=>{
  const plan=engine.makeLocalVideoPlan('bending starlight');
  const result=engine.searchSemanticVideos(videos,plan,'All','c1');

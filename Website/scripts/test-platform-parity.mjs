@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 const require=createRequire(import.meta.url),ts=require('typescript');
 require('node:module')._extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,f);
-const web=require('../lib/topic-tree.ts'),catalog=require('../lib/topic-catalog.ts'),preferences=require('../lib/topic-preferences.ts'),youtube=require('../lib/youtube.ts'),storage=require('../lib/snapshot-validation.ts');
+const web=require('../lib/topic-tree.ts'),catalog=require('../lib/topic-catalog.ts'),preferences=require('../lib/topic-preferences.ts'),youtube=require('../lib/youtube.ts'),storage=require('../lib/snapshot-validation.ts'),videoMetadata=require('../lib/video-metadata.ts');
 const scope={Map,Set,WeakMap,Date,Math,performance,TextEncoder};
 runInNewContext(readFileSync(new URL('../../App/Resources/frontend/shared-policy.js',import.meta.url),'utf8'),scope);
 const mac=scope.LEARNED_MEDIA_SHARED,clean=x=>JSON.parse(JSON.stringify(x));
@@ -32,6 +32,73 @@ test('selection, weights, compact restoration and legacy custom IDs agree',()=>{
 test('every approved identity, individual video and recency default is identical',()=>{
  for(const key of ['APPROVED_YOUTUBE_CHANNELS','APPROVED_INDIVIDUAL_VIDEOS','DEFAULT_YOUTUBE_RECENCY_PREFERENCES','YOUTUBE_TOPICS','YOUTUBE_CATALOG_VERSION'])assert.deepEqual(clean(mac.youtube[key]),clean(youtube[key]));
  assert.ok(mac.youtube.APPROVED_INDIVIDUAL_VIDEOS.some(v=>(v.videoId || v.id)==='QTQVZuBV9oA'));
+});
+test('native worker sender captures compact initialization, forced rebuild, and incremental payloads',()=>{
+ const messages=[];
+ class FakeWorker{postMessage(message){messages.push(message);}terminate(){}}
+ const source={id:'compact-source',channelId:'approved-channel',channelName:'Approved Channel',title:'Gravitational lensing',description:'Full searchable description. '.repeat(12),tags:['astronomy','optics'],topics:['Science','Astronomy'],publishedAt:'2025-01-01T00:00:00Z',durationSeconds:642,approved:true,special:false,sourceIds:['playlist:approved'],thumbnailUrl:'https://example.test/full.jpg',thumbnailWidth:1280,thumbnailHeight:720,durationLabel:'10:42',embedAvailable:true,metadataRefreshedAt:1234,unrelatedImportField:'retain'};
+ const state={youtube:{catalogVersion:3,videos:[source]}};
+ const context={state,videoSearch:{VIDEO_SEMANTIC_VERSION:9},window:{LEARNED_MEDIA_VIDEO_METADATA:videoMetadata},shared:mac,youtubeIndexPolicy:'',youtubeIndexedVideos:null,youtubeIndexRevision:0,youtubeById:new Map(),youtubeVideosByTopic:new Map(),youtubeVideosByChannel:new Map(),youtubeSemanticWorker:null,youtubeSemanticWorkerFailed:false,youtubeWorkerPending:new Map(),youtubeSmartSearchCache:{clear(){}},preparedVideoSearchCache:{clear(){}},Worker:FakeWorker};
+ const indexStart=native.indexOf('  function videoSearchIndex('),indexEnd=native.indexOf('\n  async function localVideoCandidates(',indexStart);
+ runInNewContext(native.slice(indexStart,indexEnd)+';api={videoSearchIndex};',context);
+ context.api.videoSearchIndex();
+ assert.equal(messages.length,1);
+ assert.equal(messages[0].type,'initialize');
+ assert.deepEqual(clean(messages[0].videos[0]),clean(videoMetadata.toVideoSearchDocument(source)));
+ assert.deepEqual(Object.keys(messages[0].videos[0]),['id','channelId','channelName','title','description','tags','topics','publishedAt','durationSeconds','approved','special','sourceIds']);
+ assert.equal(state.youtube.videos[0].thumbnailUrl,source.thumbnailUrl,'the primary catalog retains complete display and import data');
+
+ const displayUpdate={...source,thumbnailUrl:'https://example.test/updated.jpg',durationLabel:'10:43'};
+ state.youtube.videos=[displayUpdate];context.api.videoSearchIndex();
+ assert.equal(messages.length,1,'display-only changes do not send an incremental worker update');
+ assert.equal(context.youtubeById.get(source.id).thumbnailUrl,displayUpdate.thumbnailUrl,'the main-thread comparison map still has the full newest record');
+
+ const searchableUpdate={...displayUpdate,description:displayUpdate.description+'New searchable passage.'};
+ state.youtube.videos=[searchableUpdate];context.api.videoSearchIndex();
+ assert.equal(messages.length,2);assert.equal(messages[1].type,'update');
+ assert.deepEqual(clean(messages[1].upserts[0]),clean(videoMetadata.toVideoSearchDocument(searchableUpdate)));
+ assert.equal(messages[1].upserts[0].thumbnailUrl,undefined);
+
+ context.api.videoSearchIndex(true);
+ assert.equal(messages.length,3);assert.equal(messages[2].type,'initialize','forced rebuild uses compact initialization documents');
+ assert.deepEqual(clean(messages[2].videos[0]),clean(videoMetadata.toVideoSearchDocument(searchableUpdate)));
+ assert.equal(context.youtubeIndexedVideos[0].unrelatedImportField,'retain');
+
+ const page=readFileSync(new URL('../../Website/app/page.tsx',import.meta.url),'utf8');
+ assert.match(page,/videos: nextVideos\.map\(toVideoSearchDocument\)/,'website rebuilds and initialization project documents');
+ assert.match(page,/upserts: upserts\.map\(toVideoSearchDocument\)/,'website incremental updates project only changed searchable records');
+ assert.match(page,/videos: initialVideos\.map\(toVideoSearchDocument\)/,'website startup projects initial records');
+ assert.match(readFileSync(new URL('../../Website/workers/youtube-search.worker.ts',import.meta.url),'utf8'),/Map<string, SearchableVideoMetadata>/);
+});
+test('website worker sender captures compact initialization, forced rebuild, and changed-only upserts',()=>{
+ const page=readFileSync(new URL('../../Website/app/page.tsx',import.meta.url),'utf8');
+ const start=page.indexOf('const syncYouTubeSearchIndex = useCallback('),end=page.indexOf('\n  }, []);',start);
+ assert.ok(start>=0&&end>start,'locate the real website sender callback');
+ const callback=page.slice(start+'const syncYouTubeSearchIndex = useCallback('.length,end+4);
+ const compiled=require('typescript').transpileModule(`const syncYouTubeSearchIndex = ${callback}; globalThis.api = { syncYouTubeSearchIndex };`,{compilerOptions:{target:require('typescript').ScriptTarget.ES2022}}).outputText;
+ const messages=[];
+ const worker={postMessage(message){messages.push(message);}};
+ const context={YOUTUBE_CATALOG_VERSION:youtube.YOUTUBE_CATALOG_VERSION,VIDEO_SEMANTIC_VERSION:9,toVideoSearchDocument:videoMetadata.toVideoSearchDocument,diffVideoSearchMetadata:videoMetadata.diffVideoSearchMetadata,setYoutubeSearchIndexRevision(){},youtubeSearchWorker:{current:worker},youtubeSearchWorkerReady:{current:true},youtubeSearchWorkerPendingVideos:{current:null},youtubeSearchWorkerIndexedVideos:{current:new Map()},youtubeSearchWorkerRevision:{current:0},youtubeSearchWorkerNeedsRebuild:{current:false},youtubeSearchWorkerPolicy:{current:''},youtubeSearchPending:{current:new Map()}};
+ runInNewContext(compiled,context);
+ const source={id:'web-video',channelId:'c',channelName:'Channel',title:'Gravitational lensing',description:'Complete description. '.repeat(10),tags:['astronomy'],topics:['Science'],publishedAt:'2025-01-01',durationSeconds:600,approved:true,special:false,sourceIds:['playlist:approved'],thumbnailUrl:'https://example.test/full.jpg',durationLabel:'10:00',embedAvailable:true};
+ context.api.syncYouTubeSearchIndex([source]);
+ assert.equal(messages[0].type,'initialize');
+ assert.deepEqual(clean(messages[0].videos[0]),clean(videoMetadata.toVideoSearchDocument(source)));
+ assert.equal(context.youtubeSearchWorkerIndexedVideos.current.get(source.id).thumbnailUrl,source.thumbnailUrl,'website index comparison map remains a full-record map');
+ context.youtubeSearchWorkerReady.current=true; // emulate the worker's ready reply after initialization
+
+ const displayOnly={...source,thumbnailUrl:'https://example.test/new.jpg',durationLabel:'10:01'};
+ context.api.syncYouTubeSearchIndex([displayOnly]);
+ assert.equal(messages.length,1,'display-only changes do not create worker updates');
+ const changed={...displayOnly,description:displayOnly.description+'Added searchable content.'};
+ context.api.syncYouTubeSearchIndex([changed]);
+ assert.equal(messages.length,2);assert.equal(messages[1].type,'update');
+ assert.deepEqual(clean(messages[1].upserts[0]),clean(videoMetadata.toVideoSearchDocument(changed)));
+ assert.equal(messages[1].upserts[0].thumbnailUrl,undefined);
+
+ context.api.syncYouTubeSearchIndex([changed],true);
+ assert.equal(messages.length,3);assert.equal(messages[2].type,'initialize','forced rebuild posts projected documents');
+ assert.deepEqual(clean(messages[2].videos[0]),clean(videoMetadata.toVideoSearchDocument(changed)));
 });
 test('approved channel pools and lossless YouTube activity merging match on web and Mac',()=>{
  const videos=Array.from({length:30000},(_,index)=>({id:String(index),approved:index%17!==0,title:index===15?'A #Shorts clip':'Video '+index,description:'',tags:[],channelName:'Channel',channelId:'c'+index%10,topics:index%2?['Science']:['History'],publishedAt:'2025-01-01'}));

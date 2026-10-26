@@ -1,4 +1,5 @@
 import { searchTextForms, protectedSearchTerms, contextualSearchText } from "./search";
+import type { SearchableVideoMetadata } from "./video-metadata";
 /** Shared, dependency-free search policy. The native runtime is generated from this file. */
 export type VideoSearchPlan = {
   terms?: string[]; include?: string[]; alternatives?: string[]; exclude?: string[];
@@ -9,7 +10,7 @@ export type VideoSearchPlan = {
   minDate?: string; maxDate?: string; minDurationSeconds?: number; maxDurationSeconds?: number;
   sort?: "relevance" | "newest" | "oldest" | "random";
 };
-type Video = { id: string; channelId: string; channelName: string; title: string; description: string; tags: string[]; topics: string[]; publishedAt: string; durationSeconds: number; approved: boolean; special?: boolean; sourceIds?: string[] };
+type Video = SearchableVideoMetadata;
 export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
 export const VIDEO_SEMANTIC_VERSION = 9;

@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import { SessionCache } from "@/lib/session-cache";
-import type { YouTubeSearchPlanLike, YouTubeTopic, YouTubeVideo } from "@/lib/youtube";
+import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
+import type { SearchableVideoMetadata } from "@/lib/video-metadata";
 import { PreparedVideoSearchCache, searchPreparedSemanticVideos } from "@/lib/video-semantic";
 
 type SearchRequest = {
@@ -17,16 +18,16 @@ type SearchRequest = {
   viewKey?: string;
 };
 type Request =
-  | { type: "initialize"; revision: number; videos: YouTubeVideo[] }
-  | { type: "update"; baseRevision: number; revision: number; upserts: YouTubeVideo[]; removeIds: string[]; orderIds?: string[] }
+  | { type: "initialize"; revision: number; videos: SearchableVideoMetadata[] }
+  | { type: "update"; baseRevision: number; revision: number; upserts: SearchableVideoMetadata[]; removeIds: string[]; orderIds?: string[] }
   | { type: "cancel"; requestId: number }
   | SearchRequest;
 type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
 type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
-const videos = new Map<string, YouTubeVideo>();
-let orderedVideos: YouTubeVideo[] = [];
+const videos = new Map<string, SearchableVideoMetadata>();
+let orderedVideos: SearchableVideoMetadata[] = [];
 const resultCache = new SessionCache<CandidateReply[]>(80, 30 * 60 * 1000, 4 * 1024 * 1024);
 const preparedSearchCache = new PreparedVideoSearchCache(4);
 let revision = -1;
@@ -34,7 +35,7 @@ let latestRequestId = 0;
 let activeRequestId = 0;
 let indexEpoch = 0;
 
-function sameVideoRecord(previous: YouTubeVideo | undefined, next: YouTubeVideo): boolean {
+function sameVideoRecord(previous: SearchableVideoMetadata | undefined, next: SearchableVideoMetadata): boolean {
   if (!previous) return false;
   const previousRecord = previous as unknown as Record<string, unknown>;
   const nextRecord = next as unknown as Record<string, unknown>;
@@ -51,7 +52,7 @@ function sameVideoRecord(previous: YouTubeVideo | undefined, next: YouTubeVideo)
   return true;
 }
 
-function mapMatchesOrderedVideos(map: Map<string, YouTubeVideo>, ordered: YouTubeVideo[]): boolean {
+function mapMatchesOrderedVideos(map: Map<string, SearchableVideoMetadata>, ordered: SearchableVideoMetadata[]): boolean {
   if (map.size !== ordered.length) return false;
   let index = 0;
   for (const [id, video] of map) {
@@ -61,7 +62,7 @@ function mapMatchesOrderedVideos(map: Map<string, YouTubeVideo>, ordered: YouTub
   return true;
 }
 
-function mapsHaveSameEntries(left: Map<string, YouTubeVideo>, right: Map<string, YouTubeVideo>): boolean {
+function mapsHaveSameEntries(left: Map<string, SearchableVideoMetadata>, right: Map<string, SearchableVideoMetadata>): boolean {
   if (left.size !== right.size) return false;
   const leftEntries = left.entries(), rightEntries = right.entries();
   while (true) {
@@ -164,7 +165,7 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
       if (!sameVideoRecord(previous, video)) videos.set(video.id, video);
     }
     if (request.orderIds) {
-      const ordered = new Map<string, YouTubeVideo>();
+      const ordered = new Map<string, SearchableVideoMetadata>();
       for (const id of request.orderIds) {
         const video = videos.get(id);
         if (video) ordered.set(id, video);

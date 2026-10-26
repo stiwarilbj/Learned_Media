@@ -17,6 +17,8 @@ Module._extensions[".ts"] = (module, filename) => {
   }).outputText;
   module._compile(compiled, filename);
 };
+const { toVideoSearchDocument } = require("../lib/video-metadata.ts");
+const projectVideos = (videos) => videos.map(toVideoSearchDocument);
 
 function importFromWorker(specifier) {
   if (!specifier.startsWith("@/")) return require(specifier);
@@ -138,7 +140,7 @@ test("YouTube worker preserves catalog ranking and strict filters across chunks"
     topics: ["History", "Science"],
     approved: true
   }));
-  scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
+  scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
   const plan = { terms: ["human population"], channelId: "channel-a", minDate: "2021-01-01", minDurationSeconds: 620, exclude: ["shark"] };
   scope.onmessage({ data: { type: "search", requestId: 21, revision: 0, query: "human population", plan, topic: "History", channelId: "channel-a", limit: 80 } });
   const reply = await waitForMessage(messages, (message) => message.type === "results" && message.requestId === 21);
@@ -164,7 +166,7 @@ test("YouTube worker cancels a previous query while scanning large catalogs", as
     topics: ["History", "Science"],
     approved: true
   }));
-  scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
+  scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
   const base = { type: "search", revision: 0, topic: "All", channelId: undefined, limit: 80 };
   scope.onmessage({ data: { ...base, requestId: 31, query: "history science", plan: { terms: ["history science"] } } });
   scope.onmessage({ data: { ...base, requestId: 32, query: "modern physics", plan: { terms: ["modern physics"] } } });
@@ -191,7 +193,7 @@ test("YouTube worker settles a search when the catalog changes mid-scan", async 
     topics: ["History", "Science"],
     approved: true
   }));
-  scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
+  scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
   scope.onmessage({ data: { type: "search", requestId: 35, revision: 0, query: "history science", plan: { terms: ["history science"] }, topic: "All", limit: 80 } });
   scope.onmessage({ data: { type: "update", baseRevision: 0, revision: 1, upserts: [], removeIds: [] } });
   const stale = await waitForMessage(messages, (message) => message.type === "stale" && message.requestId === 35);
@@ -216,7 +218,7 @@ test("YouTube worker settles obsolete searches and requests a rebuild on revisio
     topics: ["History"],
     approved: true
   }));
-  scope.onmessage({ data: { type: "initialize", revision: 4, videos } });
+  scope.onmessage({ data: { type: "initialize", revision: 4, videos: projectVideos(videos) } });
   scope.onmessage({ data: { type: "search", requestId: 51, revision: 4, query: "history", plan: { terms: ["history"] }, topic: "All", limit: 80 } });
   scope.onmessage({ data: { type: "update", baseRevision: 2, revision: 5, upserts: [], removeIds: [] } });
 
@@ -247,7 +249,7 @@ test("YouTube worker yields while ranking 30,000 videos and preserves the top re
     approved: true
   }));
   const plan = { terms: ["modern physics"] };
-  scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
+  scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
   const catalogMap = worker.workerMaps[0];
   assert.equal(catalogMap.valuesCallCount, 1, "initialization creates the retained ordered snapshot once");
   scope.onmessage({ data: { type: "search", requestId: 41, revision: 0, query: "modern physics", plan, topic: "All", limit: 80, viewKey: "large-catalog" } });
@@ -296,7 +298,7 @@ test("YouTube worker refreshes its ordered snapshot only when records or order c
     topics: ["History"], approved: true, ...overrides
   });
   const videos = [makeVideo("A", { title: "Older duplicate" }), makeVideo("B"), makeVideo("C"), makeVideo("A")];
-  scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
+  scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
   const catalogMap = worker.workerMaps[0];
   assert.equal(catalogMap.size, 3);
   assert.equal(catalogMap.valuesCallCount, 1);
@@ -310,18 +312,18 @@ test("YouTube worker refreshes its ordered snapshot only when records or order c
   assert.equal(catalogMap.valuesCallCount, 1);
 
   scope.onmessage({ data: { type: "update", baseRevision: 0, revision: 1, upserts: [], removeIds: [] } });
-  scope.onmessage({ data: { type: "update", baseRevision: 1, revision: 2, upserts: [makeVideo("B")], removeIds: [] } });
+  scope.onmessage({ data: { type: "update", baseRevision: 1, revision: 2, upserts: projectVideos([makeVideo("B")]), removeIds: [] } });
   assert.equal(catalogMap.valuesCallCount, 1, "revision-only updates and equal replacement records retain the array");
   const unchanged = await search(2, 71);
   assert.deepEqual(unchanged.candidates.map(candidate => candidate.videoId), ["A", "B", "C"]);
   assert.equal(catalogMap.valuesCallCount, 1);
 
-  scope.onmessage({ data: { type: "update", baseRevision: 2, revision: 3, upserts: [makeVideo("B", { thumbnailUrl: "https://example.test/replaced.jpg" })], removeIds: [] } });
+  scope.onmessage({ data: { type: "update", baseRevision: 2, revision: 3, upserts: projectVideos([makeVideo("B", { sourceIds: ["approved-upload:B"] })]), removeIds: [] } });
   assert.equal(catalogMap.valuesCallCount, 2, "a replaced record refreshes the ordered snapshot");
   const replaced = await search(3, 72);
   assert.deepEqual(replaced.candidates.map(candidate => candidate.videoId), ["A", "B", "C"], "replacement preserves its original tie position");
 
-  scope.onmessage({ data: { type: "update", baseRevision: 3, revision: 4, upserts: [makeVideo("D")], removeIds: [] } });
+  scope.onmessage({ data: { type: "update", baseRevision: 3, revision: 4, upserts: projectVideos([makeVideo("D")]), removeIds: [] } });
   assert.equal(catalogMap.valuesCallCount, 3);
   assert.deepEqual((await search(4, 73)).candidates.map(candidate => candidate.videoId), ["A", "B", "C", "D"], "new records append");
 
@@ -349,7 +351,7 @@ test("YouTube worker preserves catalog order for tied matches spanning chunk bou
     description: "A long-form approved documentary.", tags: ["history"], publishedAt: "2024-01-01T00:00:00.000Z",
     durationSeconds: 600, durationLabel: "10:00", embedAvailable: true, topics: ["History"], approved: true
   }));
-  worker.scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
+  worker.scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
   worker.scope.onmessage({ data: { type: "search", requestId: 78, revision: 0, query: "history documentary", plan: { terms: ["history documentary"] }, topic: "All", limit: videos.length } });
   const reply = await waitForMessage(worker.messages, message => message.type === "results" && message.requestId === 78);
   assert.deepEqual(reply.candidates.map(candidate => candidate.videoId), videos.map(video => video.id));
@@ -367,7 +369,7 @@ test("YouTube worker handles an empty catalog and refreshes it when the first re
 
   const first = { id: "first", channelId: "channel-a", channelName: "Approved Channel", title: "History documentary", description: "Long-form", tags: ["history"], publishedAt: "2024-01-01T00:00:00.000Z", durationSeconds: 600, durationLabel: "10:00", embedAvailable: true, topics: ["History"], approved: true };
   const second = { ...first, id: "second" };
-  worker.scope.onmessage({ data: { type: "update", baseRevision: 0, revision: 1, upserts: [first, second], removeIds: [] } });
+  worker.scope.onmessage({ data: { type: "update", baseRevision: 0, revision: 1, upserts: projectVideos([first, second]), removeIds: [] } });
   assert.equal(catalogMap.valuesCallCount, 2);
   worker.scope.onmessage({ data: { type: "search", requestId: 80, revision: 1, query: "history", plan: { terms: ["history"] }, topic: "All", limit: 10 } });
   const populated = await waitForMessage(worker.messages, message => message.type === "results" && message.requestId === 80);
@@ -386,7 +388,7 @@ test("YouTube worker prepares one immutable plan for every chunk in a request", 
   let conceptGroupReads = 0;
   const plan = { terms: ["bending starlight"] };
   Object.defineProperty(plan, "conceptGroups", { enumerable: true, get() { conceptGroupReads += 1; return undefined; } });
-  scope.onmessage({ data: { type: "initialize", revision: 0, videos } });
+  scope.onmessage({ data: { type: "initialize", revision: 0, videos: projectVideos(videos) } });
   scope.onmessage({ data: { type: "search", requestId: 45, revision: 0, query: "bending starlight", plan, topic: "Science", limit: 80, viewKey: "workspace-a" } });
   const reply = await waitForMessage(messages, message => message.type === "results" && message.requestId === 45);
   assert.ok(reply.candidates.length > 0);
@@ -411,7 +413,7 @@ test("native YouTube worker reuses a prepared search across paginated requests",
   let conceptGroupReads = 0;
   const plan = { terms: ["bending starlight"] };
   Object.defineProperty(plan, "conceptGroups", { enumerable: true, get() { conceptGroupReads += 1; return undefined; } });
-  worker.send({ type: "initialize", revision: 0, videos });
+  worker.send({ type: "initialize", revision: 0, videos: projectVideos(videos) });
   const catalogMap = worker.workerMaps.find(map => map.size === videos.length && map.has(videos[0].id));
   assert.ok(catalogMap, "the native worker maintains an ID map beside its retained ordered array");
   assert.equal(catalogMap.valuesCallCount, 0);

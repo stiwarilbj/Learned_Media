@@ -34,7 +34,7 @@ import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, createYouTubeChannelPools, createYouTubeTopicPools, importCoordinatedYouTubeCatalog, hasPendingYouTubeImport, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, mergeYouTubeRecencyPreferences, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, PreparedVideoSearchCache, searchPreparedSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
-import { diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVideoRecordsYielding } from "@/lib/video-metadata";
+import { diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVideoRecordsYielding, toVideoSearchDocument } from "@/lib/video-metadata";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import { normalizeSpotlightSources } from "@/lib/source-spotlight";
 import { cardExplanationFingerprint, getCardExplanationSelection, normalizeCardExplanations } from "@/lib/card-explanations";
@@ -1595,8 +1595,8 @@ export default function HomePage() {
         pending.reject(new Error("Video catalog changed during search."));
       }
       youtubeSearchPending.current.clear();
-      worker.postMessage({ type: "initialize", revision, videos: nextVideos });
-    } else worker.postMessage({ type: "update", baseRevision, revision, upserts, removeIds, orderIds });
+      worker.postMessage({ type: "initialize", revision, videos: nextVideos.map(toVideoSearchDocument) });
+    } else worker.postMessage({ type: "update", baseRevision, revision, upserts: upserts.map(toVideoSearchDocument), removeIds, orderIds });
     setYoutubeSearchIndexRevision(revision);
   }, []);
 
@@ -1716,7 +1716,7 @@ export default function HomePage() {
         pending.reject(new Error("Local video search stopped unexpectedly."));
       }
     };
-    worker.postMessage({ type: "initialize", revision: youtubeSearchWorkerRevision.current, videos: initialVideos });
+    worker.postMessage({ type: "initialize", revision: youtubeSearchWorkerRevision.current, videos: initialVideos.map(toVideoSearchDocument) });
   }, [hydrated, view, syncYouTubeSearchIndex, youtubeWorkspace.videos]);
 
   useEffect(() => {
