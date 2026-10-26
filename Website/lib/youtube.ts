@@ -5,9 +5,9 @@ import type { MonotonicDeadlineMs } from "./retry-timing";
 import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportChanges } from "./youtube-import-lease";
 import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
-import { reuseUnchangedVideoRecordsYielding } from "./video-metadata";
 import { checkBackgroundCancellation, forEachBackground, yieldBackground } from "./background-work";
 import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageIdentity, openImportCheckpoint, type YouTubeImportPageStore } from "./youtube-import-checkpoints";
+import { mergeVideoSourceRefreshes, reuseIndexedVideoRecords } from "./video-source-index";
 import { restoreStoredCatalog, videoRecordRange, type StoredVideo } from "./youtube-catalog-storage";
 import { ConditionalDownloadCache } from "./conditional-download";
 import { requestCacheScope } from "./session-cache";
@@ -910,52 +910,18 @@ export class YouTubeClient {
         return { job, videos: [] as YouTubeVideo[], scanned: false, ok: false };
       }
     });
-    const merged = new Map<string, YouTubeVideo>(), videosBySource = new Map<string, Set<string>>();
-    await forEachBackground(existingVideos, video => {
-      merged.set(video.id, video);
-      for (const sourceId of video.sourceIds ?? []) {
-        if (!videosBySource.has(sourceId)) videosBySource.set(sourceId, new Set());
-        videosBySource.get(sourceId)!.add(video.id);
-      }
-    }, signal);
-    for (const result of imported) {
-      if (!result.scanned || !result.ok) continue;
-      const importedIds = new Set<string>();
-      await forEachBackground(result.videos, video => { importedIds.add(video.id); }, signal);
-      // Only revisit this source's records instead of rescanning the whole library.
-      await forEachBackground(videosBySource.get(result.job.sourceId) ?? [], id => {
-        const video = merged.get(id);
-        if (!importedIds.has(id) && video?.sourceIds?.includes(result.job.sourceId)) {
-          const sourceIds = video.sourceIds.filter((sourceId) => sourceId !== result.job.sourceId);
-          if (sourceIds.length) merged.set(id, { ...video, sourceIds }); else merged.delete(id);
-        }
-      }, signal);
-      await forEachBackground(result.videos, video => {
-        const previous = merged.get(video.id);
-        merged.set(video.id, { ...previous, ...video, sourceIds: Array.from(new Set([...(previous?.sourceIds ?? []), result.job.sourceId])) });
-      }, signal);
-      videosBySource.set(result.job.sourceId, importedIds);
-    }
-    if (verified.length === APPROVED_YOUTUBE_CHANNELS.length) {
-      const activeSourceIds = new Set(jobs.map((job) => job.sourceId));
-      await forEachBackground(merged, ([id, video]) => {
-        const sourceIds = video.sourceIds ?? [];
-        const retainedSourceIds = sourceIds.filter((sourceId) => !/^(?:channel|playlist):/.test(sourceId) || activeSourceIds.has(sourceId));
-        if (retainedSourceIds.length === sourceIds.length) return;
-        if (retainedSourceIds.length) merged.set(id, { ...video, sourceIds: retainedSourceIds });
-        else merged.delete(id);
-      }, signal);
-      Object.keys(sourceStates).forEach((sourceId) => { if (!activeSourceIds.has(sourceId)) delete sourceStates[sourceId]; });
-    }
     const playlistSourceIds = new Set(APPROVED_YOUTUBE_CHANNELS.flatMap((seed) => seed.playlistIds ?? []).map((id) => `playlist:${id}`));
     const threeBlue = APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown");
-    const allowed: YouTubeVideo[] = [];
-    await forEachBackground(merged.values(), video => {
-      const approved = threeBlue && (normalized(video.channelName) === normalized(threeBlue.name) || video.channelId === threeBlue.channelId)
-        ? video.special === true || video.sourceIds?.some(sourceId => playlistSourceIds.has(sourceId)) : video.approved;
-      if (approved) allowed.push(video);
-    }, signal);
-    const unique = await reuseUnchangedVideoRecordsYielding(existingVideos, allowed, signal);
+    const allowed = await mergeVideoSourceRefreshes(existingVideos,
+      imported.filter(result => result.scanned && result.ok).map(result => ({ sourceId: result.job.sourceId, videos: result.videos })),
+      video => Boolean(threeBlue && (normalized(video.channelName) === normalized(threeBlue.name) || video.channelId === threeBlue.channelId)
+        ? video.special === true || video.sourceIds?.some(sourceId => playlistSourceIds.has(sourceId)) : video.approved),
+      verified.length === APPROVED_YOUTUBE_CHANNELS.length ? new Set(jobs.map(job => job.sourceId)) : undefined, signal);
+    if (verified.length === APPROVED_YOUTUBE_CHANNELS.length) {
+      const activeSourceIds = new Set(jobs.map(job => job.sourceId));
+      Object.keys(sourceStates).forEach(sourceId => { if (!activeSourceIds.has(sourceId)) delete sourceStates[sourceId]; });
+    }
+    const unique = await reuseIndexedVideoRecords(existingVideos, allowed, signal);
     const channelCounts = new Map<string, number>();
     await forEachBackground(unique, video => { channelCounts.set(video.channelId, (channelCounts.get(video.channelId) ?? 0) + 1); }, signal);
     const channelsWithCounts = verified.map(({ channel }) => ({ ...channel, videoCount: channelCounts.get(channel.id) ?? 0, lastImportedAt: new Date().toISOString() }));

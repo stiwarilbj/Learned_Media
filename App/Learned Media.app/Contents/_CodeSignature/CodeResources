@@ -106,7 +106,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		lRFoqdcqg/u/7s3kqckRnfOf0Q4=
+		ZHAlaHVVxlfbxzQw1881yPgR+Vg=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -134,7 +134,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		gIcvZvksQP+5XpyWh8dQyLVc2t8=
+		9burnOk2CMO+O72HQExLWHJSd1E=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -184,6 +184,10 @@
 		<data>
 		xIDfyL2LL/lX8kGG+7kdMlXusbg=
 		</data>
+		<key>Resources/frontend/video-source-index.js</key>
+		<data>
+		mr1nYg6W+EqalSA6lp5+KWi0hTs=
+		</data>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<data>
 		R0Rf0SIHPKEz/c4HPeuSP0amers=
@@ -198,7 +202,7 @@
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
-		GvG7FqOORtUyJgK06m9fFp0Tv6k=
+		mNEMThADT1bFJpak5YhONylH1ZE=
 		</data>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<data>
@@ -394,7 +398,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			E8QR5CfMQBs0tOTfPM+is2ms4JcpzWISKfAlVR3CfoU=
+			TQbROCaxdEo7WhXP0K3DcNQfm03ZzyEZ1nWWcffE+DE=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -443,7 +447,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			wnULOEAakWIsq/TV9kiNu54vJPinkzDdD4WUI0VXPTQ=
+			OpoAFEYmqKhmPZ5DyzzeznM2Wx3t5gTQrH2VSmPVMXA=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -530,6 +534,13 @@
 			SOdrCSObfDOovLXIgPEnZIsmpGX7Nmb3lCFbOHhBCa8=
 			</data>
 		</dict>
+		<key>Resources/frontend/video-source-index.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			drbYBZX5kaTPHB32CqCtl2+/4udldY8pDXHRuuQbjaE=
+			</data>
+		</dict>
 		<key>Resources/frontend/war-history-catalog.js</key>
 		<dict>
 			<key>hash2</key>
@@ -555,7 +566,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			v30PHb2kYeaRQD6YsYo2nNLWZCFADYMKOz8Prpoh0q0=
+			gvUR75W0SJ3w40En54+XvuTxBGzydgekNucXfd+VnAk=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>

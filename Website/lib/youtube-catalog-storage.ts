@@ -1,11 +1,11 @@
 import type { YouTubeVideo, YouTubeWorkspaceState } from "./youtube";
-import { reuseUnchangedVideoRecordsYielding } from "./video-metadata";
+import { reuseIndexedVideoRecords, catalogSourceMembership, restoreCatalogSourceMembership, type StoredSourceMembership } from "./video-source-index";
 import { checkBackgroundCancellation, forEachBackground, type BackgroundCancellation } from "./background-work";
 
 export const VIDEO_RECORD_PREFIX = "youtube-video-record-v1:";
 export const VIDEO_WRITE_BATCH_SIZE = 100;
 export type YouTubeCatalog = Pick<YouTubeWorkspaceState, "channels" | "videos" | "libraryIncomplete" | "lastSyncAt" | "catalogVersion" | "sourceStates">;
-type CatalogManifest = Omit<YouTubeCatalog, "videos"> & { storageVersion: 1; entries: [string, string][] };
+type CatalogManifest = Omit<YouTubeCatalog, "videos"> & { storageVersion: 1; entries: [string, string][]; sourceMembership?: StoredSourceMembership };
 export type StoredVideo = { key: string; video: YouTubeVideo };
 
 export function videoRecordRange() { return IDBKeyRange.bound(VIDEO_RECORD_PREFIX, `${VIDEO_RECORD_PREFIX}\uffff`); }
@@ -21,7 +21,7 @@ export async function planCatalogCommit(catalog: YouTubeCatalog, previous: YouTu
   const revision = crypto.randomUUID();
   const upserts: StoredVideo[] = [], entries: [string, string][] = [];
   const ids = new Set<string>(), retainedKeys = new Set<string>();
-  const videos = await reuseUnchangedVideoRecordsYielding(previous, catalog.videos, cancellation);
+  const videos = await reuseIndexedVideoRecords(previous, catalog.videos, cancellation);
   await forEachBackground(videos, video => {
     if (ids.has(video.id)) throw new Error("The video catalog contains a duplicate ID.");
     ids.add(video.id);
@@ -33,7 +33,7 @@ export async function planCatalogCommit(catalog: YouTubeCatalog, previous: YouTu
     if (key !== oldKey) upserts.push({ key, video });
   }, cancellation);
   const { videos: _videos, ...metadata } = catalog;
-  const manifest: CatalogManifest = { ...metadata, storageVersion: 1, entries };
+  const manifest: CatalogManifest = { ...metadata, storageVersion: 1, entries, sourceMembership: await catalogSourceMembership(videos, cancellation) };
   return { manifest, upserts, retainedKeys };
 }
 
@@ -52,6 +52,8 @@ export async function restoreStoredCatalog(raw: Record<string, unknown> | null, 
     ids.add(id);
     videos.push(video);
   }, cancellation);
-  const { entries: _entries, storageVersion: _version, ...metadata } = raw;
+  // Validate against records on restoration; rebuild missing or stale derived data.
+  await restoreCatalogSourceMembership(videos, raw.sourceMembership, cancellation);
+  const { entries: _entries, storageVersion: _version, sourceMembership: _membership, ...metadata } = raw;
   return { ...metadata, videos };
 }

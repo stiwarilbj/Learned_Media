@@ -176,22 +176,10 @@
       }
     });
     assertCurrent();
-    const merged = new Map(), videosBySource = new Map();
-    await background.forEachBackground(oldVideos, function (video) {
-      merged.set(video.id, video);
-      (video.sourceIds || []).forEach(function (sourceId) { if (!videosBySource.has(sourceId)) videosBySource.set(sourceId, new Set()); videosBySource.get(sourceId).add(video.id); });
-    }, assertCurrent);
-    for (const result of imported) {
-      if (!result.scanned || !result.ok) continue;
-      const importedIds = new Set();
-      await background.forEachBackground(result.videos, function (video) { importedIds.add(video.id); }, assertCurrent);
-      await background.forEachBackground(videosBySource.get(result.job.sourceId) || [], function (id) { const video = merged.get(id); if (importedIds.has(id) || !video || !video.sourceIds || video.sourceIds.indexOf(result.job.sourceId) < 0) return; const sourceIds = video.sourceIds.filter(function (sourceId) { return sourceId !== result.job.sourceId; }); if (sourceIds.length) merged.set(id, Object.assign({}, video, { sourceIds: sourceIds })); else merged.delete(id); }, assertCurrent);
-      await background.forEachBackground(result.videos, function (video) { const previous = merged.get(video.id); merged.set(video.id, Object.assign({}, previous, video, { sourceIds: Array.from(new Set((previous && previous.sourceIds || []).concat([result.job.sourceId]))) })); }, assertCurrent);
-      videosBySource.set(result.job.sourceId, importedIds);
-    }
-    const allowed = [], channelCounts = new Map();
-    await background.forEachBackground(merged.values(), function (video) { if (isAllowed(video)) allowed.push(video); }, assertCurrent);
-    const videos = await window.LEARNED_MEDIA_VIDEO_METADATA.reuseUnchangedVideoRecordsYielding(oldVideos, allowed, assertCurrent);
+    const allowed = await window.LEARNED_MEDIA_VIDEO_SOURCES.mergeVideoSourceRefreshes(oldVideos,
+      imported.filter(function (result) { return result.scanned && result.ok; }).map(function (result) { return { sourceId: result.job.sourceId, videos: result.videos }; }), isAllowed, undefined, assertCurrent);
+    const channelCounts = new Map();
+    const videos = await window.LEARNED_MEDIA_VIDEO_SOURCES.reuseIndexedVideoRecords(oldVideos, allowed, assertCurrent);
     await background.forEachBackground(videos, function (video) { channelCounts.set(video.channelId, (channelCounts.get(video.channelId) || 0) + 1); }, assertCurrent);
     const channels = verified.map(function (entry) { return Object.assign({}, entry.channel, { videoCount: channelCounts.get(entry.channel.id) || 0, lastImportedAt: new Date().toISOString() }); });
     const complete = errors.length === 0 && verified.length === CHANNELS.length; progress.phase = "complete"; progress.currentSource = undefined; progress.error = complete ? undefined : (progress.error || "Some approved video sources need a retry."); onProgress(Object.assign({}, progress));
