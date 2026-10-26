@@ -1,6 +1,7 @@
 import { performanceFetch, recordPerformance } from "./performance-diagnostics";
 import { readLimitedResponseText, ResponseTooLargeError } from "./bounded-response";
-import { backgroundRetryDelay, serverRetryAt, waitForBackgroundRetry } from "./background-retry";
+import { backgroundRetryDelay, serverRetryDeadline, waitForBackgroundRetry } from "./background-retry";
+import type { MonotonicDeadlineMs } from "./retry-timing";
 import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportChanges } from "./youtube-import-lease";
 import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
@@ -377,15 +378,15 @@ export class YouTubeApiError extends Error {
   status?: number;
   reason?: string;
   retryable: boolean;
-  retryAt?: number;
+  retryDeadline?: MonotonicDeadlineMs;
 
-  constructor(message: string, status?: number, reason?: string, retryable = false, retryAt?: number) {
+  constructor(message: string, status?: number, reason?: string, retryable = false, retryDeadline?: MonotonicDeadlineMs) {
     super(message);
     this.name = "YouTubeApiError";
     this.status = status;
     this.reason = reason;
     this.retryable = retryable;
-    this.retryAt = retryAt;
+    this.retryDeadline = retryDeadline;
   }
 }
 
@@ -474,7 +475,7 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
     if (signal?.aborted) throw abortError();
     const response = await performanceFetch("youtube", url, { headers: conditional.headers, cache: "no-store", signal: timeout.controller.signal });
     if (signal?.aborted) throw abortError();
-    const retryAt = serverRetryAt(response.headers.get("retry-after"));
+    const retryDeadline = serverRetryDeadline(response.headers.get("retry-after"));
     const reused = youtubeDownloads.notModified(cacheKey, response, conditional.previous);
     if (response.status === 304 && reused === undefined) throw new YouTubeApiError("YouTube returned Not Modified without a validated response.", 304, "missingCachedResponse", true);
     let raw = reused;
@@ -488,17 +489,17 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
         if (!(error instanceof ResponseTooLargeError)) throw error;
         youtubeDownloads.discard(cacheKey);
         recordPerformance("youtube", "response_bytes_read", error.bytesRead);
-        throw new YouTubeApiError("YouTube returned an unexpectedly large response.", response.status, "responseTooLarge", false, retryAt);
+        throw new YouTubeApiError("YouTube returned an unexpectedly large response.", response.status, "responseTooLarge", false, retryDeadline);
       }
     }
     if (signal?.aborted) throw abortError();
     recordPerformance("youtube", "response_bytes_read", responseBytesRead);
     if (reused !== undefined) recordPerformance("youtube", "cache_hits");
     let payload: unknown = {};
-    try { payload = JSON.parse(raw); } catch { youtubeDownloads.discard(cacheKey); throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryAt); }
+    try { payload = JSON.parse(raw); } catch { youtubeDownloads.discard(cacheKey); throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryDeadline); }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       youtubeDownloads.discard(cacheKey);
-      throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryAt);
+      throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryDeadline);
     }
     if (!response.ok && response.status !== 304) {
       const error = (payload as { error?: { message?: string; errors?: Array<{ reason?: string }> } }).error;
@@ -507,7 +508,7 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
       const quotaExhausted = reason === "quotaExceeded" || reason === "dailyLimitExceeded";
       const rateLimited = reason === "rateLimitExceeded" || reason === "userRateLimitExceeded";
       const retryable = !quotaExhausted && (rateLimited || response.status === 408 || response.status === 429 || response.status >= 500);
-      throw new YouTubeApiError(quotaExhausted ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable, retryAt);
+      throw new YouTubeApiError(quotaExhausted ? "YouTube API quota is exhausted. Resume tomorrow after the quota resets." : message, response.status, reason, retryable, retryDeadline);
     }
     const list = payload as { items?: unknown; nextPageToken?: unknown; etag?: unknown; error?: unknown } | null;
     if (reused === undefined && response.status === 200 && list && typeof list === "object" && !Array.isArray(list)
@@ -631,7 +632,7 @@ export class YouTubeClient {
           return await fetchYouTubeJson<T>(this.apiKey, resource, requestParams, signal);
         } catch (error) {
           if (!(error instanceof YouTubeApiError) || !error.retryable || attempt >= 2) throw error;
-          await waitForBackgroundRetry(backgroundRetryDelay(500 * (2 ** attempt), error.retryAt), signal);
+          await waitForBackgroundRetry(backgroundRetryDelay(500 * (2 ** attempt), error.retryDeadline), signal);
           attempt += 1;
         }
       }
