@@ -1,4 +1,7 @@
 let playerSequence = 0;
+const HANDSHAKE_RETRY_MS = 5000;
+const MAX_HANDSHAKE_ATTEMPTS = 6;
+const CHECKPOINT_CHECK_MS = 5000;
 
 /** Track the player in memory; persist only changed, whole playback seconds. */
 export function watchYouTubePlayback(frame: HTMLIFrameElement, options: {
@@ -20,6 +23,9 @@ export function watchYouTubePlayback(frame: HTMLIFrameElement, options: {
   let flushNextPosition = false;
   let listening = false;
   let stopped = false;
+  let handshakeAttempts = 0;
+  let handshakeTimer: number | null = null;
+  let checkpointTimer: number | null = null;
 
   const flush = () => {
     const second = Math.floor(seconds);
@@ -38,10 +44,51 @@ export function watchYouTubePlayback(frame: HTMLIFrameElement, options: {
     target.postMessage(JSON.stringify({ event: "listening", id: playerId, channel: "widget" }), origin);
     subscribeState();
   };
+  const stopHandshakeRetries = () => {
+    if (handshakeTimer === null) return;
+    window.clearTimeout(handshakeTimer);
+    handshakeTimer = null;
+  };
+  const stopCheckpointChecks = () => {
+    if (checkpointTimer === null) return;
+    window.clearInterval(checkpointTimer);
+    checkpointTimer = null;
+  };
+  const startCheckpointChecks = () => {
+    if (checkpointTimer !== null || stopped || !listening) return;
+    checkpointTimer = window.setInterval(() => {
+      if (playerState !== 1 && playerState !== 3) {
+        stopCheckpointChecks();
+        return;
+      }
+      if (Date.now() - savedAt >= options.saveIntervalMs) flush();
+    }, CHECKPOINT_CHECK_MS);
+  };
+  const syncCheckpointChecks = () => {
+    if (playerState === 1 || playerState === 3) startCheckpointChecks();
+    else stopCheckpointChecks();
+  };
+  const markListening = () => {
+    listening = true;
+    stopHandshakeRetries();
+    syncCheckpointChecks();
+  };
+  const attemptHandshake = () => {
+    if (stopped || listening || handshakeTimer !== null || handshakeAttempts >= MAX_HANDSHAKE_ATTEMPTS) return;
+    handshakeAttempts += 1;
+    subscribe();
+    if (handshakeAttempts < MAX_HANDSHAKE_ATTEMPTS) {
+      handshakeTimer = window.setTimeout(() => {
+        handshakeTimer = null;
+        attemptHandshake();
+      }, HANDSHAKE_RETRY_MS);
+    }
+  };
   const receiveState = (state: number) => {
     if (![-1, 0, 1, 2, 3, 5].includes(state)) return;
     const previous = playerState;
     playerState = state;
+    syncCheckpointChecks();
     if (state === 2 || state === 0 || (state === 1 && (previous === 3 || seekPending))) {
       flush();
       // State and position may arrive in separate messages, in either order.
@@ -56,12 +103,12 @@ export function watchYouTubePlayback(frame: HTMLIFrameElement, options: {
     try { data = typeof event.data === "string" ? JSON.parse(event.data) : event.data; }
     catch { return; }
     if (!data || typeof data !== "object") return;
-    if (data.event === "onReady") { listening = true; subscribeState(); return; }
+    if (data.event === "onReady") { markListening(); subscribeState(); return; }
     if (data.event === "onStateChange" && typeof data.info === "number") { receiveState(data.info); return; }
     if (data.event !== "infoDelivery" && data.event !== "initialDelivery") return;
     const info = data.info;
     if (!info || typeof info !== "object") return;
-    listening = true;
+    markListening();
     if (typeof info.playbackRate === "number" && Number.isFinite(info.playbackRate) && info.playbackRate > 0) playbackRate = info.playbackRate;
     const nextState = typeof info.playerState === "number" ? info.playerState : playerState;
     if (typeof info.currentTime === "number" && Number.isFinite(info.currentTime) && info.currentTime >= 0 && (observed || [0, 1, 2, 3].includes(nextState))) {
@@ -81,24 +128,21 @@ export function watchYouTubePlayback(frame: HTMLIFrameElement, options: {
     if (typeof info.playerState === "number" && info.playerState !== playerState) receiveState(info.playerState);
   };
   const onHidden = () => { if (document.visibilityState === "hidden") flush(); };
-  const timer = window.setInterval(() => {
-    if (!listening) subscribe();
-    if (Date.now() - savedAt >= options.saveIntervalMs) flush();
-  }, 5000);
-  frame.addEventListener("load", subscribe);
+  frame.addEventListener("load", attemptHandshake);
   window.addEventListener("message", onMessage);
   window.addEventListener("pagehide", flush);
   window.addEventListener("beforeunload", flush);
   document.addEventListener("visibilitychange", onHidden);
-  subscribe();
+  attemptHandshake();
   return {
     flush,
     stop() {
       if (stopped) return;
       stopped = true;
       flush();
-      window.clearInterval(timer);
-      frame.removeEventListener("load", subscribe);
+      stopHandshakeRetries();
+      stopCheckpointChecks();
+      frame.removeEventListener("load", attemptHandshake);
       window.removeEventListener("message", onMessage);
       window.removeEventListener("pagehide", flush);
       window.removeEventListener("beforeunload", flush);

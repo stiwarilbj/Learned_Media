@@ -4,6 +4,9 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.watchYouTubePlayback = watchYouTubePlayback;
 let playerSequence = 0;
+const HANDSHAKE_RETRY_MS = 5000;
+const MAX_HANDSHAKE_ATTEMPTS = 6;
+const CHECKPOINT_CHECK_MS = 5000;
 /** Track the player in memory; persist only changed, whole playback seconds. */
 function watchYouTubePlayback(frame, options) {
     const origin = "https://www.youtube.com";
@@ -19,6 +22,9 @@ function watchYouTubePlayback(frame, options) {
     let flushNextPosition = false;
     let listening = false;
     let stopped = false;
+    let handshakeAttempts = 0;
+    let handshakeTimer = null;
+    let checkpointTimer = null;
     const flush = () => {
         const second = Math.floor(seconds);
         if (!observed || second === savedSecond)
@@ -38,11 +44,59 @@ function watchYouTubePlayback(frame, options) {
         target.postMessage(JSON.stringify({ event: "listening", id: playerId, channel: "widget" }), origin);
         subscribeState();
     };
+    const stopHandshakeRetries = () => {
+        if (handshakeTimer === null)
+            return;
+        window.clearTimeout(handshakeTimer);
+        handshakeTimer = null;
+    };
+    const stopCheckpointChecks = () => {
+        if (checkpointTimer === null)
+            return;
+        window.clearInterval(checkpointTimer);
+        checkpointTimer = null;
+    };
+    const startCheckpointChecks = () => {
+        if (checkpointTimer !== null || stopped || !listening)
+            return;
+        checkpointTimer = window.setInterval(() => {
+            if (playerState !== 1 && playerState !== 3) {
+                stopCheckpointChecks();
+                return;
+            }
+            if (Date.now() - savedAt >= options.saveIntervalMs)
+                flush();
+        }, CHECKPOINT_CHECK_MS);
+    };
+    const syncCheckpointChecks = () => {
+        if (playerState === 1 || playerState === 3)
+            startCheckpointChecks();
+        else
+            stopCheckpointChecks();
+    };
+    const markListening = () => {
+        listening = true;
+        stopHandshakeRetries();
+        syncCheckpointChecks();
+    };
+    const attemptHandshake = () => {
+        if (stopped || listening || handshakeTimer !== null || handshakeAttempts >= MAX_HANDSHAKE_ATTEMPTS)
+            return;
+        handshakeAttempts += 1;
+        subscribe();
+        if (handshakeAttempts < MAX_HANDSHAKE_ATTEMPTS) {
+            handshakeTimer = window.setTimeout(() => {
+                handshakeTimer = null;
+                attemptHandshake();
+            }, HANDSHAKE_RETRY_MS);
+        }
+    };
     const receiveState = (state) => {
         if (![-1, 0, 1, 2, 3, 5].includes(state))
             return;
         const previous = playerState;
         playerState = state;
+        syncCheckpointChecks();
         if (state === 2 || state === 0 || (state === 1 && (previous === 3 || seekPending))) {
             flush();
             // State and position may arrive in separate messages, in either order.
@@ -65,7 +119,7 @@ function watchYouTubePlayback(frame, options) {
         if (!data || typeof data !== "object")
             return;
         if (data.event === "onReady") {
-            listening = true;
+            markListening();
             subscribeState();
             return;
         }
@@ -78,7 +132,7 @@ function watchYouTubePlayback(frame, options) {
         const info = data.info;
         if (!info || typeof info !== "object")
             return;
-        listening = true;
+        markListening();
         if (typeof info.playbackRate === "number" && Number.isFinite(info.playbackRate) && info.playbackRate > 0)
             playbackRate = info.playbackRate;
         const nextState = typeof info.playerState === "number" ? info.playerState : playerState;
@@ -103,18 +157,12 @@ function watchYouTubePlayback(frame, options) {
     };
     const onHidden = () => { if (document.visibilityState === "hidden")
         flush(); };
-    const timer = window.setInterval(() => {
-        if (!listening)
-            subscribe();
-        if (Date.now() - savedAt >= options.saveIntervalMs)
-            flush();
-    }, 5000);
-    frame.addEventListener("load", subscribe);
+    frame.addEventListener("load", attemptHandshake);
     window.addEventListener("message", onMessage);
     window.addEventListener("pagehide", flush);
     window.addEventListener("beforeunload", flush);
     document.addEventListener("visibilitychange", onHidden);
-    subscribe();
+    attemptHandshake();
     return {
         flush,
         stop() {
@@ -122,8 +170,9 @@ function watchYouTubePlayback(frame, options) {
                 return;
             stopped = true;
             flush();
-            window.clearInterval(timer);
-            frame.removeEventListener("load", subscribe);
+            stopHandshakeRetries();
+            stopCheckpointChecks();
+            frame.removeEventListener("load", attemptHandshake);
             window.removeEventListener("message", onMessage);
             window.removeEventListener("pagehide", flush);
             window.removeEventListener("beforeunload", flush);
