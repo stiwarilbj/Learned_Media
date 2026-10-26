@@ -280,6 +280,7 @@ private struct WikipediaSearchResponse: Decodable {
     let error: WikipediaPageResponse.APIError?
     let query: Query?
 }
+private struct WikipediaSummaryResponse: Decodable { let title: String? }
 
 private struct WikipediaPresenceFlag: Decodable, Sendable {
     let isSet: Bool
@@ -564,6 +565,7 @@ private struct WikipediaImageInfoResponse: Decodable, Sendable {
         }
         let pages: [String: Page]?
     }
+    let error: WikipediaPageResponse.APIError?
     let query: Query?
 }
 private struct MetadataValue: Decodable, Sendable { let value: String? }
@@ -1070,13 +1072,54 @@ private final class WikipediaClient: @unchecked Sendable {
         let body = reused ?? data
         let decoded: T
         do { decoded = try JSONDecoder().decode(T.self, from: body) }
-        catch { await downloads.discard(conditional); throw error }
+        catch {
+            if let schema = providerResponseSchema(for: url) {
+                let object = try? JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed])
+                let firstNonWhitespace = body.first { ![UInt8(9), 10, 13, 32].contains($0) }
+                let nonJSON = firstNonWhitespace == 60
+                PerformanceDiagnostics.shared.recordProviderSchemaFailure(schema, payload: object, rootOverride: object == nil ? (nonJSON ? .nonJSON : .invalidJSON) : nil)
+            }
+            await downloads.discard(conditional)
+            throw error
+        }
+        if let schema = providerResponseSchema(for: url), !hasExpectedProviderEnvelope(schema, decoded: decoded) {
+            let object = try? JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed])
+            PerformanceDiagnostics.shared.recordProviderSchemaFailure(schema, payload: object)
+        }
         if reused != nil { PerformanceDiagnostics.shared.record(.wikipedia, .cacheHits) }
         else if http.statusCode == 200, reusableResponse(decoded) {
             try Task.checkCancellation()
             await downloads.validated(conditional, response: http, body: body)
         } else { await downloads.discard(conditional) }
         return decoded
+    }
+    private func providerResponseSchema(for url: URL) -> ProviderResponseSchema? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        if components.path.hasPrefix("/api/rest_v1/page/summary/") { return .wikipediaSummary }
+        let query = Dictionary(components.queryItems?.map { ($0.name, $0.value ?? "") } ?? [], uniquingKeysWith: { first, _ in first })
+        if query["list"] == "search" { return .wikipediaSearch }
+        let properties = Set((query["prop"] ?? "").split(separator: "|").map(String.init))
+        if properties.contains("imageinfo") { return .wikipediaImages }
+        if query["prop"] != nil { return .wikipediaPages }
+        return nil
+    }
+    private func hasExpectedProviderEnvelope<T>(_ schema: ProviderResponseSchema, decoded: T) -> Bool {
+        switch schema {
+        case .wikipediaSearch:
+            guard let response = decoded as? WikipediaSearchResponse else { return true }
+            return response.error != nil || response.query?.search != nil
+        case .wikipediaPages:
+            guard let response = decoded as? WikipediaPageResponse else { return true }
+            return response.error != nil || response.query?.pages != nil
+        case .wikipediaImages:
+            guard let response = decoded as? WikipediaImageInfoResponse else { return true }
+            return response.error != nil || response.query?.pages != nil
+        case .wikipediaSummary:
+            guard let response = decoded as? WikipediaSummaryResponse else { return true }
+            return response.title != nil
+        default:
+            return true
+        }
     }
     private func reusableResponse<T>(_ decoded: T) -> Bool {
         if let response = decoded as? WikipediaPageResponse, response.error == nil,
@@ -3267,6 +3310,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         return ["savedWorkspaces": rawWorkspaces.count, "savedFacts": memories.count]
     }
 
+    private func youtubeResponseSchema(_ resource: String) -> ProviderResponseSchema? {
+        switch resource {
+        case "channels": return .youtubeChannels
+        case "search": return .youtubeSearch
+        case "playlistItems": return .youtubePlaylistItems
+        case "videos": return .youtubeVideos
+        default: return nil
+        }
+    }
+
+    private func hasYouTubeErrorEnvelope(_ payload: Any?) -> Bool {
+        guard let object = payload as? [String: Any], let error = object["error"] as? [String: Any] else { return false }
+        let message = error["message"] as? String
+        let reason = (error["errors"] as? [[String: Any]])?.first?["reason"] as? String
+        return !(message?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) || reason?.isEmpty == false
+    }
+
     private func youtubeRequest(resource: String, key: String, params: [String: Any]) async throws -> Any {
         let allowedResources: Set<String> = ["channels", "search", "playlistItems", "videos"]
         guard allowedResources.contains(resource) else { throw NativeError(message: "That YouTube request is outside the approved catalog service.", retryable: false) }
@@ -3312,8 +3372,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         let reused = await youtubeDownloads.notModified(conditional, response: http)
         if http.statusCode == 304, reused == nil { throw NativeError(message: "YouTube returned Not Modified without a validated response.", retryable: true) }
         let body = reused ?? data
-        let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
+        let parsedPayload = try? JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed])
+        let object = parsedPayload as? [String: Any] ?? [:]
         guard (200..<300).contains(http.statusCode) || reused != nil else {
+            if !hasYouTubeErrorEnvelope(parsedPayload) {
+                PerformanceDiagnostics.shared.recordProviderSchemaFailure(.youtubeError, payload: parsedPayload, rootOverride: parsedPayload == nil ? .invalidJSON : nil)
+            }
             let errorObject = object["error"] as? [String: Any]
             let message = errorObject?["message"] as? String ?? "YouTube returned HTTP \(http.statusCode)."
             let reason = (errorObject?["errors"] as? [[String: Any]])?.first?["reason"] as? String
@@ -3325,9 +3389,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             throw NativeError(message: message, retryable: retryable)
         }
         if reused != nil { PerformanceDiagnostics.shared.record(.youtube, .cacheHits) }
-        else if http.statusCode == 200, object["error"] == nil, object["items"] is [[String: Any]], object["nextPageToken"] == nil || object["nextPageToken"] is String {
-            try Task.checkCancellation()
-            await youtubeDownloads.validated(conditional, response: http, body: body, bodyETag: object["etag"] as? String)
+        else if http.statusCode == 200 {
+            let validList = object["error"] == nil && object["items"] is [[String: Any]]
+                && (object["nextPageToken"] == nil || object["nextPageToken"] is String)
+            if validList {
+                try Task.checkCancellation()
+                await youtubeDownloads.validated(conditional, response: http, body: body, bodyETag: object["etag"] as? String)
+            } else {
+                if let schema = youtubeResponseSchema(resource) {
+                    PerformanceDiagnostics.shared.recordProviderSchemaFailure(schema, payload: parsedPayload, rootOverride: parsedPayload == nil ? .invalidJSON : nil)
+                }
+                await youtubeDownloads.discard(conditional)
+            }
         } else { await youtubeDownloads.discard(conditional) }
         await backgroundRetries.succeeded(retryKey, observed: observed)
         return object

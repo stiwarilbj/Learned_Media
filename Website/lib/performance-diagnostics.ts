@@ -1,3 +1,5 @@
+import { providerSchemaFailureSnapshot, resetProviderSchemaFailures } from "./provider-schema-diagnostics";
+
 /** Numeric aggregates only. No event log, identifiers, persistence, or uploads. */
 const services = ['gemini', 'youtube', 'wikipedia', 'cloud', 'cache'] as const;
 const metrics = ['requests', 'cache_hits', 'cache_misses', 'coalesced', 'queue_ms', 'retries', 'request_bytes', 'response_bytes_reported', 'response_bytes_read'] as const;
@@ -21,8 +23,8 @@ export function recordPerformance(service: DiagnosticService, metric: Diagnostic
 }
 
 export const performanceDiagnostics = Object.freeze({
-  snapshot: () => ({ version: 1, scope: 'current-runtime', counters: Object.fromEntries([...counters].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => [key, { ...value }])) }),
-  reset: () => counters.clear()
+  snapshot: () => ({ version: 1, scope: 'current-runtime', counters: Object.fromEntries([...counters].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => [key, { ...value }])), providerSchemaFailures: providerSchemaFailureSnapshot() }),
+  reset: () => { counters.clear(); resetProviderSchemaFailures(); }
 });
 
 // Count UTF-8 bytes without retaining text or allocating a second payload buffer.

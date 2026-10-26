@@ -11,6 +11,7 @@ import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageIdentity, openImportCheckpoint, t
 import { restoreStoredCatalog, videoRecordRange, type StoredVideo } from "./youtube-catalog-storage";
 import { ConditionalDownloadCache } from "./conditional-download";
 import { requestCacheScope } from "./session-cache";
+import { recordProviderSchemaFailure, type ProviderResponseSchema } from "./provider-schema-diagnostics";
 export type YouTubeTopic = "History" | "Politics" | "Geography" | "Science" | "Nature" | "Mathematics" | "Literature" | "Sports" | "Culture" | "Technology";
 
 export type ApprovedChannelSeed = {
@@ -465,6 +466,16 @@ const youtubeDownloads = new ConditionalDownloadCache();
 
 type YouTubeApiErrorDetails = { message?: string; reason?: string };
 
+function youtubeResponseSchema(resource: string): ProviderResponseSchema | undefined {
+  switch (resource) {
+    case "channels": return "youtube.channels";
+    case "search": return "youtube.search";
+    case "playlistItems": return "youtube.playlistItems";
+    case "videos": return "youtube.videos";
+    default: return undefined;
+  }
+}
+
 function knownYouTubeApiErrorDetails(value: unknown): YouTubeApiErrorDetails | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const error = (value as { error?: unknown }).error;
@@ -483,6 +494,7 @@ async function readYouTubeErrorDetails(response: Response, resource: string, tim
   const definitelyNonJson = contentType === "text/html" || contentType === "application/xhtml+xml"
     || /^(?:image|audio|video)\//.test(contentType);
   if (definitelyNonJson) {
+    recordProviderSchemaFailure("youtube.error", undefined, "non-json");
     await response.body?.cancel().catch(() => undefined);
     return undefined;
   }
@@ -504,8 +516,15 @@ async function readYouTubeErrorDetails(response: Response, resource: string, tim
     return undefined;
   }
 
-  if (!raw.trimStart().startsWith("{")) return undefined;
-  try { return knownYouTubeApiErrorDetails(JSON.parse(raw)); } catch { return undefined; }
+  try {
+    const payload: unknown = JSON.parse(raw);
+    const details = knownYouTubeApiErrorDetails(payload);
+    if (!details) recordProviderSchemaFailure("youtube.error", payload);
+    return details;
+  } catch {
+    recordProviderSchemaFailure("youtube.error", undefined, raw.trimStart().startsWith("<") ? "non-json" : "invalid-json");
+    return undefined;
+  }
 }
 
 async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Record<string, string>, signal?: AbortSignal): Promise<T> {
@@ -517,6 +536,7 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
   const cacheKey = JSON.stringify([requestCacheScope("youtube-http-v1", apiKey), url.toString(), pageContext]);
   const conditional = youtubeDownloads.prepare(cacheKey, { accept: "application/json", "x-goog-api-key": apiKey });
   const timeout = withTimeout(signal);
+  const schema = youtubeResponseSchema(resource);
   try {
     if (signal?.aborted) throw abortError();
     const response = await performanceFetch("youtube", url, { headers: conditional.headers, cache: "no-store", signal: timeout.controller.signal });
@@ -555,15 +575,22 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
     recordPerformance("youtube", "response_bytes_read", responseBytesRead);
     if (reused !== undefined) recordPerformance("youtube", "cache_hits");
     let payload: unknown = {};
-    try { payload = JSON.parse(raw); } catch { youtubeDownloads.discard(cacheKey); throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryDeadline); }
+    try { payload = JSON.parse(raw); } catch {
+      if (schema) recordProviderSchemaFailure(schema, undefined, "invalid-json");
+      youtubeDownloads.discard(cacheKey);
+      throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryDeadline);
+    }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      if (schema) recordProviderSchemaFailure(schema, payload);
       youtubeDownloads.discard(cacheKey);
       throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryDeadline);
     }
     const list = payload as { items?: unknown; nextPageToken?: unknown; etag?: unknown; error?: unknown } | null;
-    if (reused === undefined && response.status === 200 && list && typeof list === "object" && !Array.isArray(list)
+    const validList = list && typeof list === "object" && !Array.isArray(list)
       && list.error === undefined && Array.isArray(list.items) && list.items.every(item => !!item && typeof item === "object" && !Array.isArray(item))
-      && (list.nextPageToken === undefined || typeof list.nextPageToken === "string")) {
+      && (list.nextPageToken === undefined || typeof list.nextPageToken === "string");
+    if (reused === undefined && response.status === 200 && !validList && schema) recordProviderSchemaFailure(schema, payload);
+    if (reused === undefined && response.status === 200 && validList) {
       youtubeDownloads.validated(cacheKey, response.headers, raw, typeof list.etag === "string" ? list.etag : undefined);
     } else if (reused === undefined) youtubeDownloads.discard(cacheKey);
     return payload as T;

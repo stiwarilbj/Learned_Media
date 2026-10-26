@@ -1,6 +1,7 @@
 import { performanceFetch, recordPerformance } from "./performance-diagnostics";
 import { readLimitedResponseText } from "./bounded-response";
 import { approximateCacheBytes } from "./session-cache";
+import { recordProviderSchemaFailure, type ProviderResponseSchema } from "./provider-schema-diagnostics";
 import type { ImageAttribution, WikipediaSource } from "./types";
 
 const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
@@ -381,6 +382,29 @@ function wikipediaResponseLimit(url: string) {
   return WIKIPEDIA_RESPONSE_LIMITS.metadata;
 }
 
+function wikipediaResponseSchema(url: string): ProviderResponseSchema | undefined {
+  const parsed = new URL(url);
+  if (parsed.pathname.startsWith("/api/rest_v1/page/summary/")) return "wikipedia.summary";
+  if (parsed.pathname !== "/w/api.php") return undefined;
+  const params = parsed.searchParams;
+  if (params.get("list") === "search") return "wikipedia.search";
+  if ((params.get("prop") ?? "").split("|").includes("imageinfo")) return "wikipedia.images";
+  if (params.has("prop")) return "wikipedia.pages";
+  return undefined;
+}
+
+function hasWikipediaEnvelope(schema: ProviderResponseSchema, payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  if (schema === "wikipedia.summary") return typeof (payload as { title?: unknown }).title === "string";
+  const error = (payload as { error?: unknown }).error;
+  if (error && typeof error === "object" && !Array.isArray(error)) return true;
+  const query = (payload as { query?: unknown }).query;
+  if (!query || typeof query !== "object" || Array.isArray(query)) return false;
+  if (schema === "wikipedia.search") return Array.isArray((query as { search?: unknown }).search);
+  const pages = (query as { pages?: unknown }).pages;
+  return !!pages && typeof pages === "object" && !Array.isArray(pages);
+}
+
 async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cacheResponse = true): Promise<T | null> {
   const queuedAt = performance.now();
   const origin = new URL(url).origin;
@@ -416,9 +440,13 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cache
     releaseWikipediaSlot();
   }
 
+  const schema = wikipediaResponseSchema(url);
   try {
-    return JSON.parse(body) as T;
+    const payload: unknown = JSON.parse(body);
+    if (schema && !hasWikipediaEnvelope(schema, payload)) recordProviderSchemaFailure(schema, payload);
+    return payload as T;
   } catch {
+    if (schema) recordProviderSchemaFailure(schema, undefined, body.trimStart().startsWith("<") ? "non-json" : "invalid-json");
     return null;
   }
 }
