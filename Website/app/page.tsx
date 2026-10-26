@@ -34,7 +34,7 @@ import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, createYouTubeChannelPools, createYouTubeTopicPools, importCoordinatedYouTubeCatalog, hasPendingYouTubeImport, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, mergeYouTubeRecencyPreferences, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
 import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, PreparedVideoSearchCache, searchPreparedSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
-import { diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVideoRecordsYielding, toVideoSearchDocument } from "@/lib/video-metadata";
+import { createVideoSearchPatchQueue, diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVideoRecordsYielding, toVideoSearchDocument } from "@/lib/video-metadata";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
 import { normalizeSpotlightSources } from "@/lib/source-spotlight";
 import { cardExplanationFingerprint, getCardExplanationSelection, normalizeCardExplanations } from "@/lib/card-explanations";
@@ -646,7 +646,9 @@ export default function HomePage() {
   const youtubeSearchWorkerReady = useRef(false);
   const youtubeSearchWorkerReadyWaiters = useRef<Array<() => void>>([]);
   const youtubeSearchWorkerIndexedVideos = useRef<Map<string, YouTubeVideo> | null>(null);
+  const youtubeSearchWorkerPatches = useRef<ReturnType<typeof createVideoSearchPatchQueue<YouTubeVideo>> | null>(null);
   const youtubeSearchWorkerPendingVideos = useRef<YouTubeVideo[] | null>(null);
+  useEffect(() => () => { youtubeSearchWorkerPatches.current?.clear(); }, []);
   const youtubeSearchWorkerNeedsRebuild = useRef(false);
   const youtubeSearchWorkerPolicy = useRef(`${YOUTUBE_CATALOG_VERSION}:${VIDEO_SEMANTIC_VERSION}`);
   const youtubeSearchWorkerRevision = useRef(0);
@@ -1598,6 +1600,7 @@ export default function HomePage() {
     const baseRevision = youtubeSearchWorkerRevision.current;
     const revision = ++youtubeSearchWorkerRevision.current;
     if (youtubeSearchWorkerNeedsRebuild.current) {
+      youtubeSearchWorkerPatches.current?.clear();
       youtubeSearchWorkerNeedsRebuild.current = false;
       youtubeSearchWorkerPolicy.current = policy;
       youtubeSearchWorkerReady.current = false;
@@ -1607,7 +1610,13 @@ export default function HomePage() {
       }
       youtubeSearchPending.current.clear();
       worker.postMessage({ type: "initialize", revision, videos: nextVideos.map(toVideoSearchDocument) });
-    } else worker.postMessage({ type: "update", baseRevision, revision, upserts: upserts.map(toVideoSearchDocument), removeIds, orderIds });
+    } else {
+      youtubeSearchWorkerPatches.current ??= createVideoSearchPatchQueue<YouTubeVideo>(patch => {
+        if (worker !== youtubeSearchWorker.current) return;
+        worker.postMessage({ type: "update", ...patch, upserts: patch.upserts.map(toVideoSearchDocument) });
+      });
+      youtubeSearchWorkerPatches.current.enqueue({ baseRevision, revision, upserts, removeIds, orderIds });
+    }
     setYoutubeSearchIndexRevision(revision);
   }, []);
 
@@ -1628,6 +1637,7 @@ export default function HomePage() {
       });
     }
     if (signal.aborted) throw new DOMException("Search canceled", "AbortError");
+    youtubeSearchWorkerPatches.current?.flush();
     const currentWorker = youtubeSearchWorker.current;
     if (!currentWorker) throw new Error("The local video search worker is unavailable.");
     const requestId = ++youtubeSearchRequestId.current;
@@ -1691,6 +1701,8 @@ export default function HomePage() {
     let worker: Worker;
     try { worker = new Worker(new URL("../workers/youtube-search.worker.ts", import.meta.url), { type: "module" }); }
     catch { setYoutubeSearchWorkerFailed(true); return; }
+    youtubeSearchWorkerPatches.current?.clear();
+    youtubeSearchWorkerPatches.current = null;
     youtubeSearchWorker.current = worker;
     youtubeSearchWorkerReady.current = false;
     const initialVideos = youtubeWorkspace.videos;
@@ -1723,6 +1735,9 @@ export default function HomePage() {
       else pending.resolve(reply);
     };
     worker.onerror = () => {
+      if (youtubeSearchWorker.current !== worker) return;
+      youtubeSearchWorkerPatches.current?.clear();
+      youtubeSearchWorkerPatches.current = null;
       worker.terminate();
       if (youtubeSearchWorker.current === worker) youtubeSearchWorker.current = null;
       youtubeSearchWorkerReady.current = false;

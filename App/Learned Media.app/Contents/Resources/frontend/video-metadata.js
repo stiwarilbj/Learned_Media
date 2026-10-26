@@ -8,6 +8,7 @@ exports.sameVideoSearchMetadata = sameVideoSearchMetadata;
 exports.reuseUnchangedVideoRecords = reuseUnchangedVideoRecords;
 exports.reuseUnchangedVideoRecordsYielding = reuseUnchangedVideoRecordsYielding;
 exports.diffVideoSearchMetadata = diffVideoSearchMetadata;
+exports.createVideoSearchPatchQueue = createVideoSearchPatchQueue;
 const background_work_1 = require("./background-work");
 /** Project a full catalog record to the exact document shape sent to search workers. */
 function toVideoSearchDocument(video) {
@@ -113,6 +114,46 @@ function diffVideoSearchMetadata(indexed, next) {
         if (!ids.has(id))
             removeIds.push(id);
     return { upserts, removeIds, orderIds: orderChanged ? orderIds : undefined, changed: orderChanged || upserts.length > 0 || removeIds.length > 0 };
+}
+/** Keep full records locally; project and clone only the final pending patch. */
+function createVideoSearchPatchQueue(publish, schedule = flush => {
+    const timer = setTimeout(flush, 16);
+    return () => clearTimeout(timer);
+}) {
+    let pending;
+    let cancelScheduled;
+    const clear = () => { cancelScheduled?.(); cancelScheduled = undefined; pending = undefined; };
+    const flush = () => {
+        const patch = pending;
+        clear();
+        if (patch)
+            publish({ baseRevision: patch.baseRevision, revision: patch.revision,
+                upserts: [...patch.upserts.values()], removeIds: [...patch.removeIds], orderIds: patch.orderIds });
+    };
+    return {
+        clear, flush,
+        enqueue(patch) {
+            if (pending && pending.revision !== patch.baseRevision)
+                throw new Error("Noncontiguous video index patches require a rebuild.");
+            pending ??= { baseRevision: patch.baseRevision, revision: patch.revision, upserts: new Map(), removeIds: new Set() };
+            pending.revision = patch.revision;
+            for (const id of patch.removeIds) {
+                pending.upserts.delete(id);
+                pending.removeIds.add(id);
+            }
+            for (const video of patch.upserts) {
+                pending.removeIds.delete(video.id);
+                pending.upserts.set(video.id, video);
+            }
+            if (patch.orderIds !== undefined)
+                pending.orderIds = patch.orderIds.slice();
+            if (!cancelScheduled) {
+                const scheduledPatch = pending;
+                cancelScheduled = schedule(() => { if (pending === scheduledPatch)
+                    flush(); });
+            }
+        }
+    };
 }
 
 scope.LEARNED_MEDIA_VIDEO_METADATA = exports; })(globalThis);

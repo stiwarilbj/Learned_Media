@@ -664,3 +664,61 @@ for (const platform of ["website", "native"]) {
     assert.deepEqual(new Set(Array.from(current.candidates, candidate => candidate.videoId)), new Set(["new", original[1].id, original[2].id]));
   });
 }
+
+const metadata = require("../lib/video-metadata.ts");
+const nativeMetadataContext = { LEARNED_MEDIA_BACKGROUND: require("../lib/background-work.ts"), setTimeout, clearTimeout };
+vm.runInNewContext(readFileSync(path.join(root, "..", "App/Resources/frontend/video-metadata.js"), "utf8"), nativeMetadataContext);
+for (const [platform, api] of [["website", metadata], ["native", nativeMetadataContext.LEARNED_MEDIA_VIDEO_METADATA]]) {
+  test(`${platform} coalesces pending video patches by ID and preserves the final revision/order`, () => {
+    const sent = [], scheduled = [], canceled = [];
+    const queue = api.createVideoSearchPatchQueue(patch => sent.push(patch), flush => { scheduled.push(flush); return () => canceled.push(flush); });
+    const make = (id, title) => ({ id, title });
+    queue.enqueue({ baseRevision: 1, revision: 2, upserts: [make("A", "first"), make("B", "old"), make("gone", "temporary")], removeIds: [], orderIds: ["A", "B"] });
+    queue.enqueue({ baseRevision: 2, revision: 3, upserts: [make("A", "latest")], removeIds: ["B"], orderIds: ["A"] });
+    const order = ["B", "A"];
+    queue.enqueue({ baseRevision: 3, revision: 4, upserts: [make("B", "restored")], removeIds: ["gone"], orderIds: order });
+    order.reverse();
+    assert.equal(sent.length, 0, "no projection or structured clone before the batch flushes");
+    assert.equal(scheduled.length, 1);
+    scheduled[0]();
+    assert.equal(sent.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { baseRevision: 1, revision: 4, upserts: [make("A", "latest"), make("B", "restored")], removeIds: ["gone"], orderIds: ["B", "A"] });
+    queue.flush();
+    assert.equal(sent.length, 1, "a search flush after a scheduled flush does not resend it");
+    queue.enqueue({ baseRevision: 4, revision: 5, upserts: [make("late", "canceled")], removeIds: [] });
+    queue.clear(); scheduled[1]();
+    assert.equal(sent.length, 1, "a canceled callback cannot send an obsolete patch");
+    queue.enqueue({ baseRevision: 9, revision: 10, upserts: [make("new-worker", "fresh")], removeIds: [] });
+    scheduled[1]();
+    assert.equal(sent.length, 1, "an obsolete callback cannot flush a newer batch");
+    queue.flush();
+    assert.equal(sent[1].baseRevision, 9, "a rebuild can start a fresh revision chain");
+    assert.equal(canceled.length, 3);
+  });
+  test(`${platform} burst patches match sequential catalog changes across 30,000 videos`, () => {
+    const initial = Array.from({length: 30000}, (_, i) => ({ id: String(i), title: "Original", tags: [], topics: [] }));
+    let target = initial, previous = new Map(initial.map(video => [video.id, video]));
+    const sent = [];
+    const queue = api.createVideoSearchPatchQueue(patch => sent.push(patch), () => () => {});
+    for (let revision = 1; revision <= 24; revision++) {
+      const next = new Map(target.map(video => [video.id, video]));
+      next.delete(String(revision - 1));
+      next.set(String(100 + revision % 3), { ...initial[100 + revision % 3], title: `Changed ${revision}` });
+      next.set(`new-${revision}`, { ...initial[0], id: `new-${revision}` });
+      target = [...next.values()];
+      if (revision % 3 === 0) target.reverse();
+      const patch = api.diffVideoSearchMetadata(previous, target);
+      queue.enqueue({baseRevision: revision - 1, revision, ...patch});
+      previous = new Map(target.map(video => [video.id, video]));
+    }
+    queue.flush();
+    assert.equal(sent.length, 1);
+    const result = new Map(initial.map(video => [video.id, video]));
+    for (const id of sent[0].removeIds) result.delete(id);
+    for (const video of sent[0].upserts) result.set(video.id, video);
+    const final = sent[0].orderIds.map(id => result.get(id));
+    assert.deepEqual(final, target);
+    assert.equal(sent[0].revision, 24);
+    assert.equal(sent[0].upserts.length, 27, "repeated replacements retain only one record per ID");
+  });
+}

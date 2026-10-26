@@ -114,3 +114,41 @@ export function diffVideoSearchMetadata<T extends SearchableVideoMetadata>(index
   for (const id of indexed.keys()) if (!ids.has(id)) removeIds.push(id);
   return { upserts, removeIds, orderIds: orderChanged ? orderIds : undefined, changed: orderChanged || upserts.length > 0 || removeIds.length > 0 };
 }
+
+export type VideoSearchIndexPatch<T extends SearchableVideoMetadata> = {
+  baseRevision: number; revision: number; upserts: T[]; removeIds: string[]; orderIds?: string[];
+};
+
+/** Keep full records locally; project and clone only the final pending patch. */
+export function createVideoSearchPatchQueue<T extends SearchableVideoMetadata>(
+  publish: (patch: VideoSearchIndexPatch<T>) => void,
+  schedule: (flush: () => void) => () => void = flush => {
+    const timer = setTimeout(flush, 16);
+    return () => clearTimeout(timer);
+  }
+) {
+  let pending: { baseRevision: number; revision: number; upserts: Map<string, T>; removeIds: Set<string>; orderIds?: string[] } | undefined;
+  let cancelScheduled: (() => void) | undefined;
+  const clear = () => { cancelScheduled?.(); cancelScheduled = undefined; pending = undefined; };
+  const flush = () => {
+    const patch = pending;
+    clear();
+    if (patch) publish({ baseRevision: patch.baseRevision, revision: patch.revision,
+      upserts: [...patch.upserts.values()], removeIds: [...patch.removeIds], orderIds: patch.orderIds });
+  };
+  return {
+    clear, flush,
+    enqueue(patch: VideoSearchIndexPatch<T>) {
+      if (pending && pending.revision !== patch.baseRevision) throw new Error("Noncontiguous video index patches require a rebuild.");
+      pending ??= { baseRevision: patch.baseRevision, revision: patch.revision, upserts: new Map(), removeIds: new Set() };
+      pending.revision = patch.revision;
+      for (const id of patch.removeIds) { pending.upserts.delete(id); pending.removeIds.add(id); }
+      for (const video of patch.upserts) { pending.removeIds.delete(video.id); pending.upserts.set(video.id, video); }
+      if (patch.orderIds !== undefined) pending.orderIds = patch.orderIds.slice();
+      if (!cancelScheduled) {
+        const scheduledPatch = pending;
+        cancelScheduled = schedule(() => { if (pending === scheduledPatch) flush(); });
+      }
+    }
+  };
+}

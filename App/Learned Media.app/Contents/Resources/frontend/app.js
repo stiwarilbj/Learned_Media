@@ -1703,6 +1703,7 @@
   let youtubeSearchPlan = null, youtubeSearchHasMore = true, youtubeSearchPaging = false, youtubePagingController = null, youtubeBrowseOrder = "newest", youtubeSearchVisibleCount = 80;
   const youtubeWorkerPending = new Map();
   function localVideoReason(candidate) { return videoSearch.videoSearchReason(candidate.video, youtubeSearchPlan || videoSearch.makeLocalVideoPlan(state.youtube.searchText), candidate.score); }
+  let youtubeWorkerPatchQueue = null;
   function videoSearchIndex(force) {
     const policy = JSON.stringify([videoSearch.VIDEO_SEMANTIC_VERSION, state.youtube.catalogVersion]);
     force = Boolean(force) || policy !== youtubeIndexPolicy;
@@ -1728,16 +1729,29 @@
         youtubeSemanticWorker = new Worker("youtube-search.worker.js");
         newWorker = true;
         youtubeSemanticWorker.onmessage = function(event) { const reply=event.data; if (reply.type === "rebuild") { if (reply.revision === youtubeIndexRevision) videoSearchIndex(true); return; } const pending=youtubeWorkerPending.get(reply.requestId); if (!pending) return; youtubeWorkerPending.delete(reply.requestId); if(reply.revision!==youtubeIndexRevision) pending.reject(new Error("Video catalog changed during search.")); else pending.resolve(reply.candidates.flatMap(function(candidate){ const video=youtubeById.get(candidate.videoId); return video ? [Object.assign({},candidate,{video:video})] : []; })); };
-        youtubeSemanticWorker.onerror = function() { youtubeSemanticWorkerFailed=true; youtubeSemanticWorker.terminate(); youtubeSemanticWorker=null; for(const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video search worker unavailable.")); youtubeWorkerPending.clear(); };
+        youtubeSemanticWorker.onerror = function() { if (youtubeWorkerPatchQueue) youtubeWorkerPatchQueue.clear(); youtubeWorkerPatchQueue=null; youtubeSemanticWorkerFailed=true; youtubeSemanticWorker.terminate(); youtubeSemanticWorker=null; for(const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video search worker unavailable.")); youtubeWorkerPending.clear(); };
       } catch(_) { youtubeSemanticWorkerFailed=true; }
     }
-    if(youtubeSemanticWorker) youtubeSemanticWorker.postMessage(newWorker || force
-      ? {type:"initialize",videos:youtubeIndexedVideos.map(window.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument),revision:youtubeIndexRevision}
-      : {type:"update",baseRevision:baseRevision,upserts:changes.upserts.map(window.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument),removeIds:changes.removeIds,orderIds:changes.orderIds,revision:youtubeIndexRevision});
+    if(youtubeSemanticWorker) {
+      if(newWorker || force) {
+        if(youtubeWorkerPatchQueue) youtubeWorkerPatchQueue.clear();
+        youtubeWorkerPatchQueue=null;
+        youtubeSemanticWorker.postMessage({type:"initialize",videos:youtubeIndexedVideos.map(window.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument),revision:youtubeIndexRevision});
+      } else {
+        if(!youtubeWorkerPatchQueue) {
+          const worker=youtubeSemanticWorker;
+          youtubeWorkerPatchQueue=window.LEARNED_MEDIA_VIDEO_METADATA.createVideoSearchPatchQueue(function(patch) {
+            if(worker===youtubeSemanticWorker) worker.postMessage(Object.assign({type:"update"},patch,{upserts:patch.upserts.map(window.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument)}));
+          });
+        }
+        youtubeWorkerPatchQueue.enqueue({baseRevision:baseRevision,revision:youtubeIndexRevision,upserts:changes.upserts,removeIds:changes.removeIds,orderIds:changes.orderIds});
+      }
+    }
   }
   async function localVideoCandidates(plan, limit, signal, excluded) {
     videoSearchIndex();
     if(signal.aborted) throw new DOMException("Search canceled","AbortError");
+    if(youtubeWorkerPatchQueue) youtubeWorkerPatchQueue.flush();
     if(youtubeSemanticWorker) {
       const requestId=++youtubeWorkerRequest;
       try { return await new Promise(function(resolve,reject){
