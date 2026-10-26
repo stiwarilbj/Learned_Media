@@ -1,10 +1,13 @@
 import { performanceFetch, recordPerformance } from "./performance-diagnostics";
+import { readLimitedResponseText } from "./bounded-response";
 import { approximateCacheBytes } from "./session-cache";
 import type { ImageAttribution, WikipediaSource } from "./types";
 
 const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
 const MAX_CONCURRENT_WIKIPEDIA_REQUESTS = 4;
 const WIKIPEDIA_REQUEST_TIMEOUT_MS = 20_000;
+const MEBIBYTE = 1024 * 1024;
+const WIKIPEDIA_RESPONSE_LIMITS = Object.freeze({ search: 2 * MEBIBYTE, article: 32 * MEBIBYTE, images: 8 * MEBIBYTE, metadata: 4 * MEBIBYTE });
 let wikipediaInFlight = 0;
 let wikipediaWaiterCount = 0;
 type WikipediaWaiter = { priority: number; origin: string; active: boolean; resolve: () => void; reject: (error: Error) => void; signal?: AbortSignal; onAbort: () => void };
@@ -366,6 +369,18 @@ function apiUrl(params: Record<string, string>) {
   return url.toString();
 }
 
+function wikipediaResponseLimit(url: string) {
+  const parsed = new URL(url);
+  if (parsed.pathname === "/w/api.php") {
+    const params = parsed.searchParams;
+    if (params.get("list") === "search") return WIKIPEDIA_RESPONSE_LIMITS.search;
+    const properties = new Set((params.get("prop") ?? "").split("|").filter(Boolean));
+    if (properties.has("extracts")) return WIKIPEDIA_RESPONSE_LIMITS.article;
+    if (properties.has("imageinfo")) return WIKIPEDIA_RESPONSE_LIMITS.images;
+  }
+  return WIKIPEDIA_RESPONSE_LIMITS.metadata;
+}
+
 async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cacheResponse = true): Promise<T | null> {
   const queuedAt = performance.now();
   const origin = new URL(url).origin;
@@ -389,7 +404,9 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cache
       }
       return null;
     }
-    body = await response.text();
+    const limited = await readLimitedResponseText(response, wikipediaResponseLimit(url), "Wikipedia");
+    body = limited.text;
+    recordPerformance("wikipedia", "response_bytes_read", limited.bytesRead);
   } catch (error) {
     if (signal?.aborted) throw error;
     return null;

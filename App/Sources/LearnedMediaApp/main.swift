@@ -568,6 +568,179 @@ private struct WikipediaImageInfoResponse: Decodable, Sendable {
 }
 private struct MetadataValue: Decodable, Sendable { let value: String? }
 
+private struct ResponseBodyLimitExceeded: Error {
+    let maximumBytes: Int
+    let bytesRead: Int
+    let response: URLResponse?
+}
+
+private enum ExternalResponseLimits {
+    private static let mebibyte = 1024 * 1024
+
+    static func wikipedia(_ url: URL) -> Int {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let items = components?.queryItems ?? []
+        if url.path == "/w/api.php", items.first(where: { $0.name == "list" })?.value == "search" {
+            return 2 * mebibyte
+        }
+        if url.path == "/w/api.php",
+           items.first(where: { $0.name == "prop" })?.value?.split(separator: "|").contains("extracts") == true {
+            return 32 * mebibyte
+        }
+        if url.path == "/w/api.php",
+           items.first(where: { $0.name == "prop" })?.value?.split(separator: "|").contains("imageinfo") == true {
+            return 8 * mebibyte
+        }
+        return 4 * mebibyte
+    }
+
+    static func youtube(_ url: URL) -> Int {
+        switch url.lastPathComponent {
+        case "channels", "search": return 4 * mebibyte
+        case "playlistItems": return 8 * mebibyte
+        case "videos": return 16 * mebibyte
+        default: return 8 * mebibyte
+        }
+    }
+}
+
+private final class BoundedRequestHandle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+    private var cancelled = false
+
+    func attach(_ task: URLSessionDataTask) {
+        lock.lock()
+        self.task = task
+        let shouldCancel = cancelled
+        lock.unlock()
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let task = self.task
+        lock.unlock()
+        task?.cancel()
+    }
+}
+
+private final class BoundedResponseDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private struct Pending {
+        let continuation: CheckedContinuation<(Data, URLResponse), Error>
+        let maximumBytes: Int
+        var bytesRead = 0
+        var response: URLResponse?
+        var data: Data
+        var exceededLimit = false
+
+        init(continuation: CheckedContinuation<(Data, URLResponse), Error>, maximumBytes: Int) {
+            self.continuation = continuation
+            self.maximumBytes = maximumBytes
+            self.data = Data(capacity: min(maximumBytes, 256 * 1024))
+        }
+    }
+
+    private let lock = NSLock()
+    private var pending: [Int: Pending] = [:]
+
+    func register(taskID: Int, maximumBytes: Int, continuation: CheckedContinuation<(Data, URLResponse), Error>) {
+        lock.lock()
+        pending[taskID] = Pending(continuation: continuation, maximumBytes: maximumBytes)
+        lock.unlock()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        let taskID = dataTask.taskIdentifier
+        lock.lock()
+        guard var current = pending[taskID] else {
+            lock.unlock()
+            completionHandler(.cancel)
+            return
+        }
+        current.response = response
+        let headerLength = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Length").flatMap { Int64($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let expectedLength = headerLength ?? (response.expectedContentLength >= 0 ? response.expectedContentLength : nil)
+        if let expectedLength, expectedLength > Int64(current.maximumBytes) {
+            current.exceededLimit = true
+        }
+        pending[taskID] = current
+        let exceededLimit = current.exceededLimit
+        lock.unlock()
+        completionHandler(exceededLimit ? .cancel : .allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let taskID = dataTask.taskIdentifier
+        lock.lock()
+        guard var current = pending[taskID] else {
+            lock.unlock()
+            dataTask.cancel()
+            return
+        }
+        if current.exceededLimit {
+            lock.unlock()
+            dataTask.cancel()
+            return
+        }
+        if data.count > current.maximumBytes - current.bytesRead {
+            current.bytesRead = current.maximumBytes == Int.max ? Int.max : current.maximumBytes + 1
+            current.exceededLimit = true
+        } else {
+            current.bytesRead += data.count
+            current.data.append(data)
+        }
+        pending[taskID] = current
+        let exceededLimit = current.exceededLimit
+        lock.unlock()
+        if exceededLimit { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let current = pending.removeValue(forKey: task.taskIdentifier)
+        lock.unlock()
+        guard let current else { return }
+        if current.exceededLimit {
+            current.continuation.resume(throwing: ResponseBodyLimitExceeded(maximumBytes: current.maximumBytes, bytesRead: current.bytesRead, response: current.response))
+        } else if let error {
+            current.continuation.resume(throwing: error)
+        } else if let response = current.response {
+            current.continuation.resume(returning: (current.data, response))
+        } else {
+            current.continuation.resume(throwing: URLError(.badServerResponse))
+        }
+    }
+}
+
+private final class BoundedURLSession: @unchecked Sendable {
+    private let delegate: BoundedResponseDelegate
+    private let session: URLSession
+
+    init() {
+        let delegate = BoundedResponseDelegate()
+        let delegateQueue = OperationQueue()
+        delegateQueue.maxConcurrentOperationCount = 1
+        self.delegate = delegate
+        self.session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: delegateQueue)
+    }
+
+    func data(for request: URLRequest, maximumBytes: Int) async throws -> (Data, URLResponse) {
+        let handle = BoundedRequestHandle()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = session.dataTask(with: request)
+                delegate.register(taskID: task.taskIdentifier, maximumBytes: maximumBytes, continuation: continuation)
+                handle.attach(task)
+                task.resume()
+            }
+        } onCancel: {
+            handle.cancel()
+        }
+    }
+}
+
 private actor WikipediaRequestLimiter {
     private final class Waiter {
         let id: UUID
@@ -848,7 +1021,7 @@ private final class LocalWorkspaceStore {
 }
 
 private final class WikipediaClient: @unchecked Sendable {
-    private let session = URLSession(configuration: .ephemeral)
+    private let session = BoundedURLSession()
     private let limiter = WikipediaRequestLimiter()
     private let retryAfterDateParser = RetryAfterDateParser()
     private let pageCache = WikipediaPageCache()
@@ -867,7 +1040,17 @@ private final class WikipediaClient: @unchecked Sendable {
         do {
             try Task.checkCancellation()
             PerformanceDiagnostics.shared.record(.wikipedia, .requests)
-            (data, response) = try await session.data(for: conditional.request)
+            (data, response) = try await session.data(for: conditional.request, maximumBytes: ExternalResponseLimits.wikipedia(url))
+        } catch let oversized as ResponseBodyLimitExceeded {
+            PerformanceDiagnostics.shared.record(.wikipedia, .responseBytesRead, Double(oversized.bytesRead))
+            if let http = oversized.response as? HTTPURLResponse,
+               [429, 503].contains(http.statusCode),
+               let value = http.value(forHTTPHeaderField: "Retry-After"),
+               let delay = await retryAfterDateParser.delay(from: value) {
+                await limiter.applyCooldown(origin: wikipediaOrigin(http.url ?? url), seconds: delay)
+            }
+            await limiter.release()
+            throw NativeError(message: "Wikipedia could not be reached right now.")
         } catch {
             await limiter.release()
             throw error
@@ -2417,7 +2600,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let youtubeImportCheckpoints = YouTubeImportCheckpointStore()
     private let youtubeLimiter = YouTubeRequestLimiter()
     private let youtubeDownloads = ConditionalDownloadCache()
-    private let youtubeSession = URLSession(configuration: .ephemeral)
+    private let youtubeSession = BoundedURLSession()
     private let backgroundRetries = BackgroundRetryGate()
     private var geminiKey = ""
     private var sessionRefresh: Task<CloudSession, Error>?
@@ -3101,8 +3284,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             PerformanceDiagnostics.shared.record(.youtube, .queueMs, max(0, ProcessInfo.processInfo.systemUptime - queuedAt) * 1_000)
             if observed != nil { PerformanceDiagnostics.shared.record(.youtube, .retries) }
             PerformanceDiagnostics.shared.record(.youtube, .requests)
-            (data, response) = try await youtubeSession.data(for: conditional.request)
+            (data, response) = try await youtubeSession.data(for: conditional.request, maximumBytes: ExternalResponseLimits.youtube(url))
             await youtubeLimiter.release()
+        } catch let oversized as ResponseBodyLimitExceeded {
+            await youtubeLimiter.release()
+            PerformanceDiagnostics.shared.record(.youtube, .responseBytesRead, Double(oversized.bytesRead))
+            throw NativeError(message: "YouTube returned an unexpectedly large response.", retryable: false)
         } catch is CancellationError {
             await youtubeLimiter.release()
             throw NativeError(message: "YouTube request canceled.", retryable: false)

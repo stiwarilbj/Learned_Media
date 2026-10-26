@@ -1,4 +1,5 @@
-import { performanceFetch, recordPerformance, diagnosticTextBytes } from "./performance-diagnostics";
+import { performanceFetch, recordPerformance } from "./performance-diagnostics";
+import { readLimitedResponseText, ResponseTooLargeError } from "./bounded-response";
 import { backgroundRetryDelay, serverRetryAt, waitForBackgroundRetry } from "./background-retry";
 import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportChanges } from "./youtube-import-lease";
 import { createDatabaseConnection } from "./indexed-db";
@@ -364,6 +365,13 @@ export const DEFAULT_YOUTUBE_WORKSPACE: YouTubeWorkspaceState = {
 };
 
 const YOUTUBE_API_ROOT = "https://www.googleapis.com/youtube/v3";
+const MEBIBYTE = 1024 * 1024;
+const YOUTUBE_RESPONSE_LIMITS: Readonly<Record<string, number>> = Object.freeze({
+  channels: 4 * MEBIBYTE,
+  search: 4 * MEBIBYTE,
+  playlistItems: 8 * MEBIBYTE,
+  videos: 16 * MEBIBYTE
+});
 
 export class YouTubeApiError extends Error {
   status?: number;
@@ -469,9 +477,22 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
     const retryAt = serverRetryAt(response.headers.get("retry-after"));
     const reused = youtubeDownloads.notModified(cacheKey, response, conditional.previous);
     if (response.status === 304 && reused === undefined) throw new YouTubeApiError("YouTube returned Not Modified without a validated response.", 304, "missingCachedResponse", true);
-    const raw = reused ?? await response.text();
+    let raw = reused;
+    let responseBytesRead = 0;
+    if (raw === undefined) {
+      try {
+        const limited = await readLimitedResponseText(response, YOUTUBE_RESPONSE_LIMITS[resource] ?? 8 * MEBIBYTE, `YouTube ${resource}`);
+        raw = limited.text;
+        responseBytesRead = limited.bytesRead;
+      } catch (error) {
+        if (!(error instanceof ResponseTooLargeError)) throw error;
+        youtubeDownloads.discard(cacheKey);
+        recordPerformance("youtube", "response_bytes_read", error.bytesRead);
+        throw new YouTubeApiError("YouTube returned an unexpectedly large response.", response.status, "responseTooLarge", false, retryAt);
+      }
+    }
     if (signal?.aborted) throw abortError();
-    recordPerformance("youtube", "response_bytes_read", reused === undefined ? diagnosticTextBytes(raw) : 0);
+    recordPerformance("youtube", "response_bytes_read", responseBytesRead);
     if (reused !== undefined) recordPerformance("youtube", "cache_hits");
     let payload: unknown = {};
     try { payload = JSON.parse(raw); } catch { youtubeDownloads.discard(cacheKey); throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryAt); }
