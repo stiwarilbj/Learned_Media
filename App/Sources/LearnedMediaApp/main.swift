@@ -1571,6 +1571,7 @@ private final class GeminiClient {
     private let scheduler = ModelScheduler()
     private let structuredCache = RequestWorkCache<GeminiStructuredResult>()
     private let retryAfterDateParser = RetryAfterDateParser()
+    private let responseSchemaCache = GeminiSchemaCache()
 
     func reset() async {
         await scheduler.acquireRequest(priority: 0)
@@ -1874,11 +1875,14 @@ private final class GeminiClient {
     }
 
     private func candidateSchema(slotCount: Int) -> [String: Any] {
-        ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "maxItems": slotCount, "items": ["type": "OBJECT", "properties": ["slot": ["type": "INTEGER"], "title": ["type": "STRING"], "claim": ["type": "STRING"], "topicPath": ["type": "ARRAY", "items": ["type": "STRING"]], "wikipediaSearchTitles": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["slot", "title", "claim", "topicPath", "wikipediaSearchTitles"]]]], "required": ["facts"]]
+        responseSchemaCache.value(for: "candidate:\(slotCount)") {
+            ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "maxItems": slotCount, "items": ["type": "OBJECT", "properties": ["slot": ["type": "INTEGER"], "title": ["type": "STRING"], "claim": ["type": "STRING"], "topicPath": ["type": "ARRAY", "items": ["type": "STRING"]], "wikipediaSearchTitles": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["slot", "title", "claim", "topicPath", "wikipediaSearchTitles"]]]], "required": ["facts"]]
+        }
     }
 
-    private func groundedSchema(sentenceCount: Int) -> [String: Any] {
-        ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": [
+    private func groundedSchema(sentenceCount: Int, combined: Bool = false) -> [String: Any] {
+        responseSchemaCache.value(for: "grounded:\(sentenceCount):\(combined ? 1 : 0)") {
+            var schema: [String: Any] = ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": [
             "slot": ["type": "INTEGER"], "status": ["type": "STRING", "enum": ["grounded", "needs_evidence", "duplicate", "angle_unavailable"]], "duplicateOf": ["type": "STRING"], "claimEvidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]], "missingEvidence": ["type": "STRING"], "title": ["type": "STRING"], "hook": ["type": "STRING"], "claim": ["type": "STRING"],
             "sentences": ["type": "ARRAY", "minItems": sentenceCount, "maxItems": sentenceCount, "items": ["type": "STRING"]],
             "evidence": ["type": "ARRAY", "maxItems": 12, "items": ["type": "OBJECT", "properties": ["sentence": ["type": "INTEGER"], "evidenceIds": ["type": "ARRAY", "minItems": 1, "maxItems": 3, "items": ["type": "STRING"]]], "required": ["sentence", "evidenceIds"]]],
@@ -1887,7 +1891,17 @@ private final class GeminiClient {
                 "dateText": ["type": "STRING"], "eventText": ["type": "STRING"], "anchor": ["type": "OBJECT", "properties": ["field": ["type": "STRING", "enum": ["title", "hook", "body"]], "sentenceIndex": ["type": "INTEGER"]], "required": ["field"]]
             ], "required": ["dateText", "eventText", "anchor"]]]], "required": ["events"]],
             "locations": ["type": "ARRAY", "maxItems": 2, "items": ["type": "OBJECT", "properties": ["name": ["type": "STRING"], "articleTitle": ["type": "STRING"], "anchor": ["type": "OBJECT", "properties": ["field": ["type": "STRING", "enum": ["title", "hook", "body"]], "sentenceIndex": ["type": "INTEGER"]], "required": ["field"]]], "required": ["name", "articleTitle", "anchor"]]]
-        ], "required": ["slot", "status"]]]], "required": ["facts"]]
+            ], "required": ["slot", "status"]]]], "required": ["facts"]]
+            if combined, var properties = schema["properties"] as? [String: Any], var facts = properties["facts"] as? [String: Any], var items = facts["items"] as? [String: Any], var fields = items["properties"] as? [String: Any] {
+                fields["topicPath"] = ["type": "ARRAY", "items": ["type": "STRING"]]
+                items["properties"] = fields
+                items["required"] = (items["required"] as? [String] ?? []) + ["topicPath"]
+                facts["items"] = items
+                properties["facts"] = facts
+                schema["properties"] = properties
+            }
+            return schema
+        }
     }
 
     private func candidatePrompt(slots: [GeminiGenerationSlot], attempt: Int, priorClaims: [[String: Any]] = [], context: GenerationPromptContext = GenerationPromptContext()) -> String {
@@ -2079,14 +2093,7 @@ private final class GeminiClient {
     }
 
     private func combinedSchema(sentenceCount: Int, combined: Bool) -> [String: Any] {
-        var schema = groundedSchema(sentenceCount: sentenceCount)
-        if combined, var properties = schema["properties"] as? [String: Any], var facts = properties["facts"] as? [String: Any], var items = facts["items"] as? [String: Any], var fields = items["properties"] as? [String: Any] {
-            fields["topicPath"] = ["type":"ARRAY","items":["type":"STRING"]]
-            items["properties"] = fields
-            items["required"] = (items["required"] as? [String] ?? []) + ["topicPath"]
-            facts["items"] = items; properties["facts"] = facts; schema["properties"] = properties
-        }
-        return schema
+        groundedSchema(sentenceCount: sentenceCount, combined: combined)
     }
 
     private func cachedSlots(_ slots: [GeminiGenerationSlot], sentenceCount: Int, avoid: [[String: Any]], priorClaims: [[String: Any]], context: GenerationPromptContext = GenerationPromptContext()) async -> [GeminiGenerationSlot]? {

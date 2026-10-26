@@ -16,6 +16,7 @@ import { geminiAttemptRounds } from "./model-retry-policy";
 import { JsonArrayItemStreamParser } from "./stream-json";
 import { normalizeStructuredValue, parseStructuredResponse, stripResponseBom } from "./structured-response";
 import { transientRetryDelayMs } from "./retry-timing";
+import { ImmutableSchemaCache } from "./immutable-schema-cache";
 import { createSavedFollowUpQuestions } from "./card-follow-ups";
 import { cardGlossaryFingerprint, normalizeCardGlossary } from "./card-glossary";
 import { createSavedCardChronology } from "./card-chronology";
@@ -34,6 +35,7 @@ const MAX_CONCURRENT_GEMINI_REQUESTS = 1;
 const MAX_CANDIDATE_RETRIES = 3;
 const MAX_CARDS_PER_GROUP = MAX_FACTS_PER_BATCH;
 const MAX_GROUNDING_CONTEXT_CHARS = 48_000;
+const responseSchemaCache = new ImmutableSchemaCache(16);
 export const REQUIRED_WORKING_MODELS = 2;
 
 export const PRIMARY_FLASH_LITE_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"] as const;
@@ -715,10 +717,10 @@ function factAvoidKeySet(fact: FactMemory) {
 }
 
 function candidateSchema(slotCount: number) {
-  return { type: "OBJECT", properties: { facts: { type: "ARRAY", maxItems: slotCount, items: { type: "OBJECT", properties: { slot: { type: "INTEGER" }, title: { type: "STRING" }, claim: { type: "STRING" }, topicPath: { type: "ARRAY", items: { type: "STRING" } }, wikipediaSearchTitles: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } } }, required: ["slot", "title", "claim", "topicPath", "wikipediaSearchTitles"] } } }, required: ["facts"] };
+  return responseSchemaCache.get(`candidate:${slotCount}`, () => ({ type: "OBJECT", properties: { facts: { type: "ARRAY", maxItems: slotCount, items: { type: "OBJECT", properties: { slot: { type: "INTEGER" }, title: { type: "STRING" }, claim: { type: "STRING" }, topicPath: { type: "ARRAY", items: { type: "STRING" } }, wikipediaSearchTitles: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } } }, required: ["slot", "title", "claim", "topicPath", "wikipediaSearchTitles"] } } }, required: ["facts"] }));
 }
 function groundedSchema(sentenceCount: number, combined = false) {
-  return { type: "OBJECT", properties: { facts: { type: "ARRAY", items: { type: "OBJECT", properties: {
+  return responseSchemaCache.get(`grounded:${sentenceCount}:${combined ? 1 : 0}`, () => ({ type: "OBJECT", properties: { facts: { type: "ARRAY", items: { type: "OBJECT", properties: {
     ...(combined ? {topicPath: { type: "ARRAY", items: {type: "STRING"} }} : {}), slot: { type: "INTEGER" }, status: { type: "STRING", enum: ["grounded", "needs_evidence", "duplicate", "angle_unavailable"] }, duplicateOf: { type: "STRING" }, claimEvidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } }, missingEvidence: { type: "STRING" }, title: { type: "STRING" }, hook: { type: "STRING" }, claim: { type: "STRING" },
     sentences: { type: "ARRAY", items: { type: "STRING" }, minItems: sentenceCount, maxItems: sentenceCount },
     evidence: { type: "ARRAY", maxItems: 12, items: { type: "OBJECT", properties: { sentence: { type: "INTEGER" }, evidenceIds: { type: "ARRAY", minItems: 1, maxItems: 3, items: { type: "STRING" } } }, required: ["sentence", "evidenceIds"] } },
@@ -729,7 +731,7 @@ function groundedSchema(sentenceCount: number, combined = false) {
     locations: { type: "ARRAY", maxItems: 2, items: { type: "OBJECT", properties: { name: { type: "STRING" }, articleTitle: { type: "STRING" }, anchor: { type: "OBJECT", properties: { field: { type: "STRING", enum: ["title", "hook", "body"] }, sentenceIndex: { type: "INTEGER" } }, required: ["field"] } }, required: ["name", "articleTitle", "anchor"] } }
   // Special statuses (for example, a duplicate) are intentionally compact.
   // The grounded-card validator below checks claim and citation fields when status is grounded.
-  }, required: ["slot", "status", ...(combined ? ["topicPath"] : [])] } } }, required: ["facts"] };
+  }, required: ["slot", "status", ...(combined ? ["topicPath"] : [])] } } }, required: ["facts"] }));
 }
 
 function splitIntoGroups<T>(items: T[], maxItems: number) {
