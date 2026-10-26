@@ -54,7 +54,7 @@
 		</data>
 		<key>Resources/frontend/card-search.worker.js</key>
 		<data>
-		wikCOp4jSa4EAn7AVxbuKUa1Hqc=
+		2jCEPSiPASMw2QHx3zLmX05TrjI=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -86,7 +86,7 @@
 		</data>
 		<key>Resources/frontend/fact-novelty.js</key>
 		<data>
-		FcECy7xPiUR5ZKO3ofDnu1HgvEw=
+		OrLj/Z3ROqbpz4/MnexzefTz2aE=
 		</data>
 		<key>Resources/frontend/fact-specificity.js</key>
 		<data>
@@ -122,7 +122,7 @@
 		</data>
 		<key>Resources/frontend/performance-diagnostics.js</key>
 		<data>
-		Zvhpy/1iuHIsqzE9mK+4o3CDi3o=
+		kHCBmaH6AghoUB0OW9WbRs0gE8U=
 		</data>
 		<key>Resources/frontend/political-history.js</key>
 		<data>
@@ -134,7 +134,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		UvuJCA2Q3iKK+9gHoORD4GMGq6c=
+		gIcvZvksQP+5XpyWh8dQyLVc2t8=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -198,11 +198,11 @@
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
-		+b0M9M/8XGYdNCQe8sKNUclmv9g=
+		GvG7FqOORtUyJgK06m9fFp0Tv6k=
 		</data>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<data>
-		T9JjXw5HHu4Ik2rtVMWihlF7xvw=
+		zm/CsLcjtiyNB/HIUelc35KvbE4=
 		</data>
 		<key>Resources/frontend/youtube-playback.js</key>
 		<data>
@@ -303,7 +303,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			IzG6H7C1uGTRGNC6f3jZZODJP2q5cZ8ceVFz0InZzdA=
+			WhqIV2sVL3tTnRooO0EwSonFrrjx5LXAZiY08IsFsfE=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -359,7 +359,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			D/k3775kArmPd+FHNv9szeu0ONVfZ6GzI8GEJ+4ZeKU=
+			ZDoFq1Anrc282ZEe5NDaocie5WoeIu02pi4o4V1uxuM=
 			</data>
 		</dict>
 		<key>Resources/frontend/fact-specificity.js</key>
@@ -422,7 +422,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			aaCU5GzK37DB69i15Qb5B3ghbDpOnZr+oNiMctbggfY=
+			CAn7sDxUVwggnKVlc6kt2l2nW/wmPe79L1SGUsdemcE=
 			</data>
 		</dict>
 		<key>Resources/frontend/political-history.js</key>
@@ -443,7 +443,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ZqII8T07ke+h+NhcY1BwRfUMJWBLp33ssQnmb/QNVgY=
+			wnULOEAakWIsq/TV9kiNu54vJPinkzDdD4WUI0VXPTQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -555,14 +555,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			bN6cSWbMu3YF0C+TDwGVBOhAexyNJ29E9YycOUoHACM=
+			v30PHb2kYeaRQD6YsYo2nNLWZCFADYMKOz8Prpoh0q0=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			j0PSuEsUHNqH/BfurlcBTWGkluYo/HaEs0CLhXVSj9c=
+			T7onuA7QryYPPfg9sruCs28s76NlhIaunjhh0Uc2Un8=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-playback.js</key>

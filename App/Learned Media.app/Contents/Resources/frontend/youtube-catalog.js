@@ -75,6 +75,7 @@
     let checkpoint = await checkpoints.openImportCheckpoint(pages, sourceId, identity, committedAt, assertCurrent), restarted = false;
     while (checkpoint.nextPageToken !== null) {
       assertCurrent();
+      checkpoint.assertPageRequestAllowed();
       const pageToken = checkpoint.nextPageToken;
       let payload;
       try { payload = await request("playlistItems", Object.assign({ part: "snippet,contentDetails", playlistId: playlistId, maxResults: "50" }, pageToken ? { pageToken: pageToken } : {}), key); }
@@ -85,6 +86,7 @@
         throw error;
       }
       if (!payload || !Array.isArray(payload.items) || payload.nextPageToken !== undefined && typeof payload.nextPageToken !== "string") throw new Error("YouTube returned an invalid import page. Its checkpoint was not advanced.");
+      checkpoint.validateNextPageToken(payload.nextPageToken || null);
       const ids = payload.items.filter(function (item) { return !/#shorts?\b/i.test((item.snippet && item.snippet.title || "") + " " + (item.snippet && item.snippet.description || "")); }).map(function (item) { return item.contentDetails && item.contentDetails.videoId; }).filter(Boolean);
       const items = await metadata(ids);
       assertCurrent();

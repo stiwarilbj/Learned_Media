@@ -58,19 +58,31 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
         videos.clear();
         nextPageToken = "";
     }
+    function assertPageRequestAllowed() {
+        (0, background_work_1.checkBackgroundCancellation)(cancellation);
+        if (nextPageToken === null || tokens.has(nextPageToken))
+            throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
+        return nextPageToken;
+    }
+    function validateNextPageToken(next) {
+        const requestToken = assertPageRequestAllowed();
+        if (!(next === null || typeof next === "string" && next.length > 0 && next.length <= 4096))
+            throw new Error("YouTube returned an invalid continuation token. The checkpoint was not advanced.");
+        if (next !== null && (next === requestToken || tokens.has(next)))
+            throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
+        return requestToken;
+    }
     return {
         get nextPageToken() { return nextPageToken; },
         get videos() { return [...videos.values()]; },
+        assertPageRequestAllowed,
+        validateNextPageToken,
         async append(records, next) {
-            (0, background_work_1.checkBackgroundCancellation)(cancellation);
-            if (!(next === null || typeof next === "string" && next.length > 0 && next.length <= 4096))
-                throw new Error("YouTube returned an invalid continuation token. The checkpoint was not advanced.");
-            if (nextPageToken === null || tokens.has(nextPageToken) || next !== null && (next === nextPageToken || tokens.has(next)))
-                throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
+            const requestToken = validateNextPageToken(next);
             if (records.length > 50 || !records.every(video => validVideo(video, sourceId)))
                 throw new Error("YouTube returned invalid import metadata. The checkpoint was not advanced.");
             const page = { version: exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, index: pages.length,
-                requestToken: nextPageToken, nextPageToken: next, videos: records, savedAt: new Date().toISOString() };
+                requestToken, nextPageToken: next, videos: records, savedAt: new Date().toISOString() };
             // Advance memory/progress only after the entire envelope commits.
             await store?.save(page);
             pages.push(page);

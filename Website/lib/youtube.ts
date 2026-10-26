@@ -760,6 +760,7 @@ export class YouTubeClient {
     let restarted = false;
     while (checkpoint.nextPageToken !== null) {
       if (signal?.aborted) throw abortError();
+      checkpoint.assertPageRequestAllowed();
       const pageToken = checkpoint.nextPageToken;
       let payload: PlaylistApiResponse;
       try {
@@ -774,6 +775,7 @@ export class YouTubeClient {
         throw error;
       }
       if (!payload || !Array.isArray(payload.items) || payload.nextPageToken !== undefined && typeof payload.nextPageToken !== "string") throw new YouTubeApiError("YouTube returned an invalid import page. Its checkpoint was not advanced.", undefined, "malformed-page", false);
+      checkpoint.validateNextPageToken(payload.nextPageToken || null);
       const ids: string[] = [];
       for (const item of payload.items ?? []) {
         const videoId = item.contentDetails?.videoId;
