@@ -52,9 +52,22 @@ function loadWorker(filename, { observeMaps = false } = {}) {
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
-function loadNativeYouTubeWorker() {
+function loadNativeYouTubeWorker({ observeMaps = false } = {}) {
   const messages = [];
-  const context = { postMessage: (message) => messages.push(message), setTimeout };
+  const workerMaps = [];
+  class ObservedMap extends Map {
+    constructor(...args) {
+      super(...args);
+      this.valuesCallCount = 0;
+      workerMaps.push(this);
+    }
+
+    values() {
+      this.valuesCallCount += 1;
+      return super.values();
+    }
+  }
+  const context = { postMessage: (message) => messages.push(message), setTimeout, Map: observeMaps ? ObservedMap : Map };
   context.globalThis = context;
   context.importScripts = (filename) => {
     const runtime = readFileSync(path.join(root, "..", "App", "Resources", "frontend", filename), "utf8");
@@ -62,7 +75,7 @@ function loadNativeYouTubeWorker() {
   };
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
   vm.runInNewContext(source, context);
-  return { messages, send: (data) => context.onmessage({ data }) };
+  return { messages, workerMaps, send: (data) => context.onmessage({ data }) };
 }
 
 async function waitForMessage(messages, predicate, timeoutMs = 8000) {
@@ -388,7 +401,7 @@ test("YouTube worker prepares one immutable plan for every chunk in a request", 
 });
 
 test("native YouTube worker reuses a prepared search across paginated requests", async () => {
-  const worker = loadNativeYouTubeWorker();
+  const worker = loadNativeYouTubeWorker({ observeMaps: true });
   const videos = Array.from({ length: 1_450 }, (_, index) => ({
     id: `native-prepared-${index}`, channelId: "channel-a", channelName: "Approved Channel",
     title: `Gravitational lensing documentary ${index}`, description: "A long-form approved documentary.",
@@ -399,17 +412,22 @@ test("native YouTube worker reuses a prepared search across paginated requests",
   const plan = { terms: ["bending starlight"] };
   Object.defineProperty(plan, "conceptGroups", { enumerable: true, get() { conceptGroupReads += 1; return undefined; } });
   worker.send({ type: "initialize", revision: 0, videos });
+  const catalogMap = worker.workerMaps.find(map => map.size === videos.length && map.has(videos[0].id));
+  assert.ok(catalogMap, "the native worker maintains an ID map beside its retained ordered array");
+  assert.equal(catalogMap.valuesCallCount, 0);
   worker.send({ type: "search", requestId: 61, revision: 0, plan, topic: "Science", limit: 80, viewKey: "workspace-a" });
   const firstPage = await waitForMessage(worker.messages, message => message.requestId === 61);
   const firstPageIds = firstPage.candidates.map(candidate => candidate.videoId);
   assert.ok(firstPageIds.length > 0);
   assert.equal(conceptGroupReads, 2, "the Mac worker snapshots the plan only on the first page");
+  assert.equal(catalogMap.valuesCallCount, 0, "native search scans the retained array rather than rebuilding it from map values");
 
   worker.send({ type: "search", requestId: 62, revision: 0, plan, topic: "Science", limit: 80, excludedIds: firstPageIds, viewKey: "workspace-a" });
   const secondPage = await waitForMessage(worker.messages, message => message.requestId === 62);
   assert.ok(secondPage.candidates.length > 0);
   assert.ok(secondPage.candidates.every(candidate => !firstPageIds.includes(candidate.videoId)));
   assert.equal(conceptGroupReads, 3, "the Mac worker reuses prepared terms and resolves new page exclusions independently");
+  assert.equal(catalogMap.valuesCallCount, 0, "native pagination also keeps using the retained catalog array");
 });
 
 test("topic semantic worker returns meaning matches and ancestor paths, rejecting obsolete queries", async () => {
