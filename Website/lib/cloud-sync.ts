@@ -2,11 +2,18 @@ import { backgroundCloudFetch } from './background-retry';
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { AccountKeys, KeyProvider } from './account-credentials';
 import { canonicalRecord, safeMemory, type CloudRecord } from './cloud-records';
-import { workspaceRevisionId } from './workspace-revision';
+import { serializeWorkspaceRecord, workspaceRevisionIdFromSerialization, workspaceRevisionRowByteLength } from './workspace-revision';
 import { LatestSnapshotQueue } from './latest-snapshot-queue';
 import type { FactMemory } from './fact-quality';
 import type { Database } from './supabase/database.types';
 import { assertSnapshot } from './snapshot-validation';
+
+function sameBytes(previous: Uint8Array | undefined, next: Uint8Array) {
+  if (!previous || previous.byteLength !== next.byteLength) return false;
+  for (let index = 0; index < next.byteLength; index += 1) if (previous[index] !== next[index]) return false;
+  return true;
+}
+
 // Public client configuration; authorization is enforced by RLS, never by this key.
 export const CLOUD_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ignafizdnpjludnvqkjz.supabase.co';
 export const CLOUD_PUBLIC_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_PyviIi5NadM-SswSlJBuVg_UugoFxEe';
@@ -24,7 +31,7 @@ export async function googleSignIn() {
 export type CloudAccount = Pick<User, 'id' | 'email' | 'user_metadata'>;
 type CloudSnapshot = { ownerId?: string; records: CloudRecord[]; factMemory?: FactMemory[] };
 export class WorkspaceCloudSync {
-  private sent = new Map<string, string>();
+  private sent = new Map<string, Uint8Array>();
   private memories = new Map<string, string>();
   private trackedMemory: FactMemory[] | undefined;
   private memoryById = new Map<string, FactMemory>();
@@ -83,7 +90,7 @@ export class WorkspaceCloudSync {
       if (typeof next !== 'string' || next === after) throw new Error('Cloud fact history returned an invalid cursor.');
       after = next;
     }
-    for (const record of records) this.sent.set(record.id, JSON.stringify(record));
+    for (const record of records) this.sent.set(record.id, serializeWorkspaceRecord(record).bytes);
     for (const memory of factMemory) this.memories.set(memory.fingerprint || memory.id, JSON.stringify(safeMemory(memory)));
     return { records, factMemory };
   }
@@ -100,28 +107,28 @@ export class WorkspaceCloudSync {
     for (const record of store.records) assertSnapshot(record, 'record', 'save');
     const api = cloudClient();
     // Bound both row count and payload size; a large workspace travels alone.
-    const encoder = new TextEncoder();
     const changedRecords = store.records.map(value => {
-      const record = canonicalRecord(value), serialized = JSON.stringify(record);
-      return { record, serialized };
-    }).filter(item => this.sent.get(item.record.id) !== item.serialized);
-    const pending = await Promise.all(changedRecords.map(async ({ record, serialized }) => {
-      const row = { revision_id: await workspaceRevisionId(this.userId, record), user_id: this.userId, workspace_id: record.id, modified_at: record.updatedAt, record };
-      return { record, serialized, row };
+      const record = canonicalRecord(value);
+      const serialization = serializeWorkspaceRecord(record);
+      return { record, serialization };
+    }).filter(item => !sameBytes(this.sent.get(item.record.id), item.serialization.bytes));
+    const pending = await Promise.all(changedRecords.map(async ({ record, serialization }) => {
+      const row = { revision_id: await workspaceRevisionIdFromSerialization(this.userId, serialization), user_id: this.userId, workspace_id: record.id, modified_at: record.updatedAt, record };
+      return { record, serialization, row };
     }));
     for (let offset = 0; offset < pending.length;) {
       const batch: typeof pending = [];
       let bytes = 2;
       while (offset < pending.length && batch.length < 20) {
         const item = pending[offset];
-        const size = encoder.encode(JSON.stringify(item.row)).byteLength + (batch.length ? 1 : 0);
+        const size = workspaceRevisionRowByteLength(item.row, item.serialization) + (batch.length ? 1 : 0);
         if (batch.length && bytes + size > 1024 * 1024) break;
         batch.push(item); bytes += size; offset += 1;
       }
       const { error } = await api.from('workspace_revisions').upsert(batch.map(item => item.row), { onConflict: 'revision_id', ignoreDuplicates: true }).abortSignal(signal);
       if (error) throw error;
       // Keep failed/later batches dirty and acknowledge the exact uploaded versions.
-      batch.forEach(item => this.sent.set(item.record.id, item.serialized));
+      batch.forEach(item => this.sent.set(item.record.id, item.serialization.bytes));
     }
     const history = store.factMemory;
     if (this.trackedMemory !== history || !this.trackedMemory) {
