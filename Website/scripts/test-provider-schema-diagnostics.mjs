@@ -56,7 +56,10 @@ const groups = Object.keys(baseline).map(schema => [
 groups.push(Object.keys(baseline).flatMap(schema => [
   { schema, payload: { items: [], query: { pages: [] }, error: null } },
   { schema, payload: { items: [null], query: { pages: [null] }, error: [] } },
-  { schema, payload: { items: [{ id: 'PRIVATE', snippet: { title: null, tags: false } }], query: { search: {}, pages: {} } } }
+  { schema, payload: { items: [{ id: 'PRIVATE', snippet: { title: null, tags: false } }], query: { search: {}, pages: {} } } },
+  { schema, payload: { items: [null, payload.items[0]], query: { pages: [null, payload.query.pages[0]] } } },
+  { schema, payload: { items: { 0: payload.items[0] }, query: { pages: { 0: payload.query.pages[0] } } } },
+  { schema, payload: { items: [false], query: { pages: [{ imageinfo: [[], payload.query.pages[0].imageinfo[0]], coordinates: [] }] } } }
 ]));
 groups.push(Array.from({ length: 80 }, (_, i) => ({ schema: 'youtube.videos', payload: i % 3 ? payload : {} })));
 function browserSnapshot(group) {
@@ -72,6 +75,76 @@ test('existing browser fingerprints keep the exact pre-change representation', (
     assert.equal(createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'), baseline[group[0].schema]);
     assert.equal(JSON.stringify(snapshot).includes('PRIVATE'), false);
   }
+});
+
+test('prepared traversal matches the original path reader for every fixture', () => {
+  function originalReadPath(value, path) {
+    if (path === '$') return value;
+    let current = value;
+    for (const segment of path.split('.')) {
+      const arrayIndex = segment.endsWith('[0]');
+      const key = arrayIndex ? segment.slice(0, -3) : segment;
+      if (!current || typeof current !== 'object' || Array.isArray(current) || !Object.prototype.hasOwnProperty.call(current, key)) return undefined;
+      current = current[key];
+      if (arrayIndex) current = Array.isArray(current) ? current[0] : undefined;
+    }
+    return current;
+  }
+  function type(value) {
+    if (value === undefined) return 'missing';
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return 'array';
+    return ['object', 'string', 'number', 'boolean'].includes(typeof value) ? typeof value : 'other';
+  }
+  const cases = groups.flat().concat([
+    { schema: 'youtube.videos', payload: Object.create({ items: payload.items }) },
+    { schema: 'youtube.error', payload, rootOverride: 'PRIVATE' }
+  ]);
+  for (const item of cases) {
+    const override = ['invalid-json', 'non-json'].includes(item.rootOverride) ? item.rootOverride : undefined;
+    const expected = item.schema + '|' + api.providerSchemaFields[item.schema].map(path => `${path}:${path === '$' && override ? override : type(originalReadPath(item.payload, path))}`).join(',');
+    assert.deepEqual(browserSnapshot([item]), [{ fingerprint: expected, count: 1 }]);
+  }
+});
+
+test('paths compile once and remain immutable across recording, reset and all schemas', () => {
+  const sandbox = { exports: {}, window: {} };
+  runInNewContext(`
+    globalThis.pathOperations = { split: 0, endsWith: 0, slice: 0 };
+    for (const method of Object.keys(pathOperations)) {
+      const original = String.prototype[method];
+      String.prototype[method] = function (...args) {
+        pathOperations[method]++;
+        return Reflect.apply(original, this, args);
+      };
+    }
+  `, sandbox);
+  // Inspect private metadata in this test context, without a production API.
+  runInNewContext(code + '\nexports.testPaths = preparedSchemaFields;', sandbox);
+  const initial = plain(sandbox.pathOperations);
+  assert.equal(initial.split, Object.values(api.providerSchemaFields).flat().filter(path => path !== '$').length);
+  assert.ok(initial.endsWith > initial.split && initial.slice > 0);
+  for (const fields of sandbox.exports.testPaths.values()) {
+    assert.ok(Object.isFrozen(fields));
+    for (const field of fields) {
+      assert.ok(Object.isFrozen(field) && Object.isFrozen(field.steps));
+      assert.ok(field.steps.every(Object.isFrozen));
+    }
+  }
+  for (let repeat = 0; repeat < 100; repeat++) {
+    for (const schema of Object.keys(baseline)) sandbox.exports.recordProviderSchemaFailure(schema, payload);
+  }
+  assert.equal(sandbox.exports.providerSchemaFailureSnapshot().reduce((sum, item) => sum + item.count, 0), 64);
+  sandbox.exports.resetProviderSchemaFailures();
+  sandbox.exports.recordProviderSchemaFailure('youtube.videos', {});
+  assert.deepEqual(plain(sandbox.pathOperations), initial, 'no path parsing after metadata initialization');
+});
+
+test('throwing payload accessors remain isolated from response handling and diagnostics', () => {
+  const unsafe = Object.defineProperty({}, 'items', { get() { throw new Error('PRIVATE'); } });
+  api.resetProviderSchemaFailures();
+  assert.doesNotThrow(() => api.recordProviderSchemaFailure('youtube.videos', unsafe));
+  assert.deepEqual(plain(api.providerSchemaFailureSnapshot()), []);
 });
 
 test('generated Swift definitions and actual native fingerprints equal the browser for every schema', () => {

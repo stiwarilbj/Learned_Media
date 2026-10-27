@@ -18,21 +18,24 @@ exports.providerSchemaFields = {
     "youtube.videos": ["$", "items", "items[0]", "items[0].id", "items[0].snippet", "items[0].snippet.title", "items[0].snippet.description", "items[0].snippet.publishedAt", "items[0].snippet.channelId", "items[0].snippet.channelTitle", "items[0].snippet.tags", "items[0].snippet.thumbnails", "items[0].contentDetails", "items[0].contentDetails.duration", "items[0].status", "items[0].status.privacyStatus", "items[0].status.embeddable"],
     "youtube.error": ["$", "error", "error.code", "error.message", "error.status", "error.errors", "error.errors[0]", "error.errors[0].reason"]
 };
+const preparedSchemaFields = new Map(Object.entries(exports.providerSchemaFields).map(([schema, paths]) => [schema, Object.freeze(paths.map(path => Object.freeze({
+        path,
+        steps: Object.freeze(path === "$" ? [] : path.split(".").map(segment => {
+            const firstElement = segment.endsWith("[0]");
+            return Object.freeze({ key: firstElement ? segment.slice(0, -3) : segment, firstElement });
+        }))
+    })))]));
 const ringCapacity = 64;
 const ring = [];
 const counts = new Map();
 const localRuntime = typeof window !== "undefined" || (typeof self !== "undefined" && "importScripts" in globalThis);
-function readPath(value, path) {
-    if (path === "$")
-        return value;
+function readPath(value, steps) {
     let current = value;
-    for (const segment of path.split(".")) {
-        const arrayIndex = segment.endsWith("[0]");
-        const key = arrayIndex ? segment.slice(0, -3) : segment;
+    for (const { key, firstElement } of steps) {
         if (!current || typeof current !== "object" || Array.isArray(current) || !Object.prototype.hasOwnProperty.call(current, key))
             return undefined;
         current = current[key];
-        if (arrayIndex)
+        if (firstElement)
             current = Array.isArray(current) ? current[0] : undefined;
     }
     return current;
@@ -59,11 +62,11 @@ function recordProviderSchemaFailure(schema, payload, rootOverride) {
     if (!localRuntime)
         return;
     try {
-        const fields = exports.providerSchemaFields[schema];
+        const fields = preparedSchemaFields.get(schema);
         if (!fields)
             return;
         const safeRootOverride = rootOverride === "invalid-json" || rootOverride === "non-json" ? rootOverride : undefined;
-        const fingerprint = `${schema}|${fields.map(path => `${path}:${observedType(readPath(payload, path), path === "$" ? safeRootOverride : undefined)}`).join(",")}`;
+        const fingerprint = `${schema}|${fields.map(({ path, steps }) => `${path}:${observedType(readPath(payload, steps), path === "$" ? safeRootOverride : undefined)}`).join(",")}`;
         if (ring.length === ringCapacity) {
             const expired = ring.shift();
             const remaining = (counts.get(expired) ?? 1) - 1;

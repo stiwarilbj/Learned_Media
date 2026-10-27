@@ -13,20 +13,29 @@ export const providerSchemaFields = {
 
 export type ProviderResponseSchema = keyof typeof providerSchemaFields;
 
+type PathStep = Readonly<{ key: string; firstElement: boolean }>;
+type PreparedPath = Readonly<{ path: string; steps: readonly PathStep[] }>;
+const preparedSchemaFields: ReadonlyMap<string, readonly PreparedPath[]> = new Map(
+  Object.entries(providerSchemaFields).map(([schema, paths]) => [schema, Object.freeze(paths.map(path => Object.freeze({
+    path,
+    steps: Object.freeze(path === "$" ? [] : path.split(".").map(segment => {
+      const firstElement = segment.endsWith("[0]");
+      return Object.freeze({ key: firstElement ? segment.slice(0, -3) : segment, firstElement });
+    }))
+  })))] as const)
+);
+
 const ringCapacity = 64;
 const ring: string[] = [];
 const counts = new Map<string, number>();
 const localRuntime = typeof window !== "undefined" || (typeof self !== "undefined" && "importScripts" in globalThis);
 
-function readPath(value: unknown, path: string): unknown {
-  if (path === "$") return value;
+function readPath(value: unknown, steps: readonly PathStep[]): unknown {
   let current = value;
-  for (const segment of path.split(".")) {
-    const arrayIndex = segment.endsWith("[0]");
-    const key = arrayIndex ? segment.slice(0, -3) : segment;
+  for (const { key, firstElement } of steps) {
     if (!current || typeof current !== "object" || Array.isArray(current) || !Object.prototype.hasOwnProperty.call(current, key)) return undefined;
     current = (current as Record<string, unknown>)[key];
-    if (arrayIndex) current = Array.isArray(current) ? current[0] : undefined;
+    if (firstElement) current = Array.isArray(current) ? current[0] : undefined;
   }
   return current;
 }
@@ -49,10 +58,10 @@ function observedType(value: unknown, override?: "invalid-json" | "non-json") {
 export function recordProviderSchemaFailure(schema: ProviderResponseSchema, payload?: unknown, rootOverride?: "invalid-json" | "non-json") {
   if (!localRuntime) return;
   try {
-    const fields = providerSchemaFields[schema];
+    const fields = preparedSchemaFields.get(schema);
     if (!fields) return;
     const safeRootOverride = rootOverride === "invalid-json" || rootOverride === "non-json" ? rootOverride : undefined;
-    const fingerprint = `${schema}|${fields.map(path => `${path}:${observedType(readPath(payload, path), path === "$" ? safeRootOverride : undefined)}`).join(",")}`;
+    const fingerprint = `${schema}|${fields.map(({ path, steps }) => `${path}:${observedType(readPath(payload, steps), path === "$" ? safeRootOverride : undefined)}`).join(",")}`;
     if (ring.length === ringCapacity) {
       const expired = ring.shift()!;
       const remaining = (counts.get(expired) ?? 1) - 1;

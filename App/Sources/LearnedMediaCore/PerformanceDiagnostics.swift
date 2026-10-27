@@ -15,6 +15,26 @@ public enum ProviderResponseRootOverride: String {
 
 /// Fixed numeric aggregates, in process memory only. Never accepts identifiers or text.
 public final class PerformanceDiagnostics: @unchecked Sendable {
+    private struct PathStep: Sendable {
+        let key: String
+        let firstElement: Bool
+    }
+    private struct PreparedPath: Sendable {
+        let path: String
+        let steps: [PathStep]
+        init(_ path: String) {
+            self.path = path
+            steps = path == "$" ? [] : path.split(separator: ".").map { component in
+                let firstElement = component.hasSuffix("[0]")
+                return PathStep(key: firstElement ? String(component.dropLast(3)) : String(component), firstElement: firstElement)
+            }
+        }
+    }
+    // Static initialization is synchronized; metadata contains only generated
+    // allowlisted paths and never any provider payload or caller content.
+    private static let preparedSchemaFields = Dictionary(uniqueKeysWithValues: ProviderResponseSchema.allCases.map { schema in
+        (schema, schema.fields.map(PreparedPath.init))
+    })
     public static let shared = PerformanceDiagnostics()
     private let lock = NSLock()
     private var counters: [String: [String: Double]] = [:]
@@ -33,8 +53,8 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
         counters[key] = ["samples": min(limit, (previous["samples"] ?? 0) + 1), "total": min(limit, (previous["total"] ?? 0) + sample), "max": max(previous["max"] ?? 0, sample)]
     }
     public func recordProviderSchemaFailure(_ schema: ProviderResponseSchema, payload: Any?, rootOverride: ProviderResponseRootOverride? = nil) {
-        let fingerprint = schema.rawValue + "|" + schema.fields.map { path in
-            "\(path):\(Self.observedType(Self.value(at: path, in: payload), override: path == "$" ? rootOverride?.rawValue : nil))"
+        let fingerprint = schema.rawValue + "|" + (Self.preparedSchemaFields[schema] ?? []).map { field in
+            "\(field.path):\(Self.observedType(Self.value(at: field.steps, in: payload), override: field.path == "$" ? rootOverride?.rawValue : nil))"
         }.joined(separator: ",")
         lock.lock(); defer { lock.unlock() }
         if schemaRing.count == schemaRingCapacity {
@@ -61,15 +81,11 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
         schemaCounts.removeAll(keepingCapacity: true)
     }
 
-    private static func value(at path: String, in root: Any?) -> Any? {
-        if path == "$" { return root }
+    private static func value(at steps: [PathStep], in root: Any?) -> Any? {
         var current = root
-        for segment in path.split(separator: ".") {
-            let component = String(segment)
-            let firstElement = component.hasSuffix("[0]")
-            let key = firstElement ? String(component.dropLast(3)) : component
-            guard let object = current as? [String: Any], let next = object[key] else { return nil }
-            if firstElement {
+        for step in steps {
+            guard let object = current as? [String: Any], let next = object[step.key] else { return nil }
+            if step.firstElement {
                 guard let array = next as? [Any] else { return nil }
                 current = array.first
             } else { current = next }
