@@ -24,6 +24,7 @@ type Request =
   | SearchRequest;
 type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
 type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
+type SearchSession = { direct: CandidateReply[]; fallback: CandidateReply[]; directComplete: boolean; fallbackComplete: boolean };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 type CatalogSnapshot = Readonly<{
@@ -33,6 +34,10 @@ type CatalogSnapshot = Readonly<{
 }>;
 let snapshot: CatalogSnapshot = { videos: new Map(), ordered: [], revision: -1 };
 const resultCache = new SessionCache<CandidateReply[]>(80, 30 * 60 * 1000, 4 * 1024 * 1024);
+// Keep a couple of pages per group warm. The shared cache enforces both a TTL
+// and a byte budget, so broad searches with long supporting passages are simply
+// not retained when their result metadata would consume too much worker memory.
+const searchSessionCache = new SessionCache<SearchSession>(8, 5 * 60 * 1000, 4 * 1024 * 1024);
 const preparedSearchCache = new PreparedVideoSearchCache(4);
 let latestRequestId = 0;
 let activeRequestId = 0;
@@ -94,8 +99,29 @@ function remember(key: string, candidates: CandidateReply[]) {
   resultCache.set(key, candidates);
 }
 
-function cacheKey(request: SearchRequest) {
-  return JSON.stringify([request.revision, request.query.trim().toLocaleLowerCase(), request.plan, request.topic, request.channelId, request.limit, request.excludedIds ?? [], Boolean(request.expanded), request.viewKey ?? ""]);
+function cacheKeys(request: SearchRequest) {
+  // Serialize the complete plan once for both cache identities. Besides avoiding
+  // duplicate work, this keeps the exact-page and search-session scopes aligned.
+  const planKey = JSON.stringify(request.plan);
+  const query = request.query.trim().toLocaleLowerCase();
+  const session = [request.revision, query, planKey, request.topic, request.channelId, Boolean(request.expanded), request.viewKey ?? ""];
+  return {
+    result: JSON.stringify([request.revision, query, planKey, request.topic, request.channelId, request.limit, request.excludedIds ?? [], Boolean(request.expanded), request.viewKey ?? ""]),
+    session: JSON.stringify(session),
+  };
+}
+
+function pageFromSession(session: SearchSession, excludedIds: ReadonlySet<string>, limit: number): CandidateReply[] | undefined {
+  const direct = session.direct.filter((candidate) => !excludedIds.has(candidate.videoId));
+  if (direct.length >= limit) return direct.slice(0, limit);
+  // Keep the existing tier rule: fallback suggestions appear only after no
+  // direct result remains, never just to fill a short direct page.
+  if (direct.length) return session.directComplete ? direct : undefined;
+  if (!session.directComplete) return undefined;
+
+  const fallback = session.fallback.filter((candidate) => !excludedIds.has(candidate.videoId));
+  if (fallback.length >= limit) return fallback.slice(0, limit);
+  return session.fallbackComplete ? fallback : undefined;
 }
 
 function yieldToWorker() {
@@ -108,7 +134,8 @@ async function search(request: SearchRequest) {
   latestRequestId = request.requestId;
   activeRequestId = request.requestId;
   const epoch = indexEpoch;
-  const key = cacheKey(request);
+  const keys = cacheKeys(request);
+  const key = keys.result;
   const cached = resultCache.get(key);
   if (cached) {
     if (activeRequestId === request.requestId) activeRequestId = 0;
@@ -116,15 +143,28 @@ async function search(request: SearchRequest) {
     return;
   }
 
+  const resultLimit = Math.max(1, Math.floor(request.limit));
+  const excludedIds = request.excludedIds?.length ? new Set(request.excludedIds) : new Set<string>();
+  const sessionKey = keys.session;
+  const cachedSession = searchSessionCache.get(sessionKey);
+  const sessionPage = cachedSession && pageFromSession(cachedSession, excludedIds, resultLimit);
+  if (sessionPage) {
+    remember(key, sessionPage);
+    if (activeRequestId === request.requestId) activeRequestId = 0;
+    workerScope.postMessage({ type: "results", requestId: request.requestId, revision: captured.revision, query: request.query, viewKey: request.viewKey, candidates: sessionPage } satisfies Reply);
+    return;
+  }
+
   // The retained snapshot is replaced on catalog changes, never mutated, so
   // yielded searches keep stable positions even if a newer update arrives.
   const catalog = captured.ordered;
   const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, captured.revision, request.viewKey ?? "worker");
-  const excludedIds = request.excludedIds?.length ? new Set(request.excludedIds) : new Set<string>();
   type RankedCandidateEntry = { candidate: CandidateReply; index: number };
   const direct: RankedCandidateEntry[] = [];
   const fallback: RankedCandidateEntry[] = [];
-  const resultLimit = Math.max(1, Math.floor(request.limit));
+  let directMatchCount = 0, fallbackMatchCount = 0;
+  const buildSession = excludedIds.size === 0 && resultLimit <= 160;
+  const sessionLimit = buildSession ? Math.min(320, Math.max(resultLimit, resultLimit * 2)) : resultLimit;
   const compareEntries = (left: RankedCandidateEntry, right: RankedCandidateEntry) => {
     const a = catalog[left.index], b = catalog[right.index];
     const dateOrder = prepared.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : prepared.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
@@ -135,18 +175,31 @@ async function search(request: SearchRequest) {
     if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
     const batch = catalog.slice(start, start + chunkSize);
     const positions = new Map(batch.map((video, index) => [video.id, start + index]));
-    const matches = searchPreparedSemanticVideos(batch, prepared, request.limit, excludedIds);
+    // The ranker returns direct and fallback results in one list. Ask for the
+    // whole chunk before splitting those groups; a fixed 2N window could be
+    // filled by fallback candidates and hide a lower-ranked direct match.
+    const matches = searchPreparedSemanticVideos(batch, prepared, batch.length, excludedIds);
     for (const match of matches) {
       const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: positions.get(match.video.id)! };
-      insertBoundedRanked(match.matchedFields.includes("semantic-fallback") ? fallback : direct, entry, resultLimit, compareEntries);
+      const isFallback = match.matchedFields.includes("semantic-fallback");
+      if (isFallback) fallbackMatchCount++;
+      else directMatchCount++;
+      insertBoundedRanked(isFallback ? fallback : direct, entry, buildSession ? sessionLimit : resultLimit, compareEntries);
     }
     if (start + chunkSize < catalog.length) {
       await yieldToWorker();
       if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
     }
   }
+  const session: SearchSession | undefined = buildSession ? {
+    direct: direct.map(({ candidate }) => candidate),
+    fallback: fallback.map(({ candidate }) => candidate),
+    directComplete: directMatchCount <= sessionLimit,
+    fallbackComplete: fallbackMatchCount <= sessionLimit,
+  } : undefined;
+  if (session) searchSessionCache.set(sessionKey, session);
   const source = direct.length ? direct : fallback;
-  const candidates = source.map(({ candidate }) => candidate);
+  const candidates = source.slice(0, resultLimit).map(({ candidate }) => candidate);
   remember(key, candidates);
   if (request.requestId === latestRequestId && request.revision === snapshot.revision) {
     if (activeRequestId === request.requestId) activeRequestId = 0;
@@ -179,6 +232,7 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
     activeRequestId = 0;
     latestRequestId += 1;
     resultCache.clear();
+    searchSessionCache.clear();
     preparedSearchCache.clear();
     if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision: snapshot.revision } satisfies Reply);
     if (request.type === "initialize") workerScope.postMessage({ type: "ready", revision: snapshot.revision } satisfies Reply);

@@ -58,7 +58,7 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
       indexVideoSearchMetadata: indexOverride ? indexOverride(imported.indexVideoSearchMetadata) : imported.indexVideoSearchMetadata };
     return imported;
   };
-  new Function("require", "module", "exports", "self", "setTimeout", "Map", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot;" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
+  new Function("require", "module", "exports", "self", "setTimeout", "Map", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes });" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
@@ -84,7 +84,7 @@ function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOve
     vm.runInNewContext(runtime, context);
   };
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
-  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot;", context);
+  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot; globalThis.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCacheBytes });", context);
   if (searchOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos = searchOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos);
   if (indexOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata = indexOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata);
   return { messages, workerMaps, context, send: (data) => context.onmessage({ data }) };
@@ -166,6 +166,100 @@ test("YouTube workers keep bounded direct and fallback pools with date and posit
     assert.deepEqual(Array.from(fallbackPage.candidates, (candidate) => candidate.videoId), ["rank-0", "rank-1"], `${fixture.name} reaches fallback results after all direct IDs are excluded`);
     const oldest = await search(4, "oldest");
     assert.deepEqual(Array.from(oldest.candidates, (candidate) => candidate.videoId), ["rank-1100", "rank-901"], `${fixture.name} preserves oldest-first ordering and original-position ties`);
+  }
+});
+
+test("YouTube workers reuse bounded completed search sessions for later pages", async () => {
+  const directIds = new Set([4, 500, 610, 900]);
+  const makeVideos = () => Array.from({ length: 1300 }, (_, index) => {
+    const direct = directIds.has(index);
+    // Fallbacks intentionally sort ahead of direct results in the combined
+    // ranker. The worker must still retain the best direct group independently.
+    const year = index === 4 || index === 500 ? 2025 : index === 610 || index === 900 ? 2024 : 2030;
+    return {
+      id: `session-${index}`, channelId: "channel-session", channelName: "Session Test", title: `Session ranking ${index}`,
+      description: "Pagination test description.", tags: direct ? ["title"] : ["semantic-fallback"], topics: ["Science"],
+      publishedAt: `${year}-01-01T00:00:00.000Z`, durationSeconds: direct ? 100 : index % 10, approved: true
+    };
+  });
+  const createSearchOverride = () => {
+    let calls = 0;
+    return {
+      get calls() { return calls; },
+      wrap: _original => (videos, prepared, limit, excludedIds) => {
+        calls++;
+        const matches = videos.filter(video => !excludedIds.has(video.id)).map(video => ({
+          video,
+          coverage: { matchedConcepts: [0], missingConcepts: [], complete: true },
+          score: video.durationSeconds,
+          matchedFields: video.tags,
+          supportingText: [video.title]
+        }));
+        const compare = (left, right) => (prepared.sort === "newest" ? right.video.publishedAt.localeCompare(left.video.publishedAt) : prepared.sort === "oldest" ? left.video.publishedAt.localeCompare(right.video.publishedAt) : 0) || right.score - left.score;
+        return matches.sort(compare).slice(0, limit);
+      }
+    };
+  };
+  const fixtures = [
+    { name: "website", load: counter => loadWorker("workers/youtube-search.worker.ts", { searchOverride: original => counter.wrap(original) }), send: (worker, data) => worker.scope.onmessage({ data }), messages: worker => worker.messages },
+    { name: "native", load: counter => loadNativeYouTubeWorker({ searchOverride: original => counter.wrap(original) }), send: (worker, data) => worker.send(data), messages: worker => worker.messages }
+  ];
+  const videos = projectVideos(makeVideos());
+  const plan = { terms: ["session ranking"], sort: "newest" };
+  const request = (requestId, excludedIds = [], viewKey = "account-a/workspace-a", revision = 0, requestPlan = plan, topic = "All", channelId = "channel-session") => ({
+    type: "search", requestId, revision, query: "session ranking", plan: requestPlan, topic, channelId, limit: 2, excludedIds, viewKey
+  });
+  const plain = value => JSON.parse(JSON.stringify(value));
+
+  for (const fixture of fixtures) {
+    const counter = createSearchOverride(), worker = fixture.load(counter), messages = fixture.messages(worker);
+    fixture.send(worker, { type: "initialize", revision: 0, videos });
+    fixture.send(worker, request(1));
+    const firstPage = await waitForMessage(messages, message => message.requestId === 1 && message.candidates);
+    assert.deepEqual(Array.from(firstPage.candidates, item => item.videoId), ["session-4", "session-500"], `${fixture.name} preserves date and original-position tie ordering`);
+    const initialSession = worker.scope?.inspectSearchSessions?.() ?? worker.context.inspectSearchSessions();
+    assert.equal(initialSession.size, 1, `${fixture.name} keeps one completed query session`);
+    assert.ok(initialSession.bytes > 0 && initialSession.bytes <= 4 * 1024 * 1024, `${fixture.name} bounds cached result metadata by bytes`);
+    const scansAfterFirstPage = counter.calls;
+
+    fixture.send(worker, request(2, firstPage.candidates.map(item => item.videoId)));
+    const cachedPage = await waitForMessage(messages, message => message.requestId === 2 && message.candidates);
+    assert.equal(counter.calls, scansAfterFirstPage, `${fixture.name} serves a complete cached page without ranking chunks again`);
+    assert.deepEqual(Array.from(cachedPage.candidates, item => item.videoId), ["session-610", "session-900"], `${fixture.name} advances within the direct-results group before fallbacks`);
+    assert.equal((worker.scope?.inspectSearchSessions?.() ?? worker.context.inspectSearchSessions()).size, 1, `${fixture.name} reuses rather than duplicates the query session`);
+
+    const referenceCounter = createSearchOverride(), reference = fixture.load(referenceCounter), referenceMessages = fixture.messages(reference);
+    fixture.send(reference, { type: "initialize", revision: 0, videos });
+    fixture.send(reference, request(3, firstPage.candidates.map(item => item.videoId)));
+    const freshPage = await waitForMessage(referenceMessages, message => message.requestId === 3 && message.candidates);
+    assert.deepEqual(plain(cachedPage.candidates), plain(freshPage.candidates), `${fixture.name} cached page matches a fresh ranking, including scores and supporting fields`);
+
+    const directIdsForExclusion = Array.from(directIds, id => `session-${id}`);
+    fixture.send(worker, request(7, directIdsForExclusion));
+    const cachedFallbackPage = await waitForMessage(messages, message => message.requestId === 7 && message.candidates);
+    assert.equal(counter.calls, scansAfterFirstPage, `${fixture.name} advances to the fallback group without rescanning`);
+    const fallbackReference = fixture.load(createSearchOverride()), fallbackMessages = fixture.messages(fallbackReference);
+    fixture.send(fallbackReference, { type: "initialize", revision: 0, videos });
+    fixture.send(fallbackReference, request(8, directIdsForExclusion));
+    const freshFallbackPage = await waitForMessage(fallbackMessages, message => message.requestId === 8 && message.candidates);
+    assert.deepEqual(plain(cachedFallbackPage.candidates), plain(freshFallbackPage.candidates), `${fixture.name} fallback page matches fresh ranking after direct exhaustion`);
+
+    const afterCachedPage = counter.calls;
+    fixture.send(worker, request(4, firstPage.candidates.map(item => item.videoId), "account-a/workspace-a", 0, { ...plan, minDurationSeconds: 1 }));
+    await waitForMessage(messages, message => message.requestId === 4 && message.candidates);
+    assert.ok(counter.calls > afterCachedPage, `${fixture.name} keys sessions by the complete filter plan`);
+
+    const afterPlanChange = counter.calls;
+    fixture.send(worker, request(5, firstPage.candidates.map(item => item.videoId), "account-b/workspace-a"));
+    await waitForMessage(messages, message => message.requestId === 5 && message.candidates);
+    assert.ok(counter.calls > afterPlanChange, `${fixture.name} does not reuse a result session across workspace/account scopes`);
+
+    fixture.send(worker, { type: "update", baseRevision: 0, revision: 1, upserts: [], removeIds: ["session-4"] });
+    assert.equal((worker.scope?.inspectSearchSessions?.() ?? worker.context.inspectSearchSessions()).size, 0, `${fixture.name} clears old sessions when the catalog revision changes`);
+    const scansBeforeNewRevision = counter.calls;
+    fixture.send(worker, request(6, [], "account-a/workspace-a", 1));
+    await waitForMessage(messages, message => message.requestId === 6 && message.candidates);
+    assert.ok(counter.calls > scansBeforeNewRevision, `${fixture.name} ranks the updated catalog instead of using the old session`);
   }
 });
 
@@ -566,7 +660,7 @@ test("YouTube worker prepares one immutable plan for every chunk in a request", 
   const nextPage = await waitForMessage(messages, message => message.type === "results" && message.requestId === 46);
   assert.ok(nextPage.candidates.length > 0);
   assert.ok(nextPage.candidates.every(candidate => !firstPageIds.includes(candidate.videoId)));
-  assert.equal(conceptGroupReads, 5, "the next page builds its own excluded-ID set but reuses the immutable prepared search");
+  assert.equal(conceptGroupReads, 4, "a cached continuation reads the plan for its scoped key but avoids rebuilding the prepared search");
 });
 
 test("native YouTube worker reuses a prepared search across paginated requests", async () => {
@@ -588,14 +682,14 @@ test("native YouTube worker reuses a prepared search across paginated requests",
   const firstPage = await waitForMessage(worker.messages, message => message.requestId === 61);
   const firstPageIds = firstPage.candidates.map(candidate => candidate.videoId);
   assert.ok(firstPageIds.length > 0);
-  assert.equal(conceptGroupReads, 2, "the Mac worker snapshots the plan only on the first page");
+  assert.equal(conceptGroupReads, 3, "the Mac worker serializes the plan once for its session key and prepares it once");
   assert.equal(catalogMap.valuesCallCount, 1, "native search scans the retained array rather than rebuilding it from map values");
 
   worker.send({ type: "search", requestId: 62, revision: 0, plan, topic: "Science", limit: 80, excludedIds: firstPageIds, viewKey: "workspace-a" });
   const secondPage = await waitForMessage(worker.messages, message => message.requestId === 62);
   assert.ok(secondPage.candidates.length > 0);
   assert.ok(secondPage.candidates.every(candidate => !firstPageIds.includes(candidate.videoId)));
-  assert.equal(conceptGroupReads, 3, "the Mac worker reuses prepared terms and resolves new page exclusions independently");
+  assert.equal(conceptGroupReads, 4, "a cached Mac continuation reads the plan for its scoped key but avoids re-preparing the search");
   assert.equal(catalogMap.valuesCallCount, 1, "native pagination also keeps using the retained catalog array");
 });
 
