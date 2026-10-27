@@ -115,6 +115,24 @@ Run `npm run test:credentials` for the shared web/native sync state machine and
 without retaining its fixture users or keys. Normal runtime sync never requires
 service-role credentials.
 
+### Native snapshot coordination
+
+Mac instances coordinate local snapshot replacement with an exclusive advisory
+lock on `learning-state.json.lock`. The sidecar remains in place across saves;
+locking the primary file itself would lose coordination when an atomic write
+replaces its inode. Only disk reads, validation, backup rotation, and primary
+replacement run under the lock; new snapshot encoding happens beforehand. The
+lock is released on errors and by the OS if a process exits.
+
+The store checks the primary's exact bytes before rotating its backup and again
+before replacing the primary. A detected outside change fails safely and asks
+for a retry. Existing valid snapshot bytes are reused directly for the backup;
+an invalid primary never replaces a valid recovery copy. Cooperating instances
+serialize saves; advisory locks cannot force older or external writers to
+participate. Run `npm run test:native-snapshot-lock` for isolated multi-process,
+crash-release, revision-conflict, and recovery tests. Saved formats and browser
+storage behavior are unchanged.
+
 ### Workspace revision protection
 
 Apply `supabase/workspace-sync.sql` for initial setup, followed by

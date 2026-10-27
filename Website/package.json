@@ -16,6 +16,7 @@
     "test:video-source-index": "node scripts/test-video-source-index.mjs",
     "test:youtube-pagination": "node scripts/test-youtube-pagination.mjs",
     "test:cloud-revision": "node --test scripts/test-cloud-revision-guard.mjs && node scripts/test-native-cloud-revision.mjs && node scripts/test-native-cloud-cursor.mjs",
+    "test:native-snapshot-lock": "node scripts/test-native-snapshot-lock.mjs",
     "test:workspace-revision": "node --test scripts/test-workspace-revision.mjs",
     "test:card-reveal": "node scripts/build-native-card-reveal.mjs --check && node scripts/test-card-reveal.mjs",
     "test:card-follow-ups": "node scripts/build-native-follow-ups.mjs --check && node scripts/test-card-follow-ups.mjs",

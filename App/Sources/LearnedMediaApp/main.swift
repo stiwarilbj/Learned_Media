@@ -3,6 +3,7 @@ import AuthenticationServices
 import Cocoa
 import CryptoKit
 import CoreText
+import Darwin
 import Foundation
 import PDFKit
 import UniformTypeIdentifiers
@@ -993,10 +994,33 @@ private final class LocalWorkspaceStore {
 
     private func readObject(at url: URL) -> (object: Any, bytes: Data)? {
         guard let data = try? Data(contentsOf: url) else { return nil }
+        return readObject(data: data)
+    }
+
+    private func readObject(data: Data) -> (object: Any, bytes: Data)? {
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
             SnapshotValidation.recordInvalidJSON(kind: .nativeStore, operation: .read); return nil
         }
         return SnapshotValidation.validate(object, kind: .nativeStore, operation: .read) ? (object, data) : nil
+    }
+
+    private func snapshotBytes(at url: URL) throws -> Data? {
+        do { return try Data(contentsOf: url) }
+        catch let error as NSError where (error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError)
+            || (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT)) { return nil }
+    }
+
+    private func withSnapshotLock<T>(at url: URL, _ operation: () throws -> T) throws -> T {
+        // A separate, persistent inode keeps all instances on the same lock
+        // even when an atomic save replaces the primary snapshot's inode.
+        let descriptor = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
+        guard descriptor >= 0 else { throw NativeError(message: "The local workspace could not be coordinated. Please retry.") }
+        defer { close(descriptor) }
+        while flock(descriptor, LOCK_EX) != 0 {
+            if errno != EINTR { throw NativeError(message: "The local workspace could not be coordinated. Please retry.") }
+        }
+        defer { flock(descriptor, LOCK_UN) }
+        return try operation()
     }
 
     func load() -> Any {
@@ -1015,10 +1039,20 @@ private final class LocalWorkspaceStore {
         }
         let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
         let locations = try urls()
-        if let previous = readObject(at: locations.primary) {
-            try previous.bytes.write(to: locations.backup, options: [.atomic])
+        try withSnapshotLock(at: locations.primary.appendingPathExtension("lock")) {
+            let startingBytes = try snapshotBytes(at: locations.primary)
+            let previous = startingBytes.flatMap { readObject(data: $0) }
+            // Exact bytes identify the on-disk revision without relying on
+            // filesystem timestamp precision. Detect uncoordinated writers too.
+            guard try snapshotBytes(at: locations.primary) == startingBytes else {
+                throw NativeError(message: "The local workspace changed during saving. Please retry. Recovery copies were kept.")
+            }
+            if let previous { try previous.bytes.write(to: locations.backup, options: [.atomic]) }
+            guard try snapshotBytes(at: locations.primary) == startingBytes else {
+                throw NativeError(message: "The local workspace changed during saving. Please retry. Recovery copies were kept.")
+            }
+            try data.write(to: locations.primary, options: [.atomic])
         }
-        try data.write(to: locations.primary, options: [.atomic])
     }
 }
 
