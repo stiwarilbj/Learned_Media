@@ -43,10 +43,18 @@ function cleanSpaces(value) {
 function punctuationSentenceCount(value) {
     return (value.trim().match(/[.!?](?=(?:[\"'”’»)]|\s|$))/g) ?? []).length;
 }
+let sentenceSegmenter;
+function getSentenceSegmenter() {
+    if (sentenceSegmenter === undefined) {
+        const Segmenter = Intl.Segmenter;
+        sentenceSegmenter = Segmenter ? new Segmenter("en", { granularity: "sentence" }) : null;
+    }
+    return sentenceSegmenter;
+}
 function splitSpotlightSentences(text) {
-    const Segmenter = Intl.Segmenter;
-    const pieces = Segmenter
-        ? Array.from(new Segmenter("en", { granularity: "sentence" }).segment(text), item => item.segment.trim()).filter(Boolean)
+    const segmenter = getSentenceSegmenter();
+    const pieces = segmenter
+        ? Array.from(segmenter.segment(text), item => item.segment.trim()).filter(Boolean)
         : (text.match(/[^.!?]+[.!?]+[”’\"')\]]*(?=\s|$)|[^.!?]+$/g) ?? []).map(item => item.trim()).filter(Boolean);
     return pieces;
 }
@@ -176,9 +184,9 @@ function sectionTexts(extract) {
     return marked;
 }
 function sentenceRanges(text) {
-    const Segmenter = Intl.Segmenter;
-    if (Segmenter)
-        return Array.from(new Segmenter("en", { granularity: "sentence" }).segment(text), item => ({ text: item.segment.trim(), start: item.index, end: item.index + item.segment.length })).filter(item => item.text);
+    const segmenter = getSentenceSegmenter();
+    if (segmenter)
+        return Array.from(segmenter.segment(text), item => ({ text: item.segment.trim(), start: item.index, end: item.index + item.segment.length })).filter(item => item.text);
     const ranges = [];
     const pattern = /[^.!?]+[.!?]+[”’"')\]]*(?=\s|$)|[^.!?]+$/g;
     for (const match of text.matchAll(pattern))

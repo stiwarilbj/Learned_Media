@@ -61,10 +61,20 @@ function punctuationSentenceCount(value: string) {
   return (value.trim().match(/[.!?](?=(?:[\"'”’»)]|\s|$))/g) ?? []).length;
 }
 
+type SentenceSegmenter = { segment: (value: string) => Iterable<{ segment: string; index: number }> };
+let sentenceSegmenter: SentenceSegmenter | null | undefined;
+function getSentenceSegmenter() {
+  if (sentenceSegmenter === undefined) {
+    const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locale: string, options: { granularity: "sentence" }) => SentenceSegmenter }).Segmenter;
+    sentenceSegmenter = Segmenter ? new Segmenter("en", { granularity: "sentence" }) : null;
+  }
+  return sentenceSegmenter;
+}
+
 export function splitSpotlightSentences(text: string) {
-  const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locale: string, options: { granularity: "sentence" }) => { segment: (value: string) => Iterable<{ segment: string }> } }).Segmenter;
-  const pieces = Segmenter
-    ? Array.from(new Segmenter("en", { granularity: "sentence" }).segment(text), item => item.segment.trim()).filter(Boolean)
+  const segmenter = getSentenceSegmenter();
+  const pieces = segmenter
+    ? Array.from(segmenter.segment(text), item => item.segment.trim()).filter(Boolean)
     : (text.match(/[^.!?]+[.!?]+[”’\"')\]]*(?=\s|$)|[^.!?]+$/g) ?? []).map(item => item.trim()).filter(Boolean);
   return pieces;
 }
@@ -197,8 +207,8 @@ function sectionTexts(extract: string): SectionText[] {
 
 type SentenceRange = { text: string; start: number; end: number };
 function sentenceRanges(text: string): SentenceRange[] {
-  const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locale: string, options: { granularity: "sentence" }) => { segment: (value: string) => Iterable<{ segment: string; index: number }> } }).Segmenter;
-  if (Segmenter) return Array.from(new Segmenter("en", { granularity: "sentence" }).segment(text), item => ({ text: item.segment.trim(), start: item.index, end: item.index + item.segment.length })).filter(item => item.text);
+  const segmenter = getSentenceSegmenter();
+  if (segmenter) return Array.from(segmenter.segment(text), item => ({ text: item.segment.trim(), start: item.index, end: item.index + item.segment.length })).filter(item => item.text);
   const ranges: SentenceRange[] = [];
   const pattern = /[^.!?]+[.!?]+[”’"')\]]*(?=\s|$)|[^.!?]+$/g;
   for (const match of text.matchAll(pattern)) ranges.push({ text: match[0].trim(), start: match.index ?? 0, end: (match.index ?? 0) + match[0].length });
