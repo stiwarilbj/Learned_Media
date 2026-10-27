@@ -8,32 +8,6 @@ public enum DiagnosticMetric: String, CaseIterable {
     case requestBytes = "request_bytes", responseBytesReported = "response_bytes_reported", responseBytesRead = "response_bytes_read"
 }
 
-public enum ProviderResponseSchema: String {
-    case wikipediaSearch = "wikipedia.search"
-    case wikipediaPages = "wikipedia.pages"
-    case wikipediaImages = "wikipedia.images"
-    case wikipediaSummary = "wikipedia.summary"
-    case youtubeChannels = "youtube.channels"
-    case youtubeSearch = "youtube.search"
-    case youtubePlaylistItems = "youtube.playlistItems"
-    case youtubeVideos = "youtube.videos"
-    case youtubeError = "youtube.error"
-
-    fileprivate var fields: [String] {
-        switch self {
-        case .wikipediaSearch: return ["$", "error", "error.code", "error.info", "query", "query.search", "query.search[0]", "query.search[0].title"]
-        case .wikipediaPages: return ["$", "error", "error.code", "error.info", "query", "query.normalized", "query.redirects", "query.pages", "query.pages[0]", "query.pages[0].title", "query.pages[0].fullurl", "query.pages[0].extract", "query.pages[0].pageimage", "query.pages[0].thumbnail", "query.pages[0].thumbnail.source", "query.pages[0].original", "query.pages[0].original.source", "query.pages[0].coordinates", "query.pages[0].coordinates[0]", "query.pages[0].coordinates[0].lat", "query.pages[0].coordinates[0].lon", "query.pages[0].pageprops", "query.pages[0].pageprops.disambiguation"]
-        case .wikipediaImages: return ["$", "error", "error.code", "error.info", "query", "query.pages", "query.pages[0]", "query.pages[0].imageinfo", "query.pages[0].imageinfo[0]", "query.pages[0].imageinfo[0].url", "query.pages[0].imageinfo[0].thumburl", "query.pages[0].imageinfo[0].descriptionurl", "query.pages[0].imageinfo[0].extmetadata"]
-        case .wikipediaSummary: return ["$", "title", "thumbnail", "thumbnail.source", "originalimage", "originalimage.source", "content_urls", "content_urls.desktop", "content_urls.desktop.page"]
-        case .youtubeChannels: return ["$", "items", "items[0]", "items[0].id", "items[0].snippet", "items[0].snippet.title", "items[0].snippet.customUrl", "items[0].snippet.thumbnails", "items[0].contentDetails", "items[0].contentDetails.relatedPlaylists", "items[0].contentDetails.relatedPlaylists.uploads"]
-        case .youtubeSearch: return ["$", "items", "items[0]", "items[0].id", "items[0].id.channelId", "items[0].id.videoId", "items[0].snippet", "items[0].snippet.title", "items[0].snippet.channelTitle", "items[0].snippet.channelId"]
-        case .youtubePlaylistItems: return ["$", "items", "items[0]", "items[0].contentDetails", "items[0].contentDetails.videoId", "items[0].snippet", "items[0].snippet.title", "items[0].snippet.description", "items[0].snippet.publishedAt", "items[0].snippet.channelId", "nextPageToken"]
-        case .youtubeVideos: return ["$", "items", "items[0]", "items[0].id", "items[0].snippet", "items[0].snippet.title", "items[0].snippet.description", "items[0].snippet.publishedAt", "items[0].snippet.channelId", "items[0].snippet.channelTitle", "items[0].snippet.tags", "items[0].snippet.thumbnails", "items[0].contentDetails", "items[0].contentDetails.duration", "items[0].status", "items[0].status.privacyStatus", "items[0].status.embeddable"]
-        case .youtubeError: return ["$", "error", "error.code", "error.message", "error.status", "error.errors", "error.errors[0]", "error.errors[0].reason"]
-        }
-    }
-}
-
 public enum ProviderResponseRootOverride: String {
     case invalidJSON = "invalid-json"
     case nonJSON = "non-json"

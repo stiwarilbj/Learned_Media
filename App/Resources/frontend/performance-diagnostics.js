@@ -2,10 +2,12 @@
 (function(scope) { const schema = (() => { const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.providerSchemaFields = void 0;
 exports.recordProviderSchemaFailure = recordProviderSchemaFailure;
 exports.providerSchemaFailureSnapshot = providerSchemaFailureSnapshot;
 exports.resetProviderSchemaFailures = resetProviderSchemaFailures;
-const fieldAllowlist = {
+/** Authoritative ordered schema IDs and paths; build-native-diagnostics emits the Swift equivalent. */
+exports.providerSchemaFields = {
     "wikipedia.search": ["$", "error", "error.code", "error.info", "query", "query.search", "query.search[0]", "query.search[0].title"],
     "wikipedia.pages": ["$", "error", "error.code", "error.info", "query", "query.normalized", "query.redirects", "query.pages", "query.pages[0]", "query.pages[0].title", "query.pages[0].fullurl", "query.pages[0].extract", "query.pages[0].pageimage", "query.pages[0].thumbnail", "query.pages[0].thumbnail.source", "query.pages[0].original", "query.pages[0].original.source", "query.pages[0].coordinates", "query.pages[0].coordinates[0]", "query.pages[0].coordinates[0].lat", "query.pages[0].coordinates[0].lon", "query.pages[0].pageprops", "query.pages[0].pageprops.disambiguation"],
     "wikipedia.images": ["$", "error", "error.code", "error.info", "query", "query.pages", "query.pages[0]", "query.pages[0].imageinfo", "query.pages[0].imageinfo[0]", "query.pages[0].imageinfo[0].url", "query.pages[0].imageinfo[0].thumburl", "query.pages[0].imageinfo[0].descriptionurl", "query.pages[0].imageinfo[0].extmetadata"],
@@ -57,7 +59,7 @@ function recordProviderSchemaFailure(schema, payload, rootOverride) {
     if (!localRuntime)
         return;
     try {
-        const fields = fieldAllowlist[schema];
+        const fields = exports.providerSchemaFields[schema];
         if (!fields)
             return;
         const safeRootOverride = rootOverride === "invalid-json" || rootOverride === "non-json" ? rootOverride : undefined;

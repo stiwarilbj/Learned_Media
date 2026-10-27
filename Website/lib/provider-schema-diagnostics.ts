@@ -1,15 +1,5 @@
-export type ProviderResponseSchema =
-  | "wikipedia.search"
-  | "wikipedia.pages"
-  | "wikipedia.images"
-  | "wikipedia.summary"
-  | "youtube.channels"
-  | "youtube.search"
-  | "youtube.playlistItems"
-  | "youtube.videos"
-  | "youtube.error";
-
-const fieldAllowlist: Record<ProviderResponseSchema, readonly string[]> = {
+/** Authoritative ordered schema IDs and paths; build-native-diagnostics emits the Swift equivalent. */
+export const providerSchemaFields = {
   "wikipedia.search": ["$", "error", "error.code", "error.info", "query", "query.search", "query.search[0]", "query.search[0].title"],
   "wikipedia.pages": ["$", "error", "error.code", "error.info", "query", "query.normalized", "query.redirects", "query.pages", "query.pages[0]", "query.pages[0].title", "query.pages[0].fullurl", "query.pages[0].extract", "query.pages[0].pageimage", "query.pages[0].thumbnail", "query.pages[0].thumbnail.source", "query.pages[0].original", "query.pages[0].original.source", "query.pages[0].coordinates", "query.pages[0].coordinates[0]", "query.pages[0].coordinates[0].lat", "query.pages[0].coordinates[0].lon", "query.pages[0].pageprops", "query.pages[0].pageprops.disambiguation"],
   "wikipedia.images": ["$", "error", "error.code", "error.info", "query", "query.pages", "query.pages[0]", "query.pages[0].imageinfo", "query.pages[0].imageinfo[0]", "query.pages[0].imageinfo[0].url", "query.pages[0].imageinfo[0].thumburl", "query.pages[0].imageinfo[0].descriptionurl", "query.pages[0].imageinfo[0].extmetadata"],
@@ -19,7 +9,9 @@ const fieldAllowlist: Record<ProviderResponseSchema, readonly string[]> = {
   "youtube.playlistItems": ["$", "items", "items[0]", "items[0].contentDetails", "items[0].contentDetails.videoId", "items[0].snippet", "items[0].snippet.title", "items[0].snippet.description", "items[0].snippet.publishedAt", "items[0].snippet.channelId", "nextPageToken"],
   "youtube.videos": ["$", "items", "items[0]", "items[0].id", "items[0].snippet", "items[0].snippet.title", "items[0].snippet.description", "items[0].snippet.publishedAt", "items[0].snippet.channelId", "items[0].snippet.channelTitle", "items[0].snippet.tags", "items[0].snippet.thumbnails", "items[0].contentDetails", "items[0].contentDetails.duration", "items[0].status", "items[0].status.privacyStatus", "items[0].status.embeddable"],
   "youtube.error": ["$", "error", "error.code", "error.message", "error.status", "error.errors", "error.errors[0]", "error.errors[0].reason"]
-};
+} as const;
+
+export type ProviderResponseSchema = keyof typeof providerSchemaFields;
 
 const ringCapacity = 64;
 const ring: string[] = [];
@@ -57,7 +49,7 @@ function observedType(value: unknown, override?: "invalid-json" | "non-json") {
 export function recordProviderSchemaFailure(schema: ProviderResponseSchema, payload?: unknown, rootOverride?: "invalid-json" | "non-json") {
   if (!localRuntime) return;
   try {
-    const fields = fieldAllowlist[schema];
+    const fields = providerSchemaFields[schema];
     if (!fields) return;
     const safeRootOverride = rootOverride === "invalid-json" || rootOverride === "non-json" ? rootOverride : undefined;
     const fingerprint = `${schema}|${fields.map(path => `${path}:${observedType(readPath(payload, path), path === "$" ? safeRootOverride : undefined)}`).join(",")}`;
