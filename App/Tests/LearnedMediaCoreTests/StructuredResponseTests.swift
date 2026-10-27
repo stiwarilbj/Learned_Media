@@ -154,6 +154,17 @@ final class StructuredResponseTests: XCTestCase {
         let parsed = try StructuredResponse.parse(#"{"facts":[{"slot":0,"claim":"A"},{"claim":"A","slot":0},{"slot":0,"claim":"B"}]}"#, schema: schema)
         XCTAssertEqual((parsed["facts"] as? [[String: Any]])?.count, 2)
     }
+
+    func testNestedSetComparisonPreservesObjectEquivalenceArrayOrderAndPrimitiveTypes() throws {
+        let input = #"[{"z":[1,{"b":false,"a":null}],"a":{"quantity":12,"unit":"km"}},{"a":{"unit":"km","quantity":12},"z":[1,{"a":null,"b":false}]},{"z":[{"a":null,"b":false},1],"a":{"quantity":12,"unit":"km"}},{"z":[1,{"b":false,"a":null}],"a":{"quantity":"12","unit":"km"}}]"#
+        let items = try XCTUnwrap(try StructuredResponse.decodeJSON(input) as? [Any])
+        let arraySchema: [String: Any] = ["type": "ARRAY", "items": [:]]
+        for field in ["facts", "evidence", "evidenceIds", "claimEvidenceIds", "terms", "include", "alternatives", "topics", "related", "equivalents", "wikipediaSearchTitles"] {
+            let result = try XCTUnwrap(StructuredResponse.normalize(items, schema: arraySchema, field: field) as? [Any])
+            XCTAssertEqual(result as NSArray, [items[0], items[2], items[3]] as NSArray, field)
+        }
+        XCTAssertEqual((StructuredResponse.normalize(items, schema: arraySchema, field: "sentences") as? [Any])?.count, 4)
+    }
     func testInvalidIntegersAndMissingClaimsAreNotInvented() throws {
         let parsed = try StructuredResponse.parse(#"{"facts":[{"slot":"1.5","claim":"Bad slot"},{"slot":1},{"slot":2,"claim":"Valid"}]}"#, schema: schema)
         XCTAssertEqual((parsed["facts"] as? [[String: Any]])?.compactMap { $0["slot"] as? Int }, [2])

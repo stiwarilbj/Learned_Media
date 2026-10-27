@@ -8,10 +8,13 @@ export function stripResponseBom(text: string): string {
 
 type Schema = Record<string, unknown>;
 const setFields = new Set(["evidenceIds", "claimEvidenceIds", "terms", "include", "alternatives", "topics", "related", "equivalents", "wikipediaSearchTitles"]);
+function ordered(value: unknown): unknown {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, ordered(item)]))
+    : Array.isArray(value) ? value.map(ordered) : value;
+}
 function stable(value: unknown): string {
-  return JSON.stringify(value && typeof value === "object" && !Array.isArray(value)
-    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, JSON.parse(stable(item))]))
-    : Array.isArray(value) ? value.map(item => JSON.parse(stable(item))) : value);
+  return JSON.stringify(ordered(value));
 }
 
 /** Repair syntax only outside quoted text; never complete an unfinished value. */
