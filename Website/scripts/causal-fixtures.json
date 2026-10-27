@@ -145,5 +145,19 @@
       "Did flooding cause bridge collapse?"
     ],
     "valid": false
+  },
+  {
+    "claim": "Storms caused abcda.",
+    "passages": [
+      "Storms caused abcdá."
+    ],
+    "valid": false
+  },
+  {
+    "claim": "Storms caused abcda.",
+    "passages": [
+      "Storms caused abcda\u0301."
+    ],
+    "valid": true
   }
 ]

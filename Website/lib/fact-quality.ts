@@ -1,4 +1,4 @@
-import { unsupportedCausality } from "./causal-validation";
+import { createCausalValidator } from "./causal-validation";
 import { factSpecificityReason, FactSpecificityError } from "./fact-specificity";
 import { createQuantityValidator } from "./quantity-validation";
 import { difficultyRequiresInnerSection } from "./recommendations";
@@ -270,6 +270,7 @@ export function validateDraft(draft: GroundedDraft, sources: WikipediaSource[], 
   const evidenceBySentence: GroundedDraft["evidence"][] = Array.from({ length: sentenceCount }, () => []);
   draft.evidence.forEach(item => evidenceBySentence[item.sentence].push(item));
   const unsupportedQuantities = createQuantityValidator();
+  const unsupportedCausality = createCausalValidator();
   const sections = new Set<string>();
   const normalizedExtracts = new Map<number, string>();
   function normalizedExtract(sourceIndex: number) {

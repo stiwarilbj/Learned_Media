@@ -34,12 +34,27 @@ function covers(required: string[], supplied: string[]) {
     && required.filter(word => available.has(word)).length / required.length >= 0.6;
 }
 
+/** Lazily reuse exact quotation analysis within one draft, never its evidence assignments. */
+export function createCausalValidator() {
+  const parsedPassages = new Map<string, Relation[]>();
+  return (claim: string, passages: string[]): string[] => {
+    const requested = relations(claim);
+    if (!requested.length) return [];
+    const supplied = passages.flatMap(passage => {
+      let parsed = parsedPassages.get(passage);
+      if (parsed === undefined) {
+        parsed = relations(passage).filter(relation => !relation.ambiguous && !relation.question);
+        parsedPassages.set(passage, parsed);
+      }
+      return parsed;
+    });
+    return requested.filter(relation => relation.ambiguous || !supplied.some(source => source.kind === relation.kind
+      && source.negative === relation.negative && (!source.uncertain || relation.uncertain)
+      && covers(relation.cause, source.cause) && covers(relation.effect, source.effect))).map(relation => relation.text);
+  };
+}
+
 /** Require an explicit relationship with matching direction, actors, outcome and certainty. */
 export function unsupportedCausality(claim: string, passages: string[]): string[] {
-  const requested = relations(claim);
-  if (!requested.length) return [];
-  const supplied = passages.flatMap(relations).filter(relation => !relation.ambiguous && !relation.question);
-  return requested.filter(relation => relation.ambiguous || !supplied.some(source => source.kind === relation.kind
-    && source.negative === relation.negative && (!source.uncertain || relation.uncertain)
-    && covers(relation.cause, source.cause) && covers(relation.effect, source.effect))).map(relation => relation.text);
+  return createCausalValidator()(claim, passages);
 }

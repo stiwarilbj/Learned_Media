@@ -1926,8 +1926,79 @@ test('date roles reach real grounding requests without altering restored citatio
 });
 
 test('causal claims require explicit directional support using shared native fixtures',()=>{
- const {unsupportedCausality}=require('../lib/causal-validation.ts');
- for(const {claim,passages,valid} of JSON.parse(readFileSync(new URL('./causal-fixtures.json',import.meta.url))))assert.equal(unsupportedCausality(claim,passages).length===0,valid,claim+' / '+passages.join(' | '));
+ const {createCausalValidator,unsupportedCausality}=require('../lib/causal-validation.ts');
+ const validate=createCausalValidator();
+ const fixtures=JSON.parse(readFileSync(new URL('./causal-fixtures.json',import.meta.url)));
+ for(const {claim,passages,valid} of [...fixtures,...fixtures.toReversed()]) {
+  const expected=unsupportedCausality(claim,passages);
+  assert.equal(expected.length===0,valid,claim+' / '+passages.join(' | '));
+  assert.deepEqual(validate(claim,passages),expected,'warm preparation must retain exact results and evidence scope');
+ }
+});
+
+function tracedCausalValidation() {
+ const source=readFileSync(new URL('../lib/causal-validation.ts',import.meta.url),'utf8');
+ const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
+ const calls=[];
+ const context={exports:{},calls,require:name=>{assert.equal(name,'./causal-policy.json');return require('../lib/causal-policy.json');}};
+ // Observe the private parser only in this isolated test runtime.
+ runInNewContext(code+'\nconst parseRelations = relations; relations = text => { calls.push(text); return parseRelations(text); };',context);
+ return {api:context.exports,calls};
+}
+
+test('causal preparations lazily analyze each exact assigned quotation once, including empty results',()=>{
+ const {api,calls}=tracedCausalValidation();
+ const validate=api.createCausalValidator();
+ const claim='Flooding caused bridge collapse.';
+ const supported='Flooding caused bridge collapse during the severe storm.';
+ const unrelated='Flooding and bridge collapse occurred together during the severe storm.';
+ assert.equal(calls.length,0);
+ assert.deepEqual(Array.from(validate('The bridge was inspected during the storm.',[supported,unrelated])),[]);
+ assert.ok(!calls.includes(supported)&&!calls.includes(unrelated),'noncausal checks do not prepare quotations');
+ for(let attempt=0;attempt<5;attempt++) {
+  assert.deepEqual(Array.from(validate(claim,[supported,supported])),[]);
+  assert.deepEqual(Array.from(validate(claim,[unrelated])),[claim]);
+  assert.deepEqual(Array.from(validate(claim,[])),[claim],'previously cached support cannot leak into an empty assignment');
+ }
+ assert.equal(calls.filter(text=>text===supported).length,1);
+ assert.equal(calls.filter(text=>text===unrelated).length,1,'empty relationship analysis is cached too');
+ const nextDraft=api.createCausalValidator();
+ assert.deepEqual(Array.from(nextDraft(claim,[supported])),[]);
+ assert.equal(calls.filter(text=>text===supported).length,2,'a new draft owns a new preparation');
+ assert.deepEqual(Array.from(api.unsupportedCausality(claim,[supported])),[]);
+ assert.equal(calls.filter(text=>text===supported).length,3,'the compatible standalone wrapper retains no shared preparation');
+});
+
+test('draft validation owns one causal preparation and retains sentence, claim and heading assignments',()=>{
+ const {api}=tracedCausalValidation();
+ const preparations=[];
+ const create=api.createCausalValidator;
+ api.createCausalValidator=()=>{
+  const checks=[];preparations.push(checks);
+  const validate=create();
+  return (claim,passages)=>{checks.push({claim,passages:[...passages]});return validate(claim,passages);};
+ };
+ const source=readFileSync(new URL('../lib/fact-quality.ts',import.meta.url),'utf8');
+ const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
+ const qualityRequire=createRequire(new URL('../lib/fact-quality.ts',import.meta.url));
+ const context={exports:{},require:name=>name==='./causal-validation'?api:qualityRequire(name)};
+ runInNewContext(code,context);
+ const validate=context.exports.validateDraft;
+ const causal='Flooding caused the bridge to collapse during the severe storm.';
+ const together='Flooding and bridge collapse occurred together during the severe storm.';
+ const sources=[{title:'Bridge',url:'https://en.wikipedia.org/wiki/Bridge',extract:causal+' '+together}];
+ const draft={title:'Flooding Caused The Bridge Collapse',hook:'Flooding Led To Bridge Collapse',claim:causal,sentences:[causal,together],
+  evidence:[{sentence:0,sourceIndex:0,quote:causal},{sentence:1,sourceIndex:0,quote:together}],claimEvidence:[causal]};
+ for(let attempt=0;attempt<2;attempt++)assert.doesNotThrow(()=>validate(draft,sources,2));
+ assert.equal(preparations.length,2,'every validation owns its preparation');
+ for(const checks of preparations)assert.deepEqual(JSON.parse(JSON.stringify(checks)),[
+  {claim:causal,passages:[causal]}, {claim:together,passages:[together]}, {claim:causal,passages:[causal]},
+  {claim:draft.title,passages:[causal,together]}, {claim:draft.hook,passages:[causal,together]}
+ ]);
+ assert.throws(()=>validate({...draft,claimEvidence:[together]},sources,2),/unsupported causal wording/,'warm sentence evidence cannot support a claim with a different assignment');
+ assert.throws(()=>validate({...draft,hook:'Flooding Caused The Tower Collapse'},sources,2),/unsupported causal wording/);
+ assert.doesNotThrow(()=>validate(draft,sources,2),'a failed draft cannot contaminate the next validation');
+ assert.equal(preparations.length,5);
 });
 
 test('causal publication checks use sentence and main-claim evidence without borrowing support',()=>{

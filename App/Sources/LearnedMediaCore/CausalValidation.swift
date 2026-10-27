@@ -39,16 +39,35 @@ public enum CausalValidation {
         return !required.isEmpty && required.prefix(2).allSatisfy { available.contains($0) }
             && Double(required.filter { available.contains($0) }.count) / Double(required.count) >= 0.6
     }
+    /// Owned by a single validation; cached quotations never expand a check's assigned evidence.
+    public struct PreparedEvidence {
+        // String keys compare canonical Unicode equivalents; parsing uses the
+        // original characters, so keep distinct quotation bytes distinct too.
+        private var parsedPassages: [Data: [Relation]] = [:]
+        public init() {}
+
+        public mutating func unsupported(_ claim: String, passages: [String]) -> [String] {
+            let requested = CausalValidation.relations(claim)
+            if requested.isEmpty { return [] }
+            let supplied = passages.flatMap { passage -> [Relation] in
+                let key = Data(passage.utf8)
+                if let parsed = parsedPassages[key] { return parsed }
+                let parsed = CausalValidation.relations(passage).filter { !$0.ambiguous && !$0.question }
+                parsedPassages[key] = parsed
+                return parsed
+            }
+            return requested.filter { relation in
+                relation.ambiguous || !supplied.contains { source in
+                    source.kind == relation.kind && source.negative == relation.negative && (!source.uncertain || relation.uncertain)
+                        && CausalValidation.covers(relation.cause, source.cause) && CausalValidation.covers(relation.effect, source.effect)
+                }
+            }.map(\.text)
+        }
+    }
+
     /// Conservative explicit-relationship check; uncertainty and unsupported paraphrases cannot establish causation.
     public static func unsupported(_ claim: String, passages: [String]) -> [String] {
-        let requested = relations(claim)
-        if requested.isEmpty { return [] }
-        let supplied = passages.flatMap(relations).filter { !$0.ambiguous && !$0.question }
-        return requested.filter { relation in
-            relation.ambiguous || !supplied.contains { source in
-                source.kind == relation.kind && source.negative == relation.negative && (!source.uncertain || relation.uncertain)
-                    && covers(relation.cause, source.cause) && covers(relation.effect, source.effect)
-            }
-        }.map(\.text)
+        var preparation = PreparedEvidence()
+        return preparation.unsupported(claim, passages: passages)
     }
 }
