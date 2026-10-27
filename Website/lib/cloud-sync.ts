@@ -60,6 +60,44 @@ export class WorkspaceCloudSync {
     }
     this.trackedMemory = next;
   }
+  private async loadWorkspaceRevisions(signal: AbortSignal) {
+    const api = cloudClient();
+    const checkCancellation = () => { if (signal.aborted) throw new Error('Cloud load was canceled.'); };
+    checkCancellation();
+    // The RPC returns one head per stable workspace ID. Revision IDs change on
+    // every save and must never be used as workspace pagination cursors.
+    const boundary = await api.rpc('latest_workspace_revisions').select('workspace_id')
+      .order('workspace_id', { ascending: false }).limit(1).abortSignal(signal);
+    if (boundary.error) throw boundary.error;
+    checkCancellation();
+    if (!Array.isArray(boundary.data) || boundary.data.length > 1) throw new Error('Cloud workspace history returned an invalid cursor.');
+    if (!boundary.data.length) return [];
+    const through = boundary.data[0]?.workspace_id;
+    if (typeof through !== 'string' || !through) throw new Error('Cloud workspace history returned an invalid cursor.');
+    const revisions: Database['public']['Functions']['latest_workspace_revisions']['Returns'] = [];
+    const seen = new Set<string>();
+    let after: string | null = null;
+    while (true) {
+      checkCancellation();
+      let query = api.rpc('latest_workspace_revisions').lte('workspace_id', through);
+      if (after !== null) query = query.gt('workspace_id', after);
+      const result = await query.order('workspace_id', { ascending: true }).limit(100).abortSignal(signal);
+      if (result.error) throw result.error;
+      checkCancellation();
+      if (!Array.isArray(result.data) || result.data.length > 100) throw new Error('Cloud workspace history returned an invalid page.');
+      for (const row of result.data) {
+        if (typeof row?.workspace_id !== 'string' || !row.workspace_id || seen.has(row.workspace_id)
+          || row.record?.id !== row.workspace_id || typeof row.revision_id !== 'string' || !row.revision_id) {
+          throw new Error('Cloud workspace history returned an invalid cursor.');
+        }
+        seen.add(row.workspace_id);
+        revisions.push(row);
+      }
+      if (result.data.length < 100 || result.data.at(-1)?.workspace_id === through) break;
+      after = result.data[result.data.length - 1].workspace_id;
+    }
+    return revisions;
+  }
   async load(signal: AbortSignal) {
     const api = cloudClient();
     const loadMemoryPage = (after: string | null) => {
@@ -69,11 +107,10 @@ export class WorkspaceCloudSync {
     };
     // Start both independent reads together, keeping later pages sequential.
     const [revisionResult, firstMemoryPage] = await Promise.all([
-      api.rpc('latest_workspace_revisions').abortSignal(signal),
+      this.loadWorkspaceRevisions(signal),
       loadMemoryPage(null),
     ]);
-    const { data, error } = revisionResult as { data: Array<{ revision_id: string; record: CloudRecord }> | null; error: any };
-    if (error) throw error;
+    const data = revisionResult;
     const records = (data || []).map((row: any) => {
       assertSnapshot(row?.record, 'record', 'import');
       return canonicalRecord(row.record);

@@ -123,6 +123,17 @@ atomically compares each write's `expected_revision_id` with the current workspa
 head under a transaction-scoped lock. It also guards legacy direct inserts;
 older open clients must reload or update before syncing existing workspaces.
 
+Web and Mac restore workspace heads in pages of at most 100, ordered by the
+stable `workspace_id` (not the changing revision UUID). Restoration first captures
+the highest visible workspace ID, then uses an exclusive lower cursor and that
+fixed inclusive upper bound on every page. No offsets or full snapshot list are
+transferred to establish the boundary. New keys beyond the bound wait for the
+next restore; concurrent updates to existing heads do not move their keys.
+This is a bounded traversal, not a point-in-time snapshot of workspace contents.
+Fact-memory loading starts concurrently. All pages must validate before restored
+records or observed revision IDs are accepted; cancellation keeps local recovery.
+No database migration or new RPC is needed.
+
 Web and Mac remember observed revisions per account/workspace. A conflict reloads
 the latest revisions, runs the existing `updatedAt` merge, and retries at most
 three attempts. Accepted snapshots retain their deterministic revision IDs so a
@@ -134,7 +145,9 @@ Run `npm run test:cloud-revision` and `npm run test:workspace-revision` for clie
 native-controller, and revision-identity regressions. Run
 `supabase/test-workspace-revision-guard.sql` against a test database to verify the
 actual trigger, transactional rollback, account isolation, and idempotent inserts;
-its fixtures roll back. Use only isolated fixture IDs, never an existing account.
+its fixtures roll back. `supabase/test-workspace-cursor.sql` also verifies a
+1,105-workspace traversal with new keys and revision changes between pages.
+Use only isolated fixture IDs, never an existing account.
 
 ### Card downloads
 
