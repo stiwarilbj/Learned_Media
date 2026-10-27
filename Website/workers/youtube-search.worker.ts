@@ -99,6 +99,13 @@ function remember(key: string, candidates: CandidateReply[]) {
   resultCache.set(key, candidates);
 }
 
+/** Drop every derived value as soon as its source catalog revision is replaced. */
+function releaseCatalogSearchCaches() {
+  resultCache.clear();
+  searchSessionCache.clear();
+  preparedSearchCache.clear();
+}
+
 function cacheKeys(request: SearchRequest) {
   // Serialize the complete plan once for both cache identities. Besides avoiding
   // duplicate work, this keeps the exact-page and search-session scopes aligned.
@@ -231,9 +238,7 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
     indexEpoch++;
     activeRequestId = 0;
     latestRequestId += 1;
-    resultCache.clear();
-    searchSessionCache.clear();
-    preparedSearchCache.clear();
+    releaseCatalogSearchCaches();
     if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision: snapshot.revision } satisfies Reply);
     if (request.type === "initialize") workerScope.postMessage({ type: "ready", revision: snapshot.revision } satisfies Reply);
   } else if (request.type === "cancel") {

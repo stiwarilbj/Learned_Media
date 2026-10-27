@@ -47,6 +47,11 @@ function rememberSearchSession(key, value) {
     if (entry) searchSessionCacheBytes -= entry.bytes;
   }
 }
+function releaseCatalogSearchCaches() {
+  preparedSearchCache.clear();
+  searchSessionCache.clear();
+  searchSessionCacheBytes = 0;
+}
 function sessionKey(request, revision, planKey) {
   return JSON.stringify([revision, String(request.query || "").trim().toLocaleLowerCase(), planKey, request.topic, request.channelId, Boolean(request.expanded), request.viewKey || ""]);
 }
@@ -106,7 +111,7 @@ onmessage = async function(event) {
     try { staged = stageCatalog(request); }
     catch { postMessage({type:"rebuild",revision:request.revision}); return; }
     snapshot = staged;
-    latest++; preparedSearchCache.clear(); searchSessionCache.clear(); searchSessionCacheBytes = 0; return;
+    latest++; releaseCatalogSearchCaches(); return;
   }
   if (request.type === "cancel") { latest++; return; }
   const token = ++latest, captured = snapshot, currentRevision = captured.revision;

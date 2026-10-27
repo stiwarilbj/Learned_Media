@@ -58,7 +58,7 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
       indexVideoSearchMetadata: indexOverride ? indexOverride(imported.indexVideoSearchMetadata) : imported.indexVideoSearchMetadata };
     return imported;
   };
-  new Function("require", "module", "exports", "self", "setTimeout", "Map", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes });" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
+  new Function("require", "module", "exports", "self", "setTimeout", "Map", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size });" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
@@ -84,7 +84,7 @@ function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOve
     vm.runInNewContext(runtime, context);
   };
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
-  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot; globalThis.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCacheBytes });", context);
+  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot; globalThis.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCacheBytes }); globalThis.inspectSearchCaches = () => ({ results: 0, sessions: searchSessionCache.size, prepared: preparedSearchCache.size });", context);
   if (searchOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos = searchOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos);
   if (indexOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata = indexOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata);
   return { messages, workerMaps, context, send: (data) => context.onmessage({ data }) };
@@ -461,6 +461,43 @@ test("YouTube worker settles a search when the catalog changes mid-scan", async 
   assert.equal(stale.revision, 1);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(messages.some((message) => message.type === "results" && message.requestId === 35), false);
+});
+
+test("catalog replacement releases old result and plan caches without publishing an in-flight stale search", async () => {
+  const makeVideos = revision => Array.from({ length: 1800 }, (_, index) => ({
+    id: `cache-revision-${index}`, channelId: "channel-a", channelName: "Approved Channel",
+    title: revision && index === 0 ? "Updated history of science" : `History of science ${index}`,
+    description: "A long-form approved documentary.", tags: ["history", "science"],
+    publishedAt: "2024-01-01T00:00:00.000Z", durationSeconds: 600, topics: ["History", "Science"], approved: true
+  }));
+  const fixtures = [
+    { name: "website", load: () => loadWorker("workers/youtube-search.worker.ts"), send: (worker, data) => worker.scope.onmessage({ data }), messages: worker => worker.messages, caches: worker => worker.scope.inspectSearchCaches() },
+    { name: "native", load: () => loadNativeYouTubeWorker(), send: (worker, data) => worker.send(data), messages: worker => worker.messages, caches: worker => worker.context.inspectSearchCaches() }
+  ];
+  for (const fixture of fixtures) {
+    const worker = fixture.load(), messages = fixture.messages(worker), videos = makeVideos(0);
+    fixture.send(worker, { type: "initialize", revision: 0, videos: projectVideos(videos) });
+    const search = (requestId, revision, plan) => fixture.send(worker, {
+      type: "search", requestId, revision, query: plan.terms[0], plan, topic: "All", limit: 80, viewKey: "same-workspace"
+    });
+    search(70, 0, { terms: ["history"] });
+    await waitForMessage(messages, message => message.requestId === 70 && message.candidates);
+    const warmed = fixture.caches(worker);
+    assert.ok(warmed.sessions > 0 && warmed.prepared > 0, `${fixture.name} populated the session and prepared-plan caches`);
+    if (fixture.name === "website") assert.ok(warmed.results > 0, "website populated its exact-page result cache");
+
+    search(71, 0, { terms: ["science"] });
+    fixture.send(worker, { type: "update", baseRevision: 0, revision: 1, upserts: [projectVideos([makeVideos(1)[0]])[0]], removeIds: [] });
+    if (fixture.name === "website") await waitForMessage(messages, message => message.type === "stale" && message.requestId === 71);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(JSON.parse(JSON.stringify(fixture.caches(worker))), { results: 0, sessions: 0, prepared: 0 }, `${fixture.name} releases all revision-0 derived cache entries when revision 1 becomes active`);
+    assert.equal(messages.some(message => message.type === "results" && message.requestId === 71), false, `${fixture.name} does not publish the in-flight revision-0 result`);
+
+    search(72, 1, { terms: ["history"] });
+    const current = await waitForMessage(messages, message => message.requestId === 72 && message.candidates);
+    assert.equal(current.revision, 1, `${fixture.name} can immediately search the new snapshot`);
+    assert.ok(fixture.caches(worker).prepared > 0, `${fixture.name} prepares only the active revision after replacement`);
+  }
 });
 
 test("YouTube worker settles obsolete searches and requests a rebuild on revision mismatch", async () => {
