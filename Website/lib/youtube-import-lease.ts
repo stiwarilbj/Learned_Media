@@ -48,8 +48,17 @@ function notify() {
 
 export function subscribeYouTubeImportChanges(listener: () => void) {
   let channel: BroadcastChannel | undefined;
-  try { channel = new BroadcastChannel(NOTICE_KEY); channel.onmessage = listener; } catch { /* Storage events and polling are sufficient. */ }
-  const storage = (event: StorageEvent) => { if (event.key === NOTICE_KEY) listener(); };
+  const recentIds = new Set<string>();
+  const recentOrder: string[] = [];
+  const deliver = (notice: unknown) => {
+    if (typeof notice !== "string" || !notice || recentIds.has(notice)) return;
+    recentIds.add(notice);
+    recentOrder.push(notice);
+    if (recentOrder.length > 64) recentIds.delete(recentOrder.shift()!);
+    listener();
+  };
+  try { channel = new BroadcastChannel(NOTICE_KEY); channel.onmessage = event => deliver(event.data); } catch { /* Storage events and polling are sufficient. */ }
+  const storage = (event: StorageEvent) => { if (event.key === NOTICE_KEY) deliver(event.newValue); };
   window.addEventListener("storage", storage);
   return () => { channel?.close(); window.removeEventListener("storage", storage); };
 }

@@ -8,11 +8,20 @@ const open = createDatabaseConnection(DB, 1, database => {
   if (!database.objectStoreNames.contains("keys")) database.createObjectStore("keys");
 });
 
-function get<T>(db: IDBDatabase, id: string) {
-  return new Promise<T | undefined>((resolve, reject) => {
-    const request = db.transaction("keys").objectStore("keys").get(id);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+function get<T>(db: IDBDatabase, id: string): Promise<T | undefined>;
+function get<T extends unknown[]>(db: IDBDatabase, ids: readonly string[]): Promise<T>;
+function get<T>(db: IDBDatabase, idOrIds: string | readonly string[]): Promise<T | T[] | undefined> {
+  return new Promise((resolve, reject) => {
+    const ids = typeof idOrIds === "string" ? [idOrIds] : idOrIds;
+    const transaction = db.transaction("keys", "readonly");
+    const results: unknown[] = new Array(ids.length);
+    ids.forEach((id, index) => {
+      const request = transaction.objectStore("keys").get(id);
+      request.onsuccess = () => { results[index] = request.result; };
+      request.onerror = () => reject(request.error);
+    });
+    transaction.oncomplete = () => resolve((typeof idOrIds === "string" ? results[0] : results) as T | T[] | undefined);
+    transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error("Credential storage could not be read."));
   });
 }
 async function put(db: IDBDatabase, id: string, value?: unknown) {
@@ -48,8 +57,7 @@ export async function readCredential(provider: Provider, owner: string | null): 
   await queue.catch(() => undefined);
   const id = keyId(provider, owner);
   const db = await open();
-  const key = await get<CryptoKey>(db, "device-key");
-  const saved = await get<{iv: Uint8Array; ciphertext: ArrayBuffer}>(db, id);
+  const [key, saved] = await get<[CryptoKey | undefined, {iv: Uint8Array; ciphertext: ArrayBuffer} | undefined]>(db, ["device-key", id]);
   if (!saved || !key) return undefined;
   const value = new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:saved.iv},key,saved.ciphertext));
   try {

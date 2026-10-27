@@ -62,6 +62,14 @@ groups.push(Object.keys(baseline).flatMap(schema => [
   { schema, payload: { items: [false], query: { pages: [{ imageinfo: [[], payload.query.pages[0].imageinfo[0]], coordinates: [] }] } } }
 ]));
 groups.push(Array.from({ length: 80 }, (_, i) => ({ schema: 'youtube.videos', payload: i % 3 ? payload : {} })));
+const ringShapes = [payload, {}, null, [], true, 42, 'PRIVATE', { items: [] }, { items: [null] },
+  { items: [{}] }, { items: [{ snippet: null }] }, { query: { pages: [] } }, { query: { pages: [null] } },
+  { error: [] }, { error: { code: 'PRIVATE' } }];
+groups.push(Array.from({ length: 777 }, (_, index) => ({
+  schema: Object.keys(baseline)[(index * 7 + Math.floor(index / 13)) % Object.keys(baseline).length],
+  payload: ringShapes[(index * 11 + Math.floor(index / 9)) % ringShapes.length],
+  rootOverride: index % 29 === 0 ? (index % 58 === 0 ? 'non-json' : 'invalid-json') : undefined
+})));
 function browserSnapshot(group) {
   api.resetProviderSchemaFailures();
   for (const item of group) api.recordProviderSchemaFailure(item.schema, item.payload, item.rootOverride);
@@ -105,6 +113,17 @@ test('prepared traversal matches the original path reader for every fixture', ()
     const expected = item.schema + '|' + api.providerSchemaFields[item.schema].map(path => `${path}:${path === '$' && override ? override : type(originalReadPath(item.payload, path))}`).join(',');
     assert.deepEqual(browserSnapshot([item]), [{ fingerprint: expected, count: 1 }]);
   }
+});
+
+test('circular history retains exactly the newest 64 fingerprints across repeated wraps and reset', () => {
+  const events = groups.at(-1);
+  assert.equal(events.length, 777);
+  assert.deepEqual(ordered(browserSnapshot(events)), ordered(browserSnapshot(events.slice(-64))));
+  assert.equal(browserSnapshot(events).reduce((sum, item) => sum + item.count, 0), 64);
+  api.resetProviderSchemaFailures();
+  assert.deepEqual(plain(api.providerSchemaFailureSnapshot()), []);
+  api.recordProviderSchemaFailure('youtube.videos', payload);
+  assert.equal(api.providerSchemaFailureSnapshot().reduce((sum, item) => sum + item.count, 0), 1);
 });
 
 test('paths compile once and remain immutable across recording, reset and all schemas', () => {

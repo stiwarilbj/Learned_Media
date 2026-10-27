@@ -38,7 +38,9 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
     public static let shared = PerformanceDiagnostics()
     private let lock = NSLock()
     private var counters: [String: [String: Double]] = [:]
-    private var schemaRing: [String] = []
+    private var schemaRing: [String?] = Array(repeating: nil, count: 64)
+    private var schemaRingOldest = 0
+    private var schemaRingCount = 0
     private var schemaCounts: [String: Int] = [:]
     private let schemaRingCapacity = 64
     private let limit = 9_007_199_254_740_991.0
@@ -57,13 +59,19 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
             "\(field.path):\(Self.observedType(Self.value(at: field.steps, in: payload), override: field.path == "$" ? rootOverride?.rawValue : nil))"
         }.joined(separator: ",")
         lock.lock(); defer { lock.unlock() }
-        if schemaRing.count == schemaRingCapacity {
-            let expired = schemaRing.removeFirst()
+        let slot: Int
+        if schemaRingCount == schemaRingCapacity {
+            let expired = schemaRing[schemaRingOldest]!
             let remaining = (schemaCounts[expired] ?? 1) - 1
             if remaining <= 0 { schemaCounts.removeValue(forKey: expired) }
             else { schemaCounts[expired] = remaining }
+            slot = schemaRingOldest
+            schemaRingOldest = (schemaRingOldest + 1) % schemaRingCapacity
+        } else {
+            slot = (schemaRingOldest + schemaRingCount) % schemaRingCapacity
+            schemaRingCount += 1
         }
-        schemaRing.append(fingerprint)
+        schemaRing[slot] = fingerprint
         schemaCounts[fingerprint, default: 0] += 1
     }
     public func snapshot() -> [String: Any] {
@@ -77,7 +85,9 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
     public func reset() {
         lock.lock(); defer { lock.unlock() }
         counters.removeAll(keepingCapacity: true)
-        schemaRing.removeAll(keepingCapacity: true)
+        for index in schemaRing.indices { schemaRing[index] = nil }
+        schemaRingOldest = 0
+        schemaRingCount = 0
         schemaCounts.removeAll(keepingCapacity: true)
     }
 

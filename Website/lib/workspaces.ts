@@ -76,15 +76,16 @@ export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null):
 }
 
 export async function accountWorkspaceBackup<T>(ownerId: string, value?: WorkspaceStore<T>): Promise<WorkspaceStore<T> | null> {
-  if (value) assertSnapshot(value, "store", "backup");
+  const submitted = value ? structuredClone(value) : undefined;
+  if (submitted) assertSnapshot(submitted, "store", "backup");
   if (typeof window === "undefined" || !window.indexedDB) return null;
   const database = await openDatabase();
   return await new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, value ? 'readwrite' : 'readonly');
+    const transaction = database.transaction(STORE_NAME, submitted ? 'readwrite' : 'readonly');
     const records = transaction.objectStore(STORE_NAME), key = 'account:' + ownerId;
-    if (value) records.put(structuredClone(value), key);
-    const request = records.get(key);
-    transaction.oncomplete = () => resolve(request.result && validateSnapshot(request.result, "store", "read") ? request.result : null);
+    if (submitted) records.put(submitted, key);
+    const request = submitted ? undefined : records.get(key);
+    transaction.oncomplete = () => resolve(submitted ?? (request?.result && validateSnapshot(request.result, "store", "read") ? request.result : null));
     transaction.onerror = transaction.onabort = () => reject(transaction.error);
   });
 }

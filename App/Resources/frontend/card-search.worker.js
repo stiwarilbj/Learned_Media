@@ -25,7 +25,9 @@ const preparedSchemaFields = new Map(Object.entries(exports.providerSchemaFields
         }))
     })))]));
 const ringCapacity = 64;
-const ring = [];
+const ring = new Array(ringCapacity);
+let ringOldest = 0;
+let ringSize = 0;
 const counts = new Map();
 const localRuntime = typeof window !== "undefined" || (typeof self !== "undefined" && "importScripts" in globalThis);
 function readPath(value, steps) {
@@ -66,15 +68,22 @@ function recordProviderSchemaFailure(schema, payload, rootOverride) {
             return;
         const safeRootOverride = rootOverride === "invalid-json" || rootOverride === "non-json" ? rootOverride : undefined;
         const fingerprint = `${schema}|${fields.map(({ path, steps }) => `${path}:${observedType(readPath(payload, steps), path === "$" ? safeRootOverride : undefined)}`).join(",")}`;
-        if (ring.length === ringCapacity) {
-            const expired = ring.shift();
+        let slot;
+        if (ringSize === ringCapacity) {
+            const expired = ring[ringOldest];
             const remaining = (counts.get(expired) ?? 1) - 1;
             if (remaining <= 0)
                 counts.delete(expired);
             else
                 counts.set(expired, remaining);
+            slot = ringOldest;
+            ringOldest = (ringOldest + 1) % ringCapacity;
         }
-        ring.push(fingerprint);
+        else {
+            slot = (ringOldest + ringSize) % ringCapacity;
+            ringSize += 1;
+        }
+        ring[slot] = fingerprint;
         counts.set(fingerprint, (counts.get(fingerprint) ?? 0) + 1);
     }
     catch {
@@ -85,7 +94,9 @@ function providerSchemaFailureSnapshot() {
     return Array.from(counts, ([fingerprint, count]) => ({ fingerprint, count }));
 }
 function resetProviderSchemaFailures() {
-    ring.length = 0;
+    ring.fill(undefined);
+    ringOldest = 0;
+    ringSize = 0;
     counts.clear();
 }
 })(schemaDiagnostics);(function(exports,require){"use strict";

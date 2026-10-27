@@ -26,7 +26,9 @@ const preparedSchemaFields: ReadonlyMap<string, readonly PreparedPath[]> = new M
 );
 
 const ringCapacity = 64;
-const ring: string[] = [];
+const ring: (string | undefined)[] = new Array(ringCapacity);
+let ringOldest = 0;
+let ringSize = 0;
 const counts = new Map<string, number>();
 const localRuntime = typeof window !== "undefined" || (typeof self !== "undefined" && "importScripts" in globalThis);
 
@@ -62,13 +64,19 @@ export function recordProviderSchemaFailure(schema: ProviderResponseSchema, payl
     if (!fields) return;
     const safeRootOverride = rootOverride === "invalid-json" || rootOverride === "non-json" ? rootOverride : undefined;
     const fingerprint = `${schema}|${fields.map(({ path, steps }) => `${path}:${observedType(readPath(payload, steps), path === "$" ? safeRootOverride : undefined)}`).join(",")}`;
-    if (ring.length === ringCapacity) {
-      const expired = ring.shift()!;
+    let slot: number;
+    if (ringSize === ringCapacity) {
+      const expired = ring[ringOldest]!;
       const remaining = (counts.get(expired) ?? 1) - 1;
       if (remaining <= 0) counts.delete(expired);
       else counts.set(expired, remaining);
+      slot = ringOldest;
+      ringOldest = (ringOldest + 1) % ringCapacity;
+    } else {
+      slot = (ringOldest + ringSize) % ringCapacity;
+      ringSize += 1;
     }
-    ring.push(fingerprint);
+    ring[slot] = fingerprint;
     counts.set(fingerprint, (counts.get(fingerprint) ?? 0) + 1);
   } catch {
     // Diagnostics must never alter provider-response handling.
@@ -80,6 +88,8 @@ export function providerSchemaFailureSnapshot() {
 }
 
 export function resetProviderSchemaFailures() {
-  ring.length = 0;
+  ring.fill(undefined);
+  ringOldest = 0;
+  ringSize = 0;
   counts.clear();
 }

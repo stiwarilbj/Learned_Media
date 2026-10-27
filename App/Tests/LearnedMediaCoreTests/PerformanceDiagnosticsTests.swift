@@ -45,4 +45,42 @@ final class PerformanceDiagnosticsTests: XCTestCase {
             XCTAssertEqual(failures(recorder).first?["count"] as? Int, 1)
         }
     }
+
+    func testCircularHistoryMatchesNewestSixtyFourEventsAcrossManyWraps() throws {
+        let diagnostics = PerformanceDiagnostics()
+        let schemas = ProviderResponseSchema.allCases
+        let payloads: [Any?] = [
+            nil, NSNull(), [], true, 42, "PRIVATE", ["items": []], ["items": [NSNull()]],
+            ["items": [["snippet": ["title": "PRIVATE"]]]], ["query": ["pages": []]],
+            ["query": ["pages": [NSNull()]]], ["error": []], ["error": ["code": "PRIVATE"]]
+        ]
+        var recent: [String] = []
+        for index in 0..<777 {
+            let schema = schemas[(index * 7 + index / 13) % schemas.count]
+            let payload = payloads[(index * 11 + index / 9) % payloads.count]
+            let override: ProviderResponseRootOverride? = index % 29 == 0 ? (index % 58 == 0 ? .nonJSON : .invalidJSON) : nil
+
+            let single = PerformanceDiagnostics()
+            single.recordProviderSchemaFailure(schema, payload: payload, rootOverride: override)
+            if let fingerprint = failures(single).first?["fingerprint"] as? String {
+                recent.append(fingerprint)
+                if recent.count > 64 { recent.removeFirst() }
+            }
+            diagnostics.recordProviderSchemaFailure(schema, payload: payload, rootOverride: override)
+
+            if index % 41 == 40 || index == 776 {
+                let expected = Dictionary(grouping: recent, by: { $0 }).mapValues(\.count)
+                let observed = Dictionary(uniqueKeysWithValues: try XCTUnwrap(failures(diagnostics)).map {
+                    (try XCTUnwrap($0["fingerprint"] as? String), try XCTUnwrap($0["count"] as? Int))
+                })
+                XCTAssertEqual(observed, expected)
+                XCTAssertEqual(recent.count, min(index + 1, 64))
+            }
+        }
+
+        diagnostics.reset()
+        XCTAssertTrue(failures(diagnostics).isEmpty)
+        diagnostics.recordProviderSchemaFailure(.youtubeVideos, payload: [:])
+        XCTAssertEqual(failures(diagnostics).first?["count"] as? Int, 1)
+    }
 }
