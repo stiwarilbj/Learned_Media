@@ -48,6 +48,7 @@
     "test:credentials": "node scripts/build-native-credentials.mjs --check && node scripts/test-account-credentials.mjs",
     "test:remembered-keys": "node scripts/test-remembered-keys-transaction.mjs",
     "test:youtube-import-notices": "node scripts/test-youtube-import-notices.mjs",
+    "test:youtube-orphan-cleanup": "node scripts/test-youtube-orphan-cleanup.mjs",
     "test:workspace-backup-write": "node scripts/test-workspace-backup-write.mjs",
     "generate:native": "node scripts/build-native-shared.mjs",
     "check:native-data": "node scripts/build-native-shared.mjs --check",

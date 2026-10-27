@@ -1,8 +1,8 @@
 // The catalog and lease share a store so ownership checks and commits are atomic.
 import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageKey, importPagePrefix, type YouTubeImportPage, type YouTubeImportPageStore, type YouTubeRefreshReceipt, verifyYouTubeRefreshes } from "./youtube-import-checkpoints";
-import { planCatalogCommit, VIDEO_WRITE_BATCH_SIZE, videoRecordRange, type YouTubeCatalog } from "./youtube-catalog-storage";
+import { planCatalogCommit, VIDEO_RECORD_PREFIX, VIDEO_WRITE_BATCH_SIZE, videoRecordRange, type YouTubeCatalog } from "./youtube-catalog-storage";
 import type { YouTubeVideo } from "./youtube";
-import { forEachBackground, yieldBackground } from "./background-work";
+import { yieldBackground } from "./background-work";
 const LEASE_KEY = "youtube-import-lease-v1";
 const COMMIT_KEY = "youtube-import-commit-v1";
 const NOTICE_KEY = "learned-media-youtube-import-notice-v1";
@@ -21,6 +21,72 @@ function pageRange(sourceId?: string) {
 
 function canceled() { return new DOMException("YouTube import canceled.", "AbortError"); }
 function lostOwnership() { return new Error("Another tab took over the YouTube import. Its saved results will be loaded automatically."); }
+
+type OrphanCleanupBatch = { afterKey?: string; complete: boolean };
+
+/** Scans and deletes at most one small key batch under the current lease. */
+function deleteOrphanVideoBatch(db: IDBDatabase, owner: string, retainedKeys: ReadonlySet<string>, afterKey: string | undefined,
+  signal: AbortSignal): Promise<OrphanCleanupBatch> {
+  return new Promise((resolve, reject) => {
+    let tx: IDBTransaction;
+    try { tx = db.transaction("workspace", "readwrite"); }
+    catch (error) { reject(error); return; }
+    const store = tx.objectStore("workspace");
+    const leaseRequest = store.get(LEASE_KEY);
+    let result: OrphanCleanupBatch | undefined;
+    let failure: unknown;
+    const abort = (error: unknown) => {
+      failure ??= error;
+      try { tx.abort(); } catch { /* The transaction may already be finishing. */ }
+    };
+    leaseRequest.onerror = () => abort(leaseRequest.error ?? new Error("Could not verify YouTube import ownership."));
+    leaseRequest.onsuccess = () => {
+      if (signal.aborted) { abort(canceled()); return; }
+      const lease = leaseRequest.result as Lease<unknown> | undefined;
+      if (lease?.owner !== owner || lease.expiresAt <= Date.now()) { abort(lostOwnership()); return; }
+
+      const range = afterKey === undefined
+        ? videoRecordRange()
+        : IDBKeyRange.bound(afterKey, `${VIDEO_RECORD_PREFIX}\uffff`, true, false);
+      const cursorRequest = store.openKeyCursor(range);
+      let scanned = 0;
+      let lastKey: string | undefined;
+      cursorRequest.onerror = () => abort(cursorRequest.error ?? new Error("Could not scan orphaned YouTube records."));
+      cursorRequest.onsuccess = () => {
+        if (signal.aborted) { abort(canceled()); return; }
+        const cursor = cursorRequest.result;
+        if (!cursor) { result = { afterKey: lastKey, complete: true }; return; }
+        if (typeof cursor.key !== "string") { abort(new Error("The stored YouTube video key is invalid.")); return; }
+        lastKey = cursor.key;
+        scanned += 1;
+        if (!retainedKeys.has(cursor.key)) {
+          const deletion = cursor.delete();
+          deletion.onerror = () => abort(deletion.error ?? new Error("Could not delete an orphaned YouTube record."));
+        }
+        if (scanned >= VIDEO_WRITE_BATCH_SIZE) {
+          result = { afterKey: lastKey, complete: false };
+          return;
+        }
+        cursor.continue();
+      };
+    };
+    tx.oncomplete = () => resolve(result ?? { afterKey, complete: true });
+    tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error("Could not clean up orphaned YouTube records."));
+  });
+}
+
+/** Remove post-commit orphans without materializing the video-key range. */
+export async function cleanupOrphanVideoRecords(openDatabase: OpenDatabase, owner: string, retainedKeys: ReadonlySet<string>, signal: AbortSignal) {
+  let afterKey: string | undefined;
+  while (true) {
+    if (signal.aborted) throw canceled();
+    const db = await openDatabase();
+    const batch = await deleteOrphanVideoBatch(db, owner, retainedKeys, afterKey, signal);
+    if (batch.complete) return;
+    afterKey = batch.afterKey;
+    await yieldBackground(signal);
+  }
+}
 
 function transaction<T>(db: IDBDatabase, update: (store: IDBObjectStore, lease: Lease<unknown> | undefined, commit: Commit | undefined) => T): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -166,16 +232,8 @@ export async function withYouTubeImportLease<P, T>(openDatabase: OpenDatabase, s
         notify();
         // A crash while staging leaves the previous manifest usable. Retire only
         // unreferenced records, in bounded transactions after publication.
-        try {
-          const keys = (await check(false, store => store.getAllKeys(videoRecordRange()))).result;
-          const removed: IDBValidKey[] = [];
-          await forEachBackground(keys, key => { if (!plan.retainedKeys.has(String(key))) removed.push(key); }, controller.signal);
-          for (let start = 0; start < removed.length; start += VIDEO_WRITE_BATCH_SIZE) {
-            const batch = removed.slice(start, start + VIDEO_WRITE_BATCH_SIZE);
-            await check(false, store => { for (const key of batch) store.delete(key); });
-            await yieldBackground(controller.signal);
-          }
-        } catch { /* The next owner can reclaim orphaned records; the catalog is already durable. */ }
+        try { await cleanupOrphanVideoRecords(openDatabase, owner, plan.retainedKeys, controller.signal); }
+        catch { /* The next owner can reclaim orphaned records; the catalog is already durable. */ }
       }
     }, value => { progress = value; onProgress(value); });
   } catch (error) {
