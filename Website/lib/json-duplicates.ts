@@ -2,7 +2,8 @@
  * Arrays retain their positions, so schema validation can salvage valid siblings.
  */
 export function rejectConflictingJsonFields(text: string): string {
-  type Frame = { object: boolean; start: number; entry: number; colon: number; values: Map<string, string>; conflict: boolean };
+  type Value = { start: number; end: number; canonical?: string };
+  type Frame = { object: boolean; start: number; entry: number; colon: number; values: Map<string, Value>; conflict: boolean };
   const stack: Frame[] = [], rejected: Array<[number, number]> = [];
   let quoted = false, escaped = false;
   function canonical(value: unknown): string {
@@ -15,9 +16,19 @@ export function rejectConflictingJsonFields(text: string): string {
     try {
       const key: unknown = JSON.parse(text.slice(frame.entry, frame.colon));
       if (typeof key !== 'string') return;
-      const value = canonical(JSON.parse(text.slice(frame.colon + 1, end)));
-      if (frame.values.has(key) && frame.values.get(key) !== value) frame.conflict = true;
-      frame.values.set(key, value);
+      const start = frame.colon + 1;
+      const previous = frame.values.get(key);
+      // Unique fields need only their response offsets. Decode values lazily
+      // when the same key repeats, retaining the comparison for later repeats.
+      if (!previous) { frame.values.set(key, { start, end }); return; }
+      const value = canonical(JSON.parse(text.slice(start, end)));
+      let previousValue = previous.canonical;
+      if (previousValue === undefined) {
+        try { previousValue = canonical(JSON.parse(text.slice(previous.start, previous.end))); }
+        catch { /* An earlier malformed value was never eligible for comparison. */ }
+      }
+      if (previousValue !== undefined && previousValue !== value) frame.conflict = true;
+      frame.values.set(key, { start, end, canonical: value });
     } catch { /* Incomplete values remain subject to the existing syntax checks. */ }
   }
   for (let i = 0; i < text.length; i++) {

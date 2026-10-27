@@ -5,6 +5,34 @@ final class StructuredResponseTests: XCTestCase {
     private let item: [String: Any] = ["type": "OBJECT", "properties": ["slot": ["type": "INTEGER"], "claim": ["type": "STRING"], "hook": ["type": "STRING"], "evidenceIds": ["type": "ARRAY", "items": ["type": "STRING"]]], "required": ["slot", "claim"]]
     private var schema: [String: Any] { ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": item], "terms": ["type": "ARRAY", "items": ["type": "STRING"]], "alternatives": ["type": "BOOLEAN"]], "required": ["facts"]] }
 
+    func testSharedDuplicateValueFixtures() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Website/scripts/fixtures/json-duplicates.json"))
+        struct Fixture: Decodable { let name: String; let input: String; let output: String? }
+        for fixture in try JSONDecoder().decode([Fixture].self, from: data) {
+            XCTAssertEqual(StructuredResponse.rejectConflictingFields(fixture.input), fixture.output ?? fixture.input, fixture.name)
+        }
+    }
+
+    func testConflictingFirstMiddleAndLastCardPreserveTheirSiblings() throws {
+        for badSlot in [0, 3, 6] {
+            let items = (0..<7).map { slot in
+                slot == badSlot
+                    ? "{\"slot\":\(slot),\"claim\":\"Bad\",\"claim\":\"Conflicting\"}"
+                    : "{\"slot\":\(slot),\"claim\":\"Exact supported fact \(slot) 😀\"}"
+            }
+            let raw = "{\"facts\":[" + items.joined(separator: ",") + "]}"
+            let expected = (0..<7).filter { $0 != badSlot }
+            for response in [raw, String(raw.dropLast(2)) + ",{\"slot\":9,\"claim\":\"unfinished"] {
+                let parsed = try StructuredResponse.parse(response, schema: schema)
+                XCTAssertEqual((parsed["facts"] as? [[String: Any]])?.compactMap { $0["slot"] as? Int }, expected)
+            }
+            let parser = JSONArrayItemStreamParser(property: "facts")
+            let streamed = raw.flatMap { parser.append(String($0)) }
+            XCTAssertEqual(streamed.compactMap { $0["slot"] as? Int }, expected)
+        }
+    }
+
     func testMalformedItemsAtEitherBoundaryAndMiddleKeepSiblingOrder() throws {
         let cardSchema: [String: Any] = ["type": "OBJECT", "properties": ["facts": ["type": "ARRAY", "items": ["type": "OBJECT", "properties": ["slot": ["type": "INTEGER"], "title": ["type": "STRING"]], "required": ["slot", "title"]]]], "required": ["facts"]]
         for slot in [0, 3, 6] {

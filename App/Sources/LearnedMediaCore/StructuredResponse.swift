@@ -28,24 +28,37 @@ public enum StructuredResponse {
 
     /// Reject conflicting keys before a JSON decoder can silently choose one value.
     static func rejectConflictingFields(_ text: String) -> String {
+        struct RetainedValue {
+            let range: Range<Int>
+            let canonical: Data?
+        }
         struct Frame {
             let object: Bool
             let start: Int
             var entry: Int
             var colon = -1
-            var values: [String: Data] = [:]
+            var values: [String: RetainedValue] = [:]
             var conflict = false
         }
         let chars = Array(text)
         var stack: [Frame] = [], rejected: [(Int, Int)] = []
         var quoted = false, escaped = false
+        func canonical(_ range: Range<Int>) -> Data? {
+            guard let value = try? decodeJSON(String(chars[range])) else { return nil }
+            return try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed])
+        }
         func retain(_ frame: inout Frame, _ end: Int) {
             guard frame.object, frame.colon >= 0,
-                  let key = (try? decodeJSON(String(chars[frame.entry..<frame.colon]))) as? String,
-                  let value = try? decodeJSON(String(chars[(frame.colon + 1)..<end])),
-                  let canonical = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]) else { return }
-            if let previous = frame.values[key], previous != canonical { frame.conflict = true }
-            frame.values[key] = canonical
+                  let key = (try? decodeJSON(String(chars[frame.entry..<frame.colon]))) as? String else { return }
+            let range = (frame.colon + 1)..<end
+            // Keep offsets until a repeated key actually needs comparison.
+            guard let previous = frame.values[key] else {
+                frame.values[key] = RetainedValue(range: range, canonical: nil)
+                return
+            }
+            guard let value = canonical(range) else { return }
+            if let prior = previous.canonical ?? canonical(previous.range), prior != value { frame.conflict = true }
+            frame.values[key] = RetainedValue(range: range, canonical: value)
         }
         for index in chars.indices {
             let c = chars[index]
