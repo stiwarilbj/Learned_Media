@@ -28,6 +28,19 @@ export class JsonArrayItemStreamParser {
     this.itemStart = -1;
   }
 
+  private compactBuffer() {
+    // Structural state survives without its original text. Only a live string
+    // or target-array item still needs a slice of the consumed prefix.
+    const retainFrom = Math.min(this.cursor,
+      this.itemStart >= 0 ? this.itemStart : this.cursor,
+      this.inString && this.stringStart >= 0 ? this.stringStart : this.cursor);
+    if (retainFrom < 4096) return;
+    this.buffer = this.buffer.slice(retainFrom);
+    this.cursor -= retainFrom;
+    this.stringStart = this.inString ? this.stringStart - retainFrom : -1;
+    if (this.itemStart >= 0) this.itemStart -= retainFrom;
+  }
+
   push(fragment: string): Array<Record<string, unknown>> {
     this.buffer += fragment;
     const items: Array<Record<string, unknown>> = [];
@@ -86,6 +99,7 @@ export class JsonArrayItemStreamParser {
         this.pendingRootKey = undefined;
       }
     }
+    this.compactBuffer();
     return items;
   }
 }

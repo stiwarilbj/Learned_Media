@@ -75,6 +75,17 @@ public final class JSONArrayItemStreamParser {
         itemStart = nil
     }
 
+    private func compactBuffer() {
+        // Keep only text needed by a live string or target-array item;
+        // stack, keys and depth do not reference the consumed prefix.
+        let retainFrom = min(cursor, itemStart ?? cursor, inString ? (stringStart ?? cursor) : cursor)
+        guard retainFrom >= 4096 else { return }
+        buffer = Array(buffer.dropFirst(retainFrom))
+        cursor -= retainFrom
+        stringStart = inString ? stringStart.map { $0 - retainFrom } : nil
+        itemStart = itemStart.map { $0 - retainFrom }
+    }
+
     public func append(_ fragment: String) -> [[String: Any]] {
         buffer.append(contentsOf: fragment)
         var items: [[String: Any]] = []
@@ -132,6 +143,7 @@ public final class JSONArrayItemStreamParser {
                 pendingRootKey = nil
             }
         }
+        compactBuffer()
         return items
     }
 }
