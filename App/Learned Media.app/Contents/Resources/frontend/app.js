@@ -731,8 +731,14 @@
       if (snapshot.token !== cloudSyncToken || state.account?.id !== snapshot.ownerId) return;
       if (result?.mergedRecords?.length) {
         result.mergedRecords.forEach(function (record) { window.LEARNED_MEDIA_STORAGE.assertSnapshot(record, "record", "import"); });
+        let checkpoints = {};
+        try {
+          checkpoints = await bridge("loadYouTubePlaybackCheckpoints", { ownerID: snapshot.ownerId,
+            workspaceIDs: result.mergedRecords.map(function (record) { return record.id; }) }) || {};
+        } catch (_) {}
+        if (snapshot.token !== cloudSyncToken || state.account?.id !== snapshot.ownerId) return;
         const previous = state.workspaces.find(function (record) { return record.id === state.workspaceId; });
-        state.workspaces = mergeWorkspaceRecords(state.workspaces, result.mergedRecords);
+        state.workspaces = mergeNativePlaybackCheckpoints(mergeWorkspaceRecords(state.workspaces, result.mergedRecords), snapshot.ownerId, checkpoints);
         const active = state.workspaces.find(function (record) { return record.id === state.workspaceId; });
         if (active && previous && active.updatedAt > previous.updatedAt) applyWorkspaceSnapshot(active, true);
         saveState();

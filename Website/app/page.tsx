@@ -894,7 +894,10 @@ export default function HomePage() {
             persistedStateRef.current = target.state;
             setWorkspaceName(target.name); workspaceNameRef.current = target.name;
           }
-          void writeWorkspaceStore(workspaceStoreRef.current).catch(() => setSyncError("The merged cloud workspace could not be saved locally."));
+          void writeWorkspaceStore(workspaceStoreRef.current).catch(() => {
+            if (cloudEpoch.current !== epoch || cloudUserId.current !== userId || controller.signal.aborted) return;
+            setSyncStatus("error"); setSyncError("The merged cloud workspace could not be saved locally.");
+          });
         }
         if (receipt) {
           acknowledgedCloudRevisions.set(userId, Math.max(acknowledgedCloudRevisions.get(userId) ?? 0, receipt.revision));

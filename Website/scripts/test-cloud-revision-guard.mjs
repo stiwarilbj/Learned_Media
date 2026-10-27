@@ -105,3 +105,40 @@ test('larger conflict winners are split again by the existing upload byte budget
   assert.equal(db.writes.length, 3); assert.equal(db.writes[1].length, 1); assert.equal(db.writes[2].length, 1);
   assert.equal(db.heads.get('w').record.name, 'Workspace 4'); assert.equal(db.heads.get('other').record.name, 'Workspace 2');
 });
+
+function nativeConflictQueue(checkpointRead) {
+  const app = readFileSync(new URL('../../App/Resources/frontend/app.js', import.meta.url), 'utf8');
+  const extract = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
+  const state = { account: { id: 'account' }, workspaces: [record()], workspaceId: 'w' };
+  const calls = { saved: 0, rendered: 0, applied: [] };
+  const context = vm.createContext({ state, cloudSyncToken: 1,
+    window: { LEARNED_MEDIA_SNAPSHOTS: baseRequire('./latest-snapshot-queue.ts'), LEARNED_MEDIA_STORAGE: baseRequire('./snapshot-validation.ts') },
+    shared: { youtube: { mergeYouTubeActivity: (legacy, canonical) => ({ ...legacy, ...canonical }) } },
+    youtubeLivePlaybackCheckpoints: new Map(), sentFactMemories: new Map(), factMemoryById: new Map(), changedFactMemoryIds: new Set(),
+    bridge: async action => action === 'cloudSave' ? { mergedRecords: [record(4)] } : checkpointRead(),
+    applyWorkspaceSnapshot: (value, preserve) => calls.applied.push({ value, preserve }),
+    saveState: () => calls.saved++, render: () => calls.rendered++
+  });
+  vm.runInContext(extract('  function mergeWorkspaceRecords(', '  function mergeFactMemories(')
+    + extract('  function mergeNativePlaybackCheckpoints(', '  function currentWorkspaceSnapshot(')
+    + extract('  function createCloudUploadQueue(', '  function scheduleCloudSave(')
+    + '\nglobalThis.queue = createCloudUploadQueue();', context);
+  return { context, state, calls, send: () => context.queue.enqueue({ token: 1, ownerId: 'account', payload: '{}', changedMemories: [] }) };
+}
+test('Mac conflict application overlays local playback before preserving the reading state', async () => {
+  const c = nativeConflictQueue(() => ({ w: { videoID: 'video', seconds: 91, updatedAt: 10 } }));
+  await c.send();
+  assert.equal(c.state.workspaces[0].state.youtubeActivity.playbackPositions.video, 91);
+  assert.equal(c.calls.applied[0].preserve, true);
+  assert.equal(c.calls.saved, 1); assert.equal(c.calls.rendered, 1);
+});
+test('Mac account changes during checkpoint restoration discard the cloud result', async () => {
+  let release, started;
+  const waiting = new Promise(resolve => { release = resolve; }), began = new Promise(resolve => { started = resolve; });
+  const c = nativeConflictQueue(() => { started(); return waiting; });
+  const pending = c.send(); await began;
+  c.state.account = { id: 'other' }; c.context.cloudSyncToken++;
+  release({ w: { videoID: 'video', seconds: 91, updatedAt: 10 } }); await pending;
+  assert.equal(c.state.workspaces[0].name, 'Workspace 1');
+  assert.equal(c.calls.applied.length, 0); assert.equal(c.calls.saved, 0); assert.equal(c.calls.rendered, 0);
+});
