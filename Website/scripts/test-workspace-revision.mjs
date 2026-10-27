@@ -103,3 +103,12 @@ test("revision row byte sizing reuses record bytes and matches JSON encoding", (
   const expectedBytes = new TextEncoder().encode(JSON.stringify(row)).byteLength;
   assert.equal(workspaceRevisionRowByteLength(row, serialization), expectedBytes);
 });
+
+test('guarded revision size includes nullable and observed revision conditions', () => {
+  const record = canonicalRecord(legacyFixtures[0].record), serialization = serializeWorkspaceRecord(record);
+  for (const expected_revision_id of [null, legacyFixtures[0].revisionId]) {
+    const row = { revision_id: legacyFixtures[0].revisionId, user_id: legacyFixtures[0].userId,
+      workspace_id: record.id, modified_at: record.updatedAt, record, expected_revision_id };
+    assert.equal(workspaceRevisionRowByteLength(row, serialization), new TextEncoder().encode(JSON.stringify(row)).byteLength);
+  }
+});

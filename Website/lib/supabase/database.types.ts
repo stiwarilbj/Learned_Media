@@ -7,6 +7,7 @@ type WorkspaceRevision = {
   modified_at: string;
   received_at: string;
   record: CloudRecord;
+  expected_revision_id?: string | null;
 };
 
 type FactMemoryRow = {

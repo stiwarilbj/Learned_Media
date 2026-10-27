@@ -1,7 +1,7 @@
 import { backgroundCloudFetch } from './background-retry';
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { AccountKeys, KeyProvider } from './account-credentials';
-import { canonicalRecord, safeMemory, type CloudRecord } from './cloud-records';
+import { canonicalRecord, mergeRecords, safeMemory, type CloudRecord } from './cloud-records';
 import { serializeWorkspaceRecord, workspaceRevisionIdFromSerialization, workspaceRevisionRowByteLength } from './workspace-revision';
 import { LatestSnapshotQueue } from './latest-snapshot-queue';
 import type { FactMemory } from './fact-quality';
@@ -32,6 +32,10 @@ export type CloudAccount = Pick<User, 'id' | 'email' | 'user_metadata'>;
 type CloudSnapshot = { ownerId?: string; records: CloudRecord[]; factMemory?: FactMemory[] };
 export class WorkspaceCloudSync {
   private sent = new Map<string, Uint8Array>();
+  private observed = new Map<string, string>();
+  private conflictRecords = new Map<string, CloudRecord>();
+  private merged = new Map<string, CloudRecord>();
+  takeMergedRecords() { const records = [...this.merged.values()]; this.merged.clear(); return records; }
   private memories = new Map<string, string>();
   private trackedMemory: FactMemory[] | undefined;
   private memoryById = new Map<string, FactMemory>();
@@ -68,7 +72,7 @@ export class WorkspaceCloudSync {
       api.rpc('latest_workspace_revisions').abortSignal(signal),
       loadMemoryPage(null),
     ]);
-    const { data, error } = revisionResult as { data: Array<{ record: CloudRecord }> | null; error: any };
+    const { data, error } = revisionResult as { data: Array<{ revision_id: string; record: CloudRecord }> | null; error: any };
     if (error) throw error;
     const records = (data || []).map((row: any) => {
       assertSnapshot(row?.record, 'record', 'import');
@@ -90,6 +94,8 @@ export class WorkspaceCloudSync {
       if (typeof next !== 'string' || next === after) throw new Error('Cloud fact history returned an invalid cursor.');
       after = next;
     }
+    if (signal.aborted) throw new Error('Cloud load was canceled.');
+    for (const row of data || []) this.observed.set(row.record.id, row.revision_id);
     for (const record of records) this.sent.set(record.id, serializeWorkspaceRecord(record).bytes);
     for (const memory of factMemory) this.memories.set(memory.fingerprint || memory.id, JSON.stringify(safeMemory(memory)));
     return { records, factMemory };
@@ -112,23 +118,81 @@ export class WorkspaceCloudSync {
       const serialization = serializeWorkspaceRecord(record);
       return { record, serialization };
     }).filter(item => !sameBytes(this.sent.get(item.record.id), item.serialization.bytes));
-    const pending = await Promise.all(changedRecords.map(async ({ record, serialization }) => {
-      const row = { revision_id: await workspaceRevisionIdFromSerialization(this.userId, serialization), user_id: this.userId, workspace_id: record.id, modified_at: record.updatedAt, record };
-      return { record, serialization, row };
-    }));
+    // Always merge against conflicts already observed by this sync session. A queued
+    // older snapshot must not reintroduce the state a previous conflict rejected.
+    const pending = await Promise.all(changedRecords.sort((a, b) => a.record.id < b.record.id ? -1 : a.record.id > b.record.id ? 1 : 0).map(async item => ({
+      ...item, revisionId: await workspaceRevisionIdFromSerialization(this.userId, item.serialization)
+    })));
     for (let offset = 0; offset < pending.length;) {
       const batch: typeof pending = [];
       let bytes = 2;
       while (offset < pending.length && batch.length < 20) {
         const item = pending[offset];
-        const size = workspaceRevisionRowByteLength(item.row, item.serialization) + (batch.length ? 1 : 0);
+        const size = workspaceRevisionRowByteLength({ revision_id: item.revisionId, user_id: this.userId,
+          workspace_id: item.record.id, modified_at: item.record.updatedAt,
+          expected_revision_id: this.observed.get(item.record.id) ?? null }, item.serialization) + (batch.length ? 1 : 0);
         if (batch.length && bytes + size > 1024 * 1024) break;
         batch.push(item); bytes += size; offset += 1;
       }
-      const { error } = await api.from('workspace_revisions').upsert(batch.map(item => item.row), { onConflict: 'revision_id', ignoreDuplicates: true }).abortSignal(signal);
-      if (error) throw error;
-      // Keep failed/later batches dirty and acknowledge the exact uploaded versions.
-      batch.forEach(item => this.sent.set(item.record.id, item.serialization.bytes));
+      let completed = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (signal.aborted) throw new Error('Cloud save was canceled.');
+        const prepared = await Promise.all(batch.map(async item => {
+          const remote = this.conflictRecords.get(item.record.id);
+          const record = remote ? mergeRecords([item.record], [remote])[0] : item.record;
+          const serialization = record === item.record ? item.serialization : serializeWorkspaceRecord(record);
+          const row = { revision_id: record === item.record ? item.revisionId : await workspaceRevisionIdFromSerialization(this.userId, serialization),
+            user_id: this.userId, workspace_id: record.id, modified_at: record.updatedAt, record,
+            expected_revision_id: this.observed.get(record.id) ?? null };
+          return { row, serialization };
+        }));
+        const rows = prepared.map(item => item.row);
+        if (signal.aborted) throw new Error('Cloud save was canceled.');
+        // A conflicting remote workspace may be much larger than the submitted
+        // one. Reapply the existing byte limit after resolving that conflict.
+        let error: { code?: string; message?: string } | null = null;
+        for (let index = 0; index < prepared.length;) {
+          const upload: typeof rows = []; let size = 2;
+          while (index < prepared.length) {
+            const item = prepared[index], next = workspaceRevisionRowByteLength(item.row, item.serialization) + (upload.length ? 1 : 0);
+            if (upload.length && size + next > 1024 * 1024) break;
+            upload.push(item.row); size += next; index++;
+          }
+          const result = await api.from('workspace_revisions').upsert(upload, { onConflict: 'revision_id', ignoreDuplicates: true }).abortSignal(signal);
+          if (result.error) { error = result.error; break; }
+        }
+        if (error?.code === '40001') {
+          // The trigger rejects the entire batch atomically. Read only its current
+          // heads and use the ordinary timestamp merge before trying again.
+          const latest = await api.rpc('latest_workspace_revisions').abortSignal(signal);
+          if (latest.error) throw latest.error;
+          if (signal.aborted) throw new Error('Cloud save was canceled.');
+          const seen = new Set<string>();
+          for (const row of latest.data || []) {
+            if (seen.has(row.workspace_id) || !batch.some(item => item.record.id === row.workspace_id)) continue;
+            assertSnapshot(row.record, 'record', 'import');
+            if (row.record.id !== row.workspace_id) throw new Error('Cloud workspace identity did not match.');
+            seen.add(row.workspace_id);
+            const record = canonicalRecord(row.record);
+            this.observed.set(record.id, row.revision_id);
+            this.conflictRecords.set(record.id, record);
+          }
+          continue;
+        }
+        if (error) throw error;
+        if (signal.aborted) throw new Error('Cloud save was canceled.');
+        rows.forEach(row => {
+          this.observed.set(row.workspace_id, row.revision_id);
+          const submitted = batch.find(item => item.record.id === row.workspace_id)!;
+          if (row.record.updatedAt > submitted.record.updatedAt) this.merged.set(row.workspace_id, row.record);
+        });
+        // Acknowledge the submitted snapshot as handled, even when the ordinary
+        // merge retained a newer remote record. New edits still become dirty.
+        batch.forEach(item => this.sent.set(item.record.id, item.serialization.bytes));
+        completed = true;
+        break;
+      }
+      if (!completed) throw new Error('This workspace changed on another device. Please retry syncing.');
     }
     const history = store.factMemory;
     if (this.trackedMemory !== history || !this.trackedMemory) {

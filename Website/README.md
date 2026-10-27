@@ -115,6 +115,27 @@ Run `npm run test:credentials` for the shared web/native sync state machine and
 without retaining its fixture users or keys. Normal runtime sync never requires
 service-role credentials.
 
+### Workspace revision protection
+
+Apply `supabase/workspace-sync.sql` for initial setup, followed by
+`supabase/workspace-revision-guard.sql` before deploying these clients. The guard
+atomically compares each write's `expected_revision_id` with the current workspace
+head under a transaction-scoped lock. It also guards legacy direct inserts;
+older open clients must reload or update before syncing existing workspaces.
+
+Web and Mac remember observed revisions per account/workspace. A conflict reloads
+the latest revisions, runs the existing `updatedAt` merge, and retries at most
+three attempts. Accepted snapshots retain their deterministic revision IDs so a
+lost response can be retried without duplicating or rewinding history. Account
+changes cancel stale operations, and unresolved contention retains local recovery
+copies. Workspace payloads and the timestamp-based merge policy are unchanged.
+
+Run `npm run test:cloud-revision` and `npm run test:workspace-revision` for client,
+native-controller, and revision-identity regressions. Run
+`supabase/test-workspace-revision-guard.sql` against a test database to verify the
+actual trigger, transactional rollback, account isolation, and idempotent inserts;
+its fixtures roll back. Use only isolated fixture IDs, never an existing account.
+
 ### Card downloads
 
 Settings → Download Facts offers one PDF (default), one TXT, or individual PDF/TXT files in a ZIP containing one named folder. The device remembers this choice. Download session always captures the entire active feed in its current order, including restored/offscreen cards regardless of search. A card’s More menu offers a single-file download in the chosen format.

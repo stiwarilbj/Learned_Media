@@ -727,8 +727,17 @@
         snapshot.changedMemories = changedMemories;
       }
       // Retain the exact payload for idempotent retries; edits cannot mutate it.
-      await bridge("cloudSave", { state: JSON.parse(snapshot.payload) });
+      const result = await bridge("cloudSave", { state: JSON.parse(snapshot.payload) });
       if (snapshot.token !== cloudSyncToken || state.account?.id !== snapshot.ownerId) return;
+      if (result?.mergedRecords?.length) {
+        result.mergedRecords.forEach(function (record) { window.LEARNED_MEDIA_STORAGE.assertSnapshot(record, "record", "import"); });
+        const previous = state.workspaces.find(function (record) { return record.id === state.workspaceId; });
+        state.workspaces = mergeWorkspaceRecords(state.workspaces, result.mergedRecords);
+        const active = state.workspaces.find(function (record) { return record.id === state.workspaceId; });
+        if (active && previous && active.updatedAt > previous.updatedAt) applyWorkspaceSnapshot(active, true);
+        saveState();
+        render();
+      }
       snapshot.changedMemories.forEach(function (entry) {
         sentFactMemories.set(entry.key, entry.serialized);
         if (factMemoryById.get(entry.id) === entry.value) changedFactMemoryIds.delete(entry.id);
@@ -2126,17 +2135,21 @@
     cancelNativeDownload();
     bridge("cancelAll", {}).catch(function () {});
   }
-  function applyWorkspaceSnapshot(record) {
+  function applyWorkspaceSnapshot(record, preserveReadingState) {
     const snapshot = record.state || record;
-    clearFactAngleBatch();
-    clearTopicDetourCompletionNotice();
-    questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();questionInstructionPreferences.clear();questionInstructionRevisions.clear();answerOptionsOpenKey="";
+    if (!preserveReadingState) {
+      clearFactAngleBatch();
+      clearTopicDetourCompletionNotice();
+      questionDrafts.clear();questionStructures.clear();questionStructureRevisions.clear();questionInstructionPreferences.clear();questionInstructionRevisions.clear();answerOptionsOpenKey="";
+    }
     state.workspaceId = record.id || "local-workspace";
     state.lastCompletedBatchSetup = batchReplay.isBatchSetup(snapshot.lastCompletedBatchSetup) ? snapshot.lastCompletedBatchSetup : null;
-    state.repeatBatchPreview = null;
-    state.repeatMenuOpen = false;
-    state.topicDetour = null;
-    state.rabbitHole = null;
+    if (!preserveReadingState) {
+      state.repeatBatchPreview = null;
+      state.repeatMenuOpen = false;
+      state.topicDetour = null;
+      state.rabbitHole = null;
+    }
     state.workspaceName = record.name || "Local Workspace";
     const catalogVersion = Number(snapshot.catalogVersion || snapshot.topicCatalogVersion || 0);
     state.topics = shared.restoreTopicPreferences(snapshot.topics,catalogVersion < 11) || migrateTopics(snapshot.topics || makeTopics(), catalogVersion < 11, catalogVersion < 11);

@@ -875,6 +875,27 @@ export default function HomePage() {
       setSyncStatus("syncing");
       void sync.save(store, controller.signal).then(() => {
         if (cloudEpoch.current !== epoch || cloudUserId.current !== userId) return;
+        const incoming = sync.takeMergedRecords();
+        const current = workspaceStoreRef.current;
+        if (incoming.length && current?.ownerId === userId) {
+          const records = mergeRecords(current.records as unknown as CloudRecord[], incoming).map(record => ({
+            ...record, state: normalizeSavedState(record.state as Partial<PersistedState>, false, initialTopicCatalog.current ?? undefined)
+          })) as AppWorkspaceRecord[];
+          const previous = current.records.find(record => record.id === workspaceIdRef.current);
+          const target = records.find(record => record.id === workspaceIdRef.current);
+          workspaceStoreRef.current = { ...current, records };
+          setWorkspaceSummaries(records.map(({ id, name, createdAt, updatedAt }) => ({ id, name, createdAt, updatedAt })));
+          if (target && previous && target.updatedAt > previous.updatedAt) {
+            setTopics(target.state.topics); setSettings(target.state.settings); setCards(target.state.cards);
+            topicCatalogReset.current += 1; topicCatalogRevision.current += 1;
+            setYoutubeWorkspace(value => applyYouTubeActivity(value, target.state.youtubeActivity));
+            setLearningProfile(target.state.learningProfile); setFeedStarted(target.state.feedStarted);
+            updateLastCompletedBatchSetup(target.state.lastCompletedBatchSetup ?? null);
+            persistedStateRef.current = target.state;
+            setWorkspaceName(target.name); workspaceNameRef.current = target.name;
+          }
+          void writeWorkspaceStore(workspaceStoreRef.current).catch(() => setSyncError("The merged cloud workspace could not be saved locally."));
+        }
         if (receipt) {
           acknowledgedCloudRevisions.set(userId, Math.max(acknowledgedCloudRevisions.get(userId) ?? 0, receipt.revision));
           clearAcknowledgedWorkspaceJournal(locallyAcknowledgedJournal);

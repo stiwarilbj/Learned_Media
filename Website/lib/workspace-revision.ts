@@ -10,6 +10,7 @@ export type WorkspaceRevisionRowMetadata = {
   user_id: string;
   workspace_id: string;
   modified_at: string;
+  expected_revision_id?: string | null;
 };
 
 const encoder = new TextEncoder();
@@ -26,7 +27,8 @@ export function serializeWorkspaceRecord(record: CloudRecord): SerializedWorkspa
 /** Exact UTF-8 size of a revision row without serializing its record again. */
 export function workspaceRevisionRowByteLength(row: WorkspaceRevisionRowMetadata, record: SerializedWorkspaceRecord): number {
   const prefix = `{"revision_id":${JSON.stringify(row.revision_id)},"user_id":${JSON.stringify(row.user_id)},"workspace_id":${JSON.stringify(row.workspace_id)},"modified_at":${JSON.stringify(row.modified_at)},"record":`;
-  return encoder.encode(prefix).byteLength + record.bytes.byteLength + 1;
+  const expectation = 'expected_revision_id' in row ? `,"expected_revision_id":${JSON.stringify(row.expected_revision_id ?? null)}` : '';
+  return encoder.encode(prefix).byteLength + record.bytes.byteLength + encoder.encode(expectation).byteLength + 1;
 }
 
 /** Account-scoped identity for the exact snapshot, stable across retries/reloads. */

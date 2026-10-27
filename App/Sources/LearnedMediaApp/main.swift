@@ -2662,6 +2662,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private var config: [String: Any] = [:]
     private var activeTasks: [String: Task<Void, Never>] = [:]
     private var cloudSyncTasks = Set<String>()
+    private var observedCloudRevisions: [String: [String: String]] = [:]
+    private var conflictingCloudRecords: [String: [String: [String: Any]]] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let configURL = Bundle.main.url(forResource: "Config", withExtension: "plist"),
@@ -3163,10 +3165,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         guard (200..<300).contains(http.statusCode) else {
             let errorObject = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let message = errorObject?["message"] as? String ?? errorObject?["error_description"] as? String ?? "Cloud sync returned HTTP \(http.statusCode)."
-            let retryable = [408, 409, 429].contains(http.statusCode) || http.statusCode >= 500
+            let revisionConflict = errorObject?["code"] as? String == "40001"
+            let retryable = !revisionConflict && ([408, 409, 429].contains(http.statusCode) || http.statusCode >= 500)
             if retryable { await backgroundRetries.failed(retryKey, retryAfter: http.value(forHTTPHeaderField: "Retry-After")) }
             else { await backgroundRetries.succeeded(retryKey, observed: observed) }
-            throw NativeError(message: message, retryable: retryable)
+            throw NativeError(message: message, retryable: retryable, status: revisionConflict ? "revision-conflict" : nil)
         }
         await backgroundRetries.succeeded(retryKey, observed: observed)
         if data.isEmpty { return NSNull() }
@@ -3188,6 +3191,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private func cloudLoad() async throws -> [String: Any] {
         let (supabaseURL, anonKey) = try cloudConfiguration()
         let session = try await cloudSession()
+        let epoch = sessionEpoch
         let revisionsURL = supabaseURL.appendingPathComponent("rest/v1/rpc/latest_workspace_revisions")
         async let revisions = cloudRequest(revisionsURL, method: "POST", anonKey: anonKey, session: session, body: [:])
         async let firstPage = cloudMemoryPage(after: nil, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
@@ -3225,6 +3229,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         }
         guard SnapshotValidation.validate(memories, kind: .memory, operation: .import) else {
             throw NativeError(message: "Cloud fact data failed validation. Local recovery copies were kept.", retryable: false)
+        }
+        try Task.checkCancellation()
+        guard epoch == sessionEpoch else { throw CancellationError() }
+        for row in revisionResult as? [[String: Any]] ?? [] {
+            if let id = row["workspace_id"] as? String, let revision = row["revision_id"] as? String {
+                observedCloudRevisions[session.userID, default: [:]][id] = revision
+            }
         }
         return ["records": records, "factMemory": memories]
     }
@@ -3285,7 +3296,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         guard SnapshotValidation.validate(envelope, kind: .nativeStore, operation: .save) else {
             throw NativeError(message: "Workspace data failed validation. Cloud copies were kept.", retryable: false)
         }
-        let rawWorkspaces = envelope["workspaces"] as? [[String: Any]] ?? []
+        let epoch = sessionEpoch
+        let rawWorkspaces = (envelope["workspaces"] as? [[String: Any]] ?? []).sorted { String(describing: $0["id"] ?? "") < String(describing: $1["id"] ?? "") }
         // Bound uploads by row count and encoded bytes; never split a workspace.
         var batches: [[[String: Any]]] = []
         var batch: [[String: Any]] = []
@@ -3308,15 +3320,74 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         if !batch.isEmpty { batches.append(batch) }
         var revisionsURL = URLComponents(url: supabaseURL.appendingPathComponent("rest/v1/workspace_revisions"), resolvingAgainstBaseURL: false)!
         revisionsURL.queryItems = [URLQueryItem(name: "on_conflict", value: "revision_id")]
+        var mergedRecords: [String: [String: Any]] = [:]
         for rows in batches {
-            _ = try await cloudRequest(revisionsURL.url!, method: "POST", anonKey: anonKey, session: session, body: rows, prefer: "resolution=ignore-duplicates,return=minimal")
+            var completed = false
+            for _ in 0..<3 {
+                try Task.checkCancellation()
+                guard epoch == sessionEpoch else { throw CancellationError() }
+                var resolved: [[String: Any]] = []
+                for row in rows {
+                    let id = row["workspace_id"] as? String ?? ""
+                    var record = row["record"] as? [String: Any] ?? [:]
+                    if let remote = conflictingCloudRecords[session.userID]?[id],
+                       (remote["updatedAt"] as? String ?? "") > (record["updatedAt"] as? String ?? "") {
+                        record = remote; mergedRecords[id] = remote
+                    }
+                    resolved.append(["revision_id": try workspaceRevisionID(userID: session.userID, record: record),
+                        "user_id": session.userID, "workspace_id": id, "modified_at": record["updatedAt"] ?? cloudNow(), "record": record,
+                        "expected_revision_id": observedCloudRevisions[session.userID]?[id] as Any? ?? NSNull()])
+                }
+                do {
+                    // Recheck bytes after a conflict selects a larger remote record.
+                    var uploads: [[[String: Any]]] = [], upload: [[String: Any]] = []
+                    var bytes = 2
+                    for row in resolved {
+                        let size = try JSONSerialization.data(withJSONObject: row).count + (upload.isEmpty ? 0 : 1)
+                        if !upload.isEmpty && bytes + size > 1024 * 1024 {
+                            uploads.append(upload); upload = []; bytes = 2
+                        }
+                        upload.append(row); bytes += size
+                    }
+                    if !upload.isEmpty { uploads.append(upload) }
+                    for upload in uploads {
+                        _ = try await cloudRequest(revisionsURL.url!, method: "POST", anonKey: anonKey, session: session, body: upload, prefer: "resolution=ignore-duplicates,return=minimal")
+                    }
+                    try Task.checkCancellation()
+                    guard epoch == sessionEpoch else { throw CancellationError() }
+                    for row in resolved {
+                        observedCloudRevisions[session.userID, default: [:]][row["workspace_id"] as? String ?? ""] = row["revision_id"] as? String
+                    }
+                    completed = true
+                    break
+                } catch let error as NativeError where error.status == "revision-conflict" {
+                    let latest = try await cloudRequest(supabaseURL.appendingPathComponent("rest/v1/rpc/latest_workspace_revisions"), method: "POST", anonKey: anonKey, session: session, body: [:])
+                    try Task.checkCancellation()
+                    guard epoch == sessionEpoch, let heads = latest as? [[String: Any]] else { throw CancellationError() }
+                    let ids = Set(rows.compactMap { $0["workspace_id"] as? String })
+                    for head in heads {
+                        guard let id = head["workspace_id"] as? String, ids.contains(id),
+                              let revision = head["revision_id"] as? String,
+                              let raw = head["record"] as? [String: Any], raw["id"] as? String == id,
+                              SnapshotValidation.validate(raw, kind: .record, operation: .import) else {
+                            if let id = head["workspace_id"] as? String, !ids.contains(id) { continue }
+                            throw NativeError(message: "Cloud workspace data failed validation. Local copies were kept.", retryable: false)
+                        }
+                        let record = canonicalCloudRecord(raw)
+                        observedCloudRevisions[session.userID, default: [:]][id] = revision
+                        conflictingCloudRecords[session.userID, default: [:]][id] = record
+                        mergedRecords[id] = record
+                    }
+                }
+            }
+            if !completed { throw NativeError(message: "This workspace changed on another device. Please retry syncing.") }
         }
         let memories = (envelope["factMemory"] as? [[String: Any]] ?? []).map { cleanedCloudValue($0) }
         for start in stride(from: 0, to: memories.count, by: 100) {
             let batch = Array(memories[start..<min(start + 100, memories.count)])
             _ = try await cloudRequest(supabaseURL.appendingPathComponent("rest/v1/rpc/remember_facts"), method: "POST", anonKey: anonKey, session: session, body: ["items": batch])
         }
-        return ["savedWorkspaces": rawWorkspaces.count, "savedFacts": memories.count]
+        return ["savedWorkspaces": rawWorkspaces.count, "savedFacts": memories.count, "mergedRecords": Array(mergedRecords.values)]
     }
 
     private func youtubeResponseSchema(_ resource: String) -> ProviderResponseSchema? {
