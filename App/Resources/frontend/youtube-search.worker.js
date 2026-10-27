@@ -5,8 +5,8 @@ const preparedSearchCache = new LEARNED_MEDIA_VIDEO_SEARCH.PreparedVideoSearchCa
 const searchSessionCache = new Map();
 const SEARCH_SESSION_CACHE_LIMIT = 8, SEARCH_SESSION_TTL_MS = 5 * 60 * 1000, SEARCH_SESSION_BYTE_LIMIT = 4 * 1024 * 1024;
 let searchSessionCacheBytes = 0;
-function sessionBytes(session) {
-  let bytes = 128;
+function sessionBytes(session, key) {
+  let bytes = 128 + key.length * 2;
   for (const list of [session.direct, session.fallback]) for (const candidate of list) {
     bytes += 96 + candidate.videoId.length * 2 + candidate.matchedFields.reduce((sum, value) => sum + 16 + value.length * 2, 0) + candidate.supportingText.reduce((sum, value) => sum + 16 + value.length * 2, 0);
     if (candidate.coverage) bytes += 48 + 4 * (candidate.coverage.matchedConcepts.length + candidate.coverage.missingConcepts.length);
@@ -36,7 +36,7 @@ function rememberSearchSession(key, value) {
     searchSessionCache.delete(key);
     searchSessionCacheBytes -= previous.bytes;
   }
-  const bytes = sessionBytes(value);
+  const bytes = sessionBytes(value, key);
   if (bytes > SEARCH_SESSION_BYTE_LIMIT) return;
   searchSessionCache.set(key, { value: value, bytes: bytes, expiresAt: now + SEARCH_SESSION_TTL_MS });
   searchSessionCacheBytes += bytes;
