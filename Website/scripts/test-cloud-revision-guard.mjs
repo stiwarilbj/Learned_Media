@@ -8,7 +8,8 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 if (!globalThis.crypto?.subtle) globalThis.crypto = require('node:crypto').webcrypto;
 const source = ts.transpileModule(readFileSync(new URL('../lib/cloud-sync.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const baseRequire = createRequire(new URL('../lib/cloud-sync.ts', import.meta.url));
-const { canonicalRecord } = baseRequire('./cloud-records.ts');
+const { canonicalRecord, mergeRecords } = baseRequire('./cloud-records.ts');
+const { snapshotDiagnostics } = baseRequire('./snapshot-validation.ts');
 const { workspaceRevisionId } = baseRequire('./workspace-revision.ts');
 const record = (time = 1, id = 'w') => ({ id, name: `Workspace ${time}`, createdAt: '2026-01-01T00:00:00Z', updatedAt: `2026-10-26T12:00:0${time}.000Z`, state: { topics: [], cards: [], settings: { obscurity: 5, sentenceLength: 3, displayMode: "text" }, youtubeActivity: {} } });
 const signal = () => new AbortController().signal;
@@ -200,7 +201,7 @@ test('empty, short, and exact-page accounts stop without an unbounded read', asy
   }
 });
 test('failed later workspace pages never acknowledge a partial restoration', async () => {
-  for (const failure of ['error', 'duplicate', 'mismatch']) {
+  for (const failure of ['error', 'duplicate']) {
     const db = server(); seedWorkspaceRange(db, 150); const c = client(db);
     db.readResult = options => options.after ? failure === 'error'
       ? { data: null, error: Error('page failed') }
@@ -214,4 +215,72 @@ test('cancellation between workspace pages stops before another page is sent', a
   db.onRead = async options => { if (options.after) controller.abort(); };
   await assert.rejects(c.load(controller.signal), /canceled/);
   assert.equal(db.requests.length, 3); assert.equal(c.observed.size, 0);
+});
+
+
+test('malformed snapshots at every batch position keep local copies and restore valid siblings', async () => {
+  for (const position of [0, 75, 149]) {
+    snapshotDiagnostics.reset();
+    const db = server(); seedWorkspaceRange(db, 150);
+    const id = `w-${String(position).padStart(5, '0')}`, local = record(2, id);
+    db.heads.get(id).record = { ...record(4, id), name: 'PRIVATE BAD PAYLOAD', state: { cards: 'invalid' } };
+    const c = client(db), restored = await c.load(signal());
+    assert.equal(restored.records.length, 149);
+    assert.equal(restored.records.some(r => r.id === id), false);
+    assert.deepEqual(mergeRecords([local], restored.records).find(r => r.id === id), canonicalRecord(local));
+    assert.equal(c.sent.has(id), false, 'invalid bytes are not acknowledged');
+    assert.equal(c.observed.get(id), `revision-${position}`, 'only envelope identity is retained for conditional writes');
+    assert.equal(c.conflictRecords.has(id), false);
+    const diagnostic = snapshotDiagnostics.snapshot();
+    assert.equal(Object.values(diagnostic.failures).reduce((a,b) => a+b, 0), 1);
+    assert.equal(JSON.stringify(diagnostic).includes('PRIVATE'), false);
+    assert.equal(JSON.stringify(diagnostic).includes(id), false);
+  }
+});
+test('an entirely malformed page does not end cursor traversal or replace local recovery', async () => {
+  const db = server(); seedWorkspaceRange(db, 201);
+  for (const [id, row] of [...db.heads].slice(0,100)) row.record = { id, name: 'sensitive' };
+  const result = await client(db).load(signal());
+  assert.equal(result.records.length, 101); assert.equal(result.records[0].id, 'w-00100');
+  assert.equal(db.requests.length, 4);
+});
+test('identity mismatches and missing revision metadata skip only their row', async () => {
+  const db = server(); seedWorkspaceRange(db, 3);
+  db.heads.get('w-00000').record.id = 'different';
+  delete db.heads.get('w-00001').revision_id;
+  const c = client(db), result = await c.load(signal());
+  assert.deepEqual(Array.from(result.records, r => r.id), ['w-00002']);
+  assert.equal(c.observed.has('w-00001'), false);
+  assert.equal(c.sent.size, 1);
+});
+test('a malformed conflict head cannot poison valid local snapshots or its batch siblings', async () => {
+  const db = server(); seedWorkspaceRange(db, 2);
+  db.heads.get('w-00000').record = { id: 'w-00000', state: { cards: 'bad' } };
+  const c = client(db);
+  const local = record(5, 'w-00000'), good = record(5, 'w-00001');
+  await save(c, [local, good]);
+  assert.deepEqual(db.writes.at(-1).map(row => row.record.name), ['Workspace 5','Workspace 5']);
+  assert.equal(c.takeMergedRecords().length, 0);
+  assert.equal(c.conflictRecords.has('w-00000'), false);
+});
+
+test('a normalization failure is isolated and contains no exception text in diagnostics', async () => {
+  const db = server(); seedWorkspaceRange(db, 3);
+  const module = baseRequire('./cloud-records.ts'), normalize = module.canonicalRecord;
+  snapshotDiagnostics.reset();
+  module.canonicalRecord = value => {
+    if (value.id === 'w-00001') throw Error('PRIVATE NORMALIZATION DETAIL');
+    return normalize(value);
+  };
+  try {
+    const result = await client(db).load(signal());
+    assert.deepEqual(Array.from(result.records, r => r.id), ['w-00000','w-00002']);
+    assert.equal(JSON.stringify(snapshotDiagnostics.snapshot()).includes('PRIVATE'), false);
+  } finally { module.canonicalRecord = normalize; }
+});
+test('Mac workspace merging retains the local copy omitted by row validation', () => {
+  const c = nativeConflictQueue(() => ({})), local = record(2, 'bad'), good = record(1, 'good');
+  const merged = c.context.mergeWorkspaceRecords([local,good], [record(4,'good')]);
+  assert.equal(merged.find(r => r.id === 'bad'), local);
+  assert.equal(merged.find(r => r.id === 'good').name, 'Workspace 4');
 });

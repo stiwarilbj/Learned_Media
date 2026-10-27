@@ -3188,7 +3188,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         return try await cloudRequest(components.url!, method: "GET", anonKey: anonKey, session: session)
     }
 
-    private func cloudWorkspaceRevisions(supabaseURL: URL, anonKey: String, session: CloudSession, epoch: Int) async throws -> [[String: Any]] {
+    private func decodedCloudWorkspace(_ row: [String: Any]) -> [String: Any]? {
+        guard SnapshotValidation.validate(row["record"], kind: .record, operation: .import), let record = row["record"] as? [String: Any] else { return nil }
+        guard record["id"] as? String == row["workspace_id"] as? String else {
+            _ = SnapshotValidation.validate(nil, kind: .record, operation: .import)
+            return nil
+        }
+        return record
+    }
+
+    private func cloudWorkspaceRevisions(supabaseURL: URL, anonKey: String, session: CloudSession, epoch: Int) async throws -> (records: [[String: Any]], heads: [String: String]) {
         func checkSession() throws {
             try Task.checkCancellation()
             guard epoch == sessionEpoch else { throw CancellationError() }
@@ -3207,28 +3216,31 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         // Page logical workspace heads, not changing append-only revision IDs.
         let boundary = try await page([URLQueryItem(name: "select", value: "workspace_id"), URLQueryItem(name: "order", value: "workspace_id.desc"), URLQueryItem(name: "limit", value: "1")])
         guard boundary.count <= 1 else { throw NativeError(message: "Cloud workspace history returned an invalid cursor.", retryable: false) }
-        if boundary.isEmpty { return [] }
+        if boundary.isEmpty { return ([], [:]) }
         guard let through = boundary.first?["workspace_id"] as? String, !through.isEmpty else {
             throw NativeError(message: "Cloud workspace history returned an invalid cursor.", retryable: false)
         }
-        var revisions: [[String: Any]] = [], seen = Set<String>(), after: String? = nil
+        var records: [[String: Any]] = [], heads: [String: String] = [:], seen = Set<String>(), after: String? = nil
         while true {
             var items = [URLQueryItem(name: "workspace_id", value: "lte.\(through)"), URLQueryItem(name: "order", value: "workspace_id.asc"), URLQueryItem(name: "limit", value: "100")]
             if let after { items.append(URLQueryItem(name: "workspace_id", value: "gt.\(after)")) }
             let rows = try await page(items)
             guard rows.count <= 100 else { throw NativeError(message: "Cloud workspace history returned an invalid page.", retryable: false) }
             for row in rows {
-                guard let id = row["workspace_id"] as? String, !id.isEmpty, seen.insert(id).inserted,
-                    let revision = row["revision_id"] as? String, !revision.isEmpty,
-                    let record = row["record"] as? [String: Any], record["id"] as? String == id else {
+                guard let id = row["workspace_id"] as? String, !id.isEmpty, seen.insert(id).inserted else {
                     throw NativeError(message: "Cloud workspace history returned an invalid cursor.", retryable: false)
                 }
-                revisions.append(row)
+                guard let revision = row["revision_id"] as? String, !revision.isEmpty else {
+                    _ = SnapshotValidation.validate(nil, kind: .record, operation: .import)
+                    continue
+                }
+                heads[id] = revision
+                if let record = decodedCloudWorkspace(row) { records.append(record) }
             }
             if rows.count < 100 || rows.last?["workspace_id"] as? String == through { break }
             after = rows.last?["workspace_id"] as? String
         }
-        return revisions
+        return (records, heads)
     }
 
     private func cloudLoad() async throws -> [String: Any] {
@@ -3238,14 +3250,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         async let revisions = cloudWorkspaceRevisions(supabaseURL: supabaseURL, anonKey: anonKey, session: session, epoch: epoch)
         async let firstPage = cloudMemoryPage(after: nil, supabaseURL: supabaseURL, anonKey: anonKey, session: session)
         let (revisionResult, firstMemoryPage) = try await (revisions, firstPage)
-        var records: [[String: Any]] = []
-        for row in revisionResult {
-            let record = row["record"]
-            guard SnapshotValidation.validate(record, kind: .record, operation: .import), let record = record as? [String: Any] else {
-                throw NativeError(message: "Cloud workspace data failed validation. Local recovery copies were kept.", retryable: false)
-            }
-            records.append(record)
-        }
+        let records = revisionResult.records
         var memories: [[String: Any]] = []
         var after: String? = nil
         while true {
@@ -3274,10 +3279,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         }
         try Task.checkCancellation()
         guard epoch == sessionEpoch else { throw CancellationError() }
-        for row in revisionResult {
-            if let id = row["workspace_id"] as? String, let revision = row["revision_id"] as? String {
-                observedCloudRevisions[session.userID, default: [:]][id] = revision
-            }
+        for (id, revision) in revisionResult.heads {
+            observedCloudRevisions[session.userID, default: [:]][id] = revision
+            conflictingCloudRecords[session.userID]?[id] = nil
         }
         return ["records": records, "factMemory": memories]
     }
@@ -3408,17 +3412,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                     guard epoch == sessionEpoch, let heads = latest as? [[String: Any]] else { throw CancellationError() }
                     let ids = Set(rows.compactMap { $0["workspace_id"] as? String })
                     for head in heads {
-                        guard let id = head["workspace_id"] as? String, ids.contains(id),
-                              let revision = head["revision_id"] as? String,
-                              let raw = head["record"] as? [String: Any], raw["id"] as? String == id,
-                              SnapshotValidation.validate(raw, kind: .record, operation: .import) else {
-                            if let id = head["workspace_id"] as? String, !ids.contains(id) { continue }
-                            throw NativeError(message: "Cloud workspace data failed validation. Local copies were kept.", retryable: false)
+                        guard let id = head["workspace_id"] as? String, ids.contains(id) else { continue }
+                        guard let revision = head["revision_id"] as? String, !revision.isEmpty else {
+                            _ = SnapshotValidation.validate(nil, kind: .record, operation: .import)
+                            continue
                         }
-                        let record = canonicalCloudRecord(raw)
                         observedCloudRevisions[session.userID, default: [:]][id] = revision
-                        conflictingCloudRecords[session.userID, default: [:]][id] = record
-                        mergedRecords[id] = record
+                        if let raw = decodedCloudWorkspace(head) {
+                            let record = canonicalCloudRecord(raw)
+                            conflictingCloudRecords[session.userID, default: [:]][id] = record
+                            mergedRecords[id] = record
+                        } else {
+                            conflictingCloudRecords[session.userID]?[id] = nil
+                            mergedRecords[id] = nil
+                        }
                     }
                 }
             }

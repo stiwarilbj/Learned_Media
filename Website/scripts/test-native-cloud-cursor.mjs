@@ -15,6 +15,7 @@ struct CloudSession { let userID: String }
 final class Harness {
  var sessionEpoch = 0
  var observedCloudRevisions: [String: [String: String]] = [:]
+ var conflictingCloudRecords: [String: [String: [String: Any]]] = [:]
  var heads: [[String: Any]] = [], requests: [[URLQueryItem]] = []
  var mode = "normal"
  func cloudConfiguration() throws -> (URL, String) { (URL(string: "https://example.invalid")!, "test") }
@@ -66,11 +67,32 @@ final class Harness {
    }
    if count == 1105 { precondition(h.observedCloudRevisions["account"]?["w-00150"] == "new-revision") }
   }
-  for mode in ["error", "duplicate", "mismatch", "epoch"] {
+  for mode in ["error", "duplicate", "epoch"] {
    let h = Harness(150); h.mode = mode
    do { _ = try await h.run(); fatalError("Invalid partial restore accepted: \\(mode)") } catch {}
    precondition(h.observedCloudRevisions.isEmpty)
   }
+  for position in [0,75,149] {
+   SnapshotValidation.reset()
+   let h = Harness(150), id = String(format: "w-%05d", position)
+   h.heads[position]["record"] = ["id": id, "name": "PRIVATE BAD PAYLOAD", "state": ["cards": "invalid"]]
+   let result = try await h.run(), records = result["records"] as! [[String: Any]]
+   precondition(records.count == 149 && !records.contains { $0["id"] as? String == id })
+   precondition(h.observedCloudRevisions["account"]?[id] == "revision")
+   precondition(h.conflictingCloudRecords["account"]?[id] == nil)
+   let diagnostics = SnapshotValidation.snapshot()["failures"] as! [String: Int]
+   precondition(diagnostics.values.reduce(0,+) == 1)
+   precondition(!String(describing: diagnostics).contains("PRIVATE"))
+  }
+  let badPage = Harness(201)
+  for index in 0..<100 { badPage.heads[index]["record"] = ["private": "DO NOT RETAIN"] }
+  let recovered = try await badPage.run()
+  precondition((recovered["records"] as! [[String: Any]]).count == 101 && badPage.requests.count == 4)
+  let identity = Harness(3)
+  identity.heads[0]["record"] = Harness.record("different")
+  identity.heads[1].removeValue(forKey: "revision_id")
+  let valid = try await identity.run()
+  precondition((valid["records"] as! [[String: Any]]).count == 1)
   print("Native workspace cursor: page boundaries, large accounts, concurrent heads, failures, invalid pages and stale sessions passed")
  }
 }

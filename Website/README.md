@@ -132,7 +132,14 @@ next restore; concurrent updates to existing heads do not move their keys.
 This is a bounded traversal, not a point-in-time snapshot of workspace contents.
 Fact-memory loading starts concurrently. All pages must validate before restored
 records or observed revision IDs are accepted; cancellation keeps local recovery.
-No database migration or new RPC is needed.
+Each workspace snapshot is checked independently. An invalid snapshot is omitted
+from the merge so its last valid local copy remains, while valid siblings restore
+normally. Only fixed validation categories/counts are recorded locally; rejected
+snapshot contents and exception messages are never retained in diagnostics.
+Envelope revision identity remains available for safe conditional writes, but
+invalid content is never acknowledged or cached as a conflict winner. Broken page
+cursors and transport failures still stop the restore rather than accepting an
+unverifiable partial traversal. No database migration or new RPC is needed.
 
 Web and Mac remember observed revisions per account/workspace. A conflict reloads
 the latest revisions, runs the existing `updatedAt` merge, and retries at most

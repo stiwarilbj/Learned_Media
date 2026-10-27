@@ -7,6 +7,7 @@ const root = new URL('../../', import.meta.url), source = readFileSync(new URL('
 function method(start, end) { return source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))); }
 const save = method('    private func cloudSave(', '    private func youtubeResponseSchema(');
 const hash = method('    private func workspaceRevisionID(', '    private func cloudSave(');
+const decode = method('    private func decodedCloudWorkspace(', '    private func cloudWorkspaceRevisions(');
 const dir = mkdtempSync(path.join(tmpdir(), 'learned-cloud-test-'));
 try {
  writeFileSync(path.join(dir, 'Harness.swift'), `
@@ -50,6 +51,7 @@ final class Harness {
   return NSNull()
  }
  ${hash}
+ ${decode}
  ${save}
  func run(_ record: [String: Any], owner: String = "account", memories: [[String: Any]] = []) async throws -> [String: Any] {
   try await cloudSave(["cloudOwnerId": owner, "activeWorkspaceId": "w", "workspaces": [record], "factMemory": memories])
@@ -83,6 +85,11 @@ final class Harness {
   do { _ = try await delayed.run(record(2), memories: memories); fatalError("Expected memory failure") } catch {}
   let recovered = try await delayed.run(record(2), memories: memories)
   precondition((recovered["mergedRecords"] as! [[String: Any]])[0]["name"] as! String == "Workspace 4")
+  let malformed = Server(), repair = Harness(malformed)
+  malformed.heads["w"] = ["workspace_id": "w", "revision_id": "bad-head", "record": ["id": "w", "private": "DO NOT RETAIN"]]
+  _ = try await repair.run(record(5))
+  precondition((malformed.writes.last![0]["record"] as! [String: Any])["name"] as! String == "Workspace 5")
+  precondition(repair.conflictingCloudRecords["account"]?["w"] == nil)
   let failing = Server(), d = Harness(failing); failing.forceConflicts = 3
   do { _ = try await d.run(record(1)); fatalError("Unbounded conflict accepted") } catch {}
   precondition(failing.writes.count == 3)

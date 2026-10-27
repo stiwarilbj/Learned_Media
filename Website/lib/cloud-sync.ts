@@ -6,7 +6,7 @@ import { serializeWorkspaceRecord, workspaceRevisionIdFromSerialization, workspa
 import { LatestSnapshotQueue } from './latest-snapshot-queue';
 import type { FactMemory } from './fact-quality';
 import type { Database } from './supabase/database.types';
-import { assertSnapshot } from './snapshot-validation';
+import { assertSnapshot, validateSnapshot } from './snapshot-validation';
 
 function sameBytes(previous: Uint8Array | undefined, next: Uint8Array) {
   if (!previous || previous.byteLength !== next.byteLength) return false;
@@ -60,6 +60,15 @@ export class WorkspaceCloudSync {
     }
     this.trackedMemory = next;
   }
+  private decodedWorkspaceRecord(row: { workspace_id: string; record: unknown }): CloudRecord | undefined {
+    if (!validateSnapshot(row.record, 'record', 'import')) return;
+    if ((row.record as CloudRecord).id !== row.workspace_id) {
+      validateSnapshot(null, 'record', 'import');
+      return;
+    }
+    try { return canonicalRecord(row.record as CloudRecord); }
+    catch { validateSnapshot(null, 'record', 'import'); }
+  }
   private async loadWorkspaceRevisions(signal: AbortSignal) {
     const api = cloudClient();
     const checkCancellation = () => { if (signal.aborted) throw new Error('Cloud load was canceled.'); };
@@ -71,10 +80,10 @@ export class WorkspaceCloudSync {
     if (boundary.error) throw boundary.error;
     checkCancellation();
     if (!Array.isArray(boundary.data) || boundary.data.length > 1) throw new Error('Cloud workspace history returned an invalid cursor.');
-    if (!boundary.data.length) return [];
+    if (!boundary.data.length) return { records: [] as CloudRecord[], heads: new Map<string, string>() };
     const through = boundary.data[0]?.workspace_id;
     if (typeof through !== 'string' || !through) throw new Error('Cloud workspace history returned an invalid cursor.');
-    const revisions: Database['public']['Functions']['latest_workspace_revisions']['Returns'] = [];
+    const records: CloudRecord[] = [], heads = new Map<string, string>();
     const seen = new Set<string>();
     let after: string | null = null;
     while (true) {
@@ -86,17 +95,24 @@ export class WorkspaceCloudSync {
       checkCancellation();
       if (!Array.isArray(result.data) || result.data.length > 100) throw new Error('Cloud workspace history returned an invalid page.');
       for (const row of result.data) {
-        if (typeof row?.workspace_id !== 'string' || !row.workspace_id || seen.has(row.workspace_id)
-          || row.record?.id !== row.workspace_id || typeof row.revision_id !== 'string' || !row.revision_id) {
+        if (typeof row?.workspace_id !== 'string' || !row.workspace_id || seen.has(row.workspace_id)) {
           throw new Error('Cloud workspace history returned an invalid cursor.');
         }
         seen.add(row.workspace_id);
-        revisions.push(row);
+        if (typeof row.revision_id !== 'string' || !row.revision_id) {
+          validateSnapshot(null, 'record', 'import');
+          continue;
+        }
+        // Keep only trusted envelope identity for conditional writes. Invalid
+        // snapshot bytes never enter restored records or acknowledged content.
+        heads.set(row.workspace_id, row.revision_id);
+        const record = this.decodedWorkspaceRecord(row);
+        if (record) records.push(record);
       }
       if (result.data.length < 100 || result.data.at(-1)?.workspace_id === through) break;
       after = result.data[result.data.length - 1].workspace_id;
     }
-    return revisions;
+    return { records, heads };
   }
   async load(signal: AbortSignal) {
     const api = cloudClient();
@@ -110,11 +126,7 @@ export class WorkspaceCloudSync {
       this.loadWorkspaceRevisions(signal),
       loadMemoryPage(null),
     ]);
-    const data = revisionResult;
-    const records = (data || []).map((row: any) => {
-      assertSnapshot(row?.record, 'record', 'import');
-      return canonicalRecord(row.record);
-    }) as CloudRecord[];
+    const { records, heads } = revisionResult;
     const factMemory: FactMemory[] = [];
     let after: string | null = null;
     while (true) {
@@ -132,7 +144,10 @@ export class WorkspaceCloudSync {
       after = next;
     }
     if (signal.aborted) throw new Error('Cloud load was canceled.');
-    for (const row of data || []) this.observed.set(row.record.id, row.revision_id);
+    for (const [id, revision] of heads) {
+      this.observed.set(id, revision);
+      this.conflictRecords.delete(id);
+    }
     for (const record of records) this.sent.set(record.id, serializeWorkspaceRecord(record).bytes);
     for (const memory of factMemory) this.memories.set(memory.fingerprint || memory.id, JSON.stringify(safeMemory(memory)));
     return { records, factMemory };
@@ -207,12 +222,12 @@ export class WorkspaceCloudSync {
           const seen = new Set<string>();
           for (const row of latest.data || []) {
             if (seen.has(row.workspace_id) || !batch.some(item => item.record.id === row.workspace_id)) continue;
-            assertSnapshot(row.record, 'record', 'import');
-            if (row.record.id !== row.workspace_id) throw new Error('Cloud workspace identity did not match.');
             seen.add(row.workspace_id);
-            const record = canonicalRecord(row.record);
-            this.observed.set(record.id, row.revision_id);
-            this.conflictRecords.set(record.id, record);
+            if (typeof row.revision_id !== 'string' || !row.revision_id) { validateSnapshot(null, 'record', 'import'); continue; }
+            this.observed.set(row.workspace_id, row.revision_id);
+            const record = this.decodedWorkspaceRecord(row);
+            if (record) this.conflictRecords.set(record.id, record);
+            else this.conflictRecords.delete(row.workspace_id);
           }
           continue;
         }
