@@ -78,7 +78,7 @@ public actor SharedImageDataCache {
 
         let flightID = UUID()
         flights[key] = Flight(id: flightID, task: nil, subscribers: [subscriberID: continuation])
-        let task = Task { [weak self] in
+        let task = Task.detached(priority: .utility) { [weak self] in
             let outcome: Outcome
             do {
                 outcome = .success(try await operation())
