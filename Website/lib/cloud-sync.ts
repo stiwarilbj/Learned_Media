@@ -267,6 +267,13 @@ export class WorkspaceCloudSync {
         if (signal.aborted) throw new Error('Cloud save was canceled.');
         // A conflicting remote workspace may be much larger than the submitted
         // one. Reapply the existing byte limit after resolving that conflict.
+        const preparedCountByWorkspace = new Map<string, number>();
+        for (const { row } of prepared) {
+          preparedCountByWorkspace.set(row.workspace_id, (preparedCountByWorkspace.get(row.workspace_id) ?? 0) + 1);
+        }
+        const acknowledgmentCounts = new Map<string, number>();
+        const acknowledgmentRevisions = new Map<string, string>();
+        const ambiguousAcknowledgments = new Set<string>();
         let error: { code?: string; message?: string } | null = null;
         for (let index = 0; index < prepared.length;) {
           const upload: typeof rows = []; let size = 2;
@@ -275,8 +282,35 @@ export class WorkspaceCloudSync {
             if (upload.length && size + next > 1024 * 1024) break;
             upload.push(item.row); size += next; index++;
           }
-          const result = await api.from('workspace_revisions').upsert(upload, { onConflict: 'revision_id', ignoreDuplicates: true }).abortSignal(signal);
+          const result = await api.from('workspace_revisions')
+            .upsert(upload, { onConflict: 'revision_id', ignoreDuplicates: true })
+            .select('workspace_id,revision_id').abortSignal(signal);
           if (result.error) { error = result.error; break; }
+          if (!Array.isArray(result.data)) continue;
+          const uploadRevisions = new Map<string, Set<string>>();
+          for (const row of upload) {
+            const revisions = uploadRevisions.get(row.workspace_id) ?? new Set<string>();
+            revisions.add(row.revision_id);
+            uploadRevisions.set(row.workspace_id, revisions);
+          }
+          for (const acknowledgment of result.data) {
+            const workspaceId = acknowledgment?.workspace_id;
+            if (typeof workspaceId !== 'string') continue;
+            if (!uploadRevisions.has(workspaceId)) {
+              if (preparedCountByWorkspace.has(workspaceId)) ambiguousAcknowledgments.add(workspaceId);
+              continue;
+            }
+            const count = (acknowledgmentCounts.get(workspaceId) ?? 0) + 1;
+            acknowledgmentCounts.set(workspaceId, count);
+            const expectedRevisions = uploadRevisions.get(workspaceId)!;
+            if (expectedRevisions.size !== 1 || typeof acknowledgment.revision_id !== 'string'
+              || !expectedRevisions.has(acknowledgment.revision_id) || count !== 1) {
+              ambiguousAcknowledgments.add(workspaceId);
+              acknowledgmentRevisions.delete(workspaceId);
+            } else {
+              acknowledgmentRevisions.set(workspaceId, acknowledgment.revision_id);
+            }
+          }
         }
         if (error?.code === '40001') {
           // A save gets one rebase read and one retry. If that retry races again,
@@ -307,16 +341,16 @@ export class WorkspaceCloudSync {
         if (error) throw error;
         if (signal.aborted) throw new Error('Cloud save was canceled.');
         prepared.forEach(({ row, serialization }) => {
-          this.observed.set(row.workspace_id, row.revision_id);
-          // The acknowledged revision is tied to this canonical payload, so it
-          // can replace the older restore cache immediately.
-          this.canonicalWorkspaceSnapshots.set(row.workspace_id, { revisionId: row.revision_id, bytes: serialization.bytes });
-          const submitted = submittedById.get(row.workspace_id)!;
+          const workspaceId = row.workspace_id;
+          const submitted = submittedById.get(workspaceId)!;
           if (row.record.updatedAt > submitted.record.updatedAt) this.merged.set(row.workspace_id, row.record);
+          if (preparedCountByWorkspace.get(workspaceId) !== 1 || acknowledgmentCounts.get(workspaceId) !== 1
+            || ambiguousAcknowledgments.has(workspaceId) || acknowledgmentRevisions.get(workspaceId) !== row.revision_id) return;
+          this.observed.set(workspaceId, row.revision_id);
+          // Only confirmed IDs advance acknowledged revision and snapshot state.
+          this.canonicalWorkspaceSnapshots.set(workspaceId, { revisionId: row.revision_id, bytes: serialization.bytes });
+          this.sent.set(workspaceId, serialization.bytes);
         });
-        // Acknowledge the submitted snapshot as handled, even when the ordinary
-        // merge retained a newer remote record. New edits still become dirty.
-        batch.forEach(item => this.sent.set(item.record.id, item.serialization.bytes));
         completed = true;
         break;
       }

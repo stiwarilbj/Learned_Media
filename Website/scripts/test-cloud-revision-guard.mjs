@@ -14,7 +14,7 @@ const { workspaceRevisionId } = baseRequire('./workspace-revision.ts');
 const record = (time = 1, id = 'w') => ({ id, name: `Workspace ${time}`, createdAt: '2026-01-01T00:00:00Z', updatedAt: `2026-10-26T12:00:0${time}.000Z`, state: { topics: [], cards: [], settings: { obscurity: 5, sentenceLength: 3, displayMode: "text" }, youtubeActivity: {} } });
 const signal = () => new AbortController().signal;
 function server() {
-  const db = { heads: new Map(), accepted: new Map(), writes: [], reads: 0, failures: [], onWrite: null, onRead: null };
+  const db = { heads: new Map(), accepted: new Map(), writes: [], reads: 0, failures: [], onWrite: null, onRead: null, acknowledgments: null };
   db.api = {
     rpc(name) {
       const options = {};
@@ -42,16 +42,29 @@ function server() {
     from(name) { return {
       select() { return this; }, eq() { return this; }, order() { return this; }, limit() { return this; },
       async abortSignal() { assert.equal(name, 'fact_memory'); return { data: [], error: null }; },
-      upsert(rows) { return { async abortSignal(s) {
-        if (s.aborted) throw Error('aborted');
-        db.writes.push(structuredClone(rows));
-        if (db.onWrite) await db.onWrite(rows);
-        if (db.failures.length) return { error: db.failures.shift() };
-        // Whole request is transactional: no rows from a conflicting batch commit.
-        for (const row of rows) if (!db.accepted.has(row.revision_id) && (db.heads.get(row.workspace_id)?.revision_id ?? null) !== row.expected_revision_id) return { error: { code: '40001' } };
-        for (const row of rows) if (!db.accepted.has(row.revision_id)) { db.accepted.set(row.revision_id, structuredClone(row)); if (!db.heads.has(row.workspace_id) || row.modified_at >= db.heads.get(row.workspace_id).modified_at) db.heads.set(row.workspace_id, structuredClone(row)); }
-        return { error: null };
-      } }; }
+      upsert(rows) {
+        const options = {};
+        const builder = {
+          select(columns) { options.returning = columns; return builder; },
+          async abortSignal(s) {
+            if (s.aborted) throw Error('aborted');
+            db.writes.push(structuredClone(rows));
+            if (db.onWrite) await db.onWrite(rows);
+            if (db.failures.length) return { data: null, error: db.failures.shift() };
+            // Whole request is transactional: no rows from a conflicting batch commit.
+            for (const row of rows) if (!db.accepted.has(row.revision_id) && (db.heads.get(row.workspace_id)?.revision_id ?? null) !== row.expected_revision_id) return { data: null, error: { code: '40001' } };
+            const inserted = [];
+            for (const row of rows) if (!db.accepted.has(row.revision_id)) {
+              db.accepted.set(row.revision_id, structuredClone(row));
+              if (!db.heads.has(row.workspace_id) || row.modified_at >= db.heads.get(row.workspace_id).modified_at) db.heads.set(row.workspace_id, structuredClone(row));
+              inserted.push({ workspace_id: row.workspace_id, revision_id: row.revision_id });
+            }
+            const data = options.returning ? (db.acknowledgments ? db.acknowledgments(rows, inserted) : inserted) : null;
+            return { data, error: null };
+          }
+        };
+        return builder;
+      }
     }; }
   };
   return db;
@@ -165,7 +178,7 @@ test('delayed older tab fetches and merges newer head before retry', async () =>
   await save(a, record(4)); const newest = db.heads.get('w').revision_id; await save(b, record(2));
   assert.equal(db.heads.get('w').revision_id, newest); assert.equal(db.writes.at(-1)[0].expected_revision_id, newest);
   assert.equal(db.writes.at(-1)[0].record.name, 'Workspace 4'); assert.equal(b.takeMergedRecords()[0].name, 'Workspace 4');
-  const count = db.writes.length; await save(b, record(2)); assert.equal(db.writes.length, count);
+  const count = db.writes.length; await save(b, record(2)); assert.equal(db.writes.length, count + 1, 'the ignored duplicate revision remains pending without a returned acknowledgment');
   await save(b, record(3)); assert.equal(db.heads.get('w').revision_id, newest);
 });
 test('newer local edit uses existing merge rule after conflict', async () => {
@@ -176,6 +189,7 @@ test('conflict response matching preserves response order, ignores missing batch
   const db = server();
   for (const id of ['a', 'b', 'c', 'outside']) await seed(db, record(1, id));
   const c = client(db); await c.load(signal());
+  const priorASent = c.sent.get('a'), priorBSent = c.sent.get('b');
   await seed(db, record(5, 'a')); await seed(db, record(6, 'b'));
   db.readResult = () => ({ data: [db.heads.get('b'), db.heads.get('outside'), db.heads.get('b'), db.heads.get('a')], error: null });
 
@@ -187,15 +201,41 @@ test('conflict response matching preserves response order, ignores missing batch
   assert.equal(JSON.stringify(c.takeMergedRecords().map(value => [value.id, value.name])), JSON.stringify([
     ['a', 'Workspace 5'], ['b', 'Workspace 6']
   ]), 'reordered conflict rows merge in submitted batch order; an absent c row has no remote conflict');
-  assert.equal(c.observed.get('a'), db.heads.get('a').revision_id);
+  assert.equal(c.sent.get('a'), priorASent, 'an ignored duplicate revision is not synchronized without a returned row');
+  assert.equal(c.sent.get('b'), priorBSent, 'the other ignored duplicate remains pending too');
+  assert.equal(c.observed.get('a'), db.heads.get('a').revision_id, 'the fetched cloud head remains a valid conditional-write base');
   assert.equal(c.observed.get('b'), db.heads.get('b').revision_id);
+  assert.equal(c.sent.has('c'), true, 'the newly inserted sibling with a returned row is acknowledged');
 });
-test('successful reconciliation retains the first submitted record for duplicate workspace IDs', async () => {
+test('duplicate submitted workspace IDs remain pending while unique siblings are acknowledged', async () => {
   const db = server(), c = client(db);
   await save(c, [record(4, 'duplicate'), record(2, 'duplicate'), record(3, 'other')]);
   assert.deepEqual(db.writes[0].map(row => row.workspace_id), ['duplicate', 'duplicate', 'other']);
   assert.equal(JSON.stringify(c.takeMergedRecords()), '[]', 'the duplicate lookup uses the same first matching submission as Array.find');
-  assert.equal(c.hasPendingUploads, false);
+  assert.equal(c.sent.has('duplicate'), false, 'duplicate workspace submissions are ambiguous even when returned');
+  assert.equal(c.sent.has('other'), true);
+  await save(c, [record(4, 'duplicate'), record(2, 'duplicate'), record(3, 'other')]);
+  assert.deepEqual(db.writes.at(-1).map(row => row.workspace_id), ['duplicate', 'duplicate'], 'only the unacknowledged workspace is sent in the next save cycle');
+});
+test('partial, duplicate, and mismatched acknowledgments update only confirmed workspace IDs', async () => {
+  const db = server(), c = client(db), records = ['confirmed', 'omitted', 'duplicated', 'mismatched'].map(id => record(2, id));
+  db.acknowledgments = (_submitted, inserted) => {
+    const confirmed = inserted.find(row => row.workspace_id === 'confirmed');
+    const duplicated = inserted.find(row => row.workspace_id === 'duplicated');
+    return [confirmed, duplicated, duplicated, { workspace_id: 'mismatched', revision_id: 'wrong-revision' }].filter(Boolean);
+  };
+  await save(c, records);
+
+  assert.equal(c.sent.has('confirmed'), true);
+  for (const id of ['omitted', 'duplicated', 'mismatched']) assert.equal(c.sent.has(id), false, `${id} remains unsynchronized`);
+  assert.equal(c.observed.has('confirmed'), true);
+  for (const id of ['omitted', 'duplicated', 'mismatched']) assert.equal(c.observed.has(id), false);
+
+  db.acknowledgments = null;
+  await save(c, records);
+  assert.deepEqual(db.writes.at(-1).map(row => row.workspace_id), ['duplicated', 'mismatched', 'omitted']);
+  assert.equal(c.sent.has('confirmed'), true, 'confirmed workspace is not resent');
+  for (const id of ['omitted', 'duplicated', 'mismatched']) assert.equal(c.sent.has(id), false);
 });
 test('simultaneous first saves cannot overwrite the newer initial record', async () => {
   const db = server(), a = client(db), b = client(db); await Promise.all([a.load(signal()), b.load(signal())]);
