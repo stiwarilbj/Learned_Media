@@ -87,10 +87,15 @@
       }
       if (!payload || !Array.isArray(payload.items) || payload.nextPageToken !== undefined && typeof payload.nextPageToken !== "string") throw new Error("YouTube returned an invalid import page. Its checkpoint was not advanced.");
       checkpoint.validateNextPageToken(payload.nextPageToken || null);
+      const orderedVideoIds = payload.items.map(function (item) { return item.contentDetails && item.contentDetails.videoId; }).filter(Boolean);
+      const nextPageToken = payload.nextPageToken || null;
+      const digests = await checkpoints.youtubeImportPageDigests(orderedVideoIds, nextPageToken);
+      assertCurrent();
+      if (checkpoint.hasRepeatedPageDigest(digests)) throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
       const ids = payload.items.filter(function (item) { return !/#shorts?\b/i.test((item.snippet && item.snippet.title || "") + " " + (item.snippet && item.snippet.description || "")); }).map(function (item) { return item.contentDetails && item.contentDetails.videoId; }).filter(Boolean);
       const items = await metadata(ids);
       assertCurrent();
-      await checkpoint.append(mapPlaylistPage(items, channel, sourceId).filter(isAllowed), payload.nextPageToken || null);
+      await checkpoint.append(mapPlaylistPage(items, channel, sourceId).filter(isAllowed), nextPageToken, digests);
       await background.yieldBackground(assertCurrent);
     }
     return checkpoint.completedRefresh();

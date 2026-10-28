@@ -65,7 +65,7 @@ function harness(platform, store = createStore()) {
     const client = new youtube.YouTubeClient("fixture", request);
     run = (signal) => client.importPlaylist(channel, "fixture", sourceId, metadata, signal, undefined, store).then(refresh => refresh.videos);
   } else {
-    const context = vm.createContext({ console, setTimeout, clearTimeout, performance, DOMException, crypto: globalThis.crypto,
+    const context = vm.createContext({ console, setTimeout, clearTimeout, performance, DOMException, TextEncoder: globalThis.TextEncoder, crypto: globalThis.crypto,
       LEARNED_MEDIA_BACKGROUND: background,
       LEARNED_MEDIA_SHARED: { youtube: { APPROVED_YOUTUBE_CHANNELS: [], APPROVED_INDIVIDUAL_VIDEOS: [], YOUTUBE_TOPICS: [], DEFAULT_YOUTUBE_RECENCY_PREFERENCES: {},
         YOUTUBE_CATALOG_VERSION: youtube.YOUTUBE_CATALOG_VERSION, isApprovedYouTubeVideo: () => true, isYouTubeShortMetadata: () => false } },
@@ -185,6 +185,53 @@ for (const platform of ["web", "mac"]) {
     assert.deepEqual(retry.requests, ["B"]);
     assert.equal(retry.metadataCalls.length, 0);
     assert.equal((await h.store.load(sourceId)).length, 2);
+  });
+  test(`${platform}: duplicate page content with rotating tokens leaves a retryable checkpoint`, async () => {
+    const h = harness(platform);
+    const repeated = [{ contentDetails: { videoId: "same-video-page" } }];
+    h.respond([
+      ["", { items: repeated, nextPageToken: "A" }],
+      ["A", { items: repeated, nextPageToken: "B" }]
+    ]);
+    await assert.rejects(h.run(), /repeated an import page/);
+    assert.deepEqual(h.requests, ["", "A"]);
+    assert.deepEqual(h.metadataCalls, [["same-video-page"]], "the duplicate response is rejected before metadata lookup");
+
+    const saved = await h.store.load(sourceId);
+    assert.equal(saved.length, 1, "only the first page advances the checkpoint");
+    assert.equal(saved[0].nextPageToken, "A");
+    assert.match(saved[0].pageDigest, /^[\da-f]{32}$/);
+    assert.match(saved[0].contentDigest, /^[\da-f]{32}$/);
+    const identity = checkpoints.importPageIdentity(youtube.YOUTUBE_CATALOG_VERSION, channel.id, "fixture");
+    const restored = await checkpoints.openImportCheckpoint(h.store, sourceId, identity);
+    const repeatedDigests = await checkpoints.youtubeImportPageDigests(["same-video-page"], "B");
+    assert.equal(restored.hasRepeatedPageDigest(repeatedDigests), true, "the content digest survives a resumed import despite a changed next token");
+    assert.throws(() => restored.completedRefresh(), /incomplete/);
+
+    const retry = harness(platform, h.store);
+    retry.respond([["A", { items: [{ contentDetails: { videoId: "recovered-video" } }] }]]);
+    const videos = Array.from(await retry.run());
+    assert.deepEqual(retry.requests, ["A"]);
+    assert.deepEqual(videos.map(video => video.id), ["same-video-page", "recovered-video"]);
+  });
+  test(`${platform}: distinct empty pages and transient failures do not falsely finish an import`, async () => {
+    const empty = harness(platform);
+    empty.respond([
+      ["", { items: [], nextPageToken: "A" }],
+      ["A", { items: [], nextPageToken: "B" }],
+      ["B", { items: [{ contentDetails: { videoId: "after-empty-pages" } }] }]
+    ]);
+    assert.deepEqual(Array.from(await empty.run(), video => video.id), ["after-empty-pages"]);
+    assert.deepEqual(empty.requests, ["", "A", "B"]);
+
+    const interrupted = harness(platform);
+    interrupted.respond([["", { nextPageToken: "A" }], ["A", new Error("temporary upstream error")]]);
+    await assert.rejects(interrupted.run(), /temporary upstream error/);
+    const partial = await checkpoints.openImportCheckpoint(interrupted.store, sourceId,
+      checkpoints.importPageIdentity(youtube.YOUTUBE_CATALOG_VERSION, channel.id, "fixture"));
+    assert.equal(partial.nextPageToken, "A");
+    assert.throws(() => partial.completedRefresh(), /incomplete/);
+    assert.equal((await interrupted.store.load(sourceId)).length, 1, "a transient error preserves the last committed page");
   });
   test(`${platform}: an invalid-token restart creates a fresh token history`, async () => {
     const h = harness(platform);

@@ -6,7 +6,7 @@ import { withYouTubeImportLease, youtubeCatalogCommitId, subscribeYouTubeImportC
 import { createDatabaseConnection } from "./indexed-db";
 import { makeLocalVideoPlan, searchSemanticVideos, semanticCoverage } from "./video-semantic";
 import { checkBackgroundCancellation, forEachBackground, yieldBackground } from "./background-work";
-import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageIdentity, openImportCheckpoint, type YouTubeImportPageStore, type CompletedYouTubeRefresh } from "./youtube-import-checkpoints";
+import { YOUTUBE_IMPORT_PAGE_PREFIX, importPageIdentity, openImportCheckpoint, youtubeImportPageDigests, type YouTubeImportPageStore, type CompletedYouTubeRefresh } from "./youtube-import-checkpoints";
 import { mergeVideoSourceRefreshes, reuseIndexedVideoRecords } from "./video-source-index";
 import { restoreStoredCatalog, videoRecordRange, type StoredVideo } from "./youtube-catalog-storage";
 import { ConditionalDownloadCache } from "./conditional-download";
@@ -829,14 +829,20 @@ export class YouTubeClient {
       if (!payload || !Array.isArray(payload.items) || payload.nextPageToken !== undefined && typeof payload.nextPageToken !== "string") throw new YouTubeApiError("YouTube returned an invalid import page. Its checkpoint was not advanced.", undefined, "malformed-page", false);
       checkpoint.validateNextPageToken(payload.nextPageToken || null);
       const ids: string[] = [];
+      const orderedVideoIds: string[] = [];
       for (const item of payload.items ?? []) {
         const videoId = item.contentDetails?.videoId;
+        if (videoId) orderedVideoIds.push(videoId);
         if (!videoId || hasExplicitShortMarker(item.snippet?.title ?? "", item.snippet?.description ?? "", [])) continue;
         ids.push(videoId);
       }
+      const nextPageToken = payload.nextPageToken || null;
+      const digests = await youtubeImportPageDigests(orderedVideoIds, nextPageToken);
+      if (signal?.aborted) throw abortError();
+      if (checkpoint.hasRepeatedPageDigest(digests)) throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
       const items = await metadata(ids);
       if (signal?.aborted) throw abortError();
-      await checkpoint.append(this.mapPlaylistPage(items, channel, sourceId), payload.nextPageToken || null);
+      await checkpoint.append(this.mapPlaylistPage(items, channel, sourceId), nextPageToken, digests);
       if (onPage) onPage(checkpoint.videos.length);
       await yieldBackground(signal);
     }

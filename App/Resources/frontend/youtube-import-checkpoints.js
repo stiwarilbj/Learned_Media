@@ -6,6 +6,7 @@ exports.YOUTUBE_IMPORT_PAGE_BATCH_SIZE = exports.YOUTUBE_IMPORT_PAGE_PREFIX = ex
 exports.importPagePrefix = importPagePrefix;
 exports.importPageKey = importPageKey;
 exports.importPageIdentity = importPageIdentity;
+exports.youtubeImportPageDigests = youtubeImportPageDigests;
 exports.openImportCheckpoint = openImportCheckpoint;
 exports.verifyYouTubeRefreshes = verifyYouTubeRefreshes;
 const background_work_1 = require("./background-work");
@@ -17,6 +18,17 @@ function importPagePrefix(sourceId) { return `${exports.YOUTUBE_IMPORT_PAGE_PREF
 function importPageKey(page) { return `${importPagePrefix(page.sourceId)}${String(page.index).padStart(8, "0")}`; }
 function importPageIdentity(catalogVersion, channelId, playlistId) {
     return JSON.stringify([exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION, catalogVersion, channelId, playlistId]);
+}
+async function compactDigest(value) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return Array.from(new Uint8Array(digest).slice(0, 16), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+/** A cursor-sensitive signature plus a content signature for rotating-token duplicates. */
+async function youtubeImportPageDigests(videoIds, nextPageToken) {
+    const orderedIds = Array.from(videoIds);
+    const pageDigest = await compactDigest(JSON.stringify([orderedIds, nextPageToken]));
+    const contentDigest = orderedIds.length ? await compactDigest(JSON.stringify(orderedIds)) : undefined;
+    return { pageDigest, ...(contentDigest ? { contentDigest } : {}) };
 }
 async function* checkpointPageBatches(store, sourceId, cancellation) {
     if (!store)
@@ -58,6 +70,8 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
     let pageCount = 0;
     let nextPageToken = "";
     const tokens = new Set();
+    const pageDigests = new Set();
+    const contentDigests = new Set();
     const videos = new Map();
     let valid = true;
     for await (const batch of checkpointPageBatches(store, sourceId, cancellation)) {
@@ -70,6 +84,8 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
                 || page.index !== index || index > 99_999_999 || nextPageToken === null || page.requestToken !== nextPageToken || tokens.has(page.requestToken)
                 || !Number.isFinite(Date.parse(page.savedAt)) || (committedAt && Date.parse(page.savedAt) <= Date.parse(committedAt))
                 || !(page.nextPageToken === null || typeof page.nextPageToken === "string" && page.nextPageToken.length > 0 && page.nextPageToken.length <= 4096)
+                || page.pageDigest !== undefined && (typeof page.pageDigest !== "string" || !/^[\da-f]{32}$/.test(page.pageDigest))
+                || page.contentDigest !== undefined && (typeof page.contentDigest !== "string" || !/^[\da-f]{32}$/.test(page.contentDigest))
                 || !Array.isArray(page.videos) || page.videos.length > 50 || !page.videos.every(video => validVideo(video, sourceId))) {
                 valid = false;
                 return false;
@@ -79,6 +95,10 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
                 valid = false;
                 return false;
             }
+            if (page.pageDigest)
+                pageDigests.add(page.pageDigest);
+            if (page.contentDigest)
+                contentDigests.add(page.contentDigest);
             page.videos.forEach(video => videos.set(video.id, video));
             nextPageToken = page.nextPageToken;
         }, cancellation);
@@ -90,6 +110,8 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
         await store?.clear(sourceId);
         pageCount = 0;
         tokens.clear();
+        pageDigests.clear();
+        contentDigests.clear();
         videos.clear();
         nextPageToken = "";
         generation = newRefreshGeneration();
@@ -108,6 +130,9 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
             throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
         return requestToken;
     }
+    function hasRepeatedPageDigest(digests) {
+        return pageDigests.has(digests.pageDigest) || Boolean(digests.contentDigest && contentDigests.has(digests.contentDigest));
+    }
     return {
         completedRefresh() {
             (0, background_work_1.checkBackgroundCancellation)(cancellation);
@@ -119,16 +144,27 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
         get videos() { return [...videos.values()]; },
         assertPageRequestAllowed,
         validateNextPageToken,
-        async append(records, next) {
+        hasRepeatedPageDigest,
+        async append(records, next, digests) {
             const requestToken = validateNextPageToken(next);
+            if (digests && (!/^[\da-f]{32}$/.test(digests.pageDigest) || digests.contentDigest !== undefined && !/^[\da-f]{32}$/.test(digests.contentDigest))) {
+                throw new Error("YouTube returned an invalid import page digest. The checkpoint was not advanced.");
+            }
+            if (digests && hasRepeatedPageDigest(digests))
+                throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
             if (records.length > 50 || !records.every(video => validVideo(video, sourceId)))
                 throw new Error("YouTube returned invalid import metadata. The checkpoint was not advanced.");
             const page = { version: exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, refreshGeneration: generation, index: pageCount,
-                requestToken, nextPageToken: next, videos: records, savedAt: new Date().toISOString() };
+                requestToken, nextPageToken: next, ...(digests ?? {}), videos: records, savedAt: new Date().toISOString() };
             // Advance memory/progress only after the entire envelope commits.
             await store?.save(page);
             pageCount += 1;
             tokens.add(page.requestToken);
+            if (digests) {
+                pageDigests.add(digests.pageDigest);
+                if (digests.contentDigest)
+                    contentDigests.add(digests.contentDigest);
+            }
             records.forEach(video => videos.set(video.id, video));
             nextPageToken = next;
         }
