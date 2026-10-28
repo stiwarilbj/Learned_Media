@@ -15,6 +15,7 @@
     "test:source-spotlight": "node scripts/test-source-spotlight.mjs",
     "test:saved-card-fidelity": "node scripts/test-saved-card-fidelity.mjs",
     "test:youtube-restoration": "node scripts/test-youtube-restoration.mjs",
+    "test:youtube-channel-normalization": "node --test scripts/test-youtube-channel-normalization.mjs",
     "test:youtube-errors": "node scripts/test-youtube-errors.mjs",
     "test:video-source-index": "node scripts/test-video-source-index.mjs",
     "test:youtube-pagination": "node scripts/test-youtube-pagination.mjs",

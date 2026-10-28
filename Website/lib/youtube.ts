@@ -397,8 +397,27 @@ function normalized(value: string) {
   return value.toLocaleLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
 }
 
-function matchesApprovedChannelTitle(value: string, seed: ApprovedChannelSeed) {
-  return [seed.name, ...(seed.titleAliases ?? [])].some((title) => normalized(value) === normalized(title));
+type ChannelNameNormalizer = (value: string) => string;
+
+/** Create a bounded, short-lived normalizer for repeated channel names in one import. */
+export function createChannelNameNormalizer(normalizeValue: ChannelNameNormalizer = normalized, maxEntries = 256): ChannelNameNormalizer {
+  const cache = new Map<string, string>();
+  const capacity = Number.isFinite(maxEntries) ? Math.max(1, Math.floor(maxEntries)) : 256;
+  return (value) => {
+    if (cache.has(value)) return cache.get(value)!;
+    const result = normalizeValue(value);
+    if (cache.size >= capacity) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(value, result);
+    return result;
+  };
+}
+
+function matchesApprovedChannelTitle(value: string, seed: ApprovedChannelSeed, normalizeChannelName: ChannelNameNormalizer = normalized) {
+  const normalizedValue = normalizeChannelName(value);
+  return [seed.name, ...(seed.titleAliases ?? [])].some((title) => normalizedValue === normalizeChannelName(title));
 }
 
 function normalizedApprovedVideoTitle(value: string) {
@@ -717,7 +736,7 @@ export class YouTubeClient {
     });
   }
 
-  async resolveChannel(seed: ApprovedChannelSeed, signal?: AbortSignal): Promise<YouTubeChannelRecord> {
+  async resolveChannel(seed: ApprovedChannelSeed, signal?: AbortSignal, normalizeChannelName: ChannelNameNormalizer = normalized): Promise<YouTubeChannelRecord> {
     let payload: ChannelApiResponse;
     if (seed.channelId) {
       payload = await this.request<ChannelApiResponse>("channels", { part: "snippet,contentDetails", id: seed.channelId }, signal);
@@ -725,12 +744,12 @@ export class YouTubeClient {
       payload = await this.request<ChannelApiResponse>("channels", { part: "snippet,contentDetails", forHandle: seed.handle.replace(/^@/, "") }, signal);
     } else {
       const search = await this.request<SearchApiResponse>("search", { part: "snippet", q: seed.name, type: "channel", maxResults: "8" }, signal);
-      const candidate = (search.items ?? []).find((item) => matchesApprovedChannelTitle(item.snippet?.title ?? "", seed));
+      const candidate = (search.items ?? []).find((item) => matchesApprovedChannelTitle(item.snippet?.title ?? "", seed, normalizeChannelName));
       if (!candidate?.id?.channelId) throw new YouTubeApiError(`Could not verify the approved channel “${seed.name}”.`, undefined, "channel-not-found", false);
       payload = await this.request<ChannelApiResponse>("channels", { part: "snippet,contentDetails", id: candidate.id.channelId }, signal);
     }
     const item = payload.items?.[0];
-    if (!item?.id || (seed.channelId && item.id !== seed.channelId) || !matchesApprovedChannelTitle(item.snippet?.title ?? "", seed)) throw new YouTubeApiError(`YouTube returned a different channel for “${seed.name}”.`, undefined, "channel-mismatch", false);
+    if (!item?.id || (seed.channelId && item.id !== seed.channelId) || !matchesApprovedChannelTitle(item.snippet?.title ?? "", seed, normalizeChannelName)) throw new YouTubeApiError(`YouTube returned a different channel for “${seed.name}”.`, undefined, "channel-mismatch", false);
     return { id: item.id, name: seed.name, handle: item.snippet?.customUrl ?? seed.handle, thumbnailUrl: item.snippet?.thumbnails?.default?.url, uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads, videoCount: 0, approved: true, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds };
   }
 
@@ -812,17 +831,17 @@ export class YouTubeClient {
     return this.importPlaylist(channel, channel.uploadsPlaylistId, `channel:${channel.id}`, metadata, signal, onPage, pages, committedAt);
   }
 
-  private async resolveSpecial(seed: ApprovedVideoSeed, channels: YouTubeChannelRecord[], metadata: VideoMetadataLoader, signal?: AbortSignal): Promise<YouTubeVideo | null> {
+  private async resolveSpecial(seed: ApprovedVideoSeed, channels: YouTubeChannelRecord[], metadata: VideoMetadataLoader, signal?: AbortSignal, normalizeChannelName: ChannelNameNormalizer = normalized): Promise<YouTubeVideo | null> {
     let videoId = seed.videoId;
     if (!videoId) {
-      const channel = channels.find((item) => normalized(item.name) === normalized(seed.creator));
+      const channel = channels.find((item) => item.name && normalizeChannelName(item.name) === normalizeChannelName(seed.creator));
       const search = await this.request<SearchApiResponse>("search", { part: "snippet", q: seed.title, type: "video", maxResults: "10", ...(channel ? { channelId: channel.id } : {}) }, signal);
-      const found = (search.items ?? []).find((item) => normalizedApprovedVideoTitle(item.snippet?.title ?? "") === normalizedApprovedVideoTitle(seed.title) && normalized(item.snippet?.channelTitle ?? "") === normalized(seed.creator));
+      const found = (search.items ?? []).find((item) => normalizedApprovedVideoTitle(item.snippet?.title ?? "") === normalizedApprovedVideoTitle(seed.title) && normalizeChannelName(item.snippet?.channelTitle ?? "") === normalizeChannelName(seed.creator));
       videoId = found?.id?.videoId;
     }
     if (!videoId) throw new YouTubeApiError(`Could not verify the approved video “${seed.title}”.`, undefined, "video-not-found", false);
     const [item] = await metadata([videoId]);
-    if (!item?.id || normalizedApprovedVideoTitle(item.snippet?.title ?? "") !== normalizedApprovedVideoTitle(seed.title) || normalized(item.snippet?.channelTitle ?? "") !== normalized(seed.creator)) throw new YouTubeApiError(`The approved video “${seed.title}” did not match its creator and title.`, undefined, "video-mismatch", false);
+    if (!item?.id || normalizedApprovedVideoTitle(item.snippet?.title ?? "") !== normalizedApprovedVideoTitle(seed.title) || normalizeChannelName(item.snippet?.channelTitle ?? "") !== normalizeChannelName(seed.creator)) throw new YouTubeApiError(`The approved video “${seed.title}” did not match its creator and title.`, undefined, "video-mismatch", false);
     const snippet = item.snippet!;
     const durationSeconds = parseDuration(item.contentDetails?.duration);
     if (isYouTubeShortMetadata({ title: snippet.title ?? seed.title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt ?? "", durationSeconds, thumbnails: Object.values(snippet.thumbnails ?? {}) })) return null;
@@ -831,6 +850,7 @@ export class YouTubeClient {
 
   async syncApprovedCatalog(existingChannels: YouTubeChannelRecord[] = [], signal?: AbortSignal, onProgress?: (progress: YouTubeImportProgress) => void, options: { existingVideos?: YouTubeVideo[]; sourceStates?: Record<string, YouTubeSourceState>; force?: boolean; pages?: YouTubeImportPageStore } = {}) {
     checkBackgroundCancellation(signal);
+    const normalizeChannelName = createChannelNameNormalizer();
     const metadata = this.createMetadataLoader(signal);
     const existingVideos = options.existingVideos ?? [];
     const sourceStates: Record<string, YouTubeSourceState> = { ...(options.sourceStates ?? {}) };
@@ -841,10 +861,13 @@ export class YouTubeClient {
     onProgress?.({ ...progress });
     const channels = await mapWithConcurrency(APPROVED_YOUTUBE_CHANNELS, 4, async (seed, index) => {
       checkBackgroundCancellation(signal);
-      const previous = existingChannels.find((item) => normalized(item.name) === normalized(seed.name));
+      // Pinned IDs are authoritative; only legacy/unpinned entries need name matching.
+      const previous = seed.channelId
+        ? existingChannels.find((item) => item.id === seed.channelId)
+        : existingChannels.find((item) => normalizeChannelName(item.name) === normalizeChannelName(seed.name));
       try {
         const needsPinnedResolution = Boolean(seed.channelId && previous?.id !== seed.channelId);
-        const channel = previous?.id && !needsPinnedResolution ? { ...previous, name: seed.name, handle: seed.handle ?? previous.handle, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds } : await this.resolveChannel(seed, signal);
+        const channel = previous?.id && !needsPinnedResolution ? { ...previous, name: seed.name, handle: seed.handle ?? previous.handle, sourceKind: seed.playlistIds?.length ? "playlists" : "uploads", approvedPlaylistIds: seed.playlistIds } : await this.resolveChannel(seed, signal, normalizeChannelName);
         checkBackgroundCancellation(signal);
         progress.completedChannels = index + 1;
         onProgress?.({ ...progress });
@@ -888,7 +911,7 @@ export class YouTubeClient {
         else {
           const checkpoint = await openImportCheckpoint(options.pages, job.sourceId, importPageIdentity(YOUTUBE_CATALOG_VERSION, job.seed!.creator, job.seed!.videoId ?? job.seed!.title), prior?.lastSuccessfulSyncAt, signal);
           if (checkpoint.nextPageToken !== null) {
-            const specialVideo = await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), metadata, signal);
+            const specialVideo = await this.resolveSpecial(job.seed!, verified.map((entry) => entry.channel), metadata, signal, normalizeChannelName);
             if (signal?.aborted) throw abortError();
             await checkpoint.append(specialVideo ? [{ ...specialVideo, sourceIds: [job.sourceId] }] : [], null);
           }
@@ -917,7 +940,7 @@ export class YouTubeClient {
     const threeBlue = APPROVED_YOUTUBE_CHANNELS.find((seed) => seed.name === "3Blue1Brown");
     const allowed = await mergeVideoSourceRefreshes(existingVideos,
       imported.filter(result => result.scanned && result.ok).map(result => result.refresh!),
-      video => Boolean(threeBlue && (normalized(video.channelName) === normalized(threeBlue.name) || video.channelId === threeBlue.channelId)
+      video => Boolean(threeBlue && (video.channelId === threeBlue.channelId || normalizeChannelName(video.channelName) === normalizeChannelName(threeBlue.name))
         ? video.special === true || video.sourceIds?.some(sourceId => playlistSourceIds.has(sourceId)) : video.approved),
       errors.length === 0 && verified.length === APPROVED_YOUTUBE_CHANNELS.length ? new Set(jobs.map(job => job.sourceId)) : undefined, signal);
     if (errors.length === 0 && verified.length === APPROVED_YOUTUBE_CHANNELS.length) {
