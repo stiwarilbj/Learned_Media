@@ -87,6 +87,31 @@ test('newer local edit uses existing merge rule after conflict', async () => {
   const db = server(); await seed(db, record()); const c = client(db); await c.load(signal()); const remote = await seed(db, record(2));
   await save(c, record(3)); assert.equal(db.writes.at(-1)[0].expected_revision_id, remote); assert.equal(db.heads.get('w').record.name, 'Workspace 3');
 });
+test('conflict response matching preserves response order, ignores missing batch IDs, and deduplicates returned IDs', async () => {
+  const db = server();
+  for (const id of ['a', 'b', 'c', 'outside']) await seed(db, record(1, id));
+  const c = client(db); await c.load(signal());
+  await seed(db, record(5, 'a')); await seed(db, record(6, 'b'));
+  db.readResult = () => ({ data: [db.heads.get('b'), db.heads.get('outside'), db.heads.get('b'), db.heads.get('a')], error: null });
+
+  await save(c, ['c', 'a', 'b'].map(id => record(2, id)));
+
+  assert.equal(db.writes.length, 2, 'one conflict response is followed by one successful retry');
+  assert.deepEqual(db.writes[1].map(row => row.workspace_id), ['a', 'b', 'c']);
+  assert.equal(JSON.stringify([...c.conflictRecords.keys()]), JSON.stringify(['b', 'a']), 'matched conflict rows retain first response order');
+  assert.equal(JSON.stringify(c.takeMergedRecords().map(value => [value.id, value.name])), JSON.stringify([
+    ['a', 'Workspace 5'], ['b', 'Workspace 6']
+  ]), 'reordered conflict rows merge in submitted batch order; an absent c row has no remote conflict');
+  assert.equal(c.observed.get('a'), db.heads.get('a').revision_id);
+  assert.equal(c.observed.get('b'), db.heads.get('b').revision_id);
+});
+test('successful reconciliation retains the first submitted record for duplicate workspace IDs', async () => {
+  const db = server(), c = client(db);
+  await save(c, [record(4, 'duplicate'), record(2, 'duplicate'), record(3, 'other')]);
+  assert.deepEqual(db.writes[0].map(row => row.workspace_id), ['duplicate', 'duplicate', 'other']);
+  assert.equal(JSON.stringify(c.takeMergedRecords()), '[]', 'the duplicate lookup uses the same first matching submission as Array.find');
+  assert.equal(c.hasPendingUploads, false);
+});
 test('simultaneous first saves cannot overwrite the newer initial record', async () => {
   const db = server(), a = client(db), b = client(db); await Promise.all([a.load(signal()), b.load(signal())]);
   await Promise.all([save(a, record(4)), save(b, record(2))]); assert.equal(db.heads.get('w').record.name, 'Workspace 4');

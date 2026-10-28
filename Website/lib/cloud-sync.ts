@@ -186,6 +186,10 @@ export class WorkspaceCloudSync {
         if (batch.length && bytes + size > 1024 * 1024) break;
         batch.push(item); bytes += size; offset += 1;
       }
+      // Preserve Array.find's first-match behavior for duplicate workspace IDs.
+      // The same index serves both conflict responses and save acknowledgments.
+      const submittedById = new Map<string, (typeof batch)[number]>();
+      for (const item of batch) if (!submittedById.has(item.record.id)) submittedById.set(item.record.id, item);
       let completed = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         if (signal.aborted) throw new Error('Cloud save was canceled.');
@@ -221,7 +225,7 @@ export class WorkspaceCloudSync {
           if (signal.aborted) throw new Error('Cloud save was canceled.');
           const seen = new Set<string>();
           for (const row of latest.data || []) {
-            if (seen.has(row.workspace_id) || !batch.some(item => item.record.id === row.workspace_id)) continue;
+            if (seen.has(row.workspace_id) || !submittedById.has(row.workspace_id)) continue;
             seen.add(row.workspace_id);
             if (typeof row.revision_id !== 'string' || !row.revision_id) { validateSnapshot(null, 'record', 'import'); continue; }
             this.observed.set(row.workspace_id, row.revision_id);
@@ -235,7 +239,7 @@ export class WorkspaceCloudSync {
         if (signal.aborted) throw new Error('Cloud save was canceled.');
         rows.forEach(row => {
           this.observed.set(row.workspace_id, row.revision_id);
-          const submitted = batch.find(item => item.record.id === row.workspace_id)!;
+          const submitted = submittedById.get(row.workspace_id)!;
           if (row.record.updatedAt > submitted.record.updatedAt) this.merged.set(row.workspace_id, row.record);
         });
         // Acknowledge the submitted snapshot as handled, even when the ordinary
