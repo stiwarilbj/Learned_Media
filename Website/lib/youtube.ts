@@ -369,6 +369,9 @@ export const DEFAULT_YOUTUBE_WORKSPACE: YouTubeWorkspaceState = {
 
 const YOUTUBE_API_ROOT = "https://www.googleapis.com/youtube/v3";
 const MEBIBYTE = 1024 * 1024;
+// These list endpoints expose response ETags and honor If-None-Match/304.
+// Keep the revalidation scope explicit when adding future API resources.
+const YOUTUBE_CONDITIONAL_RESOURCES = new Set(["channels", "search", "playlistItems", "videos"]);
 const YOUTUBE_RESPONSE_LIMITS: Readonly<Record<string, number>> = Object.freeze({
   channels: 4 * MEBIBYTE,
   search: 4 * MEBIBYTE,
@@ -554,7 +557,11 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
   // The page context also scopes the browser-supplied Origin/Referer headers.
   const pageContext = typeof window === "undefined" ? "" : window.location.href;
   const cacheKey = JSON.stringify([requestCacheScope("youtube-http-v1", apiKey), url.toString(), pageContext]);
-  const conditional = youtubeDownloads.prepare(cacheKey, { accept: "application/json", "x-goog-api-key": apiKey });
+  const baseHeaders = { accept: "application/json", "x-goog-api-key": apiKey };
+  const supportsConditional = YOUTUBE_CONDITIONAL_RESOURCES.has(resource);
+  const conditional = supportsConditional
+    ? youtubeDownloads.prepare(cacheKey, baseHeaders)
+    : { headers: new Headers(baseHeaders), previous: undefined };
   const timeout = withTimeout(signal);
   const schema = youtubeResponseSchema(resource);
   try {
@@ -564,7 +571,7 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
     const retryDeadline = serverRetryDeadline(response.headers.get("retry-after"));
     let reused: string | undefined;
     if (response.status === 304) {
-      reused = youtubeDownloads.notModified(cacheKey, response, conditional.previous);
+      reused = supportsConditional ? youtubeDownloads.notModified(cacheKey, response, conditional.previous) : undefined;
       if (reused === undefined) throw new YouTubeApiError("YouTube returned Not Modified without a validated response.", 304, "missingCachedResponse", true);
     } else if (!response.ok) {
       const error = await readYouTubeErrorDetails(response, resource, timeout.controller.signal);
@@ -586,7 +593,7 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
         responseBytesRead = limited.bytesRead;
       } catch (error) {
         if (!(error instanceof ResponseTooLargeError)) throw error;
-        youtubeDownloads.discard(cacheKey);
+        if (supportsConditional) youtubeDownloads.discard(cacheKey);
         recordPerformance("youtube", "response_bytes_read", error.bytesRead);
         throw new YouTubeApiError("YouTube returned an unexpectedly large response.", response.status, "responseTooLarge", false, retryDeadline);
       }
@@ -597,12 +604,12 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
     let payload: unknown = {};
     try { payload = JSON.parse(raw); } catch {
       if (schema) recordProviderSchemaFailure(schema, undefined, "invalid-json");
-      youtubeDownloads.discard(cacheKey);
+      if (supportsConditional) youtubeDownloads.discard(cacheKey);
       throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryDeadline);
     }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       if (schema) recordProviderSchemaFailure(schema, payload);
-      youtubeDownloads.discard(cacheKey);
+      if (supportsConditional) youtubeDownloads.discard(cacheKey);
       throw new YouTubeApiError("YouTube returned malformed data.", response.status, "malformed", true, retryDeadline);
     }
     const list = payload as { items?: unknown; nextPageToken?: unknown; etag?: unknown; error?: unknown } | null;
@@ -610,9 +617,9 @@ async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Rec
       && list.error === undefined && Array.isArray(list.items) && list.items.every(item => !!item && typeof item === "object" && !Array.isArray(item))
       && (list.nextPageToken === undefined || typeof list.nextPageToken === "string");
     if (reused === undefined && response.status === 200 && !validList && schema) recordProviderSchemaFailure(schema, payload);
-    if (reused === undefined && response.status === 200 && validList) {
+    if (supportsConditional && reused === undefined && response.status === 200 && validList) {
       youtubeDownloads.validated(cacheKey, response.headers, raw, typeof list.etag === "string" ? list.etag : undefined);
-    } else if (reused === undefined) youtubeDownloads.discard(cacheKey);
+    } else if (supportsConditional && reused === undefined) youtubeDownloads.discard(cacheKey);
     return payload as T;
   } catch (error) {
     if (signal?.aborted) throw abortError();
