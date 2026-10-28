@@ -2,7 +2,7 @@ import { providerSchemaFailureSnapshot, resetProviderSchemaFailures } from "./pr
 
 /** Numeric aggregates only. No event log, identifiers, persistence, or uploads. */
 const services = ['gemini', 'youtube', 'wikipedia', 'cloud', 'cache'] as const;
-const metrics = ['requests', 'cache_hits', 'cache_misses', 'coalesced', 'queue_ms', 'retries', 'request_bytes', 'response_bytes_reported', 'response_bytes_read'] as const;
+const metrics = ['requests', 'cache_hits', 'cache_misses', 'coalesced', 'queue_ms', 'retries', 'cursor_failures', 'request_bytes', 'response_bytes_reported', 'response_bytes_read'] as const;
 export type DiagnosticService = typeof services[number];
 export type DiagnosticMetric = typeof metrics[number];
 type Counter = { samples: number; total: number; max: number };

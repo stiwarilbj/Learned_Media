@@ -7,6 +7,7 @@ import { LatestSnapshotQueue } from './latest-snapshot-queue';
 import type { FactMemory } from './fact-quality';
 import type { Database } from './supabase/database.types';
 import { assertSnapshot, validateSnapshot } from './snapshot-validation';
+import { recordPerformance } from './performance-diagnostics';
 
 function sameBytes(previous: Uint8Array | undefined, next: Uint8Array) {
   if (!previous || previous.byteLength !== next.byteLength) return false;
@@ -15,6 +16,11 @@ function sameBytes(previous: Uint8Array | undefined, next: Uint8Array) {
 }
 const workspaceDecoder = new TextDecoder();
 type CachedWorkspaceSnapshot = { revisionId: string; bytes: Uint8Array };
+function invalidWorkspaceCursor() {
+  // Keep diagnostics aggregate-only: never retain workspace IDs or page data.
+  recordPerformance('cloud', 'cursor_failures');
+  return new Error('Cloud workspace history returned an invalid cursor.');
+}
 
 // Public client configuration; authorization is enforced by RLS, never by this key.
 export const CLOUD_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ignafizdnpjludnvqkjz.supabase.co';
@@ -123,7 +129,6 @@ export class WorkspaceCloudSync {
     const through = boundary.data[0]?.workspace_id;
     if (typeof through !== 'string' || !through) throw new Error('Cloud workspace history returned an invalid cursor.');
     const records: CloudRecord[] = [], heads = new Map<string, string>();
-    const seen = new Set<string>();
     let after: string | null = null;
     while (true) {
       checkCancellation();
@@ -133,24 +138,28 @@ export class WorkspaceCloudSync {
       if (result.error) throw result.error;
       checkCancellation();
       if (!Array.isArray(result.data) || result.data.length > 100) throw new Error('Cloud workspace history returned an invalid page.');
+      let pageCursor: string | null = after;
       for (const row of result.data) {
-        if (typeof row?.workspace_id !== 'string' || !row.workspace_id || seen.has(row.workspace_id)) {
-          throw new Error('Cloud workspace history returned an invalid cursor.');
+        const workspaceId = row?.workspace_id;
+        if (typeof workspaceId !== 'string' || !workspaceId
+          || (pageCursor !== null && workspaceId <= pageCursor) || workspaceId > through) {
+          throw invalidWorkspaceCursor();
         }
-        seen.add(row.workspace_id);
+        pageCursor = workspaceId;
         if (typeof row.revision_id !== 'string' || !row.revision_id) {
-          this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
+          this.canonicalWorkspaceSnapshots.delete(workspaceId);
           validateSnapshot(null, 'record', 'import');
           continue;
         }
         // Keep only trusted envelope identity for conditional writes. Invalid
         // snapshot bytes never enter restored records or acknowledged content.
-        heads.set(row.workspace_id, row.revision_id);
+        heads.set(workspaceId, row.revision_id);
         const record = this.decodedWorkspaceRecord(row);
         if (record) records.push(record);
       }
-      if (result.data.length < 100 || result.data.at(-1)?.workspace_id === through) break;
-      after = result.data[result.data.length - 1].workspace_id;
+      if (result.data.length < 100 || pageCursor === through) break;
+      if (pageCursor === null || pageCursor === after) throw invalidWorkspaceCursor();
+      after = pageCursor;
     }
     // The full cursor traversal is the revision verification boundary for this
     // restore. Drop snapshots for workspaces that no longer have a verified head.

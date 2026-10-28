@@ -79,6 +79,11 @@ function client(db, user = 'account', stats) {
           return revisions.serializeWorkspaceRecord(value);
         } };
       }
+      if (name === './performance-diagnostics' && stats) {
+        return { recordPerformance(service, metric) {
+          (stats.localFailureCategories ||= []).push([service, metric]);
+        } };
+      }
       return baseRequire(name);
     }
   });
@@ -313,6 +318,33 @@ test('failed later workspace pages never acknowledge a partial restoration', asy
       : { data: [{ workspace_id: failure === 'duplicate' ? 'w-00000' : 'wrong', revision_id: 'bad', record: record(1, 'w-00000') }], error: null } : null;
     await assert.rejects(c.load(signal()), /page failed|invalid cursor/);
     assert.equal(c.observed.size, 0); assert.equal(c.sent.size, 0);
+  }
+});
+test('workspace cursor pages must advance strictly and stay within the captured high-water mark', async () => {
+  const cases = [
+    ['repeated prior key', options => options.after ? [{ workspace_id: 'w-00000', revision_id: 'repeated', record: record(1, 'w-00000') }] : null],
+    ['descending page key', options => options.after ? [
+      { workspace_id: 'w-00101', revision_id: 'later', record: record(1, 'w-00101') },
+      { workspace_id: 'w-00100', revision_id: 'earlier', record: record(1, 'w-00100') }
+    ] : null],
+    ['key beyond high-water mark', options => options.after ? [{ workspace_id: 'z-new', revision_id: 'new', record: record(1, 'z-new') }] : null]
+  ];
+  for (const [label, malformedPage] of cases) {
+    const db = server(); seedWorkspaceRange(db, 150);
+    const stats = {}, c = client(db, 'account', stats);
+    await c.load(signal());
+    const localRevision = c.observed.get('w-00000'), localSnapshot = c.sent.get('w-00000');
+    db.readResult = options => {
+      if (options.after === 'w-00099') {
+        const rows = malformedPage(options);
+        return rows ? { data: rows, error: null } : null;
+      }
+      return null;
+    };
+    await assert.rejects(c.load(signal()), /invalid cursor/, label);
+    assert.equal(c.observed.get('w-00000'), localRevision, `${label}: observed local revision is retained`);
+    assert.equal(c.sent.get('w-00000'), localSnapshot, `${label}: acknowledged local snapshot is retained`);
+    assert.deepEqual(stats.localFailureCategories, [['cloud', 'cursor_failures']], `${label}: only the bounded cursor-failure category is recorded`);
   }
 });
 test('cancellation between workspace pages stops before another page is sent', async () => {
