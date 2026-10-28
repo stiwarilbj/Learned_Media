@@ -4,6 +4,7 @@ import Foundation
 /// One atomic file contains a validated page and its continuation token.
 /// The next cursor is derived from the contiguous page chain, never a second file.
 actor YouTubeImportCheckpointStore {
+    private let maximumBatchSize = 25
     private let files = FileManager.default
     private let directory: URL?
 
@@ -38,14 +39,14 @@ actor YouTubeImportCheckpointStore {
     }
 
     func load(_ sourceID: String) throws -> [[String: Any]] {
-        var pages: [[String: Any]] = []
-        for file in try pageFiles(folder(sourceID)) {
-            let data = try Data(contentsOf: file)
-            // Let the shared validator discard a corrupt chain as a unit.
-            guard let page = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [[:]] }
-            pages.append(page)
-        }
-        return pages
+        try decodePages(pageFiles(folder(sourceID)))
+    }
+
+    func loadBatch(_ sourceID: String, offset: Int, limit: Int) throws -> [[String: Any]] {
+        guard offset >= 0, (1...maximumBatchSize).contains(limit) else { throw invalid() }
+        let allFiles = try pageFiles(folder(sourceID))
+        guard offset < allFiles.count else { return [] }
+        return try decodePages(Array(allFiles.dropFirst(offset).prefix(limit)))
     }
 
     func save(_ page: [String: Any]) throws {
@@ -81,20 +82,24 @@ actor YouTubeImportCheckpointStore {
 
     /// Only a contiguous terminal generation can replace published membership.
     func assertCompleted(_ sourceID: String, identity: String, generation: String) throws {
-        let pages = try load(sourceID)
-        guard !pages.isEmpty, !generation.isEmpty, generation.utf8.count <= 128 else { throw invalid() }
+        let files = try pageFiles(folder(sourceID))
+        guard !files.isEmpty, !generation.isEmpty, generation.utf8.count <= 128 else { throw invalid() }
         var expected: String? = ""
         var seen = Set<String>()
-        for (index, page) in pages.enumerated() {
-            guard let token = expected, seen.insert(token).inserted,
-                  page["version"] as? Int == 1, page["sourceId"] as? String == sourceID,
-                  page["identity"] as? String == identity, page["refreshGeneration"] as? String == generation,
-                  page["index"] as? Int == index, page["requestToken"] as? String == token else { throw invalid() }
-            if page["nextPageToken"] is NSNull { expected = nil }
-            else {
-                guard let next = page["nextPageToken"] as? String, !next.isEmpty,
-                      next.utf8.count <= 4096, !seen.contains(next) else { throw invalid() }
-                expected = next
+        for start in stride(from: 0, to: files.count, by: maximumBatchSize) {
+            let batch = try decodePages(Array(files[start..<min(start + maximumBatchSize, files.count)]))
+            for (offset, page) in batch.enumerated() {
+                let index = start + offset
+                guard let token = expected, seen.insert(token).inserted,
+                      page["version"] as? Int == 1, page["sourceId"] as? String == sourceID,
+                      page["identity"] as? String == identity, page["refreshGeneration"] as? String == generation,
+                      page["index"] as? Int == index, page["requestToken"] as? String == token else { throw invalid() }
+                if page["nextPageToken"] is NSNull { expected = nil }
+                else {
+                    guard let next = page["nextPageToken"] as? String, !next.isEmpty,
+                          next.utf8.count <= 4096, !seen.contains(next) else { throw invalid() }
+                    expected = next
+                }
             }
         }
         guard expected == nil else { throw invalid() }
@@ -107,5 +112,17 @@ actor YouTubeImportCheckpointStore {
 
     private func invalid() -> NSError {
         NSError(domain: "LearnedMedia.YouTubeCheckpoint", code: 1, userInfo: [NSLocalizedDescriptionKey: "The YouTube import checkpoint could not be committed. Retry to resume safely."])
+    }
+
+    private func decodePages(_ files: [URL]) throws -> [[String: Any]] {
+        var pages: [[String: Any]] = []
+        pages.reserveCapacity(files.count)
+        for file in files {
+            let data = try Data(contentsOf: file)
+            // Let the shared validator discard a corrupt chain as a unit.
+            guard let page = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [[:]] }
+            pages.append(page)
+        }
+        return pages
     }
 }

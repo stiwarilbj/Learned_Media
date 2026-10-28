@@ -2,7 +2,7 @@
 (function(scope) { const require = () => scope.LEARNED_MEDIA_BACKGROUND; const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.YOUTUBE_IMPORT_PAGE_PREFIX = exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION = void 0;
+exports.YOUTUBE_IMPORT_PAGE_BATCH_SIZE = exports.YOUTUBE_IMPORT_PAGE_PREFIX = exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION = void 0;
 exports.importPagePrefix = importPagePrefix;
 exports.importPageKey = importPageKey;
 exports.importPageIdentity = importPageIdentity;
@@ -12,10 +12,31 @@ const background_work_1 = require("./background-work");
 // Bump when persisted video approval/mapping rules change. No credentials are stored.
 exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION = 1;
 exports.YOUTUBE_IMPORT_PAGE_PREFIX = "youtube-import-page-v1:";
+exports.YOUTUBE_IMPORT_PAGE_BATCH_SIZE = 25;
 function importPagePrefix(sourceId) { return `${exports.YOUTUBE_IMPORT_PAGE_PREFIX}${encodeURIComponent(sourceId)}:`; }
 function importPageKey(page) { return `${importPagePrefix(page.sourceId)}${String(page.index).padStart(8, "0")}`; }
 function importPageIdentity(catalogVersion, channelId, playlistId) {
     return JSON.stringify([exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION, catalogVersion, channelId, playlistId]);
+}
+async function* checkpointPageBatches(store, sourceId, cancellation) {
+    if (!store)
+        return;
+    if (store.loadBatches) {
+        for await (const batch of store.loadBatches(sourceId, cancellation)) {
+            (0, background_work_1.checkBackgroundCancellation)(cancellation);
+            yield batch;
+        }
+        (0, background_work_1.checkBackgroundCancellation)(cancellation);
+        return;
+    }
+    // Compatibility path for in-memory and older stores. Production storage
+    // adapters provide loadBatches so IndexedDB/native reads stay bounded.
+    const pages = await store.load(sourceId);
+    for (let offset = 0; offset < pages.length; offset += exports.YOUTUBE_IMPORT_PAGE_BATCH_SIZE) {
+        (0, background_work_1.checkBackgroundCancellation)(cancellation);
+        yield pages.slice(offset, offset + exports.YOUTUBE_IMPORT_PAGE_BATCH_SIZE);
+        await (0, background_work_1.yieldBackground)(cancellation);
+    }
 }
 function validVideo(video, sourceId) {
     return video && typeof video.id === "string" && video.id.length > 0 && typeof video.channelId === "string" && typeof video.channelName === "string"
@@ -33,34 +54,41 @@ function newRefreshGeneration() {
 /** A page's validated records and cursor form one durable envelope. */
 async function openImportCheckpoint(store, sourceId, identity, committedAt, cancellation) {
     (0, background_work_1.checkBackgroundCancellation)(cancellation);
-    const pages = store ? await store.load(sourceId) : [];
-    let generation = pages[0]?.refreshGeneration ?? newRefreshGeneration();
+    let generation = newRefreshGeneration();
+    let pageCount = 0;
     let nextPageToken = "";
     const tokens = new Set();
     const videos = new Map();
     let valid = true;
-    await (0, background_work_1.forEachBackground)(pages, (page, index) => {
-        if (!page || page.version !== exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION || page.sourceId !== sourceId || page.identity !== identity
-            || typeof page.refreshGeneration !== "string" || !page.refreshGeneration.length || page.refreshGeneration.length > 128 || page.refreshGeneration !== generation
-            || page.index !== index || index > 99_999_999 || nextPageToken === null || page.requestToken !== nextPageToken || tokens.has(page.requestToken)
-            || !Number.isFinite(Date.parse(page.savedAt)) || (committedAt && Date.parse(page.savedAt) <= Date.parse(committedAt))
-            || !(page.nextPageToken === null || typeof page.nextPageToken === "string" && page.nextPageToken.length > 0 && page.nextPageToken.length <= 4096)
-            || !Array.isArray(page.videos) || page.videos.length > 50 || !page.videos.every(video => validVideo(video, sourceId))) {
-            valid = false;
-            return false;
-        }
-        tokens.add(page.requestToken);
-        if (page.nextPageToken !== null && tokens.has(page.nextPageToken)) {
-            valid = false;
-            return false;
-        }
-        page.videos.forEach(video => videos.set(video.id, video));
-        nextPageToken = page.nextPageToken;
-    }, cancellation);
+    for await (const batch of checkpointPageBatches(store, sourceId, cancellation)) {
+        await (0, background_work_1.forEachBackground)(batch, page => {
+            const index = pageCount++;
+            if (index === 0 && typeof page?.refreshGeneration === "string")
+                generation = page.refreshGeneration;
+            if (!page || page.version !== exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION || page.sourceId !== sourceId || page.identity !== identity
+                || typeof page.refreshGeneration !== "string" || !page.refreshGeneration.length || page.refreshGeneration.length > 128 || page.refreshGeneration !== generation
+                || page.index !== index || index > 99_999_999 || nextPageToken === null || page.requestToken !== nextPageToken || tokens.has(page.requestToken)
+                || !Number.isFinite(Date.parse(page.savedAt)) || (committedAt && Date.parse(page.savedAt) <= Date.parse(committedAt))
+                || !(page.nextPageToken === null || typeof page.nextPageToken === "string" && page.nextPageToken.length > 0 && page.nextPageToken.length <= 4096)
+                || !Array.isArray(page.videos) || page.videos.length > 50 || !page.videos.every(video => validVideo(video, sourceId))) {
+                valid = false;
+                return false;
+            }
+            tokens.add(page.requestToken);
+            if (page.nextPageToken !== null && tokens.has(page.nextPageToken)) {
+                valid = false;
+                return false;
+            }
+            page.videos.forEach(video => videos.set(video.id, video));
+            nextPageToken = page.nextPageToken;
+        }, cancellation);
+        if (!valid)
+            break;
+    }
     if (!valid) {
         (0, background_work_1.checkBackgroundCancellation)(cancellation);
         await store?.clear(sourceId);
-        pages.length = 0;
+        pageCount = 0;
         tokens.clear();
         videos.clear();
         nextPageToken = "";
@@ -83,7 +111,7 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
     return {
         completedRefresh() {
             (0, background_work_1.checkBackgroundCancellation)(cancellation);
-            if (nextPageToken !== null || !pages.length)
+            if (nextPageToken !== null || !pageCount)
                 throw new Error("The YouTube refresh is incomplete. Previous playlist associations were retained.");
             return { sourceId, identity, generation, complete: true, videos: [...videos.values()] };
         },
@@ -95,11 +123,11 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
             const requestToken = validateNextPageToken(next);
             if (records.length > 50 || !records.every(video => validVideo(video, sourceId)))
                 throw new Error("YouTube returned invalid import metadata. The checkpoint was not advanced.");
-            const page = { version: exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, refreshGeneration: generation, index: pages.length,
+            const page = { version: exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, refreshGeneration: generation, index: pageCount,
                 requestToken, nextPageToken: next, videos: records, savedAt: new Date().toISOString() };
             // Advance memory/progress only after the entire envelope commits.
             await store?.save(page);
-            pages.push(page);
+            pageCount += 1;
             tokens.add(page.requestToken);
             records.forEach(video => videos.set(video.id, video));
             nextPageToken = next;

@@ -2863,13 +2863,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         case "saveState":
             do { try saveState(payload["state"]); respond(id: id, result: true) }
             catch { respond(id: id, error: "Learning data could not be saved. The last valid recovery copy was kept.") }
-        case "hasYouTubeImportPages", "loadYouTubeImportPages", "saveYouTubeImportPage", "clearYouTubeImportPages":
+        case "hasYouTubeImportPages", "loadYouTubeImportPages", "loadYouTubeImportPageBatch", "saveYouTubeImportPage", "clearYouTubeImportPages":
             Task { [weak self] in
                 guard let self else { return }
                 do {
                     let sourceID = payload["sourceId"] as? String ?? ""
                     if action == "hasYouTubeImportPages" { respond(id: id, result: try await youtubeImportCheckpoints.has(payload["sourceId"] as? String)) }
                     else if action == "loadYouTubeImportPages" { respond(id: id, result: try await youtubeImportCheckpoints.load(sourceID)) }
+                    else if action == "loadYouTubeImportPageBatch" {
+                        let offset = payload["offset"] as? Int ?? -1
+                        let limit = payload["limit"] as? Int ?? 0
+                        respond(id: id, result: try await youtubeImportCheckpoints.loadBatch(sourceID, offset: offset, limit: limit))
+                    }
                     else if action == "clearYouTubeImportPages" { try await youtubeImportCheckpoints.clear(sourceID); respond(id: id, result: true) }
                     else {
                         guard let page = payload["page"] as? [String: Any] else { throw NativeError(message: "Invalid YouTube import page.", retryable: false) }

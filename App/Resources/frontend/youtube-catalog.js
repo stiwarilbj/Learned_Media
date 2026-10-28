@@ -125,7 +125,23 @@
     function assertCurrent() { if (isCurrent && !isCurrent()) throw new DOMException("YouTube import canceled.", "AbortError"); }
     const pages = {
       has: function (sourceId) { assertCurrent(); return window.__learnedMediaNativeRequest("hasYouTubeImportPages", { sourceId: sourceId }); },
-      load: function (sourceId) { assertCurrent(); return window.__learnedMediaNativeRequest("loadYouTubeImportPages", { sourceId: sourceId }); },
+      load: async function (sourceId) { const records = []; for await (const batch of pages.loadBatches(sourceId)) records.push.apply(records, batch); return records; },
+      loadBatches: async function* (sourceId, cancellation) {
+        const batchSize = window.LEARNED_MEDIA_YOUTUBE_CHECKPOINTS.YOUTUBE_IMPORT_PAGE_BATCH_SIZE;
+        let offset = 0;
+        while (true) {
+          assertCurrent();
+          background.checkBackgroundCancellation(cancellation);
+          const batch = await window.__learnedMediaNativeRequest("loadYouTubeImportPageBatch", { sourceId: sourceId, offset: offset, limit: batchSize });
+          assertCurrent();
+          background.checkBackgroundCancellation(cancellation);
+          if (!Array.isArray(batch)) throw new Error("The YouTube import checkpoint batch is invalid.");
+          if (!batch.length) return;
+          yield batch;
+          offset += batch.length;
+          await background.yieldBackground(assertCurrent);
+        }
+      },
       save: function (page) { assertCurrent(); return window.__learnedMediaNativeRequest("saveYouTubeImportPage", { page: page }); },
       clear: function (sourceId) { assertCurrent(); return window.__learnedMediaNativeRequest("clearYouTubeImportPages", { sourceId: sourceId }); }
     };

@@ -18,6 +18,7 @@
     "test:youtube-errors": "node scripts/test-youtube-errors.mjs",
     "test:video-source-index": "node scripts/test-video-source-index.mjs",
     "test:youtube-pagination": "node scripts/test-youtube-pagination.mjs",
+    "test:youtube-import-page-batches": "node scripts/test-youtube-import-page-batches.mjs",
     "test:cloud-revision": "node --test scripts/test-cloud-revision-guard.mjs && node scripts/test-native-cloud-revision.mjs && node scripts/test-native-cloud-cursor.mjs",
     "test:native-snapshot-lock": "node scripts/test-native-snapshot-lock.mjs",
     "test:provider-schema": "node scripts/build-native-diagnostics.mjs --check && node --test scripts/test-provider-schema-diagnostics.mjs",
