@@ -18,6 +18,7 @@
     "test:youtube-channel-normalization": "node --test scripts/test-youtube-channel-normalization.mjs",
     "test:youtube-errors": "node scripts/test-youtube-errors.mjs",
     "test:youtube-conditional": "node --test scripts/test-youtube-conditional-download.mjs",
+    "test:youtube-unavailable-cache": "node --test scripts/test-youtube-unavailable-cache.mjs",
     "test:video-source-index": "node scripts/test-video-source-index.mjs",
     "test:youtube-pagination": "node scripts/test-youtube-pagination.mjs",
     "test:youtube-import-page-batches": "node scripts/test-youtube-import-page-batches.mjs",

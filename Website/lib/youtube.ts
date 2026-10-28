@@ -761,21 +761,46 @@ export class YouTubeClient {
   }
 
   private createMetadataLoader(signal?: AbortSignal): VideoMetadataLoader {
-    // Share raw metadata within one import, keeping approval decisions source-specific.
-    const pending = new Map<string, Promise<NonNullable<VideoApiResponse["items"]>[number] | undefined>>();
+    // Share successful metadata and in-flight reads within one import, while
+    // remembering only IDs that a valid videos.list response omitted.
+    const metadataById = new Map<string, NonNullable<VideoApiResponse["items"]>[number]>();
+    const confirmedUnavailable = new Set<string>();
+    const inFlight = new Map<string, Promise<NonNullable<VideoApiResponse["items"]>[number] | undefined>>();
     return async (ids) => {
       const uniqueIds = Array.from(new Set(ids));
-      const missing = uniqueIds.filter((id) => !pending.has(id));
+      const missing = uniqueIds.filter((id) => !metadataById.has(id) && !confirmedUnavailable.has(id) && !inFlight.has(id));
       for (let offset = 0; offset < missing.length; offset += 50) {
         const batch = missing.slice(offset, offset + 50);
         const response = this.request<VideoApiResponse>("videos", { part: "snippet,contentDetails,status", id: batch.join(",") }, signal)
           .then((payload) => {
-            if (!payload || !Array.isArray(payload.items)) throw new YouTubeApiError("YouTube returned invalid video metadata. The checkpoint was not advanced.", undefined, "malformed-metadata", false);
-            return new Map(payload.items.map((item) => [item.id, item]));
+            if (!payload || !Array.isArray(payload.items)
+              || !payload.items.every((item) => item && typeof item.id === "string" && item.id.length > 0)) {
+              throw new YouTubeApiError("YouTube returned invalid video metadata. The checkpoint was not advanced.", undefined, "malformed-metadata", false);
+            }
+            const items = new Map(payload.items.map((item) => [item.id, item]));
+            for (const id of batch) {
+              const item = items.get(id);
+              if (item) metadataById.set(id, item);
+              else confirmedUnavailable.add(id);
+            }
+            return items;
           });
-        batch.forEach((id) => pending.set(id, response.then((items) => items.get(id))));
+        batch.forEach((id) => {
+          const itemPromise = response.then((items) => items.get(id));
+          inFlight.set(id, itemPromise);
+          // Failed requests are never memoized: a later overlapping playlist
+          // can retry after a timeout, permission change, quota reset, or 5xx.
+          void itemPromise.then(
+            () => { if (inFlight.get(id) === itemPromise) inFlight.delete(id); },
+            () => { if (inFlight.get(id) === itemPromise) inFlight.delete(id); }
+          );
+        });
       }
-      const items = await Promise.all(uniqueIds.map((id) => pending.get(id)!));
+      const items = await Promise.all(uniqueIds.map((id) => {
+        if (metadataById.has(id)) return Promise.resolve(metadataById.get(id));
+        if (confirmedUnavailable.has(id)) return Promise.resolve(undefined);
+        return inFlight.get(id)!;
+      }));
       return items.filter((item): item is NonNullable<typeof item> => Boolean(item));
     };
   }
