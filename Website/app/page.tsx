@@ -90,7 +90,7 @@ type AppWorkspaceRecord = WorkspaceRecord<PersistedState>;
 type AppWorkspaceStore = WorkspaceStore<PersistedState>;
 type CardSearchWorkerReply = { type: "ready"; revision: number } | { type: "eligibility-stale"; requestId: number; revision: number; eligibilityScope: string; eligibilityRevision: number } | { type: "results"; requestId: number; revision: number; query: string; eligibilityScope: string; eligibilityRevision: number; viewKey: string; ids: string[] };
 type ActiveFactBatch = { workspaceId: string; accountId: string | null; key: string; setup: BatchSetup; accepted: Record<string, string>; replay: boolean };
-type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ coverage?: YouTubeSearchCandidate["coverage"]; videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
+type YouTubeSearchWorkerReply = { type: "ready"; revision: number } | { type: "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "invalid"; requestId: number; reason: "invalid-request" } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: Array<{ coverage?: YouTubeSearchCandidate["coverage"]; videoId: string; score: number; matchedFields: string[]; supportingText: string[] }> };
 type YouTubeWorkerSearchRequest = { query: string; plan: VideoSearchPlan; topic: YouTubeTopic | "All"; channelId?: string; limit: number; excludedIds?: string[]; expanded?: boolean; viewKey?: string };
 type ConfirmationRequest = {
   title: string;
@@ -1760,7 +1760,8 @@ export default function HomePage() {
       if (!pending) return;
       youtubeSearchPending.current.delete(reply.requestId);
       pending.signal.removeEventListener("abort", pending.onAbort);
-      if (reply.type === "stale" || reply.type === "results" && reply.revision !== youtubeSearchWorkerRevision.current) pending.reject(new Error("Video catalog changed during search."));
+      if (reply.type === "invalid") pending.reject(new Error("Invalid video search request."));
+      else if (reply.type === "stale" || reply.type === "results" && reply.revision !== youtubeSearchWorkerRevision.current) pending.reject(new Error("Video catalog changed during search."));
       else pending.resolve(reply);
     };
     worker.onerror = () => {

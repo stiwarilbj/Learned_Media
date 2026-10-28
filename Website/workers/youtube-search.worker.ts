@@ -2,7 +2,7 @@
 import { SessionCache } from "@/lib/session-cache";
 import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
 import type { SearchableVideoMetadata } from "@/lib/video-metadata";
-import { indexVideoSearchMetadata, validateVideoSearchCatalogUpdate, insertBoundedRanked, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
+import { indexVideoSearchMetadata, isValidVideoSearchRequest, validateVideoSearchCatalogUpdate, insertBoundedRanked, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
 
 type SearchRequest = {
   type: "search";
@@ -23,7 +23,7 @@ type Request =
   | { type: "cancel"; requestId: number }
   | SearchRequest;
 type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
-type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
+type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "invalid"; requestId: number; reason: "invalid-request" } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
 type SearchSession = { direct: CandidateReply[]; fallback: CandidateReply[]; directComplete: boolean; fallbackComplete: boolean };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
@@ -214,9 +214,12 @@ async function search(request: SearchRequest) {
   }
 }
 
-workerScope.onmessage = (event: MessageEvent<Request>) => {
-  const request = event.data;
+workerScope.onmessage = (event: MessageEvent<unknown>) => {
+  const message = event.data;
+  if (!message || typeof message !== "object" || Array.isArray(message)) return;
+  const request = message as Request;
   if (request.type === "initialize" || request.type === "update") {
+    if (request.type === "update" && (!Number.isSafeInteger(request.baseRevision) || request.baseRevision < 0)) return;
     if (request.type === "update" && (snapshot.revision < 0 || request.baseRevision !== snapshot.revision)) {
       indexEpoch++;
       const staleRequestId = activeRequestId;
@@ -242,11 +245,17 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
     if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision: snapshot.revision } satisfies Reply);
     if (request.type === "initialize") workerScope.postMessage({ type: "ready", revision: snapshot.revision } satisfies Reply);
   } else if (request.type === "cancel") {
-    if (request.requestId === latestRequestId) {
+    if (Number.isSafeInteger(request.requestId) && request.requestId >= 0 && request.requestId === latestRequestId) {
       latestRequestId += 1;
       activeRequestId = 0;
     }
-  } else {
+  } else if (request.type === "search") {
+    if (!isValidVideoSearchRequest(message)) {
+      if (Number.isSafeInteger((message as Record<string, unknown>).requestId) && ((message as Record<string, unknown>).requestId as number) >= 0) {
+        workerScope.postMessage({ type: "invalid", requestId: (message as Record<string, unknown>).requestId as number, reason: "invalid-request" } satisfies Reply);
+      }
+      return;
+    }
     void search(request);
   }
 };

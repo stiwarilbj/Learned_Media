@@ -139,7 +139,8 @@ function rankSearchResults(query, items, getText, limit = items.length) {
 })(search); const require = () => search; const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PreparedVideoSearchCache = exports.VIDEO_SEMANTIC_VERSION = void 0;
+exports.PreparedVideoSearchCache = exports.VIDEO_SEMANTIC_VERSION = exports.MAX_VIDEO_SEARCH_RESULT_LIMIT = exports.VIDEO_SEARCH_TOPICS = void 0;
+exports.isValidVideoSearchRequest = isValidVideoSearchRequest;
 exports.validateVideoSearchCatalogUpdate = validateVideoSearchCatalogUpdate;
 exports.indexVideoSearchMetadata = indexVideoSearchMetadata;
 exports.normalizeVideoQuery = normalizeVideoQuery;
@@ -158,6 +159,93 @@ exports.searchPreparedSemanticVideosYielding = searchPreparedSemanticVideosYield
 exports.videoSearchReason = videoSearchReason;
 exports.shouldEnrichVideoSearch = shouldEnrichVideoSearch;
 const search_1 = require("./search");
+exports.VIDEO_SEARCH_TOPICS = ["History", "Politics", "Geography", "Science", "Nature", "Mathematics", "Literature", "Sports", "Culture", "Technology"];
+exports.MAX_VIDEO_SEARCH_RESULT_LIMIT = 10_000;
+const MAX_VIDEO_SEARCH_QUERY_LENGTH = 4_096;
+const MAX_VIDEO_SEARCH_FILTER_TEXT_LENGTH = 512;
+const MAX_VIDEO_SEARCH_FILTER_ITEMS = 256;
+const MAX_VIDEO_SEARCH_EXCLUDED_IDS = 100_000;
+function isRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.prototype.toString.call(value) !== "[object Object]")
+        return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === null || Object.getPrototypeOf(prototype) === null;
+}
+function isBoundedString(value, maximum = MAX_VIDEO_SEARCH_FILTER_TEXT_LENGTH) {
+    return typeof value === "string" && value.length <= maximum;
+}
+function isStringList(value, maximumItems = MAX_VIDEO_SEARCH_FILTER_ITEMS) {
+    return Array.isArray(value) && value.length <= maximumItems && value.every(item => isBoundedString(item));
+}
+function isVideoSearchPlan(value) {
+    if (!isRecord(value))
+        return false;
+    const allowedFields = new Set(["terms", "include", "alternatives", "exclude", "topics", "topicHints", "conceptGroups", "anyOf", "channel", "channelId", "dateIntent", "minDate", "maxDate", "minDurationSeconds", "maxDurationSeconds", "sort"]);
+    if (Object.keys(value).some(field => !allowedFields.has(field)))
+        return false;
+    for (const field of ["terms", "include", "alternatives", "exclude", "topics", "topicHints"]) {
+        if (value[field] !== undefined && !isStringList(value[field]))
+            return false;
+    }
+    if (value.conceptGroups !== undefined) {
+        if (!Array.isArray(value.conceptGroups) || value.conceptGroups.length > 64)
+            return false;
+        for (const group of value.conceptGroups) {
+            if (!isRecord(group) || Object.keys(group).some(field => !["label", "terms", "related", "required"].includes(field))
+                || !isStringList(group.terms, 64) || group.terms.length === 0
+                || group.label !== undefined && !isBoundedString(group.label)
+                || group.related !== undefined && !isStringList(group.related, 128)
+                || group.required !== undefined && typeof group.required !== "boolean")
+                return false;
+        }
+    }
+    if (value.anyOf !== undefined) {
+        const conceptGroupCount = Array.isArray(value.conceptGroups) ? value.conceptGroups.length : -1;
+        if (!Array.isArray(value.anyOf) || value.anyOf.length > 64 || conceptGroupCount < 0)
+            return false;
+        for (const clause of value.anyOf) {
+            if (!Array.isArray(clause) || clause.length === 0 || clause.length > 64
+                || !clause.every(index => Number.isSafeInteger(index) && index >= 0 && index < conceptGroupCount))
+                return false;
+        }
+    }
+    for (const field of ["channel", "channelId"])
+        if (value[field] !== undefined && !isBoundedString(value[field], 256))
+            return false;
+    if (value.dateIntent !== undefined && !["upload", "event", "either"].includes(value.dateIntent))
+        return false;
+    for (const field of ["minDate", "maxDate"]) {
+        if (value[field] !== undefined && (!isBoundedString(value[field], 64) || !Number.isFinite(Date.parse(value[field]))))
+            return false;
+    }
+    if (value.minDate && value.maxDate && Date.parse(value.minDate) > Date.parse(value.maxDate))
+        return false;
+    for (const field of ["minDurationSeconds", "maxDurationSeconds"]) {
+        if (value[field] !== undefined && (typeof value[field] !== "number" || !Number.isFinite(value[field]) || value[field] < 0))
+            return false;
+    }
+    if (typeof value.minDurationSeconds === "number" && typeof value.maxDurationSeconds === "number" && value.minDurationSeconds > value.maxDurationSeconds)
+        return false;
+    if (value.sort !== undefined && !["relevance", "newest", "oldest", "random"].includes(value.sort))
+        return false;
+    return true;
+}
+/** Validate a worker search payload before it allocates filters or starts ranking. */
+function isValidVideoSearchRequest(value) {
+    if (!isRecord(value) || value.type !== "search"
+        || !Number.isSafeInteger(value.requestId) || value.requestId < 0
+        || !Number.isSafeInteger(value.revision) || value.revision < 0
+        || !isBoundedString(value.query, MAX_VIDEO_SEARCH_QUERY_LENGTH)
+        || !isVideoSearchPlan(value.plan)
+        || value.topic !== "All" && !exports.VIDEO_SEARCH_TOPICS.includes(value.topic)
+        || !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > exports.MAX_VIDEO_SEARCH_RESULT_LIMIT
+        || value.channelId !== undefined && !isBoundedString(value.channelId, 256)
+        || value.excludedIds !== undefined && !isStringList(value.excludedIds, MAX_VIDEO_SEARCH_EXCLUDED_IDS)
+        || value.expanded !== undefined && typeof value.expanded !== "boolean"
+        || value.viewKey !== undefined && !isBoundedString(value.viewKey, 1_024))
+        return false;
+    return true;
+}
 exports.VIDEO_SEMANTIC_VERSION = 9;
 const RESTRICTED_PLAYLIST_CHANNEL_ID = "UCYO_jab_esuFRV4b17AJtAw";
 const APPROVED_3BLUE_PLAYLIST_IDS = new Set([

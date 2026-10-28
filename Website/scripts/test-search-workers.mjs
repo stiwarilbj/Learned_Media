@@ -58,7 +58,7 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
       indexVideoSearchMetadata: indexOverride ? indexOverride(imported.indexVideoSearchMetadata) : imported.indexVideoSearchMetadata };
     return imported;
   };
-  new Function("require", "module", "exports", "self", "setTimeout", "Map", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size });" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
+  new Function("require", "module", "exports", "self", "setTimeout", "Map", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); self.inspectSearchState = () => ({ latestRequestId, activeRequestId });" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
@@ -84,7 +84,7 @@ function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOve
     vm.runInNewContext(runtime, context);
   };
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
-  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot; globalThis.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCacheBytes }); globalThis.inspectSearchCaches = () => ({ results: 0, sessions: searchSessionCache.size, prepared: preparedSearchCache.size });", context);
+  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot; globalThis.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCacheBytes }); globalThis.inspectSearchCaches = () => ({ results: 0, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); globalThis.inspectSearchState = () => ({ latest });", context);
   if (searchOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos = searchOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos);
   if (indexOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata = indexOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata);
   return { messages, workerMaps, context, send: (data) => context.onmessage({ data }) };
@@ -125,6 +125,58 @@ test("bounded ranking retains only the requested top results and preserves tie o
   const tied = [];
   for (let index = 0; index < 200; index++) insertBoundedRanked(tied, { score: 1, index }, 7, compare);
   assert.deepEqual(tied.map((item) => item.index), [0, 1, 2, 3, 4, 5, 6]);
+});
+
+test("YouTube workers reject malformed search messages before ranking or mutating request state", async () => {
+  const fixtures = [
+    { name: "website", load: searchOverride => loadWorker("workers/youtube-search.worker.ts", { searchOverride }), send: (worker, data) => worker.scope.onmessage({ data }), messages: worker => worker.messages, caches: worker => worker.scope.inspectSearchCaches(), state: worker => worker.scope.inspectSearchState(), isNative: false },
+    { name: "Mac", load: searchOverride => loadNativeYouTubeWorker({ searchOverride }), send: (worker, data) => worker.send(data), messages: worker => worker.messages, caches: worker => worker.context.inspectSearchCaches(), state: worker => worker.context.inspectSearchState(), isNative: true }
+  ];
+  for (const fixture of fixtures) {
+    let rankingCalls = 0;
+    const searchOverride = original => (videos, prepared, limit, excluded) => { rankingCalls++; return original(videos, prepared, limit, excluded); };
+    const worker = fixture.load(searchOverride);
+    fixture.send(worker, { type: "initialize", revision: 0, videos: projectVideos([{
+      id: `${fixture.name}-valid`, channelId: "channel-a", channelName: "Approved Channel", title: "History documentary",
+      description: "A specific history story.", tags: ["history"], publishedAt: "2024-01-01T00:00:00.000Z",
+      durationSeconds: 600, topics: ["History"], approved: true
+    }]) });
+    const beforeInvalid = fixture.state(worker);
+    const base = { type: "search", revision: 0, query: "history", plan: { terms: ["history"] }, topic: "History", limit: 1 };
+    const malformed = [
+      { ...base, requestId: 1, query: 7 },
+      { ...base, requestId: 2, plan: { terms: ["history", 7] } },
+      { ...base, requestId: 3, plan: { conceptGroups: [{ terms: ["history"] }], anyOf: [[2]] } },
+      { ...base, requestId: 4, plan: { sort: "sideways" } },
+      { ...base, requestId: 5, topic: "Uncatalogued" },
+      { ...base, requestId: 6, channelId: 9 },
+      { ...base, requestId: 7, excludedIds: "already-seen" },
+      { ...base, requestId: 8, expanded: "yes" },
+      { ...base, requestId: 9, viewKey: {} },
+      { ...base, requestId: 10, limit: 0 },
+      { ...base, requestId: 11, limit: 1.5 },
+      { ...base, requestId: 12, limit: 10_001 },
+      { ...base, requestId: 13, plan: { minDurationSeconds: 120, maxDurationSeconds: 60 } }
+    ];
+    for (const request of malformed) {
+      fixture.send(worker, request);
+      const reply = await waitForMessage(fixture.messages(worker), message => message.type === "invalid" && message.requestId === request.requestId);
+      assert.equal(reply.reason, "invalid-request", fixture.name);
+    }
+    fixture.send(worker, null);
+    fixture.send(worker, { ...base, requestId: "not-a-number" });
+    assert.equal(rankingCalls, 0, `${fixture.name} never invokes ranking for malformed messages`);
+    assert.deepEqual(JSON.parse(JSON.stringify(fixture.caches(worker))), { results: 0, sessions: 0, prepared: 0 }, `${fixture.name} allocates no search cache entries for invalid requests`);
+    assert.deepEqual(JSON.parse(JSON.stringify(fixture.state(worker))), JSON.parse(JSON.stringify(beforeInvalid)), `${fixture.name} leaves the active request state unchanged for invalid messages`);
+    const before = fixture.state(worker);
+    fixture.send(worker, { ...base, requestId: 100 });
+    const validReply = await waitForMessage(fixture.messages(worker), message => message.requestId === 100 && Array.isArray(message.candidates));
+    assert.equal(validReply.candidates.length, 1, `${fixture.name} remains usable after invalid requests`);
+    assert.equal(rankingCalls, 1, `${fixture.name} ranks only the valid request`);
+    const after = fixture.state(worker);
+    if (fixture.isNative) assert.equal(after.latest, before.latest + 1, `${fixture.name} only advances search state for the valid request`);
+    else { assert.equal(after.latestRequestId, 100, `${fixture.name} advances to the valid request ID`); assert.equal(after.activeRequestId, 0, `${fixture.name} settles the valid request`); }
+  }
 });
 
 test("YouTube workers keep bounded direct and fallback pools with date and position ordering", async () => {
@@ -690,14 +742,14 @@ test("YouTube worker prepares one immutable plan for every chunk in a request", 
   scope.onmessage({ data: { type: "search", requestId: 45, revision: 0, query: "bending starlight", plan, topic: "Science", limit: 80, viewKey: "workspace-a" } });
   const reply = await waitForMessage(messages, message => message.type === "results" && message.requestId === 45);
   assert.ok(reply.candidates.length > 0);
-  assert.equal(conceptGroupReads, 3, "one worker cache-key read and one immutable preparation, independent of chunk count");
+  assert.equal(conceptGroupReads, 4, "validation, cache identity, and prepared search run once, independent of chunk count");
 
   const firstPageIds = reply.candidates.map(candidate => candidate.videoId);
   scope.onmessage({ data: { type: "search", requestId: 46, revision: 0, query: "bending starlight", plan, topic: "Science", limit: 80, excludedIds: firstPageIds, viewKey: "workspace-a" } });
   const nextPage = await waitForMessage(messages, message => message.type === "results" && message.requestId === 46);
   assert.ok(nextPage.candidates.length > 0);
   assert.ok(nextPage.candidates.every(candidate => !firstPageIds.includes(candidate.videoId)));
-  assert.equal(conceptGroupReads, 4, "a cached continuation reads the plan for its scoped key but avoids rebuilding the prepared search");
+  assert.equal(conceptGroupReads, 6, "a cached continuation validates and reads its key but avoids rebuilding the prepared search");
 });
 
 test("native YouTube worker reuses a prepared search across paginated requests", async () => {
@@ -715,18 +767,18 @@ test("native YouTube worker reuses a prepared search across paginated requests",
   const catalogMap = worker.workerMaps.find(map => map.size === videos.length && map.has(videos[0].id));
   assert.ok(catalogMap, "the native worker maintains an ID map beside its retained ordered array");
   assert.equal(catalogMap.valuesCallCount, 1);
-  worker.send({ type: "search", requestId: 61, revision: 0, plan, topic: "Science", limit: 80, viewKey: "workspace-a" });
+  worker.send({ type: "search", requestId: 61, revision: 0, query: "bending starlight", plan, topic: "Science", limit: 80, viewKey: "workspace-a" });
   const firstPage = await waitForMessage(worker.messages, message => message.requestId === 61);
   const firstPageIds = firstPage.candidates.map(candidate => candidate.videoId);
   assert.ok(firstPageIds.length > 0);
-  assert.equal(conceptGroupReads, 3, "the Mac worker serializes the plan once for its session key and prepares it once");
+  assert.equal(conceptGroupReads, 4, "the Mac worker validates, serializes and prepares the plan once");
   assert.equal(catalogMap.valuesCallCount, 1, "native search scans the retained array rather than rebuilding it from map values");
 
-  worker.send({ type: "search", requestId: 62, revision: 0, plan, topic: "Science", limit: 80, excludedIds: firstPageIds, viewKey: "workspace-a" });
+  worker.send({ type: "search", requestId: 62, revision: 0, query: "bending starlight", plan, topic: "Science", limit: 80, excludedIds: firstPageIds, viewKey: "workspace-a" });
   const secondPage = await waitForMessage(worker.messages, message => message.requestId === 62);
   assert.ok(secondPage.candidates.length > 0);
   assert.ok(secondPage.candidates.every(candidate => !firstPageIds.includes(candidate.videoId)));
-  assert.equal(conceptGroupReads, 4, "a cached Mac continuation reads the plan for its scoped key but avoids re-preparing the search");
+  assert.equal(conceptGroupReads, 6, "a cached Mac continuation validates and reads its key but avoids re-preparing the search");
   assert.equal(catalogMap.valuesCallCount, 1, "native pagination also keeps using the retained catalog array");
 });
 

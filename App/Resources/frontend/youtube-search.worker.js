@@ -105,7 +105,9 @@ function stageCatalog(request) {
 }
 onmessage = async function(event) {
   const request = event.data;
+  if (!request || typeof request !== "object" || Array.isArray(request)) return;
   if (request.type === "initialize" || request.type === "update") {
+    if (request.type === "update" && (!Number.isSafeInteger(request.baseRevision) || request.baseRevision < 0)) return;
     if (request.type === "update" && (snapshot.revision < 0 || request.baseRevision !== snapshot.revision)) { latest++; postMessage({type:"rebuild",revision:request.revision}); return; }
     let staged;
     try { staged = stageCatalog(request); }
@@ -113,7 +115,15 @@ onmessage = async function(event) {
     snapshot = staged;
     latest++; releaseCatalogSearchCaches(); return;
   }
-  if (request.type === "cancel") { latest++; return; }
+  if (request.type === "cancel") {
+    if (request.requestId !== undefined && (!Number.isSafeInteger(request.requestId) || request.requestId < 0)) return;
+    latest++; return;
+  }
+  if (request.type !== "search") return;
+  if (!LEARNED_MEDIA_VIDEO_SEARCH.isValidVideoSearchRequest(request)) {
+    if (Number.isSafeInteger(request.requestId) && request.requestId >= 0) postMessage({ type:"invalid", requestId:request.requestId, reason:"invalid-request" });
+    return;
+  }
   const token = ++latest, captured = snapshot, currentRevision = captured.revision;
   if (request.revision !== snapshot.revision) return;
   const catalog = captured.videos;
