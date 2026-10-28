@@ -80,13 +80,17 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
         schemaCounts[fingerprint, default: 0] += 1
     }
     public func snapshot() -> [String: Any] {
-        lock.lock(); defer { lock.unlock() }
-        let schemaFailures = schemaCounts.map { compact, count -> (fingerprint: String, count: Int) in
+        lock.lock()
+        let countersSnapshot = counters
+        let schemaCountsSnapshot = schemaCounts
+        lock.unlock()
+
+        let schemaFailures = schemaCountsSnapshot.map { compact, count -> (fingerprint: String, count: Int) in
             (Self.readableFingerprint(compact), count)
         }.sorted { $0.fingerprint < $1.fingerprint }.map { item -> [String: Any] in
             ["fingerprint": item.fingerprint, "count": item.count]
         }
-        return ["version": 1, "scope": "native-process", "counters": counters,
+        return ["version": 1, "scope": "native-process", "counters": countersSnapshot,
                 "providerSchemaFailures": schemaFailures]
     }
     public func reset() {
