@@ -13,6 +13,8 @@ function sameBytes(previous: Uint8Array | undefined, next: Uint8Array) {
   for (let index = 0; index < next.byteLength; index += 1) if (previous[index] !== next[index]) return false;
   return true;
 }
+const workspaceDecoder = new TextDecoder();
+type CachedWorkspaceSnapshot = { revisionId: string; bytes: Uint8Array };
 
 // Public client configuration; authorization is enforced by RLS, never by this key.
 export const CLOUD_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ignafizdnpjludnvqkjz.supabase.co';
@@ -33,6 +35,7 @@ type CloudSnapshot = { ownerId?: string; records: CloudRecord[]; factMemory?: Fa
 export class WorkspaceCloudSync {
   private sent = new Map<string, Uint8Array>();
   private observed = new Map<string, string>();
+  private canonicalWorkspaceSnapshots = new Map<string, CachedWorkspaceSnapshot>();
   private conflictRecords = new Map<string, CloudRecord>();
   private merged = new Map<string, CloudRecord>();
   takeMergedRecords() { const records = [...this.merged.values()]; this.merged.clear(); return records; }
@@ -60,14 +63,47 @@ export class WorkspaceCloudSync {
     }
     this.trackedMemory = next;
   }
-  private decodedWorkspaceRecord(row: { workspace_id: string; record: unknown }): CloudRecord | undefined {
-    if (!validateSnapshot(row.record, 'record', 'import')) return;
+  private decodedWorkspaceRecord(row: { workspace_id: string; revision_id?: string; record: unknown }): CloudRecord | undefined {
+    const revisionId = typeof row.revision_id === 'string' && row.revision_id ? row.revision_id : undefined;
+    if (!revisionId) this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
+    let cacheable = Boolean(revisionId);
+    const cached = this.canonicalWorkspaceSnapshots.get(row.workspace_id);
+    if (cached && revisionId) {
+      if (cached.revisionId !== revisionId) this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
+      else {
+        // A matching revision is reusable only when the returned payload still
+        // has the exact canonical bytes previously validated for that revision.
+        let returnedBytes: Uint8Array | undefined;
+        try { returnedBytes = serializeWorkspaceRecord(row.record as CloudRecord).bytes; }
+        catch { /* Let the existing snapshot validator report malformed data. */ }
+        if (returnedBytes && sameBytes(cached.bytes, returnedBytes)) {
+          try { return JSON.parse(workspaceDecoder.decode(cached.bytes)) as CloudRecord; }
+          catch { /* Discard an unreadable cache entry and take the normal path. */ }
+        }
+        this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
+        cacheable = false;
+      }
+    }
+    if (!validateSnapshot(row.record, 'record', 'import')) {
+      this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
+      return;
+    }
     if ((row.record as CloudRecord).id !== row.workspace_id) {
+      this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
       validateSnapshot(null, 'record', 'import');
       return;
     }
-    try { return canonicalRecord(row.record as CloudRecord); }
-    catch { validateSnapshot(null, 'record', 'import'); }
+    try {
+      const record = canonicalRecord(row.record as CloudRecord);
+      if (cacheable && revisionId) {
+        const bytes = serializeWorkspaceRecord(record).bytes;
+        this.canonicalWorkspaceSnapshots.set(row.workspace_id, { revisionId, bytes });
+      }
+      return record;
+    } catch {
+      this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
+      validateSnapshot(null, 'record', 'import');
+    }
   }
   private async loadWorkspaceRevisions(signal: AbortSignal) {
     const api = cloudClient();
@@ -80,7 +116,10 @@ export class WorkspaceCloudSync {
     if (boundary.error) throw boundary.error;
     checkCancellation();
     if (!Array.isArray(boundary.data) || boundary.data.length > 1) throw new Error('Cloud workspace history returned an invalid cursor.');
-    if (!boundary.data.length) return { records: [] as CloudRecord[], heads: new Map<string, string>() };
+    if (!boundary.data.length) {
+      this.canonicalWorkspaceSnapshots.clear();
+      return { records: [] as CloudRecord[], heads: new Map<string, string>() };
+    }
     const through = boundary.data[0]?.workspace_id;
     if (typeof through !== 'string' || !through) throw new Error('Cloud workspace history returned an invalid cursor.');
     const records: CloudRecord[] = [], heads = new Map<string, string>();
@@ -100,6 +139,7 @@ export class WorkspaceCloudSync {
         }
         seen.add(row.workspace_id);
         if (typeof row.revision_id !== 'string' || !row.revision_id) {
+          this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
           validateSnapshot(null, 'record', 'import');
           continue;
         }
@@ -111,6 +151,11 @@ export class WorkspaceCloudSync {
       }
       if (result.data.length < 100 || result.data.at(-1)?.workspace_id === through) break;
       after = result.data[result.data.length - 1].workspace_id;
+    }
+    // The full cursor traversal is the revision verification boundary for this
+    // restore. Drop snapshots for workspaces that no longer have a verified head.
+    for (const workspaceId of this.canonicalWorkspaceSnapshots.keys()) {
+      if (!heads.has(workspaceId)) this.canonicalWorkspaceSnapshots.delete(workspaceId);
     }
     return { records, heads };
   }
@@ -148,7 +193,13 @@ export class WorkspaceCloudSync {
       this.observed.set(id, revision);
       this.conflictRecords.delete(id);
     }
-    for (const record of records) this.sent.set(record.id, serializeWorkspaceRecord(record).bytes);
+    for (const record of records) {
+      const cached = this.canonicalWorkspaceSnapshots.get(record.id);
+      const bytes = cached && cached.revisionId === heads.get(record.id)
+        ? cached.bytes
+        : serializeWorkspaceRecord(record).bytes;
+      this.sent.set(record.id, bytes);
+    }
     for (const memory of factMemory) this.memories.set(memory.fingerprint || memory.id, JSON.stringify(safeMemory(memory)));
     return { records, factMemory };
   }
@@ -227,7 +278,11 @@ export class WorkspaceCloudSync {
           for (const row of latest.data || []) {
             if (seen.has(row.workspace_id) || !submittedById.has(row.workspace_id)) continue;
             seen.add(row.workspace_id);
-            if (typeof row.revision_id !== 'string' || !row.revision_id) { validateSnapshot(null, 'record', 'import'); continue; }
+            if (typeof row.revision_id !== 'string' || !row.revision_id) {
+              this.canonicalWorkspaceSnapshots.delete(row.workspace_id);
+              validateSnapshot(null, 'record', 'import');
+              continue;
+            }
             this.observed.set(row.workspace_id, row.revision_id);
             const record = this.decodedWorkspaceRecord(row);
             if (record) this.conflictRecords.set(record.id, record);
@@ -237,8 +292,11 @@ export class WorkspaceCloudSync {
         }
         if (error) throw error;
         if (signal.aborted) throw new Error('Cloud save was canceled.');
-        rows.forEach(row => {
+        prepared.forEach(({ row, serialization }) => {
           this.observed.set(row.workspace_id, row.revision_id);
+          // The acknowledged revision is tied to this canonical payload, so it
+          // can replace the older restore cache immediately.
+          this.canonicalWorkspaceSnapshots.set(row.workspace_id, { revisionId: row.revision_id, bytes: serialization.bytes });
           const submitted = submittedById.get(row.workspace_id)!;
           if (row.record.updatedAt > submitted.record.updatedAt) this.merged.set(row.workspace_id, row.record);
         });

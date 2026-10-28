@@ -56,10 +56,31 @@ function server() {
   };
   return db;
 }
-function client(db, user = 'account') {
+function client(db, user = 'account', stats) {
   const exports = {};
-  vm.runInNewContext(source, { exports, process, Uint8Array, Map, Set, crypto, TextEncoder, AbortController,
-    require(name) { if (name === '@supabase/supabase-js') return { createClient: () => db.api }; return baseRequire(name); }
+  vm.runInNewContext(source, { exports, process, Uint8Array, Map, Set, crypto, TextEncoder, TextDecoder, AbortController,
+    require(name) {
+      if (name === '@supabase/supabase-js') return { createClient: () => db.api };
+      if (name === './cloud-records' && stats) {
+        const cloudRecords = baseRequire(name);
+        return { ...cloudRecords, canonicalRecord(value) { stats.canonicalRecordCalls = (stats.canonicalRecordCalls || 0) + 1; return cloudRecords.canonicalRecord(value); } };
+      }
+      if (name === './snapshot-validation' && stats) {
+        const validation = baseRequire(name);
+        return { ...validation, validateSnapshot(value, category, operation) {
+          if (category === 'record' && operation === 'import') stats.recordValidationCalls = (stats.recordValidationCalls || 0) + 1;
+          return validation.validateSnapshot(value, category, operation);
+        } };
+      }
+      if (name === './workspace-revision' && stats) {
+        const revisions = baseRequire(name);
+        return { ...revisions, serializeWorkspaceRecord(value) {
+          stats.serializationCalls = (stats.serializationCalls || 0) + 1;
+          return revisions.serializeWorkspaceRecord(value);
+        } };
+      }
+      return baseRequire(name);
+    }
   });
   return new exports.WorkspaceCloudSync(user);
 }
@@ -74,6 +95,65 @@ test('unchanged revision: one ordinary write, unchanged snapshot skips it', asyn
   const db = server(), id = await seed(db, record()), c = client(db); await c.load(signal());
   await save(c, record(2)); assert.equal(db.writes.length, 1); assert.equal(db.writes[0][0].expected_revision_id, id);
   await save(c, record(2)); assert.equal(db.writes.length, 1);
+});
+test('unchanged workspace revisions reuse the validated canonical snapshot', async () => {
+  const db = server(), stats = {};
+  await seed(db, record()); const c = client(db, 'account', stats);
+  const first = await c.load(signal()), validationCalls = stats.recordValidationCalls, normalizationCalls = stats.canonicalRecordCalls;
+  const cachedBytes = c.canonicalWorkspaceSnapshots.get('w').bytes;
+  assert.equal(c.sent.get('w'), cachedBytes, 'the restore bookkeeping reuses the trusted canonical bytes');
+  const serializationCalls = stats.serializationCalls;
+  const second = await c.load(signal());
+  assert.deepEqual(JSON.parse(JSON.stringify(second.records)), JSON.parse(JSON.stringify(first.records)));
+  assert.equal(stats.recordValidationCalls, validationCalls, 'matching canonical bytes bypass repeated snapshot validation');
+  assert.equal(stats.canonicalRecordCalls, normalizationCalls, 'matching revisions bypass repeated record normalization');
+  assert.equal(stats.serializationCalls, serializationCalls + 1, 'the second restore only serializes the returned row for revision verification');
+  assert.equal(c.sent.get('w'), cachedBytes, 'the same validated byte buffer is reused after the second restore');
+});
+test('a changed revision invalidates the cached snapshot and follows normal validation', async () => {
+  const db = server(), stats = {};
+  await seed(db, record()); const c = client(db, 'account', stats); await c.load(signal());
+  const previousValidationCalls = stats.recordValidationCalls, previousNormalizationCalls = stats.canonicalRecordCalls;
+  const newRevision = await seed(db, record(4));
+  const restored = await c.load(signal());
+  assert.equal(restored.records[0].name, 'Workspace 4');
+  assert.equal(stats.recordValidationCalls, previousValidationCalls + 1);
+  assert.equal(stats.canonicalRecordCalls, previousNormalizationCalls + 1);
+  assert.equal(c.canonicalWorkspaceSnapshots.get('w').revisionId, newRevision);
+});
+test('malformed payloads with a reused revision invalidate the cache and retain validation diagnostics', async () => {
+  snapshotDiagnostics.reset();
+  const db = server(), stats = {};
+  await seed(db, record()); const c = client(db, 'account', stats); await c.load(signal());
+  const previousCalls = stats.recordValidationCalls;
+  db.heads.get('w').record = { ...canonicalRecord(record()), state: { cards: 'malformed' } };
+  const restored = await c.load(signal());
+  assert.equal(restored.records.length, 0);
+  assert.equal(stats.recordValidationCalls, previousCalls + 1, 'changed bytes under the same revision return to full validation');
+  assert.equal(c.canonicalWorkspaceSnapshots.has('w'), false);
+  assert.equal(Object.values(snapshotDiagnostics.snapshot().failures).reduce((sum, count) => sum + count, 0), 1);
+});
+test('stale workspace identities and a new account do not reuse cached snapshots', async () => {
+  const db = server(), firstStats = {}, secondStats = {};
+  await seed(db, record()); const first = client(db, 'account', firstStats); await first.load(signal());
+  db.heads.get('w').record = { ...canonicalRecord(record()), id: 'stale-workspace-id' };
+  const stale = await first.load(signal());
+  assert.equal(stale.records.length, 0);
+  assert.equal(first.canonicalWorkspaceSnapshots.has('w'), false);
+  assert.ok(firstStats.recordValidationCalls >= 3, 'stale identity is checked by the ordinary validator');
+
+  db.heads.get('w').record = canonicalRecord(record());
+  const otherAccount = client(db, 'other-account', secondStats), restored = await otherAccount.load(signal());
+  assert.equal(restored.records.length, 1);
+  assert.equal(secondStats.recordValidationCalls, 1, 'a new account-scoped sync instance validates instead of sharing cache state');
+});
+test('a restore that no longer verifies a workspace head drops its cached snapshot', async () => {
+  const db = server(); await seed(db, record()); const c = client(db);
+  await c.load(signal()); assert.equal(c.canonicalWorkspaceSnapshots.has('w'), true);
+  db.heads.delete('w');
+  const restored = await c.load(signal());
+  assert.equal(restored.records.length, 0);
+  assert.equal(c.canonicalWorkspaceSnapshots.has('w'), false);
 });
 test('delayed older tab fetches and merges newer head before retry', async () => {
   const db = server(); await seed(db, record()); const a = client(db), b = client(db); await a.load(signal()); await b.load(signal());
