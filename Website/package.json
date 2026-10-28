@@ -51,6 +51,7 @@
     "test:youtube-import-notices": "node scripts/test-youtube-import-notices.mjs",
     "test:youtube-orphan-cleanup": "node scripts/test-youtube-orphan-cleanup.mjs",
     "test:workspace-backup-write": "node scripts/test-workspace-backup-write.mjs",
+    "test:workspace-reads": "node --test scripts/test-workspace-read-coalescing.mjs",
     "generate:native": "node scripts/build-native-shared.mjs",
     "check:native-data": "node scripts/build-native-shared.mjs --check",
     "test:difficulty": "node scripts/build-native-difficulty.mjs --check && node scripts/test-difficulty.mjs",

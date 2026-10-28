@@ -37,6 +37,31 @@ const openDatabase = createDatabaseConnection(DB_NAME, DB_VERSION, database => {
   if (!database.objectStoreNames.contains(STORE_NAME)) database.createObjectStore(STORE_NAME);
 });
 
+type StoredWorkspaceStore = WorkspaceStore<unknown>;
+type WorkspaceStoreRead = { promise: Promise<StoredWorkspaceStore | null>; callers: number };
+let workspaceStoreReadInFlight: WorkspaceStoreRead | undefined;
+
+function readStoredWorkspaceStore(): WorkspaceStoreRead {
+  if (workspaceStoreReadInFlight) {
+    workspaceStoreReadInFlight.callers += 1;
+    return workspaceStoreReadInFlight;
+  }
+  const current = { callers: 1 } as WorkspaceStoreRead;
+  current.promise = openDatabase().then(database => new Promise<StoredWorkspaceStore | null>((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const records = transaction.objectStore(STORE_NAME), request = records.get(STORE_KEY), backup = records.get("workspace-store-backup");
+    transaction.oncomplete = () => {
+      const valid = [request.result, backup.result].find(value => value != null && validateSnapshot(value, "store", "read"));
+      resolve((valid as StoredWorkspaceStore | undefined) ?? null);
+    };
+    transaction.onerror = transaction.onabort = () => reject(transaction.error);
+  })).finally(() => {
+    if (workspaceStoreReadInFlight === current) workspaceStoreReadInFlight = undefined;
+  });
+  workspaceStoreReadInFlight = current;
+  return current;
+}
+
 export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null): Promise<WorkspaceStore<T> | null> {
   if (typeof window === "undefined") return fallback;
   let recovery: WorkspaceStore<T> | null = null;
@@ -46,30 +71,26 @@ export async function readWorkspaceStore<T>(fallback: WorkspaceStore<T> | null):
   } catch { /* Try the transactional copy. */ }
   if (!window.indexedDB) return recovery ?? fallback;
   try {
-    const database = await openDatabase();
-    const stored = await new Promise<WorkspaceStore<T> | null>((resolve, reject) => {
-      const transaction = database.transaction(STORE_NAME, "readonly");
-      const records = transaction.objectStore(STORE_NAME), request = records.get(STORE_KEY), backup = records.get("workspace-store-backup");
-      transaction.oncomplete = () => {
-        const valid = [request.result, backup.result].find(value => value != null && validateSnapshot(value, "store", "read"));
-        resolve(valid ?? null);
-      };
-      transaction.onerror = transaction.onabort = () => reject(transaction.error);
-    });
+    const sharedRead = readStoredWorkspaceStore();
+    const stored = await sharedRead.promise;
     // IndexedDB writes are asynchronous while the localStorage recovery copy is
     // synchronous.  During a reload the older transactional record can win a
     // race with a newer recovery snapshot, which makes cards or the active
     // workspace appear to disappear.  Prefer whichever complete store carries
     // the newest workspace revision.
-    const revision = (store: WorkspaceStore<T> | null) => Math.max(
+    const revision = <S>(store: WorkspaceStore<S> | null) => Math.max(
       0,
       ...(store?.records ?? []).map((record) => {
         const stateSavedAt = (record.state as { savedAt?: string } | undefined)?.savedAt;
         return Math.max(Date.parse(record.updatedAt || "") || 0, Date.parse(stateSavedAt || "") || 0);
       })
     );
-    if (stored && recovery) return revision(recovery) >= revision(stored) ? recovery : stored;
-    return stored ?? recovery ?? fallback;
+    if (stored && recovery) {
+      if (revision(recovery) >= revision(stored)) return recovery;
+      return sharedRead.callers > 1 ? structuredClone(stored) as WorkspaceStore<T> : stored as WorkspaceStore<T>;
+    }
+    if (stored) return sharedRead.callers > 1 ? structuredClone(stored) as WorkspaceStore<T> : stored as WorkspaceStore<T>;
+    return recovery ?? fallback;
   } catch {
     return recovery ?? fallback;
   }
