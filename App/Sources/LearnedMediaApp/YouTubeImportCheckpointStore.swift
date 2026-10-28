@@ -5,6 +5,7 @@ import Foundation
 /// The next cursor is derived from the contiguous page chain, never a second file.
 actor YouTubeImportCheckpointStore {
     private let maximumBatchSize = 25
+    private let checkpointVersion = 2
     private let files = FileManager.default
     private let directory: URL?
 
@@ -50,7 +51,7 @@ actor YouTubeImportCheckpointStore {
     }
 
     func save(_ page: [String: Any]) throws {
-        guard page["version"] as? Int == 1, let sourceID = page["sourceId"] as? String,
+        guard page["version"] as? Int == checkpointVersion, let sourceID = page["sourceId"] as? String,
               let identity = page["identity"] as? String, !identity.isEmpty, identity.utf8.count <= 4096,
               let generation = page["refreshGeneration"] as? String, !generation.isEmpty, generation.utf8.count <= 128,
               let index = page["index"] as? Int, (0...99_999_999).contains(index),
@@ -58,6 +59,8 @@ actor YouTubeImportCheckpointStore {
               page["nextPageToken"] is NSNull || (page["nextPageToken"] as? String).map({ !$0.isEmpty && $0.utf8.count <= 4096 }) == true,
               let videos = page["videos"] as? [[String: Any]], videos.count <= 50,
               videos.allSatisfy({ $0["approved"] as? Bool == true && ($0["sourceIds"] as? [String])?.contains(sourceID) == true }),
+              let storedDigest = page["checkpointDigest"] as? String, storedDigest.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil,
+              try checkpointDigest(index: index, videos: videos, nextPageToken: page["nextPageToken"] ?? NSNull()) == storedDigest,
               JSONSerialization.isValidJSONObject(page) else { throw invalid() }
         let directory = try folder(sourceID)
         let target = directory.appendingPathComponent(String(format: "%08d.json", index))
@@ -72,9 +75,14 @@ actor YouTubeImportCheckpointStore {
         } else {
             let previousURL = directory.appendingPathComponent(String(format: "%08d.json", index - 1))
             guard let previous = try JSONSerialization.jsonObject(with: Data(contentsOf: previousURL)) as? [String: Any],
+                  previous["version"] as? Int == checkpointVersion,
                   previous["identity"] as? String == identity, previous["sourceId"] as? String == sourceID,
                   previous["refreshGeneration"] as? String == generation,
-                  previous["nextPageToken"] as? String == token else { throw invalid() }
+                  previous["index"] as? Int == index - 1,
+                  previous["nextPageToken"] as? String == token,
+                  let previousVideos = previous["videos"] as? [[String: Any]], previousVideos.count <= 50,
+                  let previousDigest = previous["checkpointDigest"] as? String,
+                  try checkpointDigest(index: index - 1, videos: previousVideos, nextPageToken: previous["nextPageToken"] ?? NSNull()) == previousDigest else { throw invalid() }
         }
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
         try data.write(to: target, options: [.atomic])
@@ -91,9 +99,12 @@ actor YouTubeImportCheckpointStore {
             for (offset, page) in batch.enumerated() {
                 let index = start + offset
                 guard let token = expected, seen.insert(token).inserted,
-                      page["version"] as? Int == 1, page["sourceId"] as? String == sourceID,
+                      page["version"] as? Int == checkpointVersion, page["sourceId"] as? String == sourceID,
                       page["identity"] as? String == identity, page["refreshGeneration"] as? String == generation,
-                      page["index"] as? Int == index, page["requestToken"] as? String == token else { throw invalid() }
+                      page["index"] as? Int == index, page["requestToken"] as? String == token,
+                      let videos = page["videos"] as? [[String: Any]], videos.count <= 50 else { throw invalid() }
+                guard let storedDigest = page["checkpointDigest"] as? String,
+                      try checkpointDigest(index: index, videos: videos, nextPageToken: page["nextPageToken"] ?? NSNull()) == storedDigest else { throw invalid() }
                 if page["nextPageToken"] is NSNull { expected = nil }
                 else {
                     guard let next = page["nextPageToken"] as? String, !next.isEmpty,
@@ -108,6 +119,27 @@ actor YouTubeImportCheckpointStore {
     func clear(_ sourceID: String) throws {
         let directory = try folder(sourceID)
         if files.fileExists(atPath: directory.path) { try files.removeItem(at: directory) }
+    }
+
+    func clear(_ sourceID: String, fromIndex: Int) throws {
+        guard (0...99_999_999).contains(fromIndex) else { throw invalid() }
+        let directory = try folder(sourceID)
+        guard files.fileExists(atPath: directory.path) else { return }
+        let firstName = String(format: "%08d.json", fromIndex)
+        for file in try pageFiles(directory) where file.lastPathComponent >= firstName {
+            try files.removeItem(at: file)
+        }
+    }
+
+    private func checkpointDigest(index: Int, videos: [[String: Any]], nextPageToken: Any) throws -> String {
+        let ids = try videos.map { video -> String in
+            guard let id = video["id"] as? String, !id.isEmpty else { throw invalid() }
+            return id
+        }
+        let payload: [Any] = [checkpointVersion, index, ids, nextPageToken]
+        // Match JSON.stringify's unescaped UTF-8 representation in the shared JS validator.
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.fragmentsAllowed, .withoutEscapingSlashes])
+        return SHA256.hash(data: data).prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 
     private func invalid() -> NSError {

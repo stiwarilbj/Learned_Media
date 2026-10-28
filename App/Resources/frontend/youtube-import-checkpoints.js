@@ -7,11 +7,12 @@ exports.importPagePrefix = importPagePrefix;
 exports.importPageKey = importPageKey;
 exports.importPageIdentity = importPageIdentity;
 exports.youtubeImportPageDigests = youtubeImportPageDigests;
+exports.youtubeImportCheckpointDigest = youtubeImportCheckpointDigest;
 exports.openImportCheckpoint = openImportCheckpoint;
 exports.verifyYouTubeRefreshes = verifyYouTubeRefreshes;
 const background_work_1 = require("./background-work");
-// Bump when persisted video approval/mapping rules change. No credentials are stored.
-exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION = 1;
+// Bump when persisted page-validation or video-mapping rules change. No credentials are stored.
+exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION = 2;
 exports.YOUTUBE_IMPORT_PAGE_PREFIX = "youtube-import-page-v1:";
 exports.YOUTUBE_IMPORT_PAGE_BATCH_SIZE = 25;
 function importPagePrefix(sourceId) { return `${exports.YOUTUBE_IMPORT_PAGE_PREFIX}${encodeURIComponent(sourceId)}:`; }
@@ -29,6 +30,10 @@ async function youtubeImportPageDigests(videoIds, nextPageToken) {
     const pageDigest = await compactDigest(JSON.stringify([orderedIds, nextPageToken]));
     const contentDigest = orderedIds.length ? await compactDigest(JSON.stringify(orderedIds)) : undefined;
     return { pageDigest, ...(contentDigest ? { contentDigest } : {}) };
+}
+/** Integrity digest for the exact durable page envelope used during recovery. */
+async function youtubeImportCheckpointDigest(index, videoIds, nextPageToken) {
+    return compactDigest(JSON.stringify([exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION, index, Array.from(videoIds), nextPageToken]));
 }
 async function* checkpointPageBatches(store, sourceId, cancellation) {
     if (!store)
@@ -66,56 +71,73 @@ function newRefreshGeneration() {
 /** A page's validated records and cursor form one durable envelope. */
 async function openImportCheckpoint(store, sourceId, identity, committedAt, cancellation) {
     (0, background_work_1.checkBackgroundCancellation)(cancellation);
-    let generation = newRefreshGeneration();
+    let generation = "";
     let pageCount = 0;
     let nextPageToken = "";
     const tokens = new Set();
     const pageDigests = new Set();
     const contentDigests = new Set();
     const videos = new Map();
-    let valid = true;
+    let corrupt = false;
     for await (const batch of checkpointPageBatches(store, sourceId, cancellation)) {
-        await (0, background_work_1.forEachBackground)(batch, page => {
-            const index = pageCount++;
-            if (index === 0 && typeof page?.refreshGeneration === "string")
-                generation = page.refreshGeneration;
+        for (const page of batch) {
+            (0, background_work_1.checkBackgroundCancellation)(cancellation);
+            const index = pageCount;
             if (!page || page.version !== exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION || page.sourceId !== sourceId || page.identity !== identity
-                || typeof page.refreshGeneration !== "string" || !page.refreshGeneration.length || page.refreshGeneration.length > 128 || page.refreshGeneration !== generation
+                || typeof page.refreshGeneration !== "string" || !page.refreshGeneration.length || page.refreshGeneration.length > 128
+                || generation && page.refreshGeneration !== generation
                 || page.index !== index || index > 99_999_999 || nextPageToken === null || page.requestToken !== nextPageToken || tokens.has(page.requestToken)
                 || !Number.isFinite(Date.parse(page.savedAt)) || (committedAt && Date.parse(page.savedAt) <= Date.parse(committedAt))
                 || !(page.nextPageToken === null || typeof page.nextPageToken === "string" && page.nextPageToken.length > 0 && page.nextPageToken.length <= 4096)
+                || typeof page.checkpointDigest !== "string" || !/^[\da-f]{32}$/.test(page.checkpointDigest)
                 || page.pageDigest !== undefined && (typeof page.pageDigest !== "string" || !/^[\da-f]{32}$/.test(page.pageDigest))
                 || page.contentDigest !== undefined && (typeof page.contentDigest !== "string" || !/^[\da-f]{32}$/.test(page.contentDigest))
                 || !Array.isArray(page.videos) || page.videos.length > 50 || !page.videos.every(video => validVideo(video, sourceId))) {
-                valid = false;
-                return false;
+                corrupt = true;
+                break;
             }
-            tokens.add(page.requestToken);
+            const expectedDigest = await youtubeImportCheckpointDigest(index, page.videos.map(video => video.id), page.nextPageToken);
+            (0, background_work_1.checkBackgroundCancellation)(cancellation);
+            if (page.checkpointDigest !== expectedDigest) {
+                corrupt = true;
+                break;
+            }
             if (page.nextPageToken !== null && tokens.has(page.nextPageToken)) {
-                valid = false;
-                return false;
+                corrupt = true;
+                break;
             }
+            if (index === 0)
+                generation = page.refreshGeneration;
+            tokens.add(page.requestToken);
             if (page.pageDigest)
                 pageDigests.add(page.pageDigest);
             if (page.contentDigest)
                 contentDigests.add(page.contentDigest);
             page.videos.forEach(video => videos.set(video.id, video));
             nextPageToken = page.nextPageToken;
-        }, cancellation);
-        if (!valid)
+            pageCount += 1;
+        }
+        if (corrupt)
             break;
     }
-    if (!valid) {
+    if (corrupt) {
         (0, background_work_1.checkBackgroundCancellation)(cancellation);
-        await store?.clear(sourceId);
-        pageCount = 0;
-        tokens.clear();
-        pageDigests.clear();
-        contentDigests.clear();
-        videos.clear();
-        nextPageToken = "";
-        generation = newRefreshGeneration();
+        if (store?.clearFrom)
+            await store.clearFrom(sourceId, pageCount);
+        else {
+            await store?.clear(sourceId);
+            pageCount = 0;
+            tokens.clear();
+            pageDigests.clear();
+            contentDigests.clear();
+            videos.clear();
+            nextPageToken = "";
+        }
+        if (!pageCount)
+            generation = newRefreshGeneration();
     }
+    if (!generation)
+        generation = newRefreshGeneration();
     function assertPageRequestAllowed() {
         (0, background_work_1.checkBackgroundCancellation)(cancellation);
         if (nextPageToken === null || tokens.has(nextPageToken))
@@ -154,8 +176,10 @@ async function openImportCheckpoint(store, sourceId, identity, committedAt, canc
                 throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
             if (records.length > 50 || !records.every(video => validVideo(video, sourceId)))
                 throw new Error("YouTube returned invalid import metadata. The checkpoint was not advanced.");
+            const checkpointDigest = await youtubeImportCheckpointDigest(pageCount, records.map(video => video.id), next);
+            (0, background_work_1.checkBackgroundCancellation)(cancellation);
             const page = { version: exports.YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, refreshGeneration: generation, index: pageCount,
-                requestToken, nextPageToken: next, ...(digests ?? {}), videos: records, savedAt: new Date().toISOString() };
+                requestToken, nextPageToken: next, ...(digests ?? {}), checkpointDigest, videos: records, savedAt: new Date().toISOString() };
             // Advance memory/progress only after the entire envelope commits.
             await store?.save(page);
             pageCount += 1;

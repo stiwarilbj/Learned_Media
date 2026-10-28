@@ -2876,7 +2876,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                         let limit = payload["limit"] as? Int ?? 0
                         respond(id: id, result: try await youtubeImportCheckpoints.loadBatch(sourceID, offset: offset, limit: limit))
                     }
-                    else if action == "clearYouTubeImportPages" { try await youtubeImportCheckpoints.clear(sourceID); respond(id: id, result: true) }
+                    else if action == "clearYouTubeImportPages" {
+                        if let fromIndex = payload["fromIndex"] as? Int { try await youtubeImportCheckpoints.clear(sourceID, fromIndex: fromIndex) }
+                        else { try await youtubeImportCheckpoints.clear(sourceID) }
+                        respond(id: id, result: true)
+                    }
                     else {
                         guard let page = payload["page"] as? [String: Any] else { throw NativeError(message: "Invalid YouTube import page.", retryable: false) }
                         try await youtubeImportCheckpoints.save(page); respond(id: id, result: true)

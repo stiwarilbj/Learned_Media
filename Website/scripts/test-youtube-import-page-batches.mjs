@@ -46,7 +46,15 @@ class ObjectStore {
     return this.transaction.addRequest({ result: key, error: null }, () => { this.transaction.database.values.set(key, value); return key; });
   }
   delete(key) {
-    return this.transaction.addRequest({ result: undefined, error: null }, () => { this.transaction.database.values.delete(key); });
+    return this.transaction.addRequest({ result: undefined, error: null }, () => {
+      const values = this.transaction.database.values;
+      if (key instanceof KeyRange) {
+        for (const candidate of values.keys()) {
+          if ((candidate > key.lower || (!key.lowerOpen && candidate === key.lower)) &&
+              (candidate < key.upper || (!key.upperOpen && candidate === key.upper))) values.delete(candidate);
+        }
+      } else values.delete(key);
+    });
   }
   getAll() { throw new Error('Checkpoint recovery must not use getAll.'); }
   openCursor(range) {
@@ -150,4 +158,16 @@ function seed(database, count) {
   assert.equal(database.cursorVisits, 9, 'the cursor read stops at the first cancellation check');
 }
 
-console.log('IndexedDB import checkpoint pages are read in bounded cursor batches and stop promptly on cancellation.');
+{
+  const database = new Database(); seed(database, 10);
+  const otherPrefix = 'youtube-import-page-v1:playlist%3Aother:';
+  database.values.set(`${otherPrefix}00000000`, { index: 0 });
+  await withYouTubeImportLease(async () => database, new AbortController().signal, () => {}, async ownership => {
+    await ownership.pages.clearFrom('playlist:fixture', 4);
+  });
+  const fixtureKeys = [...database.values.keys()].filter(key => key.startsWith('youtube-import-page-v1:playlist%3Afixture:')).sort();
+  assert.deepEqual(fixtureKeys.map(key => Number(key.slice(-8))), [0, 1, 2, 3]);
+  assert.ok(database.values.has(`${otherPrefix}00000000`), 'suffix cleanup does not affect another playlist');
+}
+
+console.log('IndexedDB import checkpoints read in bounded batches, stop promptly on cancellation, and truncate only the damaged playlist suffix.');

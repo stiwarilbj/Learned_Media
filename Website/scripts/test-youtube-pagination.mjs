@@ -37,6 +37,7 @@ function createStore() {
     },
     async save(page) { const list = saved.get(page.sourceId) ?? []; list[page.index] = structuredClone(page); saved.set(page.sourceId, list); },
     async clear(id) { saved.delete(id); },
+    async clearFrom(id, index) { const list = saved.get(id) ?? []; list.length = index; if (list.length) saved.set(id, list); else saved.delete(id); },
     stats,
     seed(id, pages) { saved.set(id, structuredClone(pages)); }
   };
@@ -81,22 +82,35 @@ function harness(platform, store = createStore()) {
   return { store, requests, metadataCalls, run, respond: entries => { responses = new Map(entries); } };
 }
 
+test("checkpoint integrity digests bind sequence, ordered IDs, and continuation token", async () => {
+  const baseline = await checkpoints.youtubeImportCheckpointDigest(3, ["first", "second"], "next-page");
+  assert.notEqual(await checkpoints.youtubeImportCheckpointDigest(4, ["first", "second"], "next-page"), baseline);
+  assert.notEqual(await checkpoints.youtubeImportCheckpointDigest(3, ["second", "first"], "next-page"), baseline);
+  assert.notEqual(await checkpoints.youtubeImportCheckpointDigest(3, ["first", "second"], "another-page"), baseline);
+});
+
 for (const platform of ["web", "mac"]) {
   test(`${platform}: checkpoint recovery validates ordered batches with the same continuation result as a full read`, async () => {
     const identity = checkpoints.importPageIdentity(youtube.YOUTUBE_CATALOG_VERSION, channel.id, "fixture");
     const generation = "fixture-generation";
     const batchSizes = [];
-    const pages = Array.from({ length: 61 }, (_, index) => ({
-      version: checkpoints.YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, refreshGeneration: generation, index,
-      requestToken: index ? `token-${index}` : "", nextPageToken: index === 60 ? null : `token-${index + 1}`,
-      videos: [{ id: `video-${index}`, channelId: channel.id, channelName: channel.name, title: `Video ${index}`, description: "Fixture video.",
-        publishedAt: "2025-01-01T00:00:00Z", durationLabel: "1:00", durationSeconds: 60, embedAvailable: true, approved: true,
-        tags: [], topics: [], sourceIds: [sourceId] }], savedAt: new Date(Date.UTC(2025, 0, index + 1)).toISOString()
-    }));
-    const fullStore = { async load() { return structuredClone(pages); }, async clear() {} };
+    const pages = [];
+    for (let index = 0; index < 61; index += 1) {
+      const page = {
+        version: checkpoints.YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, refreshGeneration: generation, index,
+        requestToken: index ? `token-${index}` : "", nextPageToken: index === 60 ? null : `token-${index + 1}`,
+        videos: [{ id: `video-${index}`, channelId: channel.id, channelName: channel.name, title: `Video ${index}`, description: "Fixture video.",
+          publishedAt: "2025-01-01T00:00:00Z", durationLabel: "1:00", durationSeconds: 60, embedAvailable: true, approved: true,
+          tags: [], topics: [], sourceIds: [sourceId] }], savedAt: new Date(Date.UTC(2025, 0, index + 1)).toISOString()
+      };
+      page.checkpointDigest = await checkpoints.youtubeImportCheckpointDigest(index, page.videos.map(video => video.id), page.nextPageToken);
+      pages.push(page);
+    }
+    const fullStore = { async load() { return structuredClone(pages); }, async clear() {}, async clearFrom(_source, index) { pages.length = index; } };
     const batchStore = {
       async load() { throw new Error("Batched recovery must not request all checkpoint pages."); },
       async clear() {},
+      async clearFrom(_source, index) { pages.length = index; },
       async *loadBatches(_source, cancellation) {
         for (let start = 0; start < pages.length; start += checkpoints.YOUTUBE_IMPORT_PAGE_BATCH_SIZE) {
           background.checkBackgroundCancellation(cancellation);
@@ -124,20 +138,25 @@ for (const platform of ["web", "mac"]) {
     assert.equal(batchIncomplete.nextPageToken, "token-60");
     assert.throws(() => batchIncomplete.completedRefresh(), /incomplete/);
 
-    const corrupt = pages.map(page => ({ ...page }));
+    const corrupt = pages.map(page => structuredClone(page));
     corrupt[30] = { ...corrupt[30], requestToken: "wrong-token" };
     let batchCleared = false;
     let fullCleared = false;
-    const fullCorrupt = await checkpoints.openImportCheckpoint({ async load() { return corrupt; }, async clear() { fullCleared = true; } }, sourceId, identity);
+    const fullRemaining = corrupt.slice();
+    const batchRemaining = corrupt.slice();
+    const fullCorrupt = await checkpoints.openImportCheckpoint({ async load() { return fullRemaining; }, async clear() { fullCleared = true; }, async clearFrom(_source, index) { fullCleared = true; fullRemaining.length = index; } }, sourceId, identity);
     const batchCorrupt = await checkpoints.openImportCheckpoint({ ...batchStore, async clear() { batchCleared = true; },
-      async *loadBatches() { yield corrupt.slice(0, 25); yield corrupt.slice(25, 50); }
+      async clearFrom(_source, index) { batchCleared = true; batchRemaining.length = index; },
+      async *loadBatches() { yield batchRemaining.slice(0, 25); yield batchRemaining.slice(25, 50); }
     }, sourceId, identity);
     assert.equal(batchCorrupt.nextPageToken, fullCorrupt.nextPageToken);
     assert.deepEqual(batchCorrupt.videos, fullCorrupt.videos);
     assert.equal(fullCleared, true);
     assert.equal(batchCleared, true);
-    assert.equal(batchCorrupt.nextPageToken, "");
-    assert.deepEqual(batchCorrupt.videos, []);
+    assert.equal(batchCorrupt.nextPageToken, "token-30");
+    assert.deepEqual(batchCorrupt.videos.map(video => video.id), pages.slice(0, 30).map(page => page.videos[0].id));
+    assert.deepEqual(fullRemaining.map(page => page.index), Array.from({ length: 30 }, (_, index) => index));
+    assert.deepEqual(batchRemaining.map(page => page.index), Array.from({ length: 30 }, (_, index) => index));
   });
 
   test(`${platform}: checkpoint recovery checks cancellation between page batches`, async () => {
@@ -146,11 +165,36 @@ for (const platform of ["web", "mac"]) {
     let cleared = false;
     const page = { version: checkpoints.YOUTUBE_IMPORT_CHECKPOINT_VERSION, sourceId, identity, refreshGeneration: "cancel-test", index: 0,
       requestToken: "", nextPageToken: "next", videos: [], savedAt: new Date().toISOString() };
+    page.checkpointDigest = await checkpoints.youtubeImportCheckpointDigest(0, [], "next");
     const store = { async load() { throw new Error("Full checkpoint reads are not used."); }, async clear() { cleared = true; },
       async *loadBatches() { yield [page]; controller.abort(); }
     };
     await assert.rejects(checkpoints.openImportCheckpoint(store, sourceId, identity, undefined, controller.signal), { name: "AbortError" });
     assert.equal(cleared, false, "cancellation preserves the durable checkpoint for a later retry");
+  });
+
+  test(`${platform}: a corrupt saved page truncates only its playlist suffix and resumes from that page`, async () => {
+    const original = harness(platform);
+    original.respond([["", { nextPageToken: "A" }], ["A", { nextPageToken: "B" }], ["B", {}]]);
+    await original.run();
+    const pages = await original.store.load(sourceId);
+    assert.equal(pages.length, 3);
+    assert.ok(pages.every(page => /^[\da-f]{32}$/.test(page.checkpointDigest)));
+    pages[1] = { ...pages[1], videos: pages[1].videos.map(video => ({ ...video, id: "tampered-video-id" })) };
+    original.store.seed(sourceId, pages);
+
+    const identity = checkpoints.importPageIdentity(youtube.YOUTUBE_CATALOG_VERSION, channel.id, "fixture");
+    const recovered = await checkpoints.openImportCheckpoint(original.store, sourceId, identity);
+    assert.equal(recovered.nextPageToken, "A");
+    assert.deepEqual(recovered.videos.map(video => video.id), ["video-first"]);
+    assert.deepEqual((await original.store.load(sourceId)).map(page => page.index), [0]);
+
+    const retry = harness(platform, original.store);
+    retry.respond([["A", { nextPageToken: "C" }], ["C", {}]]);
+    const videos = await retry.run();
+    assert.deepEqual(retry.requests, ["A", "C"], "only the damaged page and its dependent continuation are fetched again");
+    assert.deepEqual(Array.from(videos, video => video.id), ["video-first", "video-A", "video-C"]);
+    assert.equal((await checkpoints.openImportCheckpoint(original.store, sourceId, identity)).nextPageToken, null);
   });
 
   for (const [name, entries, requested] of [

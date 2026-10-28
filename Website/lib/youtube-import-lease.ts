@@ -243,7 +243,13 @@ export async function withYouTubeImportLease<P, T>(openDatabase: OpenDatabase, s
     load: loadAllPages,
     loadBatches: loadPageBatches,
     save: async page => { await check(false, store => { store.put(page, importPageKey(page)); }); },
-    clear: async sourceId => { await check(false, store => { store.delete(pageRange(sourceId)); }); }
+    clear: async sourceId => { await check(false, store => { store.delete(pageRange(sourceId)); }); },
+    clearFrom: async (sourceId, index) => {
+      if (!Number.isInteger(index) || index < 0 || index > 99_999_999) throw new Error("The YouTube checkpoint page index is invalid.");
+      const prefix = importPagePrefix(sourceId);
+      const firstKey = importPageKey({ sourceId, index });
+      await check(false, store => { store.delete(IDBKeyRange.bound(firstKey, `${prefix}\uffff`)); });
+    }
   };
   const renew = () => {
     if (stopped || renewal) return;

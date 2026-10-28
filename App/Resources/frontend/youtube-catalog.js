@@ -148,7 +148,8 @@
         }
       },
       save: function (page) { assertCurrent(); return window.__learnedMediaNativeRequest("saveYouTubeImportPage", { page: page }); },
-      clear: function (sourceId) { assertCurrent(); return window.__learnedMediaNativeRequest("clearYouTubeImportPages", { sourceId: sourceId }); }
+      clear: function (sourceId) { assertCurrent(); return window.__learnedMediaNativeRequest("clearYouTubeImportPages", { sourceId: sourceId }); },
+      clearFrom: function (sourceId, index) { assertCurrent(); return window.__learnedMediaNativeRequest("clearYouTubeImportPages", { sourceId: sourceId, fromIndex: index }); }
     };
     const metadata = createMetadataLoader(key, assertCurrent);
     const workspace = existing || {}; const oldChannels = workspace.channels || []; const oldVideos = workspace.videos || []; const sourceStates = Object.assign({}, workspace.sourceStates || {}); const errors = []; const now = Date.now(); const day = 24 * 60 * 60 * 1000;
