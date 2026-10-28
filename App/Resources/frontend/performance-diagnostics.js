@@ -30,6 +30,9 @@ const ring = new Array(ringCapacity);
 let ringOldest = 0;
 let ringSize = 0;
 const counts = new Map();
+const schemaIDs = Object.keys(exports.providerSchemaFields);
+const schemaIndexes = new Map(schemaIDs.map((schema, index) => [schema, index]));
+const typeNames = ["missing", "null", "array", "object", "string", "number", "boolean", "other", "invalid-json", "non-json"];
 const localRuntime = typeof window !== "undefined" || (typeof self !== "undefined" && "importScripts" in globalThis);
 function readPath(value, steps) {
     let current = value;
@@ -42,22 +45,37 @@ function readPath(value, steps) {
     }
     return current;
 }
-function observedType(value, override) {
-    if (override)
-        return override;
+function observedTypeCode(value, override) {
+    if (override === "invalid-json")
+        return 8;
+    if (override === "non-json")
+        return 9;
     if (value === undefined)
-        return "missing";
+        return 0;
     if (value === null)
-        return "null";
+        return 1;
     if (Array.isArray(value))
-        return "array";
+        return 2;
     switch (typeof value) {
-        case "object": return "object";
-        case "string": return "string";
-        case "number": return "number";
-        case "boolean": return "boolean";
-        default: return "other";
+        case "object": return 3;
+        case "string": return 4;
+        case "number": return 5;
+        case "boolean": return 6;
+        default: return 7;
     }
+}
+function readableFingerprint(compact) {
+    const separator = compact.indexOf(":");
+    if (separator < 0)
+        return "";
+    const schema = schemaIDs[Number.parseInt(compact.slice(0, separator), 36)];
+    if (!schema)
+        return "";
+    const fields = preparedSchemaFields.get(schema);
+    const codes = compact.slice(separator + 1);
+    if (!fields || fields.length !== codes.length)
+        return "";
+    return `${schema}|${fields.map(({ path }, index) => `${path}:${typeNames[codes.charCodeAt(index) - 65] ?? "other"}`).join(",")}`;
 }
 /** Keeps only allowlisted field names and JSON types; payload values are never retained. */
 function recordProviderSchemaFailure(schema, payload, rootOverride) {
@@ -65,10 +83,11 @@ function recordProviderSchemaFailure(schema, payload, rootOverride) {
         return;
     try {
         const fields = preparedSchemaFields.get(schema);
-        if (!fields)
+        const schemaIndex = schemaIndexes.get(schema);
+        if (!fields || schemaIndex === undefined)
             return;
         const safeRootOverride = rootOverride === "invalid-json" || rootOverride === "non-json" ? rootOverride : undefined;
-        const fingerprint = `${schema}|${fields.map(({ path, steps }) => `${path}:${observedType(readPath(payload, steps), path === "$" ? safeRootOverride : undefined)}`).join(",")}`;
+        const compact = `${schemaIndex.toString(36)}:${fields.map(({ path, steps }) => String.fromCharCode(65 + observedTypeCode(readPath(payload, steps), path === "$" ? safeRootOverride : undefined))).join("")}`;
         let slot;
         if (ringSize === ringCapacity) {
             const expired = ring[ringOldest];
@@ -84,15 +103,15 @@ function recordProviderSchemaFailure(schema, payload, rootOverride) {
             slot = (ringOldest + ringSize) % ringCapacity;
             ringSize += 1;
         }
-        ring[slot] = fingerprint;
-        counts.set(fingerprint, (counts.get(fingerprint) ?? 0) + 1);
+        ring[slot] = compact;
+        counts.set(compact, (counts.get(compact) ?? 0) + 1);
     }
     catch {
         // Diagnostics must never alter provider-response handling.
     }
 }
 function providerSchemaFailureSnapshot() {
-    return Array.from(counts, ([fingerprint, count]) => ({ fingerprint, count }));
+    return Array.from(counts, ([compact, count]) => ({ fingerprint: readableFingerprint(compact), count }));
 }
 function resetProviderSchemaFailures() {
     ring.fill(undefined);

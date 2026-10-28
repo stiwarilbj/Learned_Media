@@ -30,6 +30,10 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
             }
         }
     }
+    private struct CompactFingerprint: Hashable {
+        let schema: ProviderResponseSchema
+        let typeCodes: [UInt8]
+    }
     // Static initialization is synchronized; metadata contains only generated
     // allowlisted paths and never any provider payload or caller content.
     private static let preparedSchemaFields = Dictionary(uniqueKeysWithValues: ProviderResponseSchema.allCases.map { schema in
@@ -38,10 +42,10 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
     public static let shared = PerformanceDiagnostics()
     private let lock = NSLock()
     private var counters: [String: [String: Double]] = [:]
-    private var schemaRing: [String?] = Array(repeating: nil, count: 64)
+    private var schemaRing: [CompactFingerprint?] = Array(repeating: nil, count: 64)
     private var schemaRingOldest = 0
     private var schemaRingCount = 0
-    private var schemaCounts: [String: Int] = [:]
+    private var schemaCounts: [CompactFingerprint: Int] = [:]
     private let schemaRingCapacity = 64
     private let limit = 9_007_199_254_740_991.0
     public init() {}
@@ -55,9 +59,10 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
         counters[key] = ["samples": min(limit, (previous["samples"] ?? 0) + 1), "total": min(limit, (previous["total"] ?? 0) + sample), "max": max(previous["max"] ?? 0, sample)]
     }
     public func recordProviderSchemaFailure(_ schema: ProviderResponseSchema, payload: Any?, rootOverride: ProviderResponseRootOverride? = nil) {
-        let fingerprint = schema.rawValue + "|" + (Self.preparedSchemaFields[schema] ?? []).map { field in
-            "\(field.path):\(Self.observedType(Self.value(at: field.steps, in: payload), override: field.path == "$" ? rootOverride?.rawValue : nil))"
-        }.joined(separator: ",")
+        let fields = Self.preparedSchemaFields[schema] ?? []
+        let fingerprint = CompactFingerprint(schema: schema, typeCodes: fields.map { field in
+            Self.observedTypeCode(Self.value(at: field.steps, in: payload), override: field.path == "$" ? rootOverride : nil)
+        })
         lock.lock(); defer { lock.unlock() }
         let slot: Int
         if schemaRingCount == schemaRingCapacity {
@@ -76,8 +81,10 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
     }
     public func snapshot() -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
-        let schemaFailures = schemaCounts.keys.sorted().map { key -> [String: Any] in
-            ["fingerprint": key, "count": schemaCounts[key] ?? 0]
+        let schemaFailures = schemaCounts.map { compact, count -> (fingerprint: String, count: Int) in
+            (Self.readableFingerprint(compact), count)
+        }.sorted { $0.fingerprint < $1.fingerprint }.map { item -> [String: Any] in
+            ["fingerprint": item.fingerprint, "count": item.count]
         }
         return ["version": 1, "scope": "native-process", "counters": counters,
                 "providerSchemaFailures": schemaFailures]
@@ -103,14 +110,26 @@ public final class PerformanceDiagnostics: @unchecked Sendable {
         return current
     }
 
-    private static func observedType(_ value: Any?, override: String?) -> String {
-        if let override { return override }
-        guard let value else { return "missing" }
-        if value is NSNull { return "null" }
-        if value is String { return "string" }
-        if let number = value as? NSNumber { return CFGetTypeID(number) == CFBooleanGetTypeID() ? "boolean" : "number" }
-        if value is [String: Any] { return "object" }
-        if value is [Any] { return "array" }
-        return "other"
+    private static func observedTypeCode(_ value: Any?, override: ProviderResponseRootOverride?) -> UInt8 {
+        if override == .invalidJSON { return 8 }
+        if override == .nonJSON { return 9 }
+        guard let value else { return 0 }
+        if value is NSNull { return 1 }
+        if value is String { return 4 }
+        if let number = value as? NSNumber { return CFGetTypeID(number) == CFBooleanGetTypeID() ? 6 : 5 }
+        if value is [String: Any] { return 3 }
+        if value is [Any] { return 2 }
+        return 7
+    }
+
+    private static let observedTypeNames = ["missing", "null", "array", "object", "string", "number", "boolean", "other", "invalid-json", "non-json"]
+
+    private static func readableFingerprint(_ compact: CompactFingerprint) -> String {
+        let fields = preparedSchemaFields[compact.schema] ?? []
+        guard fields.count == compact.typeCodes.count else { return "" }
+        let details = zip(fields, compact.typeCodes).map { field, code in
+            "\(field.path):\(observedTypeNames[Int(code)])"
+        }.joined(separator: ",")
+        return "\(compact.schema.rawValue)|\(details)"
     }
 }

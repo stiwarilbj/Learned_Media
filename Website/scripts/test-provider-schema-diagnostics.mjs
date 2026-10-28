@@ -126,6 +126,25 @@ test('circular history retains exactly the newest 64 fingerprints across repeate
   assert.equal(api.providerSchemaFailureSnapshot().reduce((sum, item) => sum + item.count, 0), 1);
 });
 
+test('browser ring and counts retain compact signatures rather than readable field paths', () => {
+  const sandbox = { exports: {}, window: {} };
+  runInNewContext(code + '\nexports.testInternal = { ring, counts };', sandbox);
+  const internal = sandbox.exports.testInternal;
+  const events = groups.at(-1);
+  for (const item of events) sandbox.exports.recordProviderSchemaFailure(item.schema, item.payload, item.rootOverride);
+  assert.equal(internal.ring.filter(Boolean).length, 64);
+  for (const signature of internal.ring.filter(Boolean)) {
+    assert.match(signature, /^[0-8]:[A-J]+$/);
+    assert.equal(signature.includes('.'), false);
+    assert.equal(signature.includes('|'), false);
+  }
+  for (const signature of internal.counts.keys()) assert.match(signature, /^[0-8]:[A-J]+$/);
+  assert.deepEqual(plain(sandbox.exports.providerSchemaFailureSnapshot()), browserSnapshot(events));
+  sandbox.exports.resetProviderSchemaFailures();
+  assert.equal(internal.ring.filter(Boolean).length, 0);
+  assert.equal(internal.counts.size, 0);
+});
+
 test('paths compile once and remain immutable across recording, reset and all schemas', () => {
   const sandbox = { exports: {}, window: {} };
   runInNewContext(`
@@ -156,7 +175,10 @@ test('paths compile once and remain immutable across recording, reset and all sc
   assert.equal(sandbox.exports.providerSchemaFailureSnapshot().reduce((sum, item) => sum + item.count, 0), 64);
   sandbox.exports.resetProviderSchemaFailures();
   sandbox.exports.recordProviderSchemaFailure('youtube.videos', {});
-  assert.deepEqual(plain(sandbox.pathOperations), initial, 'no path parsing after metadata initialization');
+  const afterSnapshot = plain(sandbox.pathOperations);
+  assert.equal(afterSnapshot.split, initial.split, 'paths are not reparsed after metadata initialization');
+  assert.equal(afterSnapshot.endsWith, initial.endsWith, 'array path markers are not reinterpreted after metadata initialization');
+  assert.ok(afterSnapshot.slice > initial.slice, 'compact signatures are decoded only when a snapshot is requested');
 });
 
 test('throwing payload accessors remain isolated from response handling and diagnostics', () => {
@@ -182,8 +204,16 @@ import Foundation
       }
       return diagnostics.snapshot()["providerSchemaFailures"]!
     }
+    let resetDiagnostics = PerformanceDiagnostics()
+    for item in groups.last! {
+      resetDiagnostics.recordProviderSchemaFailure(ProviderResponseSchema(rawValue: item["schema"] as! String)!, payload: item["payload"],
+        rootOverride: (item["rootOverride"] as? String).flatMap(ProviderResponseRootOverride.init(rawValue:)))
+    }
+    resetDiagnostics.reset()
+    resetDiagnostics.recordProviderSchemaFailure(.youtubeVideos, payload: ["items": []])
+    let afterReset = resetDiagnostics.snapshot()["providerSchemaFailures"]!
     let definitions = ProviderResponseSchema.allCases.map { ["id": $0.rawValue, "fields": $0.fields] as [String: Any] }
-    let result = try JSONSerialization.data(withJSONObject: ["definitions": definitions, "snapshots": snapshots], options: [.sortedKeys])
+    let result = try JSONSerialization.data(withJSONObject: ["definitions": definitions, "snapshots": snapshots, "afterReset": afterReset], options: [.sortedKeys])
     FileHandle.standardOutput.write(result)
   }
 }
@@ -195,6 +225,7 @@ import Foundation
   const result = JSON.parse(execFileSync(binary, [input], { encoding: 'utf8' }));
   assert.deepEqual(result.definitions, plain(Object.entries(api.providerSchemaFields).map(([id, fields]) => ({ id, fields }))));
   assert.deepEqual(result.snapshots.map(ordered), groups.map(group => ordered(browserSnapshot(group))));
+  assert.deepEqual(ordered(result.afterReset), ordered(browserSnapshot([{ schema: 'youtube.videos', payload: { items: [] } }])));
   assert.equal(JSON.stringify(result).includes('PRIVATE'), false);
   assert.equal(result.snapshots.at(-1).reduce((sum, value) => sum + value.count, 0), 64);
 });
@@ -214,6 +245,9 @@ test('Mac frontend uses the same generated fingerprints and server runtimes reta
     for (const item of group) frontend.testSchema.recordProviderSchemaFailure(item.schema, item.payload, item.rootOverride);
     assert.deepEqual(ordered(snapshot.snapshot().providerSchemaFailures), ordered(browserSnapshot(group)));
   }
+  snapshot.reset();
+  frontend.testSchema.recordProviderSchemaFailure('youtube.videos', { items: [] });
+  assert.deepEqual(ordered(snapshot.snapshot().providerSchemaFailures), ordered(browserSnapshot([{ schema: 'youtube.videos', payload: { items: [] } }])));
   snapshot.reset();
   const server = { exports: {} };
   runInNewContext(code, server);
