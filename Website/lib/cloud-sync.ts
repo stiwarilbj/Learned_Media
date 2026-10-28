@@ -251,7 +251,8 @@ export class WorkspaceCloudSync {
       const submittedById = new Map<string, (typeof batch)[number]>();
       for (const item of batch) if (!submittedById.has(item.record.id)) submittedById.set(item.record.id, item);
       let completed = false;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      let rebased = false;
+      for (let attempt = 0; attempt < 2; attempt++) {
         if (signal.aborted) throw new Error('Cloud save was canceled.');
         const prepared = await Promise.all(batch.map(async item => {
           const remote = this.conflictRecords.get(item.record.id);
@@ -278,6 +279,10 @@ export class WorkspaceCloudSync {
           if (result.error) { error = result.error; break; }
         }
         if (error?.code === '40001') {
+          // A save gets one rebase read and one retry. If that retry races again,
+          // leave the snapshot dirty for a later sync pass instead of spinning.
+          if (rebased) break;
+          rebased = true;
           // The trigger rejects the entire batch atomically. Read only its current
           // heads and use the ordinary timestamp merge before trying again.
           const latest = await api.rpc('latest_workspace_revisions').abortSignal(signal);

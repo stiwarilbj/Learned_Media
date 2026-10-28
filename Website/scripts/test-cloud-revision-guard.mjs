@@ -209,8 +209,36 @@ test('retrying a lost acknowledgement keeps revision identity', async () => {
 });
 test('persistent conflicts are bounded and remain dirty; permission errors are not retried', async () => {
   const db = server(), c = client(db); db.failures = Array.from({ length: 3 }, () => ({ code: '40001' }));
-  await assert.rejects(save(c, record()), /another device/); assert.equal(db.writes.length, 3); assert.equal(c.hasPendingUploads, true);
+  await assert.rejects(save(c, record()), /another device/); assert.equal(db.writes.length, 2); assert.equal(c.hasPendingUploads, true);
   const d = server(), other = client(d); d.failures = [{ code: '42501' }]; await assert.rejects(save(other, record()), error => error.code === '42501'); assert.equal(d.writes.length, 1);
+});
+test('a second conflict leaves the local revision pending without another rebase read', async () => {
+  const db = server(), c = client(db);
+  const originalRevision = await seed(db, record());
+  await c.load(signal());
+  const initialSnapshot = c.sent.get('w');
+  await seed(db, record(2));
+  let conflictReads = 0, writes = 0, fetchedRevision = '';
+  db.onRead = async options => {
+    if (!options.select && options.after === undefined && options.through === undefined) {
+      conflictReads++;
+      if (conflictReads === 1) fetchedRevision = await seed(db, record(3));
+    }
+  };
+  db.onWrite = async () => {
+    writes++;
+    if (writes === 2) await seed(db, record(5));
+  };
+
+  await assert.rejects(save(c, record(4)), /another device/);
+
+  assert.equal(writes, 2, 'one initial write and one retry are attempted');
+  assert.equal(conflictReads, 1, 'a conflict on the retry does not trigger another read/merge cycle');
+  assert.equal(c.observed.get('w'), fetchedRevision, 'the fetched revision remains the retry base');
+  assert.notEqual(c.observed.get('w'), originalRevision);
+  assert.equal(c.sent.get('w'), initialSnapshot, 'the unacknowledged local payload remains pending');
+  assert.equal(c.hasPendingUploads, true);
+  assert.equal(db.heads.get('w').record.name, 'Workspace 5', 'the competing writer remains untouched');
 });
 test('canceled conflict read cannot retry or publish stale merged state', async () => {
   const db = server(), c = client(db), controller = new AbortController(); await seed(db, record(4));
