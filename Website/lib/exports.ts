@@ -175,7 +175,103 @@ async function fontData(signal?: AbortSignal) {
     fontFor("Bold", signal),
   ]);
 }
-export function canvasImage(
+type ImageFlight = {
+  controller: AbortController;
+  promise: Promise<ImageAsset>;
+  subscribers: number;
+  settled: boolean;
+};
+type CachedImage = { asset: ImageAsset; bytes: number; expiresAt: number; timer: ReturnType<typeof setTimeout> };
+const IMAGE_CACHE_LIFETIME_MS = 30_000;
+const IMAGE_CACHE_MAX_ENTRIES = 24;
+const IMAGE_CACHE_MAX_BYTES = 24 * 1024 * 1024;
+const imageFlights = new Map<string, ImageFlight>();
+const cachedImages = new Map<string, CachedImage>();
+let cachedImageBytes = 0;
+
+function removeCachedImage(url: string, expected?: CachedImage) {
+  const current = cachedImages.get(url);
+  if (!current || (expected && current !== expected)) return;
+  clearTimeout(current.timer);
+  cachedImages.delete(url);
+  cachedImageBytes -= current.bytes;
+}
+
+function cachedImage(url: string) {
+  const entry = cachedImages.get(url);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    removeCachedImage(url, entry);
+    return undefined;
+  }
+  // Keep frequently reused image URLs newest in the bounded cache.
+  cachedImages.delete(url);
+  cachedImages.set(url, entry);
+  return entry.asset;
+}
+
+function rememberImage(url: string, asset: ImageAsset) {
+  const bytes = asset.bytes.byteLength;
+  if (!bytes || bytes > IMAGE_CACHE_MAX_BYTES) return;
+  removeCachedImage(url);
+  while (cachedImages.size >= IMAGE_CACHE_MAX_ENTRIES || cachedImageBytes + bytes > IMAGE_CACHE_MAX_BYTES) {
+    const oldest = cachedImages.keys().next().value;
+    if (oldest === undefined) return;
+    removeCachedImage(oldest);
+  }
+  const entry = { asset, bytes, expiresAt: Date.now() + IMAGE_CACHE_LIFETIME_MS, timer: undefined as unknown as ReturnType<typeof setTimeout> };
+  entry.timer = setTimeout(() => removeCachedImage(url, entry), IMAGE_CACHE_LIFETIME_MS);
+  // Avoid holding a Node test process open solely for the browser cache timer.
+  (entry.timer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+  cachedImages.set(url, entry);
+  cachedImageBytes += bytes;
+}
+
+function createImageFlight(url: string): ImageFlight {
+  const controller = new AbortController();
+  const flight: ImageFlight = { controller, promise: Promise.resolve({ bytes: new Uint8Array(), width: 0, height: 0 }), subscribers: 0, settled: false };
+  imageFlights.set(url, flight);
+  flight.promise = Promise.resolve()
+    .then(() => loadCanvasImage(url, controller.signal))
+    .then((asset) => {
+      if (!controller.signal.aborted) rememberImage(url, asset);
+      return asset;
+    })
+    .catch((error) => {
+      if (!controller.signal.aborted) controller.abort(error);
+      throw error;
+    })
+    .finally(() => {
+      flight.settled = true;
+      if (imageFlights.get(url) === flight) imageFlights.delete(url);
+    });
+  // A last-subscriber cancellation can finish the shared request after its
+  // callers have left. Observe that expected rejection independently.
+  void flight.promise.catch(() => undefined);
+  return flight;
+}
+
+/** Share one image preparation across exports while keeping their cancellation independent. */
+export async function canvasImage(url: string, signal?: AbortSignal): Promise<ImageAsset> {
+  check(signal);
+  const cached = cachedImage(url);
+  if (cached) return cached;
+  const flight = imageFlights.get(url) ?? createImageFlight(url);
+  flight.subscribers += 1;
+  try {
+    const asset = await waitWithSignal(flight.promise, signal);
+    check(signal);
+    return asset;
+  } finally {
+    flight.subscribers -= 1;
+    if (!flight.settled && flight.subscribers === 0) {
+      if (imageFlights.get(url) === flight) imageFlights.delete(url);
+      flight.controller.abort(new DOMException("Download canceled", "AbortError"));
+    }
+  }
+}
+
+async function loadCanvasImage(
   url: string,
   signal?: AbortSignal,
 ): Promise<ImageAsset> {

@@ -2685,6 +2685,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let youtubeLimiter = YouTubeRequestLimiter()
     private let youtubeDownloads = ConditionalDownloadCache()
     private let youtubeSession = BoundedURLSession()
+    private let exportImageCache = SharedImageDataCache(limit: 24, lifetime: 30, maxBytes: 24 * 1024 * 1024)
     private let backgroundRetries = BackgroundRetryGate()
     private var geminiKey = ""
     private var sessionRefresh: Task<CloudSession, Error>?
@@ -3656,6 +3657,37 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         return output as Data
     }
 
+    private func preparedExportImage(_ raw: String) async throws -> Data {
+        guard let url = URL(string: raw), ["https", "http"].contains(url.scheme ?? "") else {
+            throw URLError(.badURL)
+        }
+        return try await exportImageCache.data(for: raw) {
+            try Task.checkCancellation()
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 12
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Task.checkCancellation()
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  data.count <= 30 * 1024 * 1024,
+                  let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 1200,
+                    kCGImageSourceCreateThumbnailWithTransform: true
+                  ] as CFDictionary) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            let compressed = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(compressed, UTType.jpeg.identifier as CFString, 1, nil) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+            guard CGImageDestinationFinalize(destination) else { throw URLError(.cannotDecodeContentData) }
+            try Task.checkCancellation()
+            return compressed as Data
+        }
+    }
+
     private func exportFacts(id: String, payload: [String: Any]) {
         let format = payload["format"] as? String ?? "txt", folder = payload["folder"] as? Bool ?? false, files = payload["files"] as? [[String: Any]] ?? [], token = payload["token"] as? Int ?? 0
         guard !files.isEmpty, files.count <= 65535 else { respond(id: id, error: "There are no cards to download."); return }
@@ -3669,18 +3701,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
                     for start in stride(from: 0, to: urls.count, by: 3) {
                         try Task.checkCancellation()
                         let batch = Array(urls[start..<min(start + 3, urls.count)])
-                        let downloaded = await withTaskGroup(of: (String, Data?).self) { group in
+                        let downloaded = try await withThrowingTaskGroup(of: (String, Data?).self) { group in
                             for raw in batch { group.addTask {
-                                guard let url = URL(string: raw), ["https", "http"].contains(url.scheme ?? "") else { return (raw, nil) }
-                                var request = URLRequest(url: url); request.timeoutInterval = 12
-                                do { let (data, response) = try await URLSession.shared.data(for: request); guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 30 * 1024 * 1024, CGImageSourceCreateWithData(data as CFData, nil) != nil else { return (raw, nil) }; guard let source = CGImageSourceCreateWithData(data as CFData, nil), let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1200, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else { return (raw, nil) }
-                                let compressed = NSMutableData()
-                                guard let destination = CGImageDestinationCreateWithData(compressed, UTType.jpeg.identifier as CFString, 1, nil) else { return (raw, nil) }
-                                CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
-                                guard CGImageDestinationFinalize(destination) else { return (raw, nil) }
-                                return (raw, compressed as Data) } catch { return (raw, nil) }
+                                do {
+                                    return (raw, try await self.preparedExportImage(raw))
+                                } catch is CancellationError {
+                                    throw CancellationError()
+                                } catch let error as URLError where Task.isCancelled || error.code == .cancelled {
+                                    if Task.isCancelled { throw CancellationError() }
+                                    return (raw, nil)
+                                } catch {
+                                    return (raw, nil)
+                                }
                             } }
-                            var results: [(String, Data?)] = []; for await result in group { results.append(result) }; return results
+                            var results: [(String, Data?)] = []; for try await result in group { results.append(result) }; return results
                         }
                         try Task.checkCancellation()
                         for (url, data) in downloaded { if let data { images[url] = data } }

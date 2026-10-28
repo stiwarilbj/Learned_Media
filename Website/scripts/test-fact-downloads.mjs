@@ -188,6 +188,123 @@ test("pre-canceled PDF work performs no font requests", async () => {
   }
 });
 
+function installImageEnvironment(route) {
+  const counts = new Map(), cancellations = new Map();
+  const priorImage = Object.getOwnPropertyDescriptor(globalThis, "Image");
+  const priorDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  class MockImage {
+    naturalWidth = 32;
+    naturalHeight = 20;
+    onload = null;
+    onerror = null;
+    done = false;
+    timer;
+    currentURL = "";
+    set src(value) {
+      if (!value) {
+        if (!this.done && this.currentURL) {
+          this.done = true;
+          clearTimeout(this.timer);
+          cancellations.set(this.currentURL, (cancellations.get(this.currentURL) ?? 0) + 1);
+        }
+        return;
+      }
+      this.currentURL = String(value);
+      const count = (counts.get(this.currentURL) ?? 0) + 1;
+      counts.set(this.currentURL, count);
+      const result = route(this.currentURL, count) ?? {};
+      this.timer = setTimeout(() => {
+        if (this.done) return;
+        this.done = true;
+        if (result.error) this.onerror?.(new Error("Mock image URL failed"));
+        else this.onload?.();
+      }, result.delay ?? 0);
+    }
+  }
+  globalThis.Image = MockImage;
+  globalThis.document = {
+    createElement(name) {
+      assert.equal(name, "canvas");
+      return {
+        width: 0,
+        height: 0,
+        getContext: () => ({ fillRect() {}, drawImage() {} }),
+        toBlob(callback) { queueMicrotask(() => callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/jpeg" }))); },
+      };
+    },
+  };
+  return {
+    counts,
+    cancellations,
+    restore() {
+      if (priorImage) Object.defineProperty(globalThis, "Image", priorImage);
+      else delete globalThis.Image;
+      if (priorDocument) Object.defineProperty(globalThis, "document", priorDocument);
+      else delete globalThis.document;
+    },
+  };
+}
+
+test("simultaneous export image work shares a download and briefly reuses successful bytes", async () => {
+  const url = "https://images.example.test/shared-export-image.jpg";
+  const environment = installImageEnvironment(() => ({ delay: 40 }));
+  try {
+    const module = freshExports(), firstController = new AbortController(), secondController = new AbortController();
+    const first = module.canvasImage(url, firstController.signal);
+    const second = module.canvasImage(url, secondController.signal);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    firstController.abort();
+    await assert.rejects(first, (error) => error.name === "AbortError");
+    const shared = await second;
+    assert.equal(environment.counts.get(url), 1);
+    assert.equal(environment.cancellations.get(url) ?? 0, 0, "one export cancel must not abort the other export's image");
+
+    const cached = await module.canvasImage(url);
+    assert.equal(environment.counts.get(url), 1, "a successful image is reused briefly after completion");
+    assert.deepEqual([...cached.bytes], [...shared.bytes]);
+  } finally {
+    environment.restore();
+  }
+});
+
+test("canceling every image subscriber stops the fetch and permits a clean retry", async () => {
+  const url = "https://images.example.test/all-cancel-export-image.jpg";
+  const environment = installImageEnvironment((_url, count) => ({ delay: count === 1 ? 1000 : 0 }));
+  try {
+    const module = freshExports(), firstController = new AbortController(), secondController = new AbortController();
+    const first = module.canvasImage(url, firstController.signal);
+    const second = module.canvasImage(url, secondController.signal);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    firstController.abort();
+    secondController.abort();
+    await Promise.all([
+      assert.rejects(first, (error) => error.name === "AbortError"),
+      assert.rejects(second, (error) => error.name === "AbortError"),
+    ]);
+    assert.equal(environment.cancellations.get(url), 1, "the shared image load is canceled once after the last subscriber leaves");
+
+    const retried = await module.canvasImage(url);
+    assert.deepEqual([...retried.bytes], [1, 2, 3]);
+    assert.equal(environment.counts.get(url), 2);
+  } finally {
+    environment.restore();
+  }
+});
+
+test("image URL failures are not cached and retry successfully", async () => {
+  const url = "https://images.example.test/retry-export-image.jpg";
+  const environment = installImageEnvironment((_url, count) => ({ error: count === 1 }));
+  try {
+    const module = freshExports();
+    await assert.rejects(module.canvasImage(url), /Image unavailable/);
+    const recovered = await module.canvasImage(url);
+    assert.deepEqual([...recovered.bytes], [1, 2, 3]);
+    assert.equal(environment.counts.get(url), 2, "failed URL responses are never retained as successful image bytes");
+  } finally {
+    environment.restore();
+  }
+});
+
 test("font waits cancel promptly, coalesce subscribers, and retry after failures", async () => {
   const regular = readFileSync(new URL("../public/fonts/NotoSans-Regular.ttf", import.meta.url));
   const bold = readFileSync(new URL("../public/fonts/NotoSans-Bold.ttf", import.meta.url));
