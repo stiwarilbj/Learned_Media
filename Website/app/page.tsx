@@ -44,6 +44,7 @@ import { createSavedCardChronology, normalizeSavedCardChronology } from "@/lib/c
 import { createSavedFollowUpQuestions, normalizeSavedFollowUpQuestions } from "@/lib/card-follow-ups";
 import { factAngleDefinition, type FactAngle } from "@/lib/fact-angle";
 import { clearCardRevealProgress } from "@/lib/card-reveal";
+import { setCardToolWorkspaceCards } from "@/lib/card-tool-state-retention";
 import { publishYouTubeImportProgress, updateYouTubeImportProgress } from "@/components/learned-media/youtubeImportProgress";
 import { acceptTopicDetourCard, createTopicDetour, markTopicDetourProgress, missingTopicDetourSlots, orderTopicDetourCards, type TopicDetour, type TopicDetourProgress } from "@/lib/topic-detours";
 import type { FactCard, FactCardAction, FeedSettings, GeminiModelCheck, GeminiModelOutcome, GeminiStatus, LearningMessage, LearningProfile, SavedCardGlossary, SavedCardLocations, TopicNode, View, WikipediaSource } from "@/lib/types";
@@ -511,6 +512,10 @@ export default function HomePage() {
   const [cards, setCards] = useState<FactCard[]>([]);
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
+
+  useEffect(() => {
+    setCardToolWorkspaceCards(workspaceId, cards.map((card) => card.id));
+  }, [cards, workspaceId]);
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, { text?: string; detailed?: boolean; structure?: AnswerStructure; structureRevision?: number; instructionPreference?: QuestionInstructionPreference; instructionRevision?: number }>>({});
   const [learningProfile, setLearningProfileState] = useState<LearningProfile>({});
   const learningProfileRef = useRef(learningProfile);

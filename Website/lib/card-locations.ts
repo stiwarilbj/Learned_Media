@@ -1,4 +1,5 @@
 import type { FactCard, WikipediaSource } from "./types";
+import { MAX_RECENT_CARD_TOOL_CARDS, pruneCardToolState, registerCardToolStatePruner } from "./card-tool-state-retention";
 
 export type CardLocationAnchor = { field: "title" | "hook" | "body"; sentenceIndex?: number };
 export type SavedCardLocation = {
@@ -160,8 +161,32 @@ export function getCardLocationPanelOpen(workspaceId: string, cardId: string, fi
 export type CardLocationPanelState = { fingerprint: string; status: "idle" | "loading" | "ready" | "error"; attempt?: number; requestedKey?: string };
 const panelStates = new Map<string, CardLocationPanelState>();
 const idleStates = new Map<string, CardLocationPanelState>();
-export function getCardLocationPanelState(workspaceId: string, cardId: string, fingerprint: string): CardLocationPanelState { const key = `${workspaceId}\u0000${cardId}`, state = panelStates.get(key); if (state?.fingerprint === fingerprint) return state; const idleKey = `${key}\u0000${fingerprint}`; let idle = idleStates.get(idleKey); if (!idle) { idle = { fingerprint, status: "idle" }; idleStates.set(idleKey, idle); } return idle; }
-export function setCardLocationPanelState(workspaceId: string, cardId: string, state: CardLocationPanelState) { const key = `${workspaceId}\u0000${cardId}`; panelStates.delete(key); panelStates.set(key, state); while (panelStates.size > MAX_OPEN_PANELS) panelStates.delete(panelStates.keys().next().value!); for (const listener of panelListeners.get(key) ?? []) listener(); }
+const MAX_IDLE_PANEL_STATES = MAX_RECENT_CARD_TOOL_CARDS * 2;
+function notifyPanelListeners(key: string) { for (const listener of panelListeners.get(key) ?? []) listener(); }
+registerCardToolStatePruner(({ workspaceId, retainedCardIds }) => {
+  const cardKeyFor = (key: string) => {
+    const separator = key.indexOf("\u0000");
+    if (separator < 0) return null;
+    const cardSeparator = key.indexOf("\u0000", separator + 1);
+    return cardSeparator < 0 ? null : { workspace: key.slice(0, separator), cardId: key.slice(separator + 1, cardSeparator), cardKey: key.slice(0, cardSeparator) };
+  };
+  for (const [key, state] of panelStates) {
+    const isOpen = panelFingerprints.get(key) === state.fingerprint;
+    const card = cardKeyFor(`${key}\u0000${state.fingerprint}`);
+    const isRetained = card?.workspace === workspaceId && retainedCardIds.has(card.cardId);
+    if (isOpen || isRetained) continue;
+    panelStates.delete(key);
+    notifyPanelListeners(key);
+  }
+  for (const [key, state] of idleStates) {
+    const card = cardKeyFor(key);
+    const isOpen = card ? panelFingerprints.get(card.cardKey) === state.fingerprint : false;
+    const isRetained = card?.workspace === workspaceId && retainedCardIds.has(card.cardId);
+    if (!isOpen && !isRetained) idleStates.delete(key);
+  }
+});
+export function getCardLocationPanelState(workspaceId: string, cardId: string, fingerprint: string): CardLocationPanelState { const key = `${workspaceId}\u0000${cardId}`, state = panelStates.get(key); if (state?.fingerprint === fingerprint) return state; const idleKey = `${key}\u0000${fingerprint}`; let idle = idleStates.get(idleKey); if (!idle) { idle = { fingerprint, status: "idle" }; idleStates.set(idleKey, idle); while (idleStates.size > MAX_IDLE_PANEL_STATES) idleStates.delete(idleStates.keys().next().value!); } return idle; }
+export function setCardLocationPanelState(workspaceId: string, cardId: string, state: CardLocationPanelState) { const key = `${workspaceId}\u0000${cardId}`; idleStates.delete(`${key}\u0000${state.fingerprint}`); panelStates.delete(key); panelStates.set(key, state); while (panelStates.size > MAX_OPEN_PANELS) panelStates.delete(panelStates.keys().next().value!); for (const listener of panelListeners.get(key) ?? []) listener(); }
 export function subscribeCardLocationPanel(workspaceId: string, cardId: string, listener: () => void) {
   const key = `${workspaceId}\u0000${cardId}`, set = panelListeners.get(key) ?? new Set<() => void>(); set.add(listener); panelListeners.set(key, set);
   return () => { set.delete(listener); if (!set.size) panelListeners.delete(key); };
@@ -171,6 +196,7 @@ export function setCardLocationPanelOpen(workspaceId: string, cardId: string, fi
   if (open) { panelFingerprints.delete(key); panelFingerprints.set(key, fingerprint); while (panelFingerprints.size > MAX_OPEN_PANELS) panelFingerprints.delete(panelFingerprints.keys().next().value!); }
   else panelFingerprints.delete(key);
   for (const listener of panelListeners.get(key) ?? []) listener();
+  if (!open) pruneCardToolState();
 }
 
 export async function loadCountryOutlines(load?: () => Promise<CountryOutlines>) {

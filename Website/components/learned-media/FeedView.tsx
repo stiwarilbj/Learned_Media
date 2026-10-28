@@ -11,6 +11,7 @@ import type { FactAngle } from "@/lib/fact-angle";
 import { factAngleDefinition } from "@/lib/fact-angle";
 import { summarizeBatchSetup } from "@/lib/batch-replay";
 import { selectedLeafCount } from "@/lib/topic-tree";
+import { retainCardToolWindow } from "@/lib/card-tool-state-retention";
 import { FactCard } from "./FactCard";
 import { FactAngleControl } from "./FactAngleControl";
 import { Icon } from "./icons";
@@ -180,6 +181,9 @@ function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, c
 }
 
 export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, factAngle, factAngleLocked, lastCompletedBatchSetup, repeatBatchPreview, repeatDisabledReason, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onQuestionInstructionPreference, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onEndFactBatch, onPrepareRepeat, onCancelRepeat, onConfirmRepeat, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+  const handleRetainedItemsChange = useCallback((items: readonly FactCardType[]) => {
+    retainCardToolWindow(workspaceId, items.map((card) => card.id));
+  }, [workspaceId]);
   const handleViewportRangeChange = useCallback((start: number) => {
     const lastDetourCardId = topicDetour?.slotCardIds[2];
     if (!topicDetour || !lastDetourCardId) return;
@@ -204,7 +208,7 @@ export function FeedView({ workspaceId, cards, showReset, query = "", catalogRev
           </div>
           <div className="feed-intro"><div><h1>Keep going</h1><p>One small idea at a time. Every card has a place to look next</p></div><span className="feed-count">{cards.length} cards in this session</span></div>
           <div className="fact-feed">
-            <VirtualizedRows items={cards} columns={1} estimatedHeight={settings.displayMode === "text" ? 490 : 660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} onViewportRangeChange={handleViewportRangeChange} />
+            <VirtualizedRows items={cards} columns={1} estimatedHeight={settings.displayMode === "text" ? 490 : 660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} onViewportRangeChange={handleViewportRangeChange} onRetainedItemsChange={handleRetainedItemsChange} />
             {loading && <div className="feed-progress" role="status" aria-live="polite"><span className="loading-dot" /> {topicDetour?.phase === "generating" ? "Gemini is building your topic detour" : "Gemini is building the next facts"}</div>}
             {generationError && <div className="feed-error" role="alert"><Icon name="help" size={17} /><div><strong>Generation paused</strong><span>{generationError}</span></div><button type="button" className="secondary-button" onClick={onRetry} disabled={loading} aria-busy={loading}>Retry missing facts</button><button type="button" className="text-button" onClick={onEndFactBatch} disabled={loading}>End this batch</button></div>}
             {canLoadMore && !topicDetour && <div className="feed-bottom-actions"><button type="button" className="small-load-button" onClick={onLoadMore} disabled={loading} aria-busy={loading}>Generate 7 more</button></div>}

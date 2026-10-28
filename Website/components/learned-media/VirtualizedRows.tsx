@@ -59,7 +59,7 @@ const MeasuredRow = memo(function MeasuredRow({ row, top, columns, gap, onMeasur
   </div>;
 });
 
-export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, className, getKey, renderItem, onViewportRangeChange }: {
+export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, className, getKey, renderItem, onViewportRangeChange, onRetainedItemsChange }: {
   items: T[];
   columns: number;
   estimatedHeight: number;
@@ -68,6 +68,7 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
   getKey: (item: T) => string;
   renderItem: (item: T) => ReactNode;
   onViewportRangeChange?: (start: number, end: number) => void;
+  onRetainedItemsChange?: (items: readonly T[]) => void;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [scrollPosition, setScrollPosition] = useState({ top: 0, height: 800 });
@@ -111,6 +112,7 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
     if (pinnedRowIndex >= 0 && (pinnedRowIndex < range.start || pinnedRowIndex >= range.end)) indexes.push(pinnedRowIndex);
     return indexes.sort((left, right) => left - right);
   }, [pinnedRowIndex, range]);
+  const retainedItems = useMemo(() => visibleIndexes.flatMap((index) => rows[index]?.items ?? []), [rows, visibleIndexes]);
 
   useEffect(() => {
     setMeasured((current) => {
@@ -203,6 +205,10 @@ export function VirtualizedRows<T>({ items, columns, estimatedHeight, gap = 16, 
   useEffect(() => {
     onViewportRangeChange?.(viewportRange.start, viewportRange.end);
   }, [onViewportRangeChange, viewportRange]);
+
+  useEffect(() => {
+    onRetainedItemsChange?.(retainedItems);
+  }, [onRetainedItemsChange, retainedItems]);
 
   if (!items.length) return null;
   return <div ref={contentRef} className={`${className} virtualized-rows`} style={{ height: offsets.at(-1) ?? 0 }}>

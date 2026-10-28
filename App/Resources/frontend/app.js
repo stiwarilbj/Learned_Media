@@ -26,6 +26,7 @@
   let legacyYoutubeRecencyPreferences = Object.assign({}, window.LEARNED_MEDIA_YOUTUBE.DEFAULT_RECENCY_PREFERENCES || {});
   const cardChronology = window.LEARNED_MEDIA_CARD_CHRONOLOGY;
   const cardLocations = window.LEARNED_MEDIA_CARD_LOCATIONS;
+  const cardToolRetention = window.LEARNED_MEDIA_CARD_TOOL_RETENTION;
   const cardFollowUps = window.LEARNED_MEDIA_CARD_FOLLOW_UPS;
   const topicDetours = window.LEARNED_MEDIA_TOPIC_DETOURS;
   const factAngleOptions = window.LEARNED_MEDIA_FACT_ANGLES || [];
@@ -649,8 +650,9 @@
       }
       archiveFacts([card]);
       state.topicDetour = acceptedDetour;
-      state.cards = topicDetours.orderTopicDetourCards(state.cards, state.topicDetour, card);
+      replaceNativeCards(topicDetours.orderTopicDetourCards(state.cards, state.topicDetour, card));
     } else { archiveFacts([card]); state.cards.push(card); }
+    if (!detour) updateNativeCardToolWorkspaceCards();
     batch.accepted[slotId] = card.id;
     state.batchAccepted += 1;
     return true;
@@ -1029,6 +1031,32 @@
     const bodyFullyVisible = !graduallyRevealing || visibleCount >= models.revealModel.sentences.length;
     return cardLocations.getVisibleCardLocations(card, visibleCount, bodyFullyVisible);
   }
+  function pruneNativeCardToolState() {
+    if (!cardToolRetention) return;
+    const snapshot = cardToolRetention.cardToolRetentionSnapshot();
+    if (!snapshot) return;
+    for (const [key, request] of nativeLocationLoads) {
+      const workspaceSeparator = key.indexOf("\u0000"), cardSeparator = key.indexOf("\u0000", workspaceSeparator + 1);
+      if (workspaceSeparator < 0 || cardSeparator < 0) { nativeLocationLoads.delete(key); continue; }
+      const ownerWorkspace = key.slice(0, workspaceSeparator), cardId = key.slice(workspaceSeparator + 1, cardSeparator), fingerprint = key.slice(cardSeparator + 1);
+      const isOpen = cardLocations.getCardLocationPanelOpen(ownerWorkspace, cardId, fingerprint);
+      const isRetained = ownerWorkspace === snapshot.workspaceId && snapshot.retainedCardIds.has(cardId);
+      if (isOpen || isRetained) continue;
+      if (request.status === "loading" && request.coordinateTask && typeof request.coordinateTask.cancel === "function") request.coordinateTask.cancel();
+      nativeLocationLoads.delete(key);
+    }
+  }
+  function updateNativeCardToolWorkspaceCards() {
+    if (!cardToolRetention) return;
+    cardToolRetention.setCardToolWorkspaceCards(state.workspaceId, state.cards.map(function (card) { return card.id; }));
+    pruneNativeCardToolState();
+  }
+  function replaceNativeCards(cards) { state.cards = cards; updateNativeCardToolWorkspaceCards(); }
+  function retainNativeCardToolWindow(cards) {
+    if (!cardToolRetention) return;
+    cardToolRetention.retainCardToolWindow(state.workspaceId, cards.map(function (card) { return card.id; }));
+    pruneNativeCardToolState();
+  }
   function nativeLocationFingerprint(card) { return cardLocations.cardLocationsFingerprint(card); }
   function nativeLocationPanelKey(card) { return state.workspaceId + "\u0000" + card.id + "\u0000" + nativeLocationFingerprint(card); }
   function cancelNativeLocationLoad(card) {
@@ -1084,6 +1112,7 @@
   function closeNativeLocationMap(card) {
     cancelNativeLocationLoad(card);
     cardLocations.setCardLocationPanelOpen(state.workspaceId, card.id, nativeLocationFingerprint(card), false);
+    pruneNativeCardToolState();
     focusedLocationTriggerCardId = card.id;
     render();
   }
@@ -1518,7 +1547,7 @@
     const fingerprint = nativeLocationFingerprint(card);
     const isOpen = cardLocations.getCardLocationPanelOpen(state.workspaceId, card.id, fingerprint);
     if (!places.length) {
-      if (isOpen) { cancelNativeLocationLoad(card); cardLocations.setCardLocationPanelOpen(state.workspaceId, card.id, fingerprint, false); focusedLocationTriggerCardId = card.id; }
+      if (isOpen) { cancelNativeLocationLoad(card); cardLocations.setCardLocationPanelOpen(state.workspaceId, card.id, fingerprint, false); pruneNativeCardToolState(); focusedLocationTriggerCardId = card.id; }
       return null;
     }
     if (!isOpen) return null;
@@ -2162,6 +2191,7 @@
     topicResetEpoch++;
     state.settings = Object.assign({}, DEFAULT_SETTINGS, snapshot.settings || {}, { sentenceLength: normalizeSentenceLength(snapshot.settings && snapshot.settings.sentenceLength) });
     state.cards = (snapshot.cards || []).filter(function (card) { return !KNOWN_DEMO_IDS.has(card.id); }).map(normalizeCard).filter(function (card) { return card.id && card.title && card.body && card.topicPath && card.topicPath.length && card.sources && card.sources.length; });
+    updateNativeCardToolWorkspaceCards();
     state.profile = difficultyEngine.normalizeLearningProfile(snapshot.profile || snapshot.learningProfile || {}, state.settings.obscurity);
     state.started = Boolean((snapshot.started ?? snapshot.feedStarted) && state.cards.length);
     applyYoutubeActivity(snapshot.youtubeActivity || snapshot.youtube, snapshot.youtube && snapshot.youtube.prioritizeRecentByChannel);
@@ -3037,8 +3067,8 @@
     const list = node("div", { className: "fact-feed" });
     let visibleCards=searchedCards("feed");
     if(state.topicDetour && state.query){const pinned=new Set([state.topicDetour.sourceCardId].concat(state.topicDetour.slotCardIds));const matches=new Set(visibleCards.map(function(card){return card.id;}));visibleCards=feedCards.filter(function(card){return pinned.has(card.id)||matches.has(card.id);});}
-    if(visibleCards.length>20)list.appendChild(window.LEARNED_MEDIA_WINDOWED.create(visibleCards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement}));
-    else visibleCards.forEach(function(card){list.appendChild(cardElement(card));});
+    if(visibleCards.length>20)list.appendChild(window.LEARNED_MEDIA_WINDOWED.create(visibleCards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement,onRetainedItemsChange:retainNativeCardToolWindow}));
+    else { retainNativeCardToolWindow(visibleCards); visibleCards.forEach(function(card){list.appendChild(cardElement(card));}); }
     if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), state.topicDetour && activeGenerationDetourId === state.topicDetour.id ? " Gemini is building your topic detour" : " Gemini is building the next facts"));
     if (!state.topicDetour && !state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 7); } }, "Generate 7 more")));
     column.appendChild(list);
@@ -3258,9 +3288,10 @@
     section.appendChild(nativeDownloadFeedback());
     if (cards.length) {
       const feed = node("div", { className: "collection-feed" });
-      if(cards.length>20)feed.appendChild(window.LEARNED_MEDIA_WINDOWED.create(cards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement}));else cards.forEach(function (card) { feed.appendChild(cardElement(card)); });
+      if(cards.length>20)feed.appendChild(window.LEARNED_MEDIA_WINDOWED.create(cards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement,onRetainedItemsChange:retainNativeCardToolWindow}));else { retainNativeCardToolWindow(cards); cards.forEach(function (card) { feed.appendChild(cardElement(card)); }); }
       section.appendChild(feed);
     } else {
+      retainNativeCardToolWindow([]);
       section.appendChild(node("div", { className: "empty-collection" }, node("div", { className: "empty-orbit" }, svg(kind === "saved" ? "bookmark" : kind === "likes" ? "heart" : "history", 25)), node("h2", { text: "Nothing here yet." }), node("p", { text: "As you explore, your " + label.toLowerCase() + " facts will appear here." })));
     }
     return section;
@@ -3708,7 +3739,7 @@
     clearTopicDetourCompletionNotice();
     const wasStarted = state.started;
     state.started = true;
-    if (!wasStarted) state.cards = [];
+    if (!wasStarted) replaceNativeCards([]);
     state.pendingSlots = 7;
     state.topicDetour = null;
     state.generationError = "";
@@ -3733,7 +3764,7 @@
     bridge("cancelAll", {}).catch(function () {});
     state.started = false;
     state.rabbitHole = null;
-    state.cards = [];
+    replaceNativeCards([]);
     state.pendingSlots = 7;
     state.profile = {};
     state.loading = false;
@@ -3771,7 +3802,7 @@
     topicResetEpoch++;
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
     setRevealGraduallyPreference(false);
-    state.cards = [];
+    replaceNativeCards([]);
     state.profile = {};
     state.started = false;
     state.generationError = "";
@@ -3794,7 +3825,7 @@
     activeGenerationDetourId = null;
     state.topicDetour = null;
     bridge("cancelAll", {}).catch(function () {});
-    state.cards = [];
+    replaceNativeCards([]);
     state.profile = {};
     state.started = false;
     state.generationError = "";

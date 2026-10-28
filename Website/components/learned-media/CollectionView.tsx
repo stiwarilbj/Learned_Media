@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import type { AnswerStructure, CardExplanationMode, DisplayMode, FactCard as FactCardType, FactCardAction, QuestionInstructionPreference, SavedCardLocations } from "@/lib/types";
 import { DownloadFeedback } from "./CardDownloads";
 import { FactCard } from "./FactCard";
 import { VirtualizedRows } from "./VirtualizedRows";
+import { retainCardToolWindow } from "@/lib/card-tool-state-retention";
 
 type CollectionViewProps = {
   kind: "saved" | "likes" | "history";
@@ -44,6 +45,12 @@ const cardRowKey = (card: FactCardType) => card.id;
 
 export function CollectionView({ kind, workspaceId, cards, displayMode, revealGradually, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onQuestionInstructionPreference, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onThreeMore }: CollectionViewProps) {
   const text = copy[kind];
+  const handleRetainedItemsChange = useCallback((items: readonly FactCardType[]) => {
+    retainCardToolWindow(workspaceId, items.map((card) => card.id));
+  }, [workspaceId]);
+  useEffect(() => {
+    if (!cards.length) retainCardToolWindow(workspaceId, []);
+  }, [cards.length, workspaceId]);
   const renderCard = useCallback((card: FactCardType) => <FactCard card={card} workspaceId={workspaceId} displayMode={card.displayModeOverride ?? displayMode} revealGradually={revealGradually} learnLoading={learnLoading === card.id} questionLoading={questionLoading === card.id} learnError={learningErrors[`${card.id}:learn`]} questionError={learningErrors[card.id]} questionDraft={questionDrafts[card.id]?.text} questionDetailed={questionDrafts[card.id]?.detailed} questionStructure={questionDrafts[card.id]?.structure} questionStructureRevision={questionDrafts[card.id]?.structureRevision} questionInstructionPreference={questionDrafts[card.id]?.instructionPreference} questionInstructionRevision={questionDrafts[card.id]?.instructionRevision} adaptationLoading={adaptationLoading === `${card.id}:simpler` || adaptationLoading === `${card.id}:deeper`} glossaryLoading={glossaryLoading === card.id} adaptationErrors={learningErrors} hasGeminiKey={hasGeminiKey} onAction={onAction} onLearnMore={onLearnMore} onAskQuestion={onAskQuestion} onQuestionDraft={onQuestionDraft} onQuestionDetailed={onQuestionDetailed} onQuestionStructure={onQuestionStructure} onQuestionInstructionPreference={onQuestionInstructionPreference} onAdaptExplanation={onAdaptExplanation} onExplainTerms={onExplainTerms} onCancelGlossary={onCancelGlossary} onLocationsResolved={onLocationsResolved} onOpenSettings={onOpenSettings} onThreeMore={onThreeMore} />, [adaptationLoading, displayMode, glossaryLoading, hasGeminiKey, learnLoading, learningErrors, onAction, onAdaptExplanation, onAskQuestion, onCancelGlossary, onExplainTerms, onLearnMore, onLocationsResolved, onOpenSettings, onQuestionDetailed, onQuestionDraft, onQuestionStructure, onQuestionInstructionPreference, onThreeMore, questionDrafts, questionLoading, revealGradually, workspaceId]);
-  return <section className="content-view collection-view"><div className="view-heading"><div><span className="eyebrow">{text.eyebrow}</span><h1>{text.title}</h1><p>{text.body}</p></div><span className="collection-count">{cards.length} {cards.length === 1 ? "fact" : "facts"}</span></div><DownloadFeedback />{cards.length ? <div className="collection-feed"><VirtualizedRows items={cards} columns={1} estimatedHeight={660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} /></div> : <div className="empty-collection"><div className="empty-orbit">✦</div><h2>Nothing here yet</h2><p>As you scroll, the things you save and love will gather here</p></div>}</section>;
+  return <section className="content-view collection-view"><div className="view-heading"><div><span className="eyebrow">{text.eyebrow}</span><h1>{text.title}</h1><p>{text.body}</p></div><span className="collection-count">{cards.length} {cards.length === 1 ? "fact" : "facts"}</span></div><DownloadFeedback />{cards.length ? <div className="collection-feed"><VirtualizedRows items={cards} columns={1} estimatedHeight={660} gap={18} className="fact-cards-window" getKey={cardRowKey} renderItem={renderCard} onRetainedItemsChange={handleRetainedItemsChange} /></div> : <div className="empty-collection"><div className="empty-orbit">✦</div><h2>Nothing here yet</h2><p>As you scroll, the things you save and love will gather here</p></div>}</section>;
 }
