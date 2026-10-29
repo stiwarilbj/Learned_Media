@@ -1377,6 +1377,10 @@ export default function HomePage() {
         if (!owner) setAuthRestored(true);
         if (owner) void credentialManager.current?.refresh({ automatic: true });
       }
+      if (cloudUserId.current && cloudUserId.current !== owner) {
+        cloudAbortController.current?.abort();
+        void cloudSyncRef.current?.discardRestoreProgress();
+      }
       if (!user) {
         cloudEpoch.current += 1;
         cloudAbortController.current?.abort();

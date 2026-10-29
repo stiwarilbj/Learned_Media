@@ -8,6 +8,7 @@ import type { FactMemory } from './fact-quality';
 import type { Database } from './supabase/database.types';
 import { assertSnapshot, validateSnapshot } from './snapshot-validation';
 import { recordPerformance } from './performance-diagnostics';
+import { cloudRestoreRecovery, type CloudRestoreRecovery, type RestoreRow } from './cloud-restore-recovery';
 
 function sameBytes(previous: Uint8Array | undefined, next: Uint8Array) {
   if (!previous || previous.byteLength !== next.byteLength) return false;
@@ -19,7 +20,9 @@ type CachedWorkspaceSnapshot = { revisionId: string; bytes: Uint8Array };
 function invalidWorkspaceCursor() {
   // Keep diagnostics aggregate-only: never retain workspace IDs or page data.
   recordPerformance('cloud', 'cursor_failures');
-  return new Error('Cloud workspace history returned an invalid cursor.');
+  const error = new Error('Cloud workspace history returned an invalid cursor.');
+  error.name = 'WorkspaceCursorError';
+  return error;
 }
 
 // Public client configuration; authorization is enforced by RLS, never by this key.
@@ -52,7 +55,8 @@ export class WorkspaceCloudSync {
   private uploads = new LatestSnapshotQueue<{ store: CloudSnapshot; signal: AbortSignal }>(
     ({ store, signal }) => this.saveSnapshot(store, signal)
   );
-  constructor(readonly userId: string) {}
+  constructor(readonly userId: string, private readonly recovery: CloudRestoreRecovery = cloudRestoreRecovery) {}
+  discardRestoreProgress() { return this.recovery.discard(this.userId); }
   get hasPendingUploads() { return this.uploads.hasUnacknowledged; }
   get isUploading() { return this.uploads.isWriting; }
   markFactMemoriesChanged(previous: FactMemory[], next: FactMemory[], ids: Set<string>) {
@@ -115,32 +119,44 @@ export class WorkspaceCloudSync {
     const api = cloudClient();
     const checkCancellation = () => { if (signal.aborted) throw new Error('Cloud load was canceled.'); };
     checkCancellation();
-    // The RPC returns one head per stable workspace ID. Revision IDs change on
-    // every save and must never be used as workspace pagination cursors.
-    const boundary = await api.rpc('latest_workspace_revisions').select('workspace_id')
-      .order('workspace_id', { ascending: false }).limit(1).abortSignal(signal);
-    if (boundary.error) throw boundary.error;
+    const saved = await this.recovery.read(this.userId, CLOUD_URL, signal);
     checkCancellation();
-    if (!Array.isArray(boundary.data) || boundary.data.length > 1) throw new Error('Cloud workspace history returned an invalid cursor.');
-    if (!boundary.data.length) {
-      this.canonicalWorkspaceSnapshots.clear();
-      return { records: [] as CloudRecord[], heads: new Map<string, string>() };
-    }
-    const through = boundary.data[0]?.workspace_id;
-    if (typeof through !== 'string' || !through) throw new Error('Cloud workspace history returned an invalid cursor.');
+    let checkpoint = saved?.checkpoint;
     const records: CloudRecord[] = [], heads = new Map<string, string>();
-    let after: string | null = null;
-    while (true) {
+    for (const row of saved?.rows ?? []) {
+      heads.set(row.id, row.revision);
+      if (row.record) records.push(row.record);
+    }
+    let through = checkpoint?.through;
+    if (!through) {
+      // Stable workspace IDs, never changing append-only revision IDs.
+      const boundary = await api.rpc('latest_workspace_revisions').select('workspace_id')
+        .order('workspace_id', { ascending: false }).limit(1).abortSignal(signal);
+      if (boundary.error) throw boundary.error;
+      checkCancellation();
+      if (!Array.isArray(boundary.data) || boundary.data.length > 1) throw invalidWorkspaceCursor();
+      if (!boundary.data.length) {
+        this.canonicalWorkspaceSnapshots.clear();
+        return { records, heads, restoreToken: undefined };
+      }
+      through = boundary.data[0]?.workspace_id;
+      if (typeof through !== 'string' || !through) throw invalidWorkspaceCursor();
+      checkpoint = await this.recovery.begin(this.userId, CLOUD_URL, through, signal);
+    }
+    const restoreToken = checkpoint?.token;
+    let after = checkpoint?.after ?? null;
+    while (!checkpoint?.complete) {
       checkCancellation();
       let query = api.rpc('latest_workspace_revisions').lte('workspace_id', through);
       if (after !== null) query = query.gt('workspace_id', after);
       const result = await query.order('workspace_id', { ascending: true }).limit(100).abortSignal(signal);
       if (result.error) throw result.error;
       checkCancellation();
-      if (!Array.isArray(result.data) || result.data.length > 100) throw new Error('Cloud workspace history returned an invalid page.');
+      if (!Array.isArray(result.data) || result.data.length > 100) throw invalidWorkspaceCursor();
       const pageRows = result.data;
       const pageLength = pageRows.length;
       let pageCursor: string | null = after;
+      const committedRows: RestoreRow[] = [];
       try {
         for (const row of pageRows) {
           const workspaceId = row?.workspace_id;
@@ -159,6 +175,7 @@ export class WorkspaceCloudSync {
           heads.set(workspaceId, row.revision_id);
           const record = this.decodedWorkspaceRecord(row);
           if (record) records.push(record);
+          committedRows.push({ id: workspaceId, revision: row.revision_id, ...(record ? { record } : {}) });
         }
       } finally {
         // The validated CloudRecords and revision heads above are the only page
@@ -166,8 +183,15 @@ export class WorkspaceCloudSync {
         // issuing another bounded request.
         pageRows.length = 0;
       }
-      if (pageLength < 100 || pageCursor === through) break;
-      if (pageCursor === null || pageCursor === after) throw invalidWorkspaceCursor();
+      const complete = pageLength < 100 || pageCursor === through;
+      if (!complete && (pageCursor === null || pageCursor === after)) throw invalidWorkspaceCursor();
+      if (checkpoint) {
+        // Failed writes leave the last committed prefix intact. Disable further
+        // checkpoint advancement for this pass rather than skipping that page.
+        checkpoint = await this.recovery.commit(checkpoint, committedRows, pageCursor, complete, signal);
+      }
+      checkCancellation();
+      if (complete) break;
       after = pageCursor;
     }
     // The full cursor traversal is the revision verification boundary for this
@@ -175,7 +199,7 @@ export class WorkspaceCloudSync {
     for (const workspaceId of this.canonicalWorkspaceSnapshots.keys()) {
       if (!heads.has(workspaceId)) this.canonicalWorkspaceSnapshots.delete(workspaceId);
     }
-    return { records, heads };
+    return { records, heads, restoreToken };
   }
   async load(signal: AbortSignal) {
     const api = cloudClient();
@@ -186,7 +210,10 @@ export class WorkspaceCloudSync {
     };
     // Start both independent reads together, keeping later pages sequential.
     const [revisionResult, firstMemoryPage] = await Promise.all([
-      this.loadWorkspaceRevisions(signal),
+      this.loadWorkspaceRevisions(signal).catch(async error => {
+        if (error?.name === 'WorkspaceCursorError') await this.recovery.discard(this.userId);
+        throw error;
+      }),
       loadMemoryPage(null),
     ]);
     const { records, heads } = revisionResult;
@@ -219,6 +246,10 @@ export class WorkspaceCloudSync {
       this.sent.set(record.id, bytes);
     }
     for (const memory of factMemory) this.memories.set(memory.fingerprint || memory.id, JSON.stringify(safeMemory(memory)));
+    // All requested data is validated. Recovery records already committed with
+    // their cursors remain usable after interruptions, including memory failures.
+    if (revisionResult.restoreToken) await this.recovery.discard(this.userId, revisionResult.restoreToken);
+    if (signal.aborted) throw new Error('Cloud load was canceled.');
     return { records, factMemory };
   }
   save(store: CloudSnapshot, signal: AbortSignal) {

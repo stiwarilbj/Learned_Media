@@ -41,7 +41,7 @@ function server() {
     },
     from(name) { return {
       select() { return this; }, eq() { return this; }, order() { return this; }, limit() { return this; },
-      async abortSignal() { assert.equal(name, 'fact_memory'); return { data: [], error: null }; },
+      async abortSignal() { assert.equal(name, 'fact_memory'); return { data: [], error: db.memoryError ?? null }; },
       upsert(rows) {
         const options = {};
         const builder = {
@@ -69,7 +69,7 @@ function server() {
   };
   return db;
 }
-function client(db, user = 'account', stats) {
+function client(db, user = 'account', stats, recovery) {
   const exports = {};
   vm.runInNewContext(source, { exports, process, Uint8Array, Map, Set, crypto, TextEncoder, TextDecoder, AbortController,
     require(name) {
@@ -100,7 +100,7 @@ function client(db, user = 'account', stats) {
       return baseRequire(name);
     }
   });
-  return new exports.WorkspaceCloudSync(user);
+  return new exports.WorkspaceCloudSync(user, recovery);
 }
 async function seed(db, value) {
   const r = canonicalRecord(value), revision_id = await workspaceRevisionId('account', r);
@@ -510,4 +510,78 @@ test('Mac workspace merging retains the local copy omitted by row validation', (
   const merged = c.context.mergeWorkspaceRecords([local,good], [record(4,'good')]);
   assert.equal(merged.find(r => r.id === 'bad'), local);
   assert.equal(merged.find(r => r.id === 'good').name, 'Workspace 4');
+});
+
+function recoveryJournal() {
+  let state;
+  return {
+    get state() { return structuredClone(state); },
+    failAfter: undefined,
+    async read(ownerId, source) {
+      if (state && (state.checkpoint.ownerId !== ownerId || state.checkpoint.source !== source)) state = undefined;
+      return structuredClone(state);
+    },
+    async begin(ownerId, source, through) {
+      if (state) return;
+      state = { checkpoint: { version: 1, ownerId, source, through, after: null, complete: false, token: crypto.randomUUID(), count: 0 }, rows: [] };
+      return structuredClone(state.checkpoint);
+    },
+    async commit(previous, rows, after, complete, signal) {
+      if (signal.aborted) throw Error('Cloud load was canceled.');
+      if (after === this.failAfter || state?.checkpoint.token !== previous.token || state.checkpoint.after !== previous.after) return;
+      state.rows.push(...structuredClone(rows));
+      state.checkpoint = { ...previous, after, complete, count: state.rows.length };
+      return structuredClone(state.checkpoint);
+    },
+    async discard(ownerId, token) { if ((!ownerId || ownerId === state?.checkpoint.ownerId) && (!token || token === state?.checkpoint.token)) state = undefined; }
+  };
+}
+test('an interrupted restore reopens after the committed page with its original high-water mark', async () => {
+  const db=server(), journal=recoveryJournal(); seedWorkspaceRange(db, 305);
+  db.readResult=options=>options.after==='w-00199'?{error:Error('offline')}:undefined;
+  const first=client(db,'account',undefined,journal);
+  await assert.rejects(first.load(signal()),/offline/);
+  assert.equal(journal.state.checkpoint.after,'w-00199'); assert.equal(journal.state.rows.length,200);
+  assert.equal(first.observed.size,0,'a partial restore never acknowledges cloud saves');
+  db.readResult=null; db.requests=[];
+  db.heads.set('z-new',{workspace_id:'z-new',revision_id:'new',record:record(1,'z-new')});
+  const resumed=await client(db,'account',undefined,journal).load(signal());
+  assert.equal(resumed.records.length,305);assert.equal(new Set(resumed.records.map(r=>r.id)).size,305);
+  assert.equal(db.requests[0].after,'w-00199');assert.equal(db.requests[0].through,'w-00304');
+  assert.equal(db.requests.length,2);assert.equal(journal.state,undefined);
+  const newer=record(4,'w-00000');assert.equal(mergeRecords([newer],resumed.records)[0].name,'Workspace 4');
+});
+test('a failed local page commit cannot skip an uncommitted page on reopen', async()=>{
+  const db=server(), journal=recoveryJournal(); seedWorkspaceRange(db,305);journal.failAfter='w-00199';
+  db.readResult=options=>options.after==='w-00299'?{error:Error('offline')}:undefined;
+  await assert.rejects(client(db,'account',undefined,journal).load(signal()),/offline/);
+  assert.equal(journal.state.checkpoint.after,'w-00099');assert.equal(journal.state.rows.length,100);
+  journal.failAfter=undefined;db.readResult=null;db.requests=[];
+  const resumed=await client(db,'account',undefined,journal).load(signal());
+  assert.equal(db.requests[0].after,'w-00099');assert.equal(resumed.records.length,305);
+});
+test('a completed workspace journal survives a separate fact-history failure without refetching workspaces', async()=>{
+  const db=server(),journal=recoveryJournal();seedWorkspaceRange(db,150);db.memoryError=Error('memory offline');
+  await assert.rejects(client(db,'account',undefined,journal).load(signal()),/memory offline/);
+  assert.equal(journal.state.checkpoint.complete,true);assert.equal(journal.state.rows.length,150);
+  db.memoryError=null;db.requests=[];
+  assert.equal((await client(db,'account',undefined,journal).load(signal())).records.length,150);
+  assert.equal(db.requests.length,0);assert.equal(journal.state,undefined);
+});
+test('invalid resumed cursors discard the journal while network failures retain it',async()=>{
+  const db=server(),journal=recoveryJournal();seedWorkspaceRange(db,150);
+  db.readResult=options=>options.after?{error:Error('offline')}:undefined;
+  await assert.rejects(client(db,'account',undefined,journal).load(signal()),/offline/);assert.ok(journal.state);
+  db.readResult=()=>({data:[{workspace_id:'w-00001',revision_id:'bad',record:record(1,'w-00001')}],error:null});
+  await assert.rejects(client(db,'account',undefined,journal).load(signal()),/invalid cursor/);assert.equal(journal.state,undefined);
+});
+test('account changes discard another account checkpoint and explicit sign-out discards its own',async()=>{
+  const db=server(),journal=recoveryJournal();seedWorkspaceRange(db,150);
+  db.readResult=options=>options.after?{error:Error('offline')}:undefined;
+  const a=client(db,'account',undefined,journal);await assert.rejects(a.load(signal()),/offline/);
+  db.heads.clear(); db.readResult=null;db.requests=[];
+  assert.equal((await client(db,'other',undefined,journal).load(signal())).records.length,0);
+  assert.equal(journal.state,undefined);assert.equal(db.requests[0].select,'workspace_id');
+  seedWorkspaceRange(db,150);db.readResult=options=>options.after?{error:Error('offline')}:undefined;
+  await assert.rejects(a.load(signal()),/offline/);await a.discardRestoreProgress();assert.equal(journal.state,undefined);
 });

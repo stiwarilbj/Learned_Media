@@ -2691,6 +2691,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let gemini = GeminiClient()
     private let keychain = KeychainStore()
     private let workspace = LocalWorkspaceStore()
+    private let cloudRestoreRecovery = CloudRestoreRecovery()
     private let youtubePlaybackCheckpoints = YouTubePlaybackCheckpointStore()
     private let videoCatalog = VideoCatalogStore()
     private let youtubeImportCheckpoints = YouTubeImportCheckpointStore()
@@ -3103,6 +3104,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         case "signIn":
             signIn(id: id)
         case "signOut":
+            cloudRestoreRecovery.discard()
             authSession?.cancel()
             authSession = nil
             cancelActiveTasks()
@@ -3257,7 +3259,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         return record
     }
 
-    private func cloudWorkspaceRevisions(supabaseURL: URL, anonKey: String, session: CloudSession, epoch: Int) async throws -> (records: [[String: Any]], heads: [String: String]) {
+    private func cloudWorkspaceRevisions(supabaseURL: URL, anonKey: String, session: CloudSession, epoch: Int) async throws -> (records: [[String: Any]], heads: [String: String], restoreToken: String?) {
         func checkSession() throws {
             try Task.checkCancellation()
             guard epoch == sessionEpoch else { throw CancellationError() }
@@ -3269,38 +3271,71 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let result = try await cloudRequest(components.url!, method: "POST", anonKey: anonKey, session: session, body: [:])
             try checkSession()
             guard let rows = result as? [[String: Any]] else {
+                cloudRestoreRecovery.discard(owner: session.userID)
                 throw NativeError(message: "Cloud workspace history returned an invalid page.", retryable: false)
             }
             return rows
         }
-        // Page logical workspace heads, not changing append-only revision IDs.
-        let boundary = try await page([URLQueryItem(name: "select", value: "workspace_id"), URLQueryItem(name: "order", value: "workspace_id.desc"), URLQueryItem(name: "limit", value: "1")])
-        guard boundary.count <= 1 else { throw NativeError(message: "Cloud workspace history returned an invalid cursor.", retryable: false) }
-        if boundary.isEmpty { return ([], [:]) }
-        guard let through = boundary.first?["workspace_id"] as? String, !through.isEmpty else {
-            throw NativeError(message: "Cloud workspace history returned an invalid cursor.", retryable: false)
+        try checkSession()
+        let source = supabaseURL.absoluteString
+        var progress = cloudRestoreRecovery.read(owner: session.userID, source: source)
+        var records: [[String: Any]] = [], heads: [String: String] = [:]
+        for row in progress?.rows ?? [] {
+            heads[row["id"] as! String] = row["revision"] as? String
+            if let record = row["record"] as? [String: Any] { records.append(record) }
         }
-        var records: [[String: Any]] = [], heads: [String: String] = [:], seen = Set<String>(), after: String? = nil
-        while true {
+        var through = progress?.through ?? ""
+        if through.isEmpty {
+            // Page logical workspace heads, not changing append-only revision IDs.
+            let boundary = try await page([URLQueryItem(name: "select", value: "workspace_id"), URLQueryItem(name: "order", value: "workspace_id.desc"), URLQueryItem(name: "limit", value: "1")])
+            guard boundary.count <= 1 else {
+                cloudRestoreRecovery.discard(owner: session.userID)
+                throw NativeError(message: "Cloud workspace history returned an invalid cursor.", retryable: false)
+            }
+            if boundary.isEmpty { return ([], [:], nil) }
+            guard let bound = boundary.first?["workspace_id"] as? String, !bound.isEmpty else {
+                cloudRestoreRecovery.discard(owner: session.userID)
+                throw NativeError(message: "Cloud workspace history returned an invalid cursor.", retryable: false)
+            }
+            through = bound
+            progress = cloudRestoreRecovery.begin(owner: session.userID, source: source, through: through)
+        }
+        let restoreToken = progress?.token
+        var after = progress?.after
+        while progress?.complete != true {
             var items = [URLQueryItem(name: "workspace_id", value: "lte.\(through)"), URLQueryItem(name: "order", value: "workspace_id.asc"), URLQueryItem(name: "limit", value: "100")]
             if let after { items.append(URLQueryItem(name: "workspace_id", value: "gt.\(after)")) }
             let rows = try await page(items)
-            guard rows.count <= 100 else { throw NativeError(message: "Cloud workspace history returned an invalid page.", retryable: false) }
+            guard rows.count <= 100 else {
+                cloudRestoreRecovery.discard(owner: session.userID)
+                throw NativeError(message: "Cloud workspace history returned an invalid page.", retryable: false)
+            }
+            var cursor = after
+            var committedRows: [[String: Any]] = []
             for row in rows {
-                guard let id = row["workspace_id"] as? String, !id.isEmpty, seen.insert(id).inserted else {
+                guard let id = row["workspace_id"] as? String, !id.isEmpty, id <= through, cursor == nil || id > cursor! else {
+                    cloudRestoreRecovery.discard(owner: session.userID)
                     throw NativeError(message: "Cloud workspace history returned an invalid cursor.", retryable: false)
                 }
+                cursor = id
                 guard let revision = row["revision_id"] as? String, !revision.isEmpty else {
                     _ = SnapshotValidation.validate(nil, kind: .record, operation: .import)
                     continue
                 }
                 heads[id] = revision
-                if let record = decodedCloudWorkspace(row) { records.append(record) }
+                var saved: [String: Any] = ["id": id, "revision": revision]
+                if let record = decodedCloudWorkspace(row) { records.append(record); saved["record"] = record }
+                committedRows.append(saved)
             }
-            if rows.count < 100 || rows.last?["workspace_id"] as? String == through { break }
-            after = rows.last?["workspace_id"] as? String
+            let complete = rows.count < 100 || cursor == through
+            try checkSession()
+            if let previous = progress { progress = cloudRestoreRecovery.commit(previous, rows: committedRows, after: cursor, complete: complete) }
+            try checkSession()
+            if complete { break }
+            after = cursor
         }
-        return (records, heads)
+        try checkSession()
+        return (records, heads, restoreToken)
     }
 
     private func cloudLoad() async throws -> [String: Any] {
@@ -3343,6 +3378,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             observedCloudRevisions[session.userID, default: [:]][id] = revision
             conflictingCloudRecords[session.userID]?[id] = nil
         }
+        if let token = revisionResult.restoreToken { cloudRestoreRecovery.discard(owner: session.userID, token: token) }
         return ["records": records, "factMemory": memories]
     }
 

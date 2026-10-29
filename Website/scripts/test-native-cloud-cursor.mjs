@@ -13,6 +13,7 @@ import Foundation
 struct NativeError: Error { let message: String; var retryable = true }
 struct CloudSession { let userID: String }
 final class Harness {
+ var cloudRestoreRecovery: CloudRestoreRecovery
  var sessionEpoch = 0
  var observedCloudRevisions: [String: [String: String]] = [:]
  var conflictingCloudRecords: [String: [String: [String: Any]]] = [:]
@@ -50,7 +51,10 @@ final class Harness {
   ["id": id, "name": "Workspace", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-10-26T12:00:00Z", "state": ["topics": [], "cards": [], "settings": ["obscurity": 5, "sentenceLength": 3, "displayMode": "text"]]]
  }
  static func row(_ id: String, revision: String = "revision") -> [String: Any] { ["workspace_id": id, "revision_id": revision, "record": record(id)] }
- init(_ count: Int) { heads = (0..<count).map { Self.row(String(format: "w-%05d", $0)) } }
+ init(_ count: Int, directory: URL? = nil) {
+  cloudRestoreRecovery = CloudRestoreRecovery(directory: directory ?? URL(fileURLWithPath: "${dir}").appendingPathComponent(UUID().uuidString))
+  heads = (0..<count).map { Self.row(String(format: "w-%05d", $0)) }
+ }
  ${methods}
  func run() async throws -> [String: Any] { try await cloudLoad() }
 }
@@ -84,6 +88,16 @@ final class Harness {
    precondition(diagnostics.values.reduce(0,+) == 1)
    precondition(!String(describing: diagnostics).contains("PRIVATE"))
   }
+  let directory = URL(fileURLWithPath: "${dir}").appendingPathComponent("resume")
+  let interrupted = Harness(150, directory: directory); interrupted.mode = "error"
+  do { _ = try await interrupted.run(); fatalError("Expected interruption") } catch {}
+  let saved = interrupted.cloudRestoreRecovery.read(owner: "account", source: "https://example.invalid")!
+  precondition(saved.after == "w-00099" && saved.rows.count == 100)
+  let restarted = Harness(150, directory: directory)
+  let complete = try await restarted.run()
+  precondition((complete["records"] as! [[String: Any]]).count == 150 && restarted.requests.count == 1)
+  precondition(restarted.requests[0].contains { $0.value == "gt.w-00099" })
+  precondition(restarted.cloudRestoreRecovery.read(owner: "account", source: "https://example.invalid") == nil)
   let badPage = Harness(201)
   for index in 0..<100 { badPage.heads[index]["record"] = ["private": "DO NOT RETAIN"] }
   let recovered = try await badPage.run()
@@ -97,6 +111,6 @@ final class Harness {
  }
 }
 `);
- execFileSync('swiftc', ['-parse-as-library', new URL('App/Sources/LearnedMediaCore/SnapshotValidation.swift', root).pathname, path.join(dir, 'Harness.swift'), '-o', path.join(dir, 'test')], { stdio: 'inherit' });
+ execFileSync('swiftc', ['-parse-as-library', new URL('App/Sources/LearnedMediaCore/SnapshotValidation.swift', root).pathname, new URL('App/Sources/LearnedMediaCore/CloudRestoreRecovery.swift', root).pathname, path.join(dir, 'Harness.swift'), '-o', path.join(dir, 'test')], { stdio: 'inherit' });
  execFileSync(path.join(dir, 'test'), [], { stdio: 'inherit' });
 } finally { rmSync(dir, { recursive: true, force: true }); }
