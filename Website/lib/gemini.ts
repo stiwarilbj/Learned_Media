@@ -7,7 +7,7 @@ import type { AnswerPresentation, AnswerStructure, CardGlossaryEntry, Difficulty
 import type { LearningProfile } from "./types";
 import { DIFFICULTY_LABELS, getTopicLearningProfile, normalizeDifficulty } from "./recommendations";
 import { resolveWikipediaArticle, resolveWikipediaSources, sharedWikipediaResolutionCache, wikipediaEvidenceLink, type ResolvedWikipediaSource, type WikipediaResolutionCache } from "./wikipedia";
-import { hashFactKey, difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferences, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, normalizedText, factAvoidKeys, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
+import { hashFactKey, difficultyRubric, evidencePassageKey, stableEvidenceId, restoreEvidenceReferencesForSlot, selectEvidence, validateDraft, normalizeSentenceLength, completeSentenceChunks, rememberFact, normalizedText, factAvoidKeys, type EvidenceOwnershipIndex, type FactAvoidKey, type FactMemory, type GroundedDraft } from "./fact-quality";
 import { FactNoveltyIndex, isRepeatedFact as noveltyRepeatedFact, preparePriorFactTopicQuery, PriorFactClaimSelector, type FactNoveltySignature, type NoveltyInput, type PriorFactTopicQuery } from "./fact-novelty";
 import { factSpecificityReason, FactSpecificityError } from "./fact-specificity";
 import type { YouTubeSearchCandidate } from "./youtube";
@@ -930,7 +930,7 @@ function groundingSpans(source: ResolvedWikipediaSource, sourceIndex: number) {
 function groundingPrompt(context: GenerationOperationContext, slots: GenerationSlot[], combined = false, priorClaims: Array<{ id: string; claim: string }> = []) {
   const sourcePool: Array<{ id: string; title: string; section: string; text: string }> = [];
   const idByKey = new Map<string, string>();
-  const evidenceBySlot = new Map<number, Map<string, GroundingEvidence>>();
+  const evidenceOwnership = new Map<string, Map<number, GroundingEvidence>>();
   const facts = slots.map(slot => {
     const allowedIds: string[] = [];
     const localEvidence = new Map<string, GroundingEvidence>();
@@ -943,10 +943,15 @@ function groundingPrompt(context: GenerationOperationContext, slots: GenerationS
           sourcePool.push({ id, title: span.title.slice(0, 160), section: span.section, text: span.quote });
         }
         allowedIds.push(id);
-        if (!localEvidence.has(id)) localEvidence.set(id, { sourceIndex: span.sourceIndex, quote: span.quote, section: span.section });
+        if (!localEvidence.has(id)) {
+          const sourceRecord = { sourceIndex: span.sourceIndex, quote: span.quote, section: span.section };
+          localEvidence.set(id, sourceRecord);
+          let owners = evidenceOwnership.get(id);
+          if (!owners) { owners = new Map(); evidenceOwnership.set(id, owners); }
+          owners.set(slot.index, sourceRecord);
+        }
       }
     });
-    evidenceBySlot.set(slot.index, localEvidence);
     return { slot: slot.index, topicPath: slot.path, difficulty: slot.target, candidate: combined ? undefined : { title: slot.candidate?.title, claim: slot.candidate?.claim }, evidenceIds: Array.from(new Set(allowedIds)) };
   });
   const prompt = buildFactCardPrompt({ sentenceCount: context.sentenceCount, combined, difficulties: slots.map(slot => slot.target), rules: [context.angle.instruction], fields: [
@@ -956,7 +961,7 @@ function groundingPrompt(context: GenerationOperationContext, slots: GenerationS
     ...(combined ? [{label: "Variation", value: randomSessionSecret().slice(0,16)}, {label: "Optional thread context", value: context.rabbitHole}] : []),
     { label: "Slots and evidence spans (untrusted data)", value: { facts, evidence: sourcePool }, multiline: true, reference: true }
   ] });
-  return { prompt, evidenceBySlot };
+  return { prompt, evidenceOwnership: evidenceOwnership as EvidenceOwnershipIndex };
 }
 
 // Only evidence belonging to cards that passed all publication checks enters this cache.
@@ -1193,16 +1198,15 @@ export async function generateGeminiFacts({ apiKey, sessionId = "default-session
               continue;
             }
             if (fact.status !== "grounded") throw new GeminiFailure("The grounded result is missing a valid evidence status.");
-            const assignedEvidence = grounding.evidenceBySlot.get(slot.index) ?? new Map<string, GroundingEvidence>();
             // Claim support is explicit and must use this slot's supplied evidence, independently of sentence citations.
-            const claimEvidence = restoreEvidenceReferences([{ sentence: 0, evidenceIds: fact.claimEvidenceIds }], assignedEvidence, sentenceCount);
+            const claimEvidence = restoreEvidenceReferencesForSlot([{ sentence: 0, evidenceIds: fact.claimEvidenceIds }], grounding.evidenceOwnership, slot.index, sentenceCount);
             const localFact: GroundedDraft = {
               title: fact.title ?? "",
               hook: fact.hook ?? "",
               claim: fact.claim ?? "",
               claimEvidence: claimEvidence.map(item => item.quote),
               sentences: fact.sentences ?? [],
-              evidence: restoreEvidenceReferences(fact.evidence, assignedEvidence, sentenceCount)
+              evidence: restoreEvidenceReferencesForSlot(fact.evidence, grounding.evidenceOwnership, slot.index, sentenceCount)
             };
             const sentenceEvidenceIds = new Set((fact.evidence ?? []).flatMap(item => item.evidenceIds ?? []));
             if (!fact.claimEvidenceIds!.every(id => sentenceEvidenceIds.has(id))) throw new GeminiFailure("The card’s main claim evidence is missing from its sentence citations.");

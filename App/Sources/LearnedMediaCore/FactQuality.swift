@@ -313,11 +313,16 @@ public enum FactQuality {
     }
     /// Every ID must be assigned to this card, even if it exists elsewhere in the batch.
     public static func validEvidenceReferences(_ references: [(sentence: Int, evidenceIDs: [String]?)], assignedIDs: Set<String>, sentenceCount: Int) -> Bool {
+        validEvidenceReferences(references, isAssignedToCard: { assignedIDs.contains($0) }, sentenceCount: sentenceCount)
+    }
+
+    /// Validates ownership with a caller-provided lookup, avoiding a per-card copy of a batch allowlist.
+    public static func validEvidenceReferences(_ references: [(sentence: Int, evidenceIDs: [String]?)], isAssignedToCard: (String) -> Bool, sentenceCount: Int) -> Bool {
         guard !references.isEmpty, references.count <= 12 else { return false }
         var count = 0
         for reference in references {
             guard (0..<sentenceCount).contains(reference.sentence), let ids = reference.evidenceIDs,
-                  !ids.isEmpty, ids.count <= 3, ids.allSatisfy({ assignedIDs.contains($0) }) else { return false }
+                  !ids.isEmpty, ids.count <= 3, ids.allSatisfy(isAssignedToCard) else { return false }
             count += ids.count
         }
         return count <= 12

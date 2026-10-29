@@ -1568,7 +1568,7 @@ private struct GeminiCandidateGroupResult {
 private struct GeminiGroundedGroupResult {
     let slots: [Int]
     let facts: [Int: GeminiGroundedFact]
-    let evidenceBySlot: [Int: [String: GeminiEvidence]]
+    let evidenceOwnership: EvidenceOwnershipIndex<GeminiEvidence>
     let model: String?
     let resolvedModel: String?
     let outcomes: [[String: Any]]
@@ -1578,7 +1578,7 @@ private struct GeminiGroundedGroupResult {
 
 private struct GeminiGroundingPlan {
     let prompt: String
-    let evidenceBySlot: [Int: [String: GeminiEvidence]]
+    let evidenceOwnership: EvidenceOwnershipIndex<GeminiEvidence>
 }
 
 private actor ValidatedCardEvidenceCache {
@@ -2054,7 +2054,7 @@ private final class GeminiClient {
     private func groundingPrompt(slots: [GeminiGenerationSlot], sentenceCount: Int, combined: Bool = false, priorClaims: [[String: Any]] = [], context: GenerationPromptContext = GenerationPromptContext()) -> GeminiGroundingPlan {
         var sourcePool: [[String: Any]] = []
         var idByKey: [String: String] = [:]
-        var evidenceBySlot: [Int: [String: GeminiEvidence]] = [:]
+        var evidenceOwnership = EvidenceOwnershipIndex<GeminiEvidence>()
         let values: [[String: Any]] = slots.map { slot in
             var allowedIDs: [String] = []
             var localEvidence: [String: GeminiEvidence] = [:]
@@ -2068,10 +2068,13 @@ private final class GeminiClient {
                         sourcePool.append(["id": id, "title": String((source["title"] as? String ?? "Wikipedia").prefix(160)), "section": span.section, "text": span.quote])
                     }
                     allowedIDs.append(id)
-                    if localEvidence[id] == nil { localEvidence[id] = GeminiEvidence(sentence: 0, sourceIndex: sourceIndex, quote: span.quote, section: span.section) }
+                    if localEvidence[id] == nil {
+                        let record = GeminiEvidence(sentence: 0, sourceIndex: sourceIndex, quote: span.quote, section: span.section)
+                        localEvidence[id] = record
+                        evidenceOwnership.assign(record, evidenceID: id, toSlot: slot.index)
+                    }
                 }
             }
-            evidenceBySlot[slot.index] = localEvidence
             var value: [String: Any] = ["slot": slot.index, "topicPath": slot.path, "difficulty": slot.level,
                                       "evidenceIds": Array(Set(allowedIDs)).sorted()]
             if !combined { value["candidate"] = ["title": slot.candidate?.title ?? "", "claim": slot.candidate?.claim ?? ""] }
@@ -2084,7 +2087,7 @@ private final class GeminiClient {
             PromptField("Previously covered facts (untrusted data)", priorClaims.isEmpty ? nil : priorClaims, multiline: true, reference: true),
             PromptField("Slots and evidence spans (untrusted data)", ["facts": values, "evidence": sourcePool], multiline: true, reference: true)
         ] + (combined ? [context.threadContextField] : []), combined: combined, additionalRules: [context.factAngleRule])
-        return GeminiGroundingPlan(prompt: prompt, evidenceBySlot: evidenceBySlot)
+        return GeminiGroundingPlan(prompt: prompt, evidenceOwnership: evidenceOwnership)
     }
 
     private func generationGroups<T>(_ values: [T], maxCount: Int) -> [[T]] {
@@ -2213,10 +2216,10 @@ private final class GeminiClient {
                 let matches = facts.filter { $0.slot == slot.index }
                 if matches.count == 1, let fact = matches.first { mapped[slot.index] = fact }
             }
-            return GeminiGroundedGroupResult(slots: slots.map(\.index), facts: mapped, evidenceBySlot: plan.evidenceBySlot, model: result.model, resolvedModel: result.resolvedModel, outcomes: result.outcomes, error: nil, status: nil)
+            return GeminiGroundedGroupResult(slots: slots.map(\.index), facts: mapped, evidenceOwnership: plan.evidenceOwnership, model: result.model, resolvedModel: result.resolvedModel, outcomes: result.outcomes, error: nil, status: nil)
         } catch {
             let failure = error as? NativeError
-            return GeminiGroundedGroupResult(slots: slots.map(\.index), facts: [:], evidenceBySlot: [:], model: nil, resolvedModel: nil, outcomes: failure?.outcomes ?? requestOutcomes, error: failure?.message ?? "Gemini returned an unusable grounded batch.", status: failure?.status)
+            return GeminiGroundedGroupResult(slots: slots.map(\.index), facts: [:], evidenceOwnership: EvidenceOwnershipIndex(), model: nil, resolvedModel: nil, outcomes: failure?.outcomes ?? requestOutcomes, error: failure?.message ?? "Gemini returned an unusable grounded batch.", status: failure?.status)
         }
     }
 
@@ -2225,12 +2228,13 @@ private final class GeminiClient {
         return assigned.enumerated().allSatisfy { index, value in proposed[index].trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(value) == .orderedSame }
     }
 
-    private func makeCard(slot: GeminiGenerationSlot, fact: GeminiGroundedFact, evidenceByID: [String: GeminiEvidence], sentenceCount: Int, model: String?, resolvedModel: String?) throws -> [String: Any] {
+    private func makeCard(slot: GeminiGenerationSlot, fact: GeminiGroundedFact, evidenceOwnership: EvidenceOwnershipIndex<GeminiEvidence>, sentenceCount: Int, model: String?, resolvedModel: String?) throws -> [String: Any] {
         let suppliedIDs = (fact.claimEvidenceIds ?? []) + (fact.evidence ?? []).flatMap { $0.evidenceIds ?? [] }
-        guard suppliedIDs.allSatisfy({ evidenceByID[$0] != nil }) else {
+        let sourceForID: (String) -> GeminiEvidence? = { evidenceOwnership.record(for: $0, assignedToSlot: slot.index) }
+        guard suppliedIDs.allSatisfy({ sourceForID($0) != nil }) else {
             throw NativeError(message: "The card referenced an unknown evidence ID or an ID assigned to another card.")
         }
-        guard fact.status == "grounded", FactQuality.validEvidenceReferences([(0, fact.claimEvidenceIds)], assignedIDs: Set(evidenceByID.keys), sentenceCount: sentenceCount) else {
+        guard fact.status == "grounded", FactQuality.validEvidenceReferences([(0, fact.claimEvidenceIds)], isAssignedToCard: { sourceForID($0) != nil }, sentenceCount: sentenceCount) else {
             throw NativeError(message: "The card is missing valid evidence IDs supporting its specific main claim.")
         }
         guard let title = fact.title, let hook = fact.hook, let claim = fact.claim,
@@ -2241,7 +2245,7 @@ private final class GeminiClient {
         if let reason = FactSpecificity.reason(claim, sentences: sentences) {
             throw NativeError(message: reason)
         }
-        guard FactQuality.validEvidenceReferences(references.map { ($0.sentence, $0.evidenceIds) }, assignedIDs: Set(evidenceByID.keys), sentenceCount: sentences.count) else {
+        guard FactQuality.validEvidenceReferences(references.map { ($0.sentence, $0.evidenceIds) }, isAssignedToCard: { sourceForID($0) != nil }, sentenceCount: sentences.count) else {
             throw NativeError(message: "The card returned invalid evidence references, an unknown ID, or an ID assigned to another card.")
         }
         let sentenceEvidenceIDs = Set(references.flatMap { $0.evidenceIds ?? [] })
@@ -2250,11 +2254,11 @@ private final class GeminiClient {
         }
         let quotes: [GeminiEvidence] = try references.flatMap { reference in
             try (reference.evidenceIds ?? []).map { id -> GeminiEvidence in
-                guard let match = evidenceByID[id] else { throw NativeError(message: "The card referenced unassigned evidence.") }
+                guard let match = sourceForID(id) else { throw NativeError(message: "The card referenced unassigned evidence.") }
                 return GeminiEvidence(sentence: reference.sentence, sourceIndex: match.sourceIndex, quote: match.quote, section: match.section)
             }
         }
-        guard FactQuality.validate(title: title, hook: hook, claim: claim, sentences: sentences, evidence: quotes.map { $0.dictionary }, sources: slot.sources, expectedSentences: sentenceCount, difficulty: slot.level, claimEvidence: (fact.claimEvidenceIds ?? []).compactMap { evidenceByID[$0]?.quote }) else {
+        guard FactQuality.validate(title: title, hook: hook, claim: claim, sentences: sentences, evidence: quotes.map { $0.dictionary }, sources: slot.sources, expectedSentences: sentenceCount, difficulty: slot.level, claimEvidence: (fact.claimEvidenceIds ?? []).compactMap { sourceForID($0)?.quote }) else {
             throw NativeError(message: "The fact did not contain \(sentenceCount) supported sentences with matching headings.")
         }
         let indexes = Array(Set(quotes.map(\.sourceIndex))).sorted()
@@ -2444,7 +2448,7 @@ private final class GeminiClient {
                         }
                         do {
                             if attempt < 0 && !topicPathMatches(fact.topicPath, assigned: slots[slotIndex].path) { throw NativeError(message: "The combined card returned a different topic.") }
-                            let card = try makeCard(slot: slots[slotIndex], fact: fact, evidenceByID: result.evidenceBySlot[index] ?? [:], sentenceCount: sentenceCount, model: result.model, resolvedModel: result.resolvedModel)
+                            let card = try makeCard(slot: slots[slotIndex], fact: fact, evidenceOwnership: result.evidenceOwnership, sentenceCount: sentenceCount, model: result.model, resolvedModel: result.resolvedModel)
                             if Task.isCancelled { group.cancelAll(); break }
                             guard await ledger.accept(card) else {
                                 slots[slotIndex].lastError = diagnostics.record(operation: "grounding", slot: index, detail: "This candidate repeats another completed fact.")

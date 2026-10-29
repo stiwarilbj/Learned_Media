@@ -231,8 +231,10 @@ export function stableEvidenceId(key: string) {
 }
 
 export type GroundedDraft = { title: string; hook: string; claim: string; sentences: string[]; claimEvidence?: string[]; evidence: Array<{ sentence: number; sourceIndex: number; quote: string; section?: string }> };
+export type EvidenceSourceRecord = { sourceIndex: number; quote: string; section?: string };
+export type EvidenceOwnershipIndex = ReadonlyMap<string, ReadonlyMap<number, EvidenceSourceRecord>>;
 /** Resolve every returned ID against this card's allowlist before citation validation. */
-export function restoreEvidenceReferences(references: unknown, assigned: ReadonlyMap<string, { sourceIndex: number; quote: string; section?: string }>, sentenceCount: number): GroundedDraft["evidence"] {
+function restoreEvidenceWithLookup(references: unknown, sourceForId: (id: string) => EvidenceSourceRecord | undefined, sentenceCount: number): GroundedDraft["evidence"] {
   if (!Array.isArray(references) || !references.length || references.length > 12) throw new Error("The card is missing valid evidence references.");
   const restored = references.flatMap(item => {
     if (!item || !Number.isInteger(item.sentence) || item.sentence < 0 || item.sentence >= sentenceCount
@@ -240,13 +242,23 @@ export function restoreEvidenceReferences(references: unknown, assigned: Readonl
       throw new Error("The card returned an invalid evidence reference or sentence index.");
     }
     return item.evidenceIds.map((id: unknown) => {
-      const match = typeof id === "string" ? assigned.get(id) : undefined;
+      const match = typeof id === "string" ? sourceForId(id) : undefined;
       if (!match) throw new Error("The card referenced an unknown evidence ID or an ID assigned to another card.");
       return { sentence: item.sentence, sourceIndex: match.sourceIndex, quote: match.quote, section: match.section };
     });
   });
   if (restored.length > 12) throw new Error("The card returned too many evidence references.");
   return restored;
+}
+
+/** Resolve an ID from one card's allowlist. Kept for focused callers and compatibility. */
+export function restoreEvidenceReferences(references: unknown, assigned: ReadonlyMap<string, EvidenceSourceRecord>, sentenceCount: number): GroundedDraft["evidence"] {
+  return restoreEvidenceWithLookup(references, id => assigned.get(id), sentenceCount);
+}
+
+/** Resolve citations through the batch ownership index without scanning slot evidence lists. */
+export function restoreEvidenceReferencesForSlot(references: unknown, ownership: EvidenceOwnershipIndex, slotIndex: number, sentenceCount: number): GroundedDraft["evidence"] {
+  return restoreEvidenceWithLookup(references, id => ownership.get(id)?.get(slotIndex), sentenceCount);
 }
 
 function evidenceSection(extract: string, quote: string, section: string) {
