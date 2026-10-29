@@ -90,6 +90,29 @@ test("checkpoint integrity digests bind sequence, ordered IDs, and continuation 
 });
 
 for (const platform of ["web", "mac"]) {
+  test(`${platform}: repeated IDs are normalized once per playlist page without changing page digests or catalog order`, async () => {
+    const h = harness(platform);
+    const playlistItem = id => ({ contentDetails: { videoId: id } });
+    const firstPageIds = ["shared", "shared", "first-only", "shared"];
+    h.respond([
+      ["", { items: firstPageIds.map(playlistItem), nextPageToken: "next" }],
+      ["next", { items: [playlistItem("first-only"), playlistItem("shared"), playlistItem("last-only")] }]
+    ]);
+
+    const videos = await h.run();
+    assert.deepEqual(h.metadataCalls, [["shared", "first-only"], ["first-only", "shared", "last-only"]],
+      "each page resolves one metadata item per eligible video ID in first-seen order");
+    assert.deepEqual(Array.from(videos, video => video.id), ["shared", "first-only", "last-only"],
+      "repeated IDs across pages keep one checkpoint record in its original catalog position");
+    assert.ok(videos.every(video => video.sourceIds.includes(sourceId)), "the imported playlist remains attached to every retained record");
+
+    const saved = await h.store.load(sourceId);
+    const expectedDigest = await checkpoints.youtubeImportPageDigests(firstPageIds, "next");
+    assert.equal(saved[0].pageDigest, expectedDigest.pageDigest,
+      "the duplicate-preserving API page IDs still feed repeated-page detection unchanged");
+    assert.deepEqual(saved.map(page => page.videos.map(video => video.id)), [["shared", "first-only"], ["first-only", "shared", "last-only"]]);
+  });
+
   test(`${platform}: checkpoint recovery validates ordered batches with the same continuation result as a full read`, async () => {
     const identity = checkpoints.importPageIdentity(youtube.YOUTUBE_CATALOG_VERSION, channel.id, "fixture");
     const generation = "fixture-generation";
@@ -303,6 +326,45 @@ for (const platform of ["web", "mac"]) {
     assert.equal((await h.store.load(sourceId)).length, 0);
   });
 }
+
+test("website: metadata work is shared across pages and approved playlists while catalog provenance is merged", async () => {
+  const { mergeVideoSourceRefreshes } = require(path.join(root, "lib/video-source-index.ts"));
+  const videoApiCalls = [];
+  const client = new youtube.YouTubeClient("fixture", async (resource, params) => {
+    if (resource === "playlistItems") {
+      const key = `${params.playlistId}:${params.pageToken ?? ""}`;
+      const pages = {
+        "playlist-A:": { items: ["shared", "shared", "from-A"].map(id => ({ contentDetails: { videoId: id } })), nextPageToken: "A-next" },
+        "playlist-A:A-next": { items: ["from-A", "shared"].map(id => ({ contentDetails: { videoId: id } })) },
+        "playlist-B:": { items: ["shared", "from-B"].map(id => ({ contentDetails: { videoId: id } })) }
+      };
+      assert.ok(pages[key], `unexpected playlist page ${key}`);
+      return pages[key];
+    }
+    if (resource === "videos") {
+      const ids = params.id.split(",");
+      videoApiCalls.push(ids);
+      return { items: ids.map(metadataItem) };
+    }
+    throw new Error(`Unexpected YouTube resource: ${resource}`);
+  });
+  const metadataCalls = [];
+  const loader = client.createMetadataLoader();
+  const trackedMetadata = async ids => { metadataCalls.push([...ids]); return loader(ids); };
+  const store = createStore();
+  const first = await client.importPlaylist(channel, "playlist-A", "playlist:A", trackedMetadata, undefined, undefined, store);
+  const second = await client.importPlaylist(channel, "playlist-B", "playlist:B", trackedMetadata, undefined, undefined, store);
+
+  assert.deepEqual(metadataCalls, [["shared", "from-A"], ["from-A", "shared"], ["shared", "from-B"]],
+    "the page layer supplies unique IDs and the shared metadata loader reuses successful cross-page and cross-playlist reads");
+  assert.deepEqual(videoApiCalls, [["shared", "from-A"], ["from-B"]],
+    "each unique video ID is fetched once for this import even when it recurs on another page or playlist");
+  const videos = await mergeVideoSourceRefreshes([], [first, second], video => video.approved);
+  assert.deepEqual(videos.map(video => video.id), ["shared", "from-A", "from-B"]);
+  assert.deepEqual(videos.find(video => video.id === "shared").sourceIds, ["playlist:A", "playlist:B"]);
+  assert.deepEqual(videos.find(video => video.id === "from-A").sourceIds, ["playlist:A"]);
+  assert.deepEqual(videos.find(video => video.id === "from-B").sourceIds, ["playlist:B"]);
+});
 
 for (const platform of ["web", "mac"]) {
   test(`${platform}: interrupted generation retains published membership until terminal resume`, async () => {

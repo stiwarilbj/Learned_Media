@@ -92,24 +92,35 @@
       const digests = await checkpoints.youtubeImportPageDigests(orderedVideoIds, nextPageToken);
       assertCurrent();
       if (checkpoint.hasRepeatedPageDigest(digests)) throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
-      const ids = payload.items.filter(function (item) { return !/#shorts?\b/i.test((item.snippet && item.snippet.title || "") + " " + (item.snippet && item.snippet.description || "")); }).map(function (item) { return item.contentDetails && item.contentDetails.videoId; }).filter(Boolean);
+      const pageItems = new Map();
+      payload.items.forEach(function (item) {
+        const id = item.contentDetails && item.contentDetails.videoId;
+        if (!id || /#shorts?\b/i.test((item.snippet && item.snippet.title || "") + " " + (item.snippet && item.snippet.description || ""))) return;
+        const retained = pageItems.get(id);
+        if (retained) { if (retained.sourceIds.indexOf(sourceId) < 0) retained.sourceIds.push(sourceId); }
+        else pageItems.set(id, { item: item, sourceIds: [sourceId] });
+      });
+      const ids = Array.from(pageItems.keys());
       const items = await metadata(ids);
       assertCurrent();
-      await checkpoint.append(mapPlaylistPage(items, channel, sourceId).filter(isAllowed), nextPageToken, digests);
+      await checkpoint.append(mapPlaylistPage(items, channel, sourceId, pageItems).filter(isAllowed), nextPageToken, digests);
       await background.yieldBackground(assertCurrent);
     }
     return checkpoint.completedRefresh();
   }
-  function mapPlaylistPage(items, channel, sourceId) {
-    const videos = [];
+  function mapPlaylistPage(items, channel, sourceId, pageItems) {
+    const videos = new Map();
     items.forEach(function (item) {
       if (!item.id || item.status && item.status.privacyStatus && item.status.privacyStatus !== "public" || item.snippet && item.snippet.channelId && item.snippet.channelId !== channel.id) return;
       const snippet = item.snippet || {}; const title = String(snippet.title || "").trim(); if (!title || !snippet.publishedAt) return;
       const seconds = duration(item.contentDetails && item.contentDetails.duration);
       if(policy.isYouTubeShortMetadata({title:title,description:snippet.description||"",tags:snippet.tags||[],publishedAt:snippet.publishedAt,durationSeconds:seconds,thumbnails:Object.values(snippet.thumbnails||{})}))return;
-      videos.push({ id: item.id, channelId: channel.id, channelName: snippet.channelTitle || channel.name, title: title, description: snippet.description || "", tags: snippet.tags || [], publishedAt: snippet.publishedAt, durationSeconds: seconds, durationLabel: durationLabel(seconds), thumbnailUrl: snippet.thumbnails && ((snippet.thumbnails.high || snippet.thumbnails.medium || snippet.thumbnails.default) || {}).url, embedAvailable: !(item.status && item.status.embeddable === false), topics: topics(channel.name, title, snippet.description || "", snippet.tags || []), approved: true, sourceIds: [sourceId], metadataRefreshedAt: new Date().toISOString() });
+      const sourceIds = Array.from(new Set(pageItems && pageItems.get(item.id) ? pageItems.get(item.id).sourceIds : [sourceId]));
+      const existing = videos.get(item.id);
+      if (existing) { existing.sourceIds = Array.from(new Set((existing.sourceIds || []).concat(sourceIds))); return; }
+      videos.set(item.id, { id: item.id, channelId: channel.id, channelName: snippet.channelTitle || channel.name, title: title, description: snippet.description || "", tags: snippet.tags || [], publishedAt: snippet.publishedAt, durationSeconds: seconds, durationLabel: durationLabel(seconds), thumbnailUrl: snippet.thumbnails && ((snippet.thumbnails.high || snippet.thumbnails.medium || snippet.thumbnails.default) || {}).url, embedAvailable: !(item.status && item.status.embeddable === false), topics: topics(channel.name, title, snippet.description || "", snippet.tags || []), approved: true, sourceIds: sourceIds, metadataRefreshedAt: new Date().toISOString() });
     });
-    return videos;
+    return Array.from(videos.values());
   }
   async function importChannel(channel, key, metadata, pages, committedAt, assertCurrent) { if (!channel.uploadsPlaylistId) throw new Error("The approved channel “" + channel.name + "” has no uploads playlist."); return importPlaylist(channel, channel.uploadsPlaylistId, "channel:" + channel.id, key, metadata, pages, committedAt, assertCurrent); }
   async function resolveIndividual(seed, channels, key, metadata) {

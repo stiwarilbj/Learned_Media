@@ -688,6 +688,7 @@ function classifyTopics(channelName: string, title: string, description: string,
 
 type ChannelApiResponse = { items?: Array<{ id?: string; snippet?: { title?: string; customUrl?: string; thumbnails?: { default?: { url?: string } } }; contentDetails?: { relatedPlaylists?: { uploads?: string } } }> };
 type PlaylistApiResponse = { nextPageToken?: string; items?: Array<{ contentDetails?: { videoId?: string }; snippet?: { title?: string; description?: string; publishedAt?: string; channelId?: string } }> };
+type NormalizedPlaylistPageItem = { item: NonNullable<PlaylistApiResponse["items"]>[number]; sourceIds: string[] };
 type YouTubeThumbnail = { url?: string; width?: number; height?: number };
 type VideoApiResponse = { items?: Array<{ id?: string; snippet?: { title?: string; description?: string; publishedAt?: string; channelId?: string; channelTitle?: string; tags?: string[]; thumbnails?: { high?: YouTubeThumbnail; medium?: YouTubeThumbnail; default?: YouTubeThumbnail; standard?: YouTubeThumbnail; maxres?: YouTubeThumbnail } }; contentDetails?: { duration?: string }; status?: { privacyStatus?: string; embeddable?: boolean } }> };
 type VideoMetadataLoader = (ids: string[]) => Promise<NonNullable<VideoApiResponse["items"]>>;
@@ -830,11 +831,20 @@ export class YouTubeClient {
       checkpoint.validateNextPageToken(payload.nextPageToken || null);
       const ids: string[] = [];
       const orderedVideoIds: string[] = [];
+      const pageItems = new Map<string, NormalizedPlaylistPageItem>();
       for (const item of payload.items ?? []) {
         const videoId = item.contentDetails?.videoId;
         if (videoId) orderedVideoIds.push(videoId);
         if (!videoId || hasExplicitShortMarker(item.snippet?.title ?? "", item.snippet?.description ?? "", [])) continue;
-        ids.push(videoId);
+        const retained = pageItems.get(videoId);
+        if (retained) {
+          if (!retained.sourceIds.includes(sourceId)) retained.sourceIds.push(sourceId);
+        } else {
+          // Preserve first eligible order and provenance, while resolving each
+          // video ID only once for this API page.
+          pageItems.set(videoId, { item, sourceIds: [sourceId] });
+          ids.push(videoId);
+        }
       }
       const nextPageToken = payload.nextPageToken || null;
       const digests = await youtubeImportPageDigests(orderedVideoIds, nextPageToken);
@@ -842,15 +852,15 @@ export class YouTubeClient {
       if (checkpoint.hasRepeatedPageDigest(digests)) throw new Error("YouTube repeated an import page. Retry the source to restart safely.");
       const items = await metadata(ids);
       if (signal?.aborted) throw abortError();
-      await checkpoint.append(this.mapPlaylistPage(items, channel, sourceId), nextPageToken, digests);
+      await checkpoint.append(this.mapPlaylistPage(items, channel, sourceId, pageItems), nextPageToken, digests);
       if (onPage) onPage(checkpoint.videos.length);
       await yieldBackground(signal);
     }
     return checkpoint.completedRefresh();
   }
 
-  private mapPlaylistPage(items: Awaited<ReturnType<VideoMetadataLoader>>, channel: YouTubeChannelRecord, sourceId: string) {
-    const mapped: YouTubeVideo[] = [];
+  private mapPlaylistPage(items: Awaited<ReturnType<VideoMetadataLoader>>, channel: YouTubeChannelRecord, sourceId: string, pageItems?: ReadonlyMap<string, NormalizedPlaylistPageItem>) {
+    const mapped = new Map<string, YouTubeVideo>();
     items.forEach((item) => {
       if (!item.id || item.status?.privacyStatus && item.status.privacyStatus !== "public" || item.snippet?.channelId !== channel.id) return;
       const snippet = item.snippet;
@@ -858,9 +868,15 @@ export class YouTubeClient {
       const title = snippet?.title?.trim();
       if (!title || !snippet?.publishedAt) return;
       if (isYouTubeShortMetadata({ title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, thumbnails: Object.values(snippet.thumbnails ?? {}) })) return;
-      mapped.push({ id: item.id, channelId: channel.id, channelName: channel.name, title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, durationLabel: formatDuration(durationSeconds), thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url, embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(channel.name, title, snippet.description ?? "", snippet.tags ?? []), approved: true, sourceIds: [sourceId], metadataRefreshedAt: new Date().toISOString() });
+      const sourceIds = Array.from(new Set(pageItems?.get(item.id)?.sourceIds ?? [sourceId]));
+      const existing = mapped.get(item.id);
+      if (existing) {
+        existing.sourceIds = Array.from(new Set([...(existing.sourceIds ?? []), ...sourceIds]));
+        return;
+      }
+      mapped.set(item.id, { id: item.id, channelId: channel.id, channelName: channel.name, title, description: snippet.description ?? "", tags: snippet.tags ?? [], publishedAt: snippet.publishedAt, durationSeconds, durationLabel: formatDuration(durationSeconds), thumbnailUrl: snippet.thumbnails?.high?.url ?? snippet.thumbnails?.medium?.url ?? snippet.thumbnails?.default?.url, embedAvailable: item.status?.embeddable !== false, topics: classifyTopics(channel.name, title, snippet.description ?? "", snippet.tags ?? []), approved: true, sourceIds, metadataRefreshedAt: new Date().toISOString() });
     });
-    return mapped;
+    return Array.from(mapped.values());
   }
 
   private async importChannel(channel: YouTubeChannelRecord, metadata: VideoMetadataLoader, signal?: AbortSignal, onPage?: (count: number) => void,
