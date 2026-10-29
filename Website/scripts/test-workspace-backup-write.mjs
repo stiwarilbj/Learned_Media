@@ -52,6 +52,7 @@ const context = {
   require(name) {
     if (name === './indexed-db') return { createDatabaseConnection: () => async () => db };
     if (name === './snapshot-validation') return snapshotExports;
+    if (name === './storage-pressure') return { prepareForStorageWrite: async () => {} };
     throw Error(`Unexpected module ${name}`);
   }
 };

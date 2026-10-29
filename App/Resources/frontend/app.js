@@ -673,12 +673,19 @@
     scheduleCloudSave();
   }
   let workspaceSaveTimer=null;
+  // File-based WebKit may not expose navigator.storage. Native disk capacity
+  // still lets the shared guard reclaim its disposable IndexedDB index.
+  const prepareNativeWorkspaceStorage = window.LEARNED_MEDIA_STORAGE_PRESSURE.createStoragePressureGuard(function () {
+    return bridge("storageEstimate", {});
+  });
   function flushWorkspaceSave() {
     if (saveInFlight || !queuedWorkspaceState) return;
     const snapshot = queuedWorkspaceState;
     queuedWorkspaceState = null;
     saveInFlight = true;
-    bridge("saveState", { state: snapshot }).catch(function (error) {
+    prepareNativeWorkspaceStorage(snapshot, { copies: 2 }).then(function () {
+      return bridge("saveState", { state: snapshot });
+    }).catch(function (error) {
       state.toast = error.message || "Local workspace could not be saved.";
     }).then(function () {
       saveInFlight = false;

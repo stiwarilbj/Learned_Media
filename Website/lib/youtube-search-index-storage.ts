@@ -2,10 +2,11 @@ import { createDatabaseConnection } from "./indexed-db";
 import { VIDEO_SEARCH_INDEX_FORMAT, VIDEO_SEMANTIC_VERSION, indexVideoSearchMetadata, restoreVideoSearchIndex, serializeVideoSearchIndex, videoSearchCatalogFingerprint, type IndexedVideoSearchMetadata } from "./video-semantic";
 import { forEachBackground } from "./background-work";
 import type { SearchableVideoMetadata } from "./video-metadata";
+import { DISPOSABLE_INDEX_DATABASE, INDEX_WRITE_PAUSED_KEY } from "./storage-pressure";
 
 // Disposable derived data lives outside every workspace, credential and import
 // database. Its single atomic record can be removed without losing user data.
-const openIndexDatabase = createDatabaseConnection("learned-media-video-search-index", 1, database => {
+const openIndexDatabase = createDatabaseConnection(DISPOSABLE_INDEX_DATABASE, 1, database => {
   if (!database.objectStoreNames.contains("index")) database.createObjectStore("index");
 });
 const MAX_INDEX_BYTES = 64 * 1024 * 1024;
@@ -30,7 +31,18 @@ export function createVideoSearchIndexStore(open = openIndexDatabase): VideoSear
       if (expired) return;
       transaction = database.transaction("index", write ? "readwrite" : "readonly");
       const store = transaction.objectStore("index");
-      const request = write ? store.put(value, "current") : store.get("current");
+      const request = store.get(write ? INDEX_WRITE_PAUSED_KEY : "current");
+      if (write) request.onsuccess = () => {
+        try {
+          const pausedUntil = request.result;
+          if (typeof pausedUntil === "number" && Number.isFinite(pausedUntil) && pausedUntil > Date.now()) return;
+          store.put(value, "current");
+          if (pausedUntil !== undefined) store.delete(INDEX_WRITE_PAUSED_KEY);
+        } catch (error) {
+          try { transaction?.abort(); } catch { /* Already settled. */ }
+          fail(error);
+        }
+      };
       transaction.oncomplete = () => { clearTimeout(timer); resolve(write ? undefined : request.result); };
       transaction.onerror = transaction.onabort = () => fail(transaction?.error ?? new Error("Search index storage failed."));
     }).catch(fail);

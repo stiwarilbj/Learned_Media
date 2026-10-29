@@ -66,6 +66,7 @@ function harness() {
     require(name) {
       if (name === './indexed-db') return { createDatabaseConnection: () => async () => database };
       if (name === './snapshot-validation') return validationExports;
+      if (name === './storage-pressure') return { prepareForStorageWrite: async () => {} };
       throw Error(`Unexpected module ${name}`);
     }
   };

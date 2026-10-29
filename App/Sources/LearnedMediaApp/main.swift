@@ -1028,6 +1028,11 @@ private final class LocalWorkspaceStore {
         return readObject(at: locations.primary)?.object ?? readObject(at: locations.backup)?.object ?? NSNull()
     }
 
+    func availableStorageBytes() -> Int64? {
+        guard let locations = try? urls() else { return nil }
+        return try? StoragePressure.availableBytes(at: locations.primary.deletingLastPathComponent())
+    }
+
     func save(_ value: Any?) throws {
         guard let value, SnapshotValidation.validate(value, kind: .nativeStore, operation: .save) else {
             if value == nil { _ = SnapshotValidation.validate(nil, kind: .nativeStore, operation: .save) }
@@ -1042,6 +1047,7 @@ private final class LocalWorkspaceStore {
         try withSnapshotLock(at: locations.primary.appendingPathExtension("lock")) {
             let startingBytes = try snapshotBytes(at: locations.primary)
             let previous = startingBytes.flatMap { readObject(data: $0) }
+            StoragePressure.prepare(writeBytes: data.count, additionalBytes: previous?.bytes.count ?? 0, at: locations.primary.deletingLastPathComponent())
             // Exact bytes identify the on-disk revision without relying on
             // filesystem timestamp precision. Detect uncoordinated writers too.
             guard try snapshotBytes(at: locations.primary) == startingBytes else {
@@ -2870,6 +2876,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
         case "saveState":
             do { try saveState(payload["state"]); respond(id: id, result: true) }
             catch { respond(id: id, error: "Learning data could not be saved. The last valid recovery copy was kept.") }
+        case "storageEstimate":
+            if let available = workspace.availableStorageBytes(), available >= 0 {
+                respond(id: id, result: ["quota": available, "usage": 0])
+            } else { respond(id: id, result: [:]) }
         case "hasYouTubeImportPages", "loadYouTubeImportPages", "loadYouTubeImportPageBatch", "saveYouTubeImportPage", "clearYouTubeImportPages":
             Task { [weak self] in
                 guard let self else { return }

@@ -48,7 +48,128 @@ function createDatabaseConnection(name, version, upgrade) {
     };
 }
  })(database);
-  const require = name => name.includes("indexed-db") ? database : name.includes("background-work") ? scope.LEARNED_MEDIA_BACKGROUND : scope.LEARNED_MEDIA_VIDEO_SEARCH;
+  const pressure = {};
+  (function(exports) { const require = name => name.includes("indexed-db") ? database : scope.LEARNED_MEDIA_BACKGROUND; "use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.prepareForStorageWrite = exports.INDEX_WRITE_PAUSED_KEY = exports.DISPOSABLE_INDEX_DATABASE = exports.LARGE_STORAGE_WRITE_BYTES = void 0;
+exports.approximateStoredBytes = approximateStoredBytes;
+exports.reclaimDerivedSearchIndex = reclaimDerivedSearchIndex;
+exports.createStoragePressureGuard = createStoragePressureGuard;
+const indexed_db_1 = require("./indexed-db");
+const background_work_1 = require("./background-work");
+exports.LARGE_STORAGE_WRITE_BYTES = 4 * 1024 * 1024;
+const STORAGE_RESERVE_BYTES = 8 * 1024 * 1024;
+exports.DISPOSABLE_INDEX_DATABASE = "learned-media-video-search-index";
+exports.INDEX_WRITE_PAUSED_KEY = "pressure-until";
+const INDEX_WRITE_PAUSE_MS = 60_000;
+const openDisposableIndex = (0, indexed_db_1.createDatabaseConnection)(exports.DISPOSABLE_INDEX_DATABASE, 1, database => {
+    if (!database.objectStoreNames.contains("index"))
+        database.createObjectStore("index");
+});
+/** A conservative structured-clone estimate, without another serialized copy.
+ * Process large collections in scheduler slices; never retain the input. */
+async function approximateStoredBytes(value, cancellation) {
+    let bytes = 0;
+    const seen = new WeakSet();
+    function* values() {
+        const pending = [[value][Symbol.iterator]()];
+        while (pending.length) {
+            const next = pending[pending.length - 1].next();
+            if (next.done) {
+                pending.pop();
+                continue;
+            }
+            const item = next.value;
+            yield item;
+            if (!item || typeof item !== "object" || seen.has(item))
+                continue;
+            seen.add(item);
+            if (Array.isArray(item))
+                pending.push(item[Symbol.iterator]());
+            else
+                pending.push((function* () {
+                    for (const key of Object.keys(item)) {
+                        yield key;
+                        yield item[key];
+                    }
+                })());
+        }
+    }
+    await (0, background_work_1.forEachBackground)(values(), item => {
+        bytes += typeof item === "string" ? item.length * 2 + 16 : 16;
+    }, cancellation, { priority: "visible", canPause: false });
+    return bytes;
+}
+/** This exact derived-data store is the entire deletion allowlist. In particular,
+ * no workspace, video record, checkpoint, activity or credential store is opened. */
+function reclaimDerivedSearchIndex() {
+    return new Promise((resolve, reject) => {
+        let expired = false, transaction;
+        const timer = setTimeout(() => {
+            expired = true;
+            try {
+                transaction?.abort();
+            }
+            catch { /* Already settled. */ }
+            reject(new Error("Disposable storage cleanup timed out."));
+        }, 1500);
+        const fail = (error) => { clearTimeout(timer); reject(error); };
+        void openDisposableIndex().then(database => {
+            if (expired)
+                return; // Never reclaim after the save has continued.
+            transaction = database.transaction("index", "readwrite");
+            const store = transaction.objectStore("index");
+            store.delete("current");
+            // Checked by all tabs/workers in the same transaction as their cache put.
+            store.put(Date.now() + INDEX_WRITE_PAUSE_MS, exports.INDEX_WRITE_PAUSED_KEY);
+            transaction.oncomplete = () => { clearTimeout(timer); resolve(); };
+            transaction.onerror = transaction.onabort = () => fail(transaction?.error ?? new Error("Disposable storage cleanup failed."));
+        }).catch(fail);
+    });
+}
+const browserEstimate = () => globalThis.navigator?.storage?.estimate?.() ?? Promise.resolve(undefined);
+/** Quota estimates are advisory. Cleanup failures never acknowledge, suppress or
+ * replace the authoritative write and its existing recovery/error handling. */
+function createStoragePressureGuard(estimate = browserEstimate, reclaim = reclaimDerivedSearchIndex) {
+    let active;
+    return async (value, options = {}) => {
+        (0, background_work_1.checkBackgroundCancellation)(options.cancellation);
+        // Missing estimates (including native WebKit) keep the ordinary write path.
+        if (estimate === browserEstimate && !globalThis.navigator?.storage?.estimate)
+            return;
+        const bytes = options.bytes ?? await approximateStoredBytes(value, options.cancellation);
+        (0, background_work_1.checkBackgroundCancellation)(options.cancellation);
+        if (!Number.isFinite(bytes) || bytes < exports.LARGE_STORAGE_WRITE_BYTES)
+            return;
+        let available;
+        let timer;
+        try {
+            const result = await Promise.race([estimate(), new Promise(resolve => { timer = setTimeout(() => resolve(undefined), 500); })]);
+            if (!result || !Number.isFinite(result.quota) || !Number.isFinite(result.usage) || result.quota < 0 || result.usage < 0)
+                return;
+            available = Math.max(0, result.quota - result.usage);
+        }
+        catch {
+            return;
+        }
+        finally {
+            if (timer !== undefined)
+                clearTimeout(timer);
+        }
+        (0, background_work_1.checkBackgroundCancellation)(options.cancellation);
+        const needed = bytes * (options.copies ?? 1) + STORAGE_RESERVE_BYTES;
+        if (available >= needed)
+            return;
+        // Concurrent large saves share only reclamation, never their snapshots.
+        active ??= Promise.resolve().then(reclaim).catch(() => { }).finally(() => { active = undefined; });
+        await active;
+        (0, background_work_1.checkBackgroundCancellation)(options.cancellation);
+    };
+}
+exports.prepareForStorageWrite = createStoragePressureGuard();
+ })(pressure);
+  scope.LEARNED_MEDIA_STORAGE_PRESSURE = pressure;
+  const require = name => name.includes("indexed-db") ? database : name.includes("storage-pressure") ? pressure : name.includes("background-work") ? scope.LEARNED_MEDIA_BACKGROUND : scope.LEARNED_MEDIA_VIDEO_SEARCH;
   const exports = {};
   "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -58,9 +179,10 @@ exports.createVideoSearchIndexLoader = createVideoSearchIndexLoader;
 const indexed_db_1 = require("./indexed-db");
 const video_semantic_1 = require("./video-semantic");
 const background_work_1 = require("./background-work");
+const storage_pressure_1 = require("./storage-pressure");
 // Disposable derived data lives outside every workspace, credential and import
 // database. Its single atomic record can be removed without losing user data.
-const openIndexDatabase = (0, indexed_db_1.createDatabaseConnection)("learned-media-video-search-index", 1, database => {
+const openIndexDatabase = (0, indexed_db_1.createDatabaseConnection)(storage_pressure_1.DISPOSABLE_INDEX_DATABASE, 1, database => {
     if (!database.objectStoreNames.contains("index"))
         database.createObjectStore("index");
 });
@@ -84,7 +206,25 @@ function createVideoSearchIndexStore(open = openIndexDatabase) {
                 return;
             transaction = database.transaction("index", write ? "readwrite" : "readonly");
             const store = transaction.objectStore("index");
-            const request = write ? store.put(value, "current") : store.get("current");
+            const request = store.get(write ? storage_pressure_1.INDEX_WRITE_PAUSED_KEY : "current");
+            if (write)
+                request.onsuccess = () => {
+                    try {
+                        const pausedUntil = request.result;
+                        if (typeof pausedUntil === "number" && Number.isFinite(pausedUntil) && pausedUntil > Date.now())
+                            return;
+                        store.put(value, "current");
+                        if (pausedUntil !== undefined)
+                            store.delete(storage_pressure_1.INDEX_WRITE_PAUSED_KEY);
+                    }
+                    catch (error) {
+                        try {
+                            transaction?.abort();
+                        }
+                        catch { /* Already settled. */ }
+                        fail(error);
+                    }
+                };
             transaction.oncomplete = () => { clearTimeout(timer); resolve(write ? undefined : request.result); };
             transaction.onerror = transaction.onabort = () => fail(transaction?.error ?? new Error("Search index storage failed."));
         }).catch(fail);

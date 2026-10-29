@@ -1,6 +1,7 @@
 import type { YouTubeVideo, YouTubeWorkspaceState } from "./youtube";
 import { reuseIndexedVideoRecords, catalogSourceMembership, restoreCatalogSourceMembership, type StoredSourceMembership } from "./video-source-index";
 import { checkBackgroundCancellation, forEachBackground, type BackgroundCancellation } from "./background-work";
+import { prepareForStorageWrite } from "./storage-pressure";
 
 export const VIDEO_RECORD_PREFIX = "youtube-video-record-v1:";
 export const VIDEO_WRITE_BATCH_SIZE = 100;
@@ -35,6 +36,12 @@ export async function planCatalogCommit(catalog: YouTubeCatalog, previous: YouTu
   const { videos: _videos, ...metadata } = catalog;
   const manifest: CatalogManifest = { ...metadata, storageVersion: 1, entries, sourceMembership: await catalogSourceMembership(videos, cancellation) };
   return { manifest, upserts, retainedKeys };
+}
+
+/** Estimate only newly staged records and the manifest, not the unchanged
+ * library. Called before opening any write transaction or publishing a commit. */
+export async function prepareCatalogStorage(plan: Pick<Awaited<ReturnType<typeof planCatalogCommit>>, "manifest" | "upserts">, cancellation?: BackgroundCancellation) {
+  await prepareForStorageWrite([plan.manifest, plan.upserts], { cancellation });
 }
 
 export async function restoreStoredCatalog(raw: Record<string, unknown> | null, records: StoredVideo[], cancellation?: BackgroundCancellation): Promise<Record<string, unknown> | null> {

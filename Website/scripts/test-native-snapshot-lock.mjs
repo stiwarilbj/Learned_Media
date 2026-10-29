@@ -68,7 +68,7 @@ ${store}
  }
 }
 `);
- execFileSync('swiftc',['-parse-as-library',new URL('App/Sources/LearnedMediaCore/SnapshotValidation.swift',root).pathname,path.join(dir,'Harness.swift'),'-o',binary],{stdio:'inherit'});
+ execFileSync('swiftc',['-parse-as-library',new URL('App/Sources/LearnedMediaCore/SnapshotValidation.swift',root).pathname,new URL('App/Sources/LearnedMediaCore/StoragePressure.swift',root).pathname,path.join(dir,'Harness.swift'),'-o',binary],{stdio:'inherit'});
  for (const seeded of [false,true]) {
   const folder=path.join(dir,seeded?'overlap':'initial'); mkdirSync(folder);
   if(seeded) await run('save',folder,0);

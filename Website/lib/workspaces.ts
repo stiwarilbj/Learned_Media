@@ -1,6 +1,7 @@
 import { createDatabaseConnection } from "./indexed-db";
 import type { FactMemory } from "./fact-quality";
 import { assertSnapshot, parseSnapshot, validateSnapshot, writeRecoverySnapshot } from "./snapshot-validation";
+import { prepareForStorageWrite } from "./storage-pressure";
 export type WorkspaceSummary = {
   id: string;
   name: string;
@@ -100,6 +101,7 @@ export async function accountWorkspaceBackup<T>(ownerId: string, value?: Workspa
   const submitted = value ? structuredClone(value) : undefined;
   if (submitted) assertSnapshot(submitted, "store", "backup");
   if (typeof window === "undefined" || !window.indexedDB) return null;
+  if (submitted) await prepareForStorageWrite(submitted);
   const database = await openDatabase();
   return await new Promise((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, submitted ? 'readwrite' : 'readonly');
@@ -122,6 +124,8 @@ export async function writeWorkspaceStore<T>(store: WorkspaceStore<T>, options: 
     try { writeWorkspaceRecovery(snapshot); recoverySaved = true; } catch { /* IndexedDB is authoritative when the recovery copy is too large. */ }
   }
   if (!window.indexedDB) { if (!recoverySaved) throw new Error("Local storage is unavailable."); return; }
+  // Keep the synchronous recovery journal ahead of this advisory async work.
+  await prepareForStorageWrite(snapshot, { copies: 2 });
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readwrite");

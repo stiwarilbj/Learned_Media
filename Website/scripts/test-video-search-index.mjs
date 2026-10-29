@@ -99,11 +99,33 @@ test('failing/unavailable storage falls back and a clean retry can reuse data',a
 
 test('IndexedDB acknowledgment waits for transaction completion and rejects aborts',async()=>{
  let transaction,committed;
- const database={transaction:()=>transaction={objectStore:()=>({get:()=>({result:{cached:true}}),put:value=>{committed=value;return {}}}),error:null}};
+ let request;
+ const database={transaction:()=>transaction={objectStore:()=>({get:key=>request={result:key==='current'?{cached:true}:undefined},put:value=>{committed=value;return {}},delete:()=>{}}),error:null}};
  const store=storage.createVideoSearchIndexStore(async()=>database);
  let settled=false;const read=store.read().then(v=>{settled=true;return v});await wait(0);assert.equal(settled,false);transaction.oncomplete();assert.deepEqual(await read,{cached:true});
- const write=store.write({derived:true});await wait(0);assert.deepEqual(committed,{derived:true});transaction.oncomplete();await write;
+ const write=store.write({derived:true});await wait(0);request.onsuccess();assert.deepEqual(committed,{derived:true});transaction.oncomplete();await write;
  const fail=store.write({bad:true});await wait(0);transaction.error=new Error('quota');transaction.onabort();await assert.rejects(fail,/quota/);
+});
+
+test('pressure reclamation prevents delayed cache writes from refilling the space',async()=>{
+ let transaction,request,pausedUntil=Date.now()+60000;const writes=[],deletes=[];
+ const store=storage.createVideoSearchIndexStore(async()=>({transaction:()=>transaction={objectStore:()=>({
+  get:key=>{assert.equal(key,'pressure-until');return request={result:pausedUntil}},
+  put:(value,key)=>{writes.push([key,value])},delete:key=>deletes.push(key)
+ })}}));
+ const paused=store.write({derived:true});await wait(0);request.onsuccess();transaction.oncomplete();await paused;assert.equal(writes.length,0);
+ pausedUntil=Date.now()-1;
+ const recovered=store.write({derived:true});await wait(0);request.onsuccess();transaction.oncomplete();await recovered;
+ assert.deepEqual(writes,[['current',{derived:true}]]);assert.deepEqual(deletes,['pressure-until']);
+});
+
+test('a synchronous failed cache put rejects without escaping its IndexedDB callback',async()=>{
+ let transaction,request,aborted=false;
+ const store=storage.createVideoSearchIndexStore(async()=>({transaction:()=>transaction={
+  objectStore:()=>({get:()=>request={result:undefined},put:()=>{throw new DOMException('quota','QuotaExceededError')}}),abort:()=>{aborted=true}
+ }}));
+ const write=store.write({derived:true});await wait(0);
+ assert.doesNotThrow(()=>request.onsuccess());await assert.rejects(write,{name:'QuotaExceededError'});assert.ok(aborted);
 });
 
 test('30,000-video cache retains scores, passages, ties and pagination',async()=>{

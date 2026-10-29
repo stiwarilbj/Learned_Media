@@ -111,6 +111,7 @@ const context = {
       verifyYouTubeRefreshes: async () => {}
     };
     if (name === './youtube-catalog-storage') return {
+      prepareCatalogStorage: async () => {},
       VIDEO_RECORD_PREFIX: 'video:', VIDEO_WRITE_BATCH_SIZE: 100,
       videoRecordRange: () => KeyRange.bound('video:', 'video:\uffff'), planCatalogCommit: async () => {}
     };

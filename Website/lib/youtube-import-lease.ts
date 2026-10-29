@@ -1,6 +1,6 @@
 // The catalog and lease share a store so ownership checks and commits are atomic.
 import { YOUTUBE_IMPORT_PAGE_BATCH_SIZE, YOUTUBE_IMPORT_PAGE_PREFIX, importPageKey, importPagePrefix, type YouTubeImportPage, type YouTubeImportPageStore, type YouTubeRefreshReceipt, verifyYouTubeRefreshes } from "./youtube-import-checkpoints";
-import { planCatalogCommit, VIDEO_RECORD_PREFIX, VIDEO_WRITE_BATCH_SIZE, videoRecordRange, type YouTubeCatalog } from "./youtube-catalog-storage";
+import { planCatalogCommit, prepareCatalogStorage, VIDEO_RECORD_PREFIX, VIDEO_WRITE_BATCH_SIZE, videoRecordRange, type YouTubeCatalog } from "./youtube-catalog-storage";
 import type { YouTubeVideo } from "./youtube";
 import { yieldBackground } from "./background-work";
 const LEASE_KEY = "youtube-import-lease-v1";
@@ -266,6 +266,7 @@ export async function withYouTubeImportLease<P, T>(openDatabase: OpenDatabase, s
         await verifyYouTubeRefreshes(completedRefreshes, pageStore, controller.signal);
         const stored = (await check(false, store => store.get("catalog"))).result;
         const plan = await planCatalogCommit(catalog, previousVideos, stored, controller.signal);
+        await prepareCatalogStorage(plan, controller.signal);
         for (let start = 0; start < plan.upserts.length; start += VIDEO_WRITE_BATCH_SIZE) {
           const batch = plan.upserts.slice(start, start + VIDEO_WRITE_BATCH_SIZE);
           await check(false, store => { for (const record of batch) store.put(record, record.key); });

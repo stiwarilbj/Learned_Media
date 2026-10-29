@@ -9,7 +9,10 @@ const output = `// Generated from Website/lib/youtube-search-index-storage.ts. R
 (function(scope) {
   const database = {};
   (function(exports) { ${compile("indexed-db")} })(database);
-  const require = name => name.includes("indexed-db") ? database : name.includes("background-work") ? scope.LEARNED_MEDIA_BACKGROUND : scope.LEARNED_MEDIA_VIDEO_SEARCH;
+  const pressure = {};
+  (function(exports) { const require = name => name.includes("indexed-db") ? database : scope.LEARNED_MEDIA_BACKGROUND; ${compile("storage-pressure")} })(pressure);
+  scope.LEARNED_MEDIA_STORAGE_PRESSURE = pressure;
+  const require = name => name.includes("indexed-db") ? database : name.includes("storage-pressure") ? pressure : name.includes("background-work") ? scope.LEARNED_MEDIA_BACKGROUND : scope.LEARNED_MEDIA_VIDEO_SEARCH;
   const exports = {};
   ${compile("youtube-search-index-storage")}
   scope.LEARNED_MEDIA_VIDEO_INDEX_STORAGE = exports;
