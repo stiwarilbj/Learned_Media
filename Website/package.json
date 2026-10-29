@@ -13,6 +13,7 @@
     "test:gemini-schema-cache": "node --test scripts/test-gemini-schema-cache.mjs",
     "test:retry-timing": "node --test scripts/test-retry-timing.mjs",
     "test:source-spotlight": "node scripts/test-source-spotlight.mjs",
+    "test:card-image-cache": "node scripts/build-native-card-image-cache.mjs --check && node scripts/test-card-image-cache.mjs",
     "test:saved-card-fidelity": "node scripts/test-saved-card-fidelity.mjs",
     "test:youtube-restoration": "node scripts/test-youtube-restoration.mjs",
     "test:youtube-channel-normalization": "node --test scripts/test-youtube-channel-normalization.mjs",

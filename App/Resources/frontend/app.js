@@ -283,6 +283,7 @@
   const imageHydrationQueue = [];
   const imageHydrationQueued = new Set();
   const imageHydrationRequests = new Map();
+  const activeCardImageReleases = [];
   const semanticSearchCache = createSessionCache(100, 30 * 60 * 1000);
   const youtubeSmartSearchCache = createSessionCache(100, 30 * 60 * 1000);
   const learningResponseCache = createSessionCache(100, 30 * 60 * 1000);
@@ -2786,9 +2787,23 @@
     const image = card.image && card.image.url;
     const wrap = node("div", { className: "fact-image " + (image ? "has-image" : "no-image") });
     if (image) {
-      const picture = node("img", { src: image, alt: card.image.alt || card.title, loading:"lazy", decoding:"async" });
-      picture.addEventListener("error", function () { wrap.classList.remove("has-image"); wrap.classList.add("no-image"); picture.remove(); wrap.insertBefore(node("div", { className: "image-unavailable" }, svg("image", 25), node("span", { text: "Image unavailable" })), wrap.firstChild); });
-      wrap.appendChild(picture);
+      const alt = card.image.alt || card.title;
+      const markUnavailable = function (element) { wrap.classList.remove("has-image"); wrap.classList.add("no-image"); element.remove(); wrap.insertBefore(node("div", { className: "image-unavailable" }, svg("image", 25), node("span", { text: "Image unavailable" })), wrap.firstChild); };
+      const fallbackImage = function () {
+        const picture = node("img", { src: image, alt: alt, loading:"lazy", decoding:"async" });
+        picture.addEventListener("error", function () { markUnavailable(picture); });
+        return picture;
+      };
+      const imageCache = window.LEARNED_MEDIA_CARD_IMAGE_CACHE;
+      if (imageCache && typeof imageCache.mountDecodedCardImage === "function") {
+        const canvas = node("canvas", { className: "card-image-canvas", role: "img", ariaLabel: alt, width: 960, height: 540 });
+        const release = imageCache.mountDecodedCardImage(canvas, state.workspaceId, image, function () {
+          if (!canvas.isConnected) return;
+          canvas.replaceWith(fallbackImage());
+        });
+        activeCardImageReleases.push(release);
+        wrap.appendChild(canvas);
+      } else wrap.appendChild(fallbackImage());
       wrap.appendChild(node("span", { className: "fact-image-label", text: (card.topicPath || ["Wikipedia"])[0] }));
       if (card.image.filePageUrl || card.image.sourceUrl) wrap.appendChild(externalLink(card.image.filePageUrl || card.image.sourceUrl, "Wikipedia image", "image-credit"));
     } else {
@@ -3385,6 +3400,9 @@
     focusedQuestionSelection = focusedQuestionCardId && typeof activeElement.selectionStart === "number" ? [activeElement.selectionStart, activeElement.selectionEnd] : null;
     suppressTopicDetourScroll = true;
     document.body.classList.add("native-shell");
+    activeCardImageReleases.splice(0).forEach(function (release) { release(); });
+    const cardImageCache = window.LEARNED_MEDIA_CARD_IMAGE_CACHE && window.LEARNED_MEDIA_CARD_IMAGE_CACHE.cache;
+    if (cardImageCache && typeof cardImageCache.setActiveWorkspace === "function") cardImageCache.setActiveWorkspace(state.workspaceId);
     app.replaceChildren();
     app.appendChild(navigation());
     const main = node("main", { className: "main-column" });

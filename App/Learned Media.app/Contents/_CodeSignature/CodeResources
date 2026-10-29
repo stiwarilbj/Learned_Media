@@ -18,7 +18,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		0H4Dv3/LnPXeuHp6rky+tYaejWg=
+		L41MNBkXkUpBYrqx4bnNm7XnXw8=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -30,31 +30,43 @@
 		</data>
 		<key>Resources/frontend/card-chronology.js</key>
 		<data>
-		gc9bo7CqXngjEyahUkAwko5gmls=
+		9jyDDbPG5cFBE/LT8JUkAqkJPkg=
+		</data>
+		<key>Resources/frontend/card-content-fingerprint.js</key>
+		<data>
+		LBlzXILlxpKtJj+qFy+im2mmxPw=
 		</data>
 		<key>Resources/frontend/card-explanations.js</key>
 		<data>
-		8tbV+qrk0XrfIql6ieuc8HcSVto=
+		nObrzhhySUZhUtYVnY+hFHrtHBc=
 		</data>
 		<key>Resources/frontend/card-follow-ups.js</key>
 		<data>
-		cL5MUOnUeZdyTVjWGYL+tTfs6mo=
+		Wn3K1uLHgRtrTPDQeqHuknQVzRE=
 		</data>
 		<key>Resources/frontend/card-glossary.js</key>
 		<data>
 		o9fmve0Q3LfLJKNnqmH9ufqe5HU=
 		</data>
+		<key>Resources/frontend/card-image-cache.js</key>
+		<data>
+		//ReSy5dxHLznLDDjvkcNd5YujI=
+		</data>
 		<key>Resources/frontend/card-locations.js</key>
 		<data>
-		lRZaIVjL2rLQbUkOa1lIj8wHSBI=
+		9XRJxd+uxXyv3R5TTaDAMRqkcJ4=
 		</data>
 		<key>Resources/frontend/card-reveal.js</key>
 		<data>
-		wU/KJkyWiAzavqrAZ0dvzXf5ZrI=
+		iw1FXXHqGsNeSr1OZUlBnAPR4LI=
 		</data>
 		<key>Resources/frontend/card-search.worker.js</key>
 		<data>
-		0IxeCfHNgDA4pz+Q5Gv0vmsfr2g=
+		I/3WsPV4iaXqSZBgUvzw4jiJ86g=
+		</data>
+		<key>Resources/frontend/card-tool-state-retention.js</key>
+		<data>
+		5e7z8CyFsBmqPpwFjXSr7o1M5Tc=
 		</data>
 		<key>Resources/frontend/companies-catalog.js</key>
 		<data>
@@ -106,7 +118,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		ZHAlaHVVxlfbxzQw1881yPgR+Vg=
+		72yvOtndoBmVZqjXbdyIVPIKXm8=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -122,7 +134,7 @@
 		</data>
 		<key>Resources/frontend/performance-diagnostics.js</key>
 		<data>
-		HMvvKyKdumjh02c6JAXtG+iEFTc=
+		t9WUF7ROMxv8tcXiFqJlrt2Oxqs=
 		</data>
 		<key>Resources/frontend/political-history.js</key>
 		<data>
@@ -134,7 +146,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		O9AFBowDOmzuwFDZ2Irc78taJbs=
+		nSpSY5JPT39ulearC5QG/oDzOT4=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -154,7 +166,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		jLlq4FWfkXV57qQwEnx7U4uwYdU=
+		blu8wjWNg7L6WQg1MHR9RuILfxc=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -182,7 +194,7 @@
 		</data>
 		<key>Resources/frontend/video-semantic.js</key>
 		<data>
-		xPj5TMn6Hv3dLJf+pzMr1IsjDjg=
+		HTguM44TZYypswjR/SHws2v6ldI=
 		</data>
 		<key>Resources/frontend/video-source-index.js</key>
 		<data>
@@ -194,7 +206,7 @@
 		</data>
 		<key>Resources/frontend/windowed-list.js</key>
 		<data>
-		7TDCAHrzzf9W5J9RQ87c+XMCNEM=
+		maVVx8m9TgZ9W80Oke0d7Nvogto=
 		</data>
 		<key>Resources/frontend/writers-catalog.js</key>
 		<data>
@@ -202,11 +214,11 @@
 		</data>
 		<key>Resources/frontend/youtube-catalog.js</key>
 		<data>
-		fzbrDAqbXRY0VP9MKLp4cr/ligc=
+		dQavm56t6wgYiVzJYcKTEQ0hnzM=
 		</data>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<data>
-		IeU+BGBMpAy+yvOLMtylE69v85w=
+		xat/BSHvFxBqTadif50P4QYxvlw=
 		</data>
 		<key>Resources/frontend/youtube-playback.js</key>
 		<data>
@@ -244,7 +256,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ReotEgeL3i1ULnA4fvGqGpEgIZoHXEn7klvgk57iOqM=
+			23d9A05edfwxqeoW6N2Yn0n/QD0F3d7Yx842LmPi79c=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -265,21 +277,28 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			skThx931JXhVPn1VLQRR0ZX588KQB9L7l6Zd7CYmrpg=
+			RQemteZwScBuAgiQxXNBakzq1ekXsWpatchSiYtmUmI=
+			</data>
+		</dict>
+		<key>Resources/frontend/card-content-fingerprint.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			JalE9UOhNFR8WKULbETQW0UhPdfyXLdUihxeAaqVzyw=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-explanations.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			Sq3SKAC3L3ouVrMb7YF1GpZy+8QPnhMrozycvyUqh0s=
+			9bd9HN0D21QFpwQvalugqhDUcHJ1qqARjJO3Blgah88=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-follow-ups.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			tWKDZzdppmo69SndbCjoZ15viiLvri1K/evxt/JRJXk=
+			RUuT4U4M46fK1lMGTUXNhqzMcNYspAxznqKkwi/vFXU=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-glossary.js</key>
@@ -289,25 +308,39 @@
 			Ya9VWjJ2nwPXIF1B9mxWta7R2HJxa8wTHTb+0WWvLzg=
 			</data>
 		</dict>
+		<key>Resources/frontend/card-image-cache.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			E8w5RjyvE6eLX+etv/gY3OM65n+RTqqz4TdvhOCToNY=
+			</data>
+		</dict>
 		<key>Resources/frontend/card-locations.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			Nb4HZDQelYFmxxTBVcyU3XaD0I9casUlu5fRtTPgPbs=
+			BaIP2aB6j02+V3JXwYvXsPZWhQHh28zu43ML/Xap8a8=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-reveal.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			PNe7Ix46wSMPkACQqStMm+0dVHeLFrFtYwsWf/Ps6Bo=
+			dXhbuLQYuQqjC+sjxObzh+bvxaaBI+PGPi8VSvfQRJ8=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-search.worker.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			nwwKIU+tn03WSm+0VRpXb4K9DBrQ/V7WHxnHoVoClO0=
+			IXy6AyNdT3+bgSOlMHyl6msSRO4h3j87jzlbLFwVpYo=
+			</data>
+		</dict>
+		<key>Resources/frontend/card-tool-state-retention.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			hBFFcilayprFni2fhPCcS3EyV1JTfXIESJCXrUxFOYA=
 			</data>
 		</dict>
 		<key>Resources/frontend/companies-catalog.js</key>
@@ -398,7 +431,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			TQbROCaxdEo7WhXP0K3DcNQfm03ZzyEZ1nWWcffE+DE=
+			gdbMEZfRaICrDkRolO9A+yyS8y9uwFWIfhsOGE3MSew=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -426,7 +459,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			jKgPhJM4Rws4nNPEERVsXFS0dn3UZ/WSxfOtAXSlSTY=
+			rnlkkFsT0XSA5j0NU915SYOp3gPdVC3XaiNLqIvON7k=
 			</data>
 		</dict>
 		<key>Resources/frontend/political-history.js</key>
@@ -447,7 +480,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			UvKe1+tKADE7WiBqQ2/iqKqlyF/AnFLh8/EuaCiTHso=
+			6+gzSvSTYaf9af98rgpiAeIaCOuL2UO371lUGEBaWSk=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -482,7 +515,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			e8MmBy7Orjs9cGJuUFQvPtkbXHXSeFmunSKlsevhuMY=
+			APZ/vOR0BGODDh7caLYZl8s7RbeCYlUnkUQQqAVvYfY=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
@@ -531,7 +564,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			kQtWnu8vX2Z2xBW1YXf7gXMx1BrOi7I8sTb3dF0+2MM=
+			VdYpY7kzAzjWlJ0K1aI1CauQ9qQVwlEVhlFYYQGEORg=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-source-index.js</key>
@@ -552,7 +585,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			GoiVIpSRrsHqD0bWcubjP2ib+A/j0dUDjx+F3REHeHA=
+			3YaP1kJH/cc+JrheNoQ6S4EWPLWNUsUtK0674GAUjQY=
 			</data>
 		</dict>
 		<key>Resources/frontend/writers-catalog.js</key>
@@ -566,14 +599,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			FmegU33z0L+j+T8zZ4wKBJBsGzMDUZJZTqwmePeIeCA=
+			qe7N4aRDHpqKcYpI6rVLscvdCQMpjKGZjWAWxMKNBRY=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-import-checkpoints.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			6KKTvjYLd0MQtXo54IJo5hyt2cKopXNKYBOnMAQFHuA=
+			lEbZ0zIGpEt7ww3bRXRh8eUTCLzANq7OeWmjJ4bYr7w=
 			</data>
 		</dict>
 		<key>Resources/frontend/youtube-playback.js</key>

@@ -651,7 +651,7 @@ a { color: inherit; }
 .selected-chip { border: 1px solid var(--border); background: var(--surface); color: var(--muted); }
 
 .fact-image { overflow: hidden; }
-.fact-image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.fact-image img, .fact-image canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .fact-image.has-image::after { z-index: 1; }
 .image-unavailable { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; font-weight: 800; }
 .image-credit { position: absolute; z-index: 2; right: 13px; bottom: 13px; max-width: 48%; overflow: hidden; color: #fff; background: rgba(15,43,73,.68); border-radius: 7px; padding: 4px 6px; font-size: 9px; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,6 +1,7 @@
 "use client";
 
 import { cardSearchText } from "@/lib/card-search-text";
+import { decodedCardImageCache } from "@/lib/card-image-cache";
 
 import dynamic from "next/dynamic";
 import { CardDownloadsProvider } from "@/components/learned-media/CardDownloads";
@@ -1188,6 +1189,10 @@ export default function HomePage() {
     }).catch(() => { /* Canceled restoration keeps the current workspace intact. */ });
     return () => { active = false; controller.abort(); };
   }, [hydrated, view, workspaceId]);
+
+  useEffect(() => {
+    decodedCardImageCache.setActiveWorkspace(workspaceId);
+  }, [workspaceId]);
 
   useEffect(() => {
     displayModeRef.current = settings.displayMode;

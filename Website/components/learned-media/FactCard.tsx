@@ -15,6 +15,7 @@ import { cardGlossaryFingerprint, getCardGlossaryPanelOpen, getVisibleCardGlossa
 import { cardChronologyFingerprint, getCardChronologyEvents, getCardChronologyPanelOpen, setCardChronologyPanelOpen, subscribeCardChronologyPanel } from "@/lib/card-chronology";
 import { attachVerifiedLocationCoordinates, cardLocationsFingerprint, getCardLocationPanelOpen, getCardLocationPanelState, getVisibleCardLocations, layoutPocketMap, loadCountryOutlines, setCardLocationPanelOpen, setCardLocationPanelState, subscribeCardLocationPanel, wikiArticleUrl, type CountryOutlines } from "@/lib/card-locations";
 import { Icon } from "./icons";
+import { CachedCardImage } from "./CachedCardImage";
 import type { TopicDetourProgress } from "@/lib/topic-detours";
 
 type FactCardProps = {
@@ -613,7 +614,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
       {showImage && (
         <div className={`fact-image ${card.image && !imageFailed ? "has-image" : "no-image"}`}>
           {card.image && !imageFailed ? (
-            <img src={card.image.url} alt={card.image.alt} loading="lazy" decoding="async" width="960" height="540" onError={() => setImageFailed(true)} />
+            <CachedCardImage key={`${workspaceId}:${card.image.url}`} workspaceId={workspaceId} url={card.image.url} alt={card.image.alt} onError={() => setImageFailed(true)} />
           ) : (
             <div className="image-unavailable"><Icon name="image" size={25} /><span>Image unavailable</span></div>
           )}

@@ -32,6 +32,7 @@
       for(const [index,row] of rendered){if((index<first || index>last) && !row.contains(document.activeElement)){observer?.unobserve(row);row.remove();rendered.delete(index);}}
       const indexes=[];for(let index=first;index<=last && keys.length;index++)indexes.push(index);
       if(options.pinnedKey){const pinned=items.findIndex(function(item){return options.key(item)===options.pinnedKey;});const row=Math.floor(pinned/columns);if(pinned>=0 && !indexes.includes(row))indexes.push(row);}
+      if(options.onRetainedItemsChange)options.onRetainedItemsChange(indexes.sort(function(a,b){return a-b;}).flatMap(function(index){return items.slice(index*columns,index*columns+columns);}));
       for(const index of indexes){
         let row=rendered.get(index);if(!row){row=document.createElement('div');row.dataset.windowKey=keys[index];row.style.position='absolute';row.style.left='0';row.style.right='0';row.style.display='grid';row.style.gridTemplateColumns='repeat('+columns+',minmax(0,1fr))';row.style.gap=gap+'px';
           for(const item of items.slice(index*columns,index*columns+columns))row.appendChild(options.render(item));host.appendChild(row);rendered.set(index,row);observer?.observe(row);
