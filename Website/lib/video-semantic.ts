@@ -16,6 +16,14 @@ const MAX_VIDEO_SEARCH_QUERY_LENGTH = 4_096;
 const MAX_VIDEO_SEARCH_FILTER_TEXT_LENGTH = 512;
 const MAX_VIDEO_SEARCH_FILTER_ITEMS = 256;
 const MAX_VIDEO_SEARCH_EXCLUDED_IDS = 100_000;
+const VIDEO_SEARCH_PLAN_FIELDS = new Set(["terms", "include", "alternatives", "exclude", "topics", "topicHints", "conceptGroups", "anyOf", "channel", "channelId", "dateIntent", "minDate", "maxDate", "minDurationSeconds", "maxDurationSeconds", "sort"]);
+const VIDEO_SEARCH_LIST_FIELDS = ["terms", "include", "alternatives", "exclude", "topics", "topicHints"] as const;
+const VIDEO_SEARCH_CONCEPT_GROUP_FIELDS = new Set(["label", "terms", "related", "required"]);
+const VIDEO_SEARCH_CHANNEL_FIELDS = ["channel", "channelId"] as const;
+const VIDEO_SEARCH_DATE_FIELDS = ["minDate", "maxDate"] as const;
+const VIDEO_SEARCH_DURATION_FIELDS = ["minDurationSeconds", "maxDurationSeconds"] as const;
+const VIDEO_SEARCH_DATE_INTENTS = new Set(["upload", "event", "either"]);
+const VIDEO_SEARCH_SORTS = new Set(["relevance", "newest", "oldest", "random"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.prototype.toString.call(value) !== "[object Object]") return false;
@@ -33,15 +41,14 @@ function isStringList(value: unknown, maximumItems = MAX_VIDEO_SEARCH_FILTER_ITE
 
 function isVideoSearchPlan(value: unknown): value is VideoSearchPlan {
   if (!isRecord(value)) return false;
-  const allowedFields = new Set(["terms", "include", "alternatives", "exclude", "topics", "topicHints", "conceptGroups", "anyOf", "channel", "channelId", "dateIntent", "minDate", "maxDate", "minDurationSeconds", "maxDurationSeconds", "sort"]);
-  if (Object.keys(value).some(field => !allowedFields.has(field))) return false;
-  for (const field of ["terms", "include", "alternatives", "exclude", "topics", "topicHints"] as const) {
+  if (Object.keys(value).some(field => !VIDEO_SEARCH_PLAN_FIELDS.has(field))) return false;
+  for (const field of VIDEO_SEARCH_LIST_FIELDS) {
     if (value[field] !== undefined && !isStringList(value[field])) return false;
   }
   if (value.conceptGroups !== undefined) {
     if (!Array.isArray(value.conceptGroups) || value.conceptGroups.length > 64) return false;
     for (const group of value.conceptGroups) {
-      if (!isRecord(group) || Object.keys(group).some(field => !["label", "terms", "related", "required"].includes(field))
+      if (!isRecord(group) || Object.keys(group).some(field => !VIDEO_SEARCH_CONCEPT_GROUP_FIELDS.has(field))
         || !isStringList(group.terms, 64) || group.terms.length === 0
         || group.label !== undefined && !isBoundedString(group.label)
         || group.related !== undefined && !isStringList(group.related, 128)
@@ -56,17 +63,17 @@ function isVideoSearchPlan(value: unknown): value is VideoSearchPlan {
         || !clause.every(index => Number.isSafeInteger(index) && index >= 0 && index < conceptGroupCount)) return false;
     }
   }
-  for (const field of ["channel", "channelId"] as const) if (value[field] !== undefined && !isBoundedString(value[field], 256)) return false;
-  if (value.dateIntent !== undefined && !["upload", "event", "either"].includes(value.dateIntent as string)) return false;
-  for (const field of ["minDate", "maxDate"] as const) {
+  for (const field of VIDEO_SEARCH_CHANNEL_FIELDS) if (value[field] !== undefined && !isBoundedString(value[field], 256)) return false;
+  if (value.dateIntent !== undefined && !VIDEO_SEARCH_DATE_INTENTS.has(value.dateIntent as string)) return false;
+  for (const field of VIDEO_SEARCH_DATE_FIELDS) {
     if (value[field] !== undefined && (!isBoundedString(value[field], 64) || !Number.isFinite(Date.parse(value[field] as string)))) return false;
   }
   if (value.minDate && value.maxDate && Date.parse(value.minDate as string) > Date.parse(value.maxDate as string)) return false;
-  for (const field of ["minDurationSeconds", "maxDurationSeconds"] as const) {
+  for (const field of VIDEO_SEARCH_DURATION_FIELDS) {
     if (value[field] !== undefined && (typeof value[field] !== "number" || !Number.isFinite(value[field]) || (value[field] as number) < 0)) return false;
   }
   if (typeof value.minDurationSeconds === "number" && typeof value.maxDurationSeconds === "number" && value.minDurationSeconds > value.maxDurationSeconds) return false;
-  if (value.sort !== undefined && !["relevance", "newest", "oldest", "random"].includes(value.sort as string)) return false;
+  if (value.sort !== undefined && !VIDEO_SEARCH_SORTS.has(value.sort as string)) return false;
   return true;
 }
 
