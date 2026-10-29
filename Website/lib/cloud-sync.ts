@@ -138,26 +138,35 @@ export class WorkspaceCloudSync {
       if (result.error) throw result.error;
       checkCancellation();
       if (!Array.isArray(result.data) || result.data.length > 100) throw new Error('Cloud workspace history returned an invalid page.');
+      const pageRows = result.data;
+      const pageLength = pageRows.length;
       let pageCursor: string | null = after;
-      for (const row of result.data) {
-        const workspaceId = row?.workspace_id;
-        if (typeof workspaceId !== 'string' || !workspaceId
-          || (pageCursor !== null && workspaceId <= pageCursor) || workspaceId > through) {
-          throw invalidWorkspaceCursor();
+      try {
+        for (const row of pageRows) {
+          const workspaceId = row?.workspace_id;
+          if (typeof workspaceId !== 'string' || !workspaceId
+            || (pageCursor !== null && workspaceId <= pageCursor) || workspaceId > through) {
+            throw invalidWorkspaceCursor();
+          }
+          pageCursor = workspaceId;
+          if (typeof row.revision_id !== 'string' || !row.revision_id) {
+            this.canonicalWorkspaceSnapshots.delete(workspaceId);
+            validateSnapshot(null, 'record', 'import');
+            continue;
+          }
+          // Keep only trusted envelope identity for conditional writes. Invalid
+          // snapshot bytes never enter restored records or acknowledged content.
+          heads.set(workspaceId, row.revision_id);
+          const record = this.decodedWorkspaceRecord(row);
+          if (record) records.push(record);
         }
-        pageCursor = workspaceId;
-        if (typeof row.revision_id !== 'string' || !row.revision_id) {
-          this.canonicalWorkspaceSnapshots.delete(workspaceId);
-          validateSnapshot(null, 'record', 'import');
-          continue;
-        }
-        // Keep only trusted envelope identity for conditional writes. Invalid
-        // snapshot bytes never enter restored records or acknowledged content.
-        heads.set(workspaceId, row.revision_id);
-        const record = this.decodedWorkspaceRecord(row);
-        if (record) records.push(record);
+      } finally {
+        // The validated CloudRecords and revision heads above are the only page
+        // data needed for the final merge. Release the raw provider rows before
+        // issuing another bounded request.
+        pageRows.length = 0;
       }
-      if (result.data.length < 100 || pageCursor === through) break;
+      if (pageLength < 100 || pageCursor === through) break;
       if (pageCursor === null || pageCursor === after) throw invalidWorkspaceCursor();
       after = pageCursor;
     }

@@ -370,6 +370,28 @@ test('workspace restoration pages beyond the API row cap with one fixed high-wat
   assert.ok(db.requests.slice(1).every(q => q.through === 'w-01104' && q.limit === 100 && q.ascending));
   assert.equal(c.observed.get('w-00150'), 'updated');
 });
+test('workspace restoration releases raw provider rows before requesting the next bounded page', async () => {
+  const db = server(); seedWorkspaceRange(db, 205);
+  let firstRawPage;
+  db.readResult = options => {
+    if (!options.through || options.after !== undefined) return null;
+    firstRawPage = [...db.heads.values()]
+      .filter(row => row.workspace_id <= options.through)
+      .sort((a, b) => a.workspace_id < b.workspace_id ? -1 : a.workspace_id > b.workspace_id ? 1 : 0)
+      .slice(0, 100);
+    return { data: firstRawPage, error: null };
+  };
+  db.onRead = options => {
+    if (options.after === 'w-00099') assert.equal(firstRawPage.length, 0, 'the previous raw page must be released before the next request starts');
+  };
+
+  const result = await client(db).load(signal());
+  assert.equal(firstRawPage.length, 0);
+  assert.equal(result.records.length, 205);
+  assert.equal(result.records[0].id, 'w-00000');
+  assert.equal(result.records.at(-1).id, 'w-00204');
+  assert.equal(db.requests.length, 4, 'the fixed cursor continues through the expected bounded pages');
+});
 test('empty, short, and exact-page accounts stop without an unbounded read', async () => {
   for (const count of [0, 1, 99, 100, 101, 200]) {
     const db = server(); seedWorkspaceRange(db, count); const result = await client(db).load(signal());
