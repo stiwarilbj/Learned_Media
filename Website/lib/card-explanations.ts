@@ -1,4 +1,5 @@
 import type { FactCard, WikipediaSource } from "./types";
+import { memoizedCardFingerprint } from "./card-content-fingerprint";
 
 export type CardExplanationMode = "simpler" | "deeper";
 export type CardExplanation = { text: string; sources: WikipediaSource[]; fingerprint: string };
@@ -7,23 +8,25 @@ export type CardExplanationSelection = CardExplanationMode | undefined;
 type ExplanationCardIdentity = Pick<FactCard, "title" | "hook" | "body" | "topicPath" | "sources"> & { claim?: string; evidence?: FactCard["evidence"] };
 
 export function cardExplanationFingerprint(card: ExplanationCardIdentity): string {
-  const sourceText = JSON.stringify([
-    card.title,
-    card.hook,
-    card.body,
-    card.claim ?? "",
-    card.topicPath,
-    card.sources.map(source => [source.canonicalUrl ?? source.url, source.extract ?? ""]),
-    card.evidence ?? []
-  ]);
-  let first = 2166136261;
-  let second = 0x9e3779b9;
-  for (let index = 0; index < sourceText.length; index++) {
-    const code = sourceText.charCodeAt(index);
-    first = Math.imul(first ^ code, 16777619);
-    second = Math.imul(second ^ (code + index), 2246822519);
-  }
-  return (first >>> 0).toString(16).padStart(8, "0") + (second >>> 0).toString(16).padStart(8, "0");
+  return memoizedCardFingerprint(card, "card-explanation-v1", [card.claim ?? "", card.topicPath, card.sources, card.evidence], () => {
+    const sourceText = JSON.stringify([
+      card.title,
+      card.hook,
+      card.body,
+      card.claim ?? "",
+      card.topicPath,
+      card.sources.map(source => [source.canonicalUrl ?? source.url, source.extract ?? ""]),
+      card.evidence ?? []
+    ]);
+    let first = 2166136261;
+    let second = 0x9e3779b9;
+    for (let index = 0; index < sourceText.length; index++) {
+      const code = sourceText.charCodeAt(index);
+      first = Math.imul(first ^ code, 16777619);
+      second = Math.imul(second ^ (code + index), 2246822519);
+    }
+    return (first >>> 0).toString(16).padStart(8, "0") + (second >>> 0).toString(16).padStart(8, "0");
+  });
 }
 
 const selections = new Map<string, CardExplanationSelection>();

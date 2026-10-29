@@ -130,7 +130,7 @@ exports.diagnosticTextBytes = diagnosticTextBytes;
 const provider_schema_diagnostics_1 = require("./provider-schema-diagnostics");
 /** Numeric aggregates only. No event log, identifiers, persistence, or uploads. */
 const services = ['gemini', 'youtube', 'wikipedia', 'cloud', 'cache'];
-const metrics = ['requests', 'cache_hits', 'cache_misses', 'coalesced', 'queue_ms', 'retries', 'request_bytes', 'response_bytes_reported', 'response_bytes_read'];
+const metrics = ['requests', 'cache_hits', 'cache_misses', 'coalesced', 'queue_ms', 'retries', 'cursor_failures', 'request_bytes', 'response_bytes_reported', 'response_bytes_read'];
 const counters = new Map();
 const limit = Number.MAX_SAFE_INTEGER;
 const localRuntime = typeof window !== 'undefined' || (typeof self !== 'undefined' && 'importScripts' in globalThis);

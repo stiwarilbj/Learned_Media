@@ -1,5 +1,6 @@
 import type { FactCard, WikipediaSource } from "./types";
 import { MAX_RECENT_CARD_TOOL_CARDS, pruneCardToolState, registerCardToolStatePruner } from "./card-tool-state-retention";
+import { memoizedCardFingerprint } from "./card-content-fingerprint";
 
 export type CardLocationAnchor = { field: "title" | "hook" | "body"; sentenceIndex?: number };
 export type SavedCardLocation = {
@@ -59,10 +60,12 @@ function cardSentences(card: LocationCard) {
   return card.body.match(/[^.!?]+(?:[.!?]+[”’"')\]]*)?(?:\s+|$)/gu)?.map(clean).filter(Boolean) ?? (card.body ? [card.body] : []);
 }
 export function cardLocationsFingerprint(card: LocationCard) {
-  const identity = JSON.stringify([card.title, card.hook, card.body, cardSentences(card)]);
-  let a = 2166136261, b = 0x9e3779b9;
-  for (let index = 0; index < identity.length; index++) { const code = identity.charCodeAt(index); a = Math.imul(a ^ code, 16777619); b = Math.imul(b ^ (code + index), 2246822519); }
-  return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
+  return memoizedCardFingerprint(card, "card-locations-v1", [card.sentences], () => {
+    const identity = JSON.stringify([card.title, card.hook, card.body, cardSentences(card)]);
+    let a = 2166136261, b = 0x9e3779b9;
+    for (let index = 0; index < identity.length; index++) { const code = identity.charCodeAt(index); a = Math.imul(a ^ code, 16777619); b = Math.imul(b ^ (code + index), 2246822519); }
+    return (a >>> 0).toString(16).padStart(8, "0") + (b >>> 0).toString(16).padStart(8, "0");
+  });
 }
 function anchorText(card: LocationCard, anchor: CardLocationAnchor) {
   if (anchor.field === "title") return card.title;

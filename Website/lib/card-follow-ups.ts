@@ -1,4 +1,5 @@
 import type { FactCard } from "./types";
+import { memoizedCardFingerprint } from "./card-content-fingerprint";
 
 export type SavedFollowUpQuestions = { fingerprint: string; questions: string[] };
 
@@ -28,15 +29,17 @@ function fingerprintText(card: Pick<FollowUpCard, "title" | "hook" | "body" | "t
 
 /** Shared with the native client. Keep the input as UTF-16 code units for identical hashes. */
 export function followUpQuestionFingerprint(card: Pick<FollowUpCard, "title" | "hook" | "body" | "topicPath" | "claim">) {
-  const source = fingerprintText(card);
-  let first = 2166136261;
-  let second = 0x9e3779b9;
-  for (let index = 0; index < source.length; index++) {
-    const code = source.charCodeAt(index);
-    first = Math.imul(first ^ code, 16777619);
-    second = Math.imul(second ^ (code + index), 2246822519);
-  }
-  return (first >>> 0).toString(16).padStart(8, "0") + (second >>> 0).toString(16).padStart(8, "0");
+  return memoizedCardFingerprint(card, "card-follow-ups-v1", [card.claim ?? "", card.topicPath], () => {
+    const source = fingerprintText(card);
+    let first = 2166136261;
+    let second = 0x9e3779b9;
+    for (let index = 0; index < source.length; index++) {
+      const code = source.charCodeAt(index);
+      first = Math.imul(first ^ code, 16777619);
+      second = Math.imul(second ^ (code + index), 2246822519);
+    }
+    return (first >>> 0).toString(16).padStart(8, "0") + (second >>> 0).toString(16).padStart(8, "0");
+  });
 }
 
 function cleanQuestion(value: unknown) {

@@ -1176,7 +1176,7 @@
     state.moreMenuCardId = null;
     focusedMoreCardId = card.id;
     if (action === "download") { render(); exportFactsNative([card], true); return; }
-    if (action === "reveal") cardReveal.startCardReveal(state.workspaceId, card.id, cardReveal.buildCardRevealModel(card.body, sourceSpotlight.buildSourceSpotlightModel(card).mapped ? sourceSpotlight.buildSourceSpotlightModel(card).sentences : undefined));
+    if (action === "reveal") cardReveal.startCardReveal(state.workspaceId, card.id, cardReveal.buildCardRevealModelForCard(card, sourceSpotlight.buildSourceSpotlightModel(card).mapped ? sourceSpotlight.buildSourceSpotlightModel(card).sentences : undefined));
     else if (action === "more") { card.moreLike = true; card.liked = true; showToast("Your mix will lean a little closer to this thread."); saveState(); }
     else if (action === "topic-detour") { startTopicDetour(card); return; }
     else if (action === "less") { card.lessLike = true; showToast("We’ll keep this thread quieter for a while."); saveState(); }
@@ -1421,7 +1421,7 @@
   }
   function nativeCardRevealModel(card) {
     const spotlightModel = sourceSpotlight.buildSourceSpotlightModel(card);
-    return { spotlightModel: spotlightModel, revealModel: cardReveal.buildCardRevealModel(card.body || "", spotlightModel.mapped ? spotlightModel.sentences : undefined) };
+    return { spotlightModel: spotlightModel, revealModel: cardReveal.buildCardRevealModelForCard(card, spotlightModel.mapped ? spotlightModel.sentences : undefined) };
   }
   function cardBody(card) {
     const revealModels = nativeCardRevealModel(card);

@@ -58,6 +58,10 @@ test("normalization keeps supported contextual terms, remaps valid citation inde
   assert.deepEqual(normalized?.entries.map(entry => entry.term), ["mantle", "crust", "Earth"]);
   assert.deepEqual(normalized?.entries[0].sourceIndexes, [0]);
   assert.equal(glossary.normalizeCardGlossary({ ...card, body: "A changed fact.", glossary: saved }), undefined);
+  const restored = JSON.parse(JSON.stringify({ ...card, glossary: saved }));
+  assert.equal(glossary.normalizeCardGlossary(restored)?.entries.length, 2);
+  restored.hook = "An edited hook";
+  assert.equal(glossary.normalizeCardGlossary(restored), undefined, "hook edits invalidate restored glossary metadata");
 });
 
 test("definitions must be one sentence of at most 35 words", () => {

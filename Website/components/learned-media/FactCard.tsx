@@ -9,7 +9,7 @@ import { resolveWikipediaArticle, resolveWikipediaCoordinates } from "@/lib/wiki
 import { buildSourceSpotlightModel, canonicalWikipediaUrl, locatePassageContext, longestSharedPhraseRange, sourceSpotlightContextKey } from "@/lib/source-spotlight";
 import { getSourceSpotlightState, setSourceSpotlightState, subscribeSourceSpotlight, updateSourceSpotlightState, type SpotlightContextState } from "@/lib/source-spotlight-state";
 import { cardExplanationFingerprint, getCardExplanationSelection, setCardExplanationSelection, subscribeCardExplanationSelection } from "@/lib/card-explanations";
-import { buildCardRevealModel, getCardRevealProgress, revealCardThroughSentence, revealNextCardSentence, showAllCardSentences, startCardReveal, subscribeCardRevealProgress } from "@/lib/card-reveal";
+import { buildCardRevealModelForCard, getCardRevealProgress, revealCardThroughSentence, revealNextCardSentence, showAllCardSentences, startCardReveal, subscribeCardRevealProgress } from "@/lib/card-reveal";
 import { getCardFollowUpQuestions } from "@/lib/card-follow-ups";
 import { cardGlossaryFingerprint, getCardGlossaryPanelOpen, getVisibleCardGlossaryEntries, normalizeCardGlossary, setCardGlossaryPanelOpen, subscribeCardGlossaryPanel } from "@/lib/card-glossary";
 import { cardChronologyFingerprint, getCardChronologyEvents, getCardChronologyPanelOpen, setCardChronologyPanelOpen, subscribeCardChronologyPanel } from "@/lib/card-chronology";
@@ -145,7 +145,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
   );
   const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const spotlightModel = useMemo(() => buildSourceSpotlightModel(card), [card]);
-  const revealModel = useMemo(() => buildCardRevealModel(card.body, spotlightModel.mapped ? spotlightModel.sentences : undefined), [card.body, spotlightModel]);
+  const revealModel = useMemo(() => buildCardRevealModelForCard(card, spotlightModel.mapped ? spotlightModel.sentences : undefined), [card, spotlightModel]);
   const revealProgress = useSyncExternalStore(
     (listener) => subscribeCardRevealProgress(workspaceId, card.id, listener),
     () => getCardRevealProgress(workspaceId, card.id, revealModel),

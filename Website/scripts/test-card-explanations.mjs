@@ -39,6 +39,10 @@ test("saved explanations are retained only when their original content fingerpri
   assert.deepEqual(explanations.normalizeCardExplanations({ ...card, explanations: { simpler: saved } }), { simpler: saved });
   assert.equal(explanations.normalizeCardExplanations({ ...card, body: "A changed fact.", explanations: { simpler: saved } }), undefined);
   assert.equal(explanations.normalizeCardExplanations({ ...card, explanations: { simpler: { ...saved, sources: [] } } }), undefined);
+  const restored = JSON.parse(JSON.stringify({ ...card, explanations: { simpler: saved } }));
+  assert.deepEqual(explanations.normalizeCardExplanations(restored), { simpler: saved });
+  restored.title = "An edited title";
+  assert.equal(explanations.normalizeCardExplanations(restored), undefined, "title edits invalidate restored explanation metadata");
 });
 
 test("transient explanation choice is isolated by workspace and card and notifies subscribers", () => {

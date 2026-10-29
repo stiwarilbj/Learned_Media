@@ -71,6 +71,10 @@ test("optional metadata is anchored, deduplicated, fingerprinted, and content-bo
   assert.match(generated?.fingerprint ?? "", /^[a-f0-9]{16}$/u);
   assert.equal(chronology.normalizeSavedCardChronology({ ...card, chronology: generated })?.events.length, 2);
   assert.equal(chronology.normalizeSavedCardChronology({ ...card, body: card.body + " Changed.", chronology: generated }), undefined);
+  const restored = JSON.parse(JSON.stringify({ ...card, chronology: generated }));
+  assert.equal(chronology.normalizeSavedCardChronology(restored)?.events.length, 2);
+  restored.hook = "An edited hook";
+  assert.equal(chronology.normalizeSavedCardChronology(restored), undefined, "hook edits invalidate restored chronology metadata");
   const mismatched = chronology.createSavedCardChronology({ events: [
     { dateText: "1901", eventText: "The observatory opened in 1901", anchor: { field: "body", sentenceIndex: 0 } },
     { dateText: "1942", eventText: "The first stone was laid in 1942", anchor: { field: "body", sentenceIndex: 1 } }

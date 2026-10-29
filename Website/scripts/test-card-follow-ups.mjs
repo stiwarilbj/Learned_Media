@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import { createRequire } from 'node:module';
 import ts from 'typescript';
 
-const source = readFileSync(new URL('../lib/card-follow-ups.ts', import.meta.url), 'utf8');
-const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-const moduleLike = { exports: {} };
-vm.runInNewContext(compiled, { exports: moduleLike.exports, module: moduleLike, require() { throw new Error('The follow-up helper must have no runtime dependencies.'); } });
-const api = moduleLike.exports;
+const require = createRequire(import.meta.url);
+const Module = require('node:module');
+Module._extensions['.ts'] = (module, filename) => {
+  const compiled = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+  module._compile(compiled, filename);
+};
+const api = require('../lib/card-follow-ups.ts');
 
 function makeCard(overrides = {}) {
   return {
@@ -31,6 +33,10 @@ assert.deepEqual(Array.from(saved.questions), ['What do its bronze gears model?'
 assert.equal(saved.fingerprint, api.followUpQuestionFingerprint(card));
 assert.equal(api.normalizeSavedFollowUpQuestions(saved, { ...card, body: card.body + ' A changed sentence.' }), undefined);
 assert.deepEqual(Array.from(api.getCardFollowUpQuestions({ ...card, followUpQuestions: saved })), Array.from(saved.questions));
+const restored = JSON.parse(JSON.stringify({ ...card, followUpQuestions: saved }));
+assert.deepEqual(Array.from(api.normalizeSavedFollowUpQuestions(restored.followUpQuestions, restored).questions), Array.from(saved.questions));
+restored.hook = 'Edited hook';
+assert.equal(api.normalizeSavedFollowUpQuestions(restored.followUpQuestions, restored), undefined, 'edited restored cards reject stale follow-up questions');
 
 const answered = makeCard({
   answer: 'Its gears model the cycles of the Sun and Moon.',

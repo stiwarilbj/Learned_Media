@@ -1,4 +1,5 @@
 import type { CardChronologyAnchor, CardChronologyEvent, FactCard, SavedCardChronology } from "./types";
+import { memoizedCardFingerprint } from "./card-content-fingerprint";
 
 type ChronologyCard = Pick<FactCard, "id" | "title" | "hook" | "body"> & {
   sentences?: string[];
@@ -38,10 +39,12 @@ function hasSupportedDateOccurrence(source: string, dateText: string) {
   return false;
 }
 export function cardChronologyFingerprint(card: ChronologyCard) {
-  const identity = JSON.stringify([card.title, card.hook, card.body, card.sentences ?? []]);
-  let first = 2166136261, second = 0x9e3779b9;
-  for (let i = 0; i < identity.length; i++) { const code = identity.charCodeAt(i); first = Math.imul(first ^ code, 16777619); second = Math.imul(second ^ (code + i), 2246822519); }
-  return (first >>> 0).toString(16).padStart(8, "0") + (second >>> 0).toString(16).padStart(8, "0");
+  return memoizedCardFingerprint(card, "card-chronology-v1", [card.sentences], () => {
+    const identity = JSON.stringify([card.title, card.hook, card.body, card.sentences ?? []]);
+    let first = 2166136261, second = 0x9e3779b9;
+    for (let i = 0; i < identity.length; i++) { const code = identity.charCodeAt(i); first = Math.imul(first ^ code, 16777619); second = Math.imul(second ^ (code + i), 2246822519); }
+    return (first >>> 0).toString(16).padStart(8, "0") + (second >>> 0).toString(16).padStart(8, "0");
+  });
 }
 
 function validCalendarDate(year: number, month: number, day: number) {

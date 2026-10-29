@@ -30,6 +30,10 @@ test("optional hints must name text in their declared anchor; invalid hints do n
   assert.equal(saved?.fingerprint, locations.cardLocationsFingerprint(card));
   assert.equal(locations.normalizeSavedCardLocations({ ...card, locations: saved })?.locations.length, 1);
   assert.equal(locations.normalizeSavedCardLocations({ ...card, body: card.body + " Changed.", locations: saved }), undefined);
+  const restored = JSON.parse(JSON.stringify({ ...card, locations: saved }));
+  assert.equal(locations.normalizeSavedCardLocations(restored)?.locations.length, 1);
+  restored.title = "A changed title";
+  assert.equal(locations.normalizeSavedCardLocations(restored), undefined, "title edits invalidate restored location metadata");
   assert.equal(locations.createSavedCardLocations([{ name: "Tokyo", articleTitle: "Tokyo", anchor: { field: "body" } }], card), undefined);
 });
 

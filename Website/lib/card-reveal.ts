@@ -1,3 +1,5 @@
+import { cardContentFingerprint } from "./card-content-fingerprint";
+
 export type CardRevealModel = {
   fingerprint: string;
   sentences: string[];
@@ -38,6 +40,15 @@ function notify(key: string) {
 
 /** Use only sentence boundaries validated by the source spotlight model. */
 export function buildCardRevealModel(body: string, validatedSentences?: string[]): CardRevealModel {
+  return buildModel(body, validatedSentences, fingerprint(body));
+}
+
+/** Build reveal state from a card so its content identity can be shared with the other card tools. */
+export function buildCardRevealModelForCard(card: { title?: string | null; hook?: string | null; body: string }, validatedSentences?: string[]) {
+  return buildModel(card.body, validatedSentences, cardContentFingerprint(card));
+}
+
+function buildModel(body: string, validatedSentences: string[] | undefined, contentFingerprint: string): CardRevealModel {
   const normalizedBody = cleanSpaces(body);
   const candidates = Array.isArray(validatedSentences)
     ? validatedSentences.filter((item): item is string => typeof item === "string").map(item => item.trim()).filter(Boolean)
@@ -45,7 +56,7 @@ export function buildCardRevealModel(body: string, validatedSentences?: string[]
   const sentences = candidates.length > 0 && cleanSpaces(candidates.join(" ")) === normalizedBody
     ? candidates
     : [body];
-  return { fingerprint: fingerprint(body), sentences };
+  return { fingerprint: contentFingerprint, sentences };
 }
 
 export function getCardRevealProgress(workspaceId: string, cardId: string, model: CardRevealModel) {

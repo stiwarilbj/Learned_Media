@@ -27,6 +27,7 @@
     "test:provider-schema": "node scripts/build-native-diagnostics.mjs --check && node --test scripts/test-provider-schema-diagnostics.mjs",
     "test:workspace-revision": "node --test scripts/test-workspace-revision.mjs",
     "test:card-reveal": "node scripts/build-native-card-reveal.mjs --check && node scripts/test-card-reveal.mjs",
+    "test:card-fingerprints": "node scripts/build-native-card-content-fingerprint.mjs --check && node scripts/test-card-content-fingerprint.mjs",
     "test:card-follow-ups": "node scripts/build-native-follow-ups.mjs --check && node scripts/test-card-follow-ups.mjs",
     "test:card-explanations": "node scripts/build-native-card-explanations.mjs --check && node scripts/test-card-explanations.mjs",
     "test:card-glossary": "node scripts/build-native-card-glossary.mjs --check && node scripts/test-card-glossary.mjs",

@@ -24,6 +24,23 @@ test("uses only validated sentence boundaries and safely falls back to one compl
   assert.deepEqual(reveal.buildCardRevealModel(body).sentences, [body]);
 });
 
+test("card reveal progress uses the shared transient identity and resets after any text edit", () => {
+  const card = { id: "fingerprinted-card", title: "Title", hook: "Hook", body };
+  const model = reveal.buildCardRevealModelForCard(card, segments);
+  reveal.startCardReveal("workspace-fingerprint", card.id, model);
+  reveal.revealNextCardSentence("workspace-fingerprint", card.id, model);
+  assert.ok(reveal.getCardRevealProgress("workspace-fingerprint", card.id, model));
+  const roundTripped = JSON.parse(JSON.stringify(card));
+  const restored = reveal.buildCardRevealModelForCard(roundTripped, segments);
+  assert.equal(restored.fingerprint, model.fingerprint, "the same text has the same identity after serialization");
+  assert.ok(reveal.getCardRevealProgress("workspace-fingerprint", card.id, restored));
+  roundTripped.hook = "Edited hook";
+  const edited = reveal.buildCardRevealModelForCard(roundTripped, segments);
+  assert.notEqual(edited.fingerprint, model.fingerprint);
+  roundTripped.body = `${body} Added sentence.`;
+  assert.notEqual(reveal.buildCardRevealModelForCard(roundTripped).fingerprint, edited.fingerprint);
+});
+
 test("reveals one complete sentence at a time and completes on the final sentence", () => {
   reveal.clearCardRevealProgress();
   const model = reveal.buildCardRevealModel(body, segments);
