@@ -18,11 +18,11 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		H7TGyZ1RJFbmiDg99e66h92vPqQ=
+		jNmI2NOezdIzjlQpvyv3Sljoy9Q=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
-		oKw+xktAhzRQIk9cx4ELyI7apoE=
+		VUC/KC7k19giHk3Ykv6+2UDQ1ts=
 		</data>
 		<key>Resources/frontend/batch-replay.js</key>
 		<data>
@@ -118,7 +118,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		Jrg/MH6dGd4pb/7XoOLSQx6hvJs=
+		Q0XC1bg9mCv7Fh0dpOXbyqtZnZE=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -146,7 +146,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		UKGVjQTwXL0odB/Ew4aDVvQX6S0=
+		/6+i1Kbnzx2+jUnzLId9j5haGZ0=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -194,7 +194,7 @@
 		</data>
 		<key>Resources/frontend/video-semantic.js</key>
 		<data>
-		df1pFmqBCBb60x9787V1Lo2iV2Y=
+		EqpNJ5roIFOLKxxURg+efHO00Gw=
 		</data>
 		<key>Resources/frontend/video-source-index.js</key>
 		<data>
@@ -224,9 +224,13 @@
 		<data>
 		O9sEeTiuMOJJBjb/X/nHUgpTkaE=
 		</data>
+		<key>Resources/frontend/youtube-search-index-storage.js</key>
+		<data>
+		kFagjrLlbp2kyDpw1OK0mebZ8Tg=
+		</data>
 		<key>Resources/frontend/youtube-search.worker.js</key>
 		<data>
-		0d3CCwL84F+xddlwJSq9UmTdd5s=
+		FZ66lsIfgU7IYsUEMbCYQvAUivw=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -256,14 +260,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			dsixoQWZqhPFXE2ECnewrlsKsdvtCMqnQdehn73ue4Y=
+			QM6wToz3JCF2ARMCiYlYtlHj/wM1ZzrOPXjS1WRcE0k=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			2ROLF7U9gRLw8xCClYqlSJgsOfyIRuSv2HiMLF6Zuu0=
+			aSwAA5QgnkFUr1LtS3FIyMuYi5lsVxmM+iFnn04h3UE=
 			</data>
 		</dict>
 		<key>Resources/frontend/batch-replay.js</key>
@@ -431,7 +435,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			w/TlT2e8bkw3z3UV0HFYgTupL/RozmrCHx/4mGxrIes=
+			5F3oAh/wkHCyBgGPDY9i1yJkGz745f+t0Arz8gpNkm4=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -480,7 +484,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			HPt2C6iRyJMA6/gBzdztpbivzVhyi2I4ZeMW2rY+aD8=
+			DBXNbupHBMAfiGIFoUq7tbgx1UQYfaC3oV9LVMEHRfQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -564,7 +568,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			QXrhdIzQDmXZcoBjtB6lriZurK39N8yZEBvT6gR97GQ=
+			kGEei9atvCf96PzUNBRaMgdhsBC1hwArQzcIwwDykmA=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-source-index.js</key>
@@ -616,11 +620,18 @@
 			q25y354tWo4rJBue5CMQa2mQIB9AaUPypliJ0joP4J8=
 			</data>
 		</dict>
+		<key>Resources/frontend/youtube-search-index-storage.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			rnCQiR240bEX9VNJpwN7yBuyCqqA/QcrdQuoGBNi7U0=
+			</data>
+		</dict>
 		<key>Resources/frontend/youtube-search.worker.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			YAhwYs5gRDeUe8+UaTHRdFp+CTZoWgDOg3TiTUlUU48=
+			Ey4jXJN2dxkjKKKLzr8x6POw0+qVXzAyfepK63IhowE=
 			</data>
 		</dict>
 	</dict>

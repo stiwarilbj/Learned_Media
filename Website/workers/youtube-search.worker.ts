@@ -3,6 +3,7 @@ import { SessionCache } from "@/lib/session-cache";
 import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
 import type { SearchableVideoMetadata } from "@/lib/video-metadata";
 import { runBackgroundSlice } from "@/lib/background-work";
+import { createVideoSearchIndexPersistence } from "@/lib/youtube-search-index-storage";
 import { indexVideoSearchMetadata, isValidVideoSearchRequest, validateVideoSearchCatalogUpdate, insertBoundedRanked, nextSemanticSearchChunkSize, SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
 
 type SearchRequest = {
@@ -43,6 +44,8 @@ const preparedSearchCache = new PreparedVideoSearchCache(4);
 let latestRequestId = 0;
 let activeRequestId = 0;
 let indexEpoch = 0;
+const persistedIndex = createVideoSearchIndexPersistence();
+let catalogLoading: Promise<void> | undefined;
 
 function sameVideoRecord(previous: IndexedVideoSearchMetadata | undefined, next: SearchableVideoMetadata): boolean {
   if (!previous) return false;
@@ -72,14 +75,14 @@ function mapMatchesOrderedVideos(map: Map<string, IndexedVideoSearchMetadata>, o
 }
 
 /** Stage independently; failures cannot alter a captured or active snapshot. */
-function stageCatalog(request: Extract<Request, { type: "initialize" | "update" }>): CatalogSnapshot {
+function stageCatalog(request: Extract<Request, { type: "initialize" | "update" }>, restored?: Map<string, IndexedVideoSearchMetadata>): CatalogSnapshot {
   validateVideoSearchCatalogUpdate(request.revision, request.type === "initialize" ? request.videos : request.upserts,
     request.type === "update" ? request.removeIds : [], request.type === "update" ? request.orderIds : undefined);
-  let staged = request.type === "initialize" ? new Map<string, IndexedVideoSearchMetadata>() : snapshot.videos;
+  let staged = request.type === "initialize" ? restored ?? new Map<string, IndexedVideoSearchMetadata>() : snapshot.videos;
   const writable = () => { if (staged === snapshot.videos) staged = new Map(staged); return staged; };
-  if (request.type === "initialize") {
+  if (request.type === "initialize" && !restored) {
     for (const video of request.videos) staged.set(video.id, indexVideoSearchMetadata(video, staged.get(video.id)));
-  } else {
+  } else if (request.type === "update") {
     for (const id of request.removeIds) if (staged.has(id)) writable().delete(id);
     for (const video of request.upserts) {
       const previous = staged.get(video.id);
@@ -223,8 +226,7 @@ async function search(request: SearchRequest) {
   }
 }
 
-workerScope.onmessage = (event: MessageEvent<unknown>) => {
-  const message = event.data;
+function handleMessage(message: unknown): void | Promise<void> {
   if (!message || typeof message !== "object" || Array.isArray(message)) return;
   const request = message as Request;
   if (request.type === "initialize" || request.type === "update") {
@@ -238,21 +240,22 @@ workerScope.onmessage = (event: MessageEvent<unknown>) => {
       workerScope.postMessage({ type: "rebuild", revision: request.revision } satisfies Reply);
       return;
     }
+    if (request.type === "initialize" && persistedIndex.enabled) {
+      try { validateVideoSearchCatalogUpdate(request.revision, request.videos); }
+      catch { workerScope.postMessage({ type: "rebuild", revision: request.revision } satisfies Reply); return; }
+      // Preserve Map's duplicate-ID semantics before computing the fingerprint.
+      const originals = Array.from(new Map(request.videos.map(video => [video.id, video])).values());
+      return persistedIndex.restore(originals).then(restored => {
+        publishCatalog(request, stageCatalog(request, restored), Boolean(restored));
+      });
+    }
     let staged: CatalogSnapshot;
     try { staged = stageCatalog(request); }
     catch {
       workerScope.postMessage({ type: "rebuild", revision: request.revision } satisfies Reply);
       return;
     }
-    const staleRequestId = activeRequestId;
-    // One publication point: map, ordered index and revision become visible together.
-    snapshot = staged;
-    indexEpoch++;
-    activeRequestId = 0;
-    latestRequestId += 1;
-    releaseCatalogSearchCaches();
-    if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision: snapshot.revision } satisfies Reply);
-    if (request.type === "initialize") workerScope.postMessage({ type: "ready", revision: snapshot.revision } satisfies Reply);
+    publishCatalog(request, staged);
   } else if (request.type === "cancel") {
     if (Number.isSafeInteger(request.requestId) && request.requestId >= 0 && request.requestId === latestRequestId) {
       latestRequestId += 1;
@@ -266,5 +269,30 @@ workerScope.onmessage = (event: MessageEvent<unknown>) => {
       return;
     }
     void search(request);
+  }
+}
+
+function publishCatalog(request: Extract<Request, { type: "initialize" | "update" }>, staged: CatalogSnapshot, restored = false) {
+  const staleRequestId = activeRequestId;
+  const previous = snapshot.ordered;
+  // Publish only a complete index; pending messages wait for startup hydration.
+  snapshot = staged;
+  indexEpoch++;
+  activeRequestId = 0;
+  latestRequestId += 1;
+  releaseCatalogSearchCaches();
+  if (!restored && previous !== staged.ordered) persistedIndex.save(staged.ordered);
+  if (staleRequestId) workerScope.postMessage({ type: "stale", requestId: staleRequestId, revision: snapshot.revision } satisfies Reply);
+  if (request.type === "initialize") workerScope.postMessage({ type: "ready", revision: snapshot.revision } satisfies Reply);
+}
+
+workerScope.onmessage = (event: MessageEvent<unknown>) => {
+  // Only catalog loading is serialized. Searches still supersede/cancel one
+  // another through the existing request and epoch checks while ranking yields.
+  const result = catalogLoading ? catalogLoading.then(() => handleMessage(event.data)) : handleMessage(event.data);
+  if (result) {
+    const pending = result.catch(() => { workerScope.postMessage({ type: "rebuild", revision: (event.data as { revision: number }).revision } satisfies Reply); });
+    catalogLoading = pending;
+    void pending.then(() => { if (catalogLoading === pending) catalogLoading = undefined; });
   }
 };

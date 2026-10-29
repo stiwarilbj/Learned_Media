@@ -1,6 +1,9 @@
 /* Native WebKit uses the same generated search engine as the website. */
 importScripts("background-work.js");
 importScripts("video-semantic.js");
+importScripts("youtube-search-index-storage.js");
+const persistedIndex = LEARNED_MEDIA_VIDEO_INDEX_STORAGE.createVideoSearchIndexPersistence();
+let catalogLoading;
 let snapshot = { videos: [], byId: new Map(), revision: -1 }, latest = 0;
 const preparedSearchCache = new LEARNED_MEDIA_VIDEO_SEARCH.PreparedVideoSearchCache(4);
 const searchSessionCache = new Map();
@@ -84,15 +87,15 @@ const sameVideoRecord = (previous, next) => {
   }
   return true;
 };
-function stageCatalog(request) {
+function stageCatalog(request, restored) {
   const initialize = request.type === "initialize";
   LEARNED_MEDIA_VIDEO_SEARCH.validateVideoSearchCatalogUpdate(request.revision, initialize ? request.videos : request.upserts,
     initialize ? [] : request.removeIds, initialize ? undefined : request.orderIds);
-  let staged = initialize ? new Map() : snapshot.byId;
+  let staged = initialize ? restored || new Map() : snapshot.byId;
   const writable = () => { if (staged === snapshot.byId) staged = new Map(staged); return staged; };
-  if (initialize) {
+  if (initialize && !restored) {
     for (const video of request.videos) staged.set(video.id, indexVideo(video, staged.get(video.id)));
-  } else {
+  } else if (!initialize) {
     for (const id of request.removeIds) if (staged.has(id)) writable().delete(id);
     for (const video of request.upserts) {
       const previous = staged.get(video.id);
@@ -111,17 +114,21 @@ function stageCatalog(request) {
   }
   return { byId: unchanged ? snapshot.byId : staged, videos: unchanged ? snapshot.videos : Array.from(staged.values()), revision: request.revision };
 }
-onmessage = async function(event) {
-  const request = event.data;
+function handleMessage(request) {
   if (!request || typeof request !== "object" || Array.isArray(request)) return;
   if (request.type === "initialize" || request.type === "update") {
     if (request.type === "update" && (!Number.isSafeInteger(request.baseRevision) || request.baseRevision < 0)) return;
     if (request.type === "update" && (snapshot.revision < 0 || request.baseRevision !== snapshot.revision)) { latest++; postMessage({type:"rebuild",revision:request.revision}); return; }
+    if (request.type === "initialize" && persistedIndex.enabled) {
+      try { LEARNED_MEDIA_VIDEO_SEARCH.validateVideoSearchCatalogUpdate(request.revision, request.videos); }
+      catch { postMessage({type:"rebuild",revision:request.revision}); return; }
+      const originals = Array.from(new Map(request.videos.map(video => [video.id,video])).values());
+      return persistedIndex.restore(originals).then(restored => publishCatalog(stageCatalog(request,restored), Boolean(restored)));
+    }
     let staged;
     try { staged = stageCatalog(request); }
     catch { postMessage({type:"rebuild",revision:request.revision}); return; }
-    snapshot = staged;
-    latest++; releaseCatalogSearchCaches(); return;
+    publishCatalog(staged); return;
   }
   if (request.type === "cancel") {
     if (request.requestId !== undefined && (!Number.isSafeInteger(request.requestId) || request.requestId < 0)) return;
@@ -132,6 +139,15 @@ onmessage = async function(event) {
     if (Number.isSafeInteger(request.requestId) && request.requestId >= 0) postMessage({ type:"invalid", requestId:request.requestId, reason:"invalid-request" });
     return;
   }
+  void search(request);
+}
+function publishCatalog(staged, restored) {
+  const previous = snapshot.videos;
+  snapshot = staged;
+  latest++; releaseCatalogSearchCaches();
+  if (!restored && previous !== staged.videos) persistedIndex.save(staged.videos);
+}
+async function search(request) {
   const token = ++latest, captured = snapshot, currentRevision = captured.revision;
   if (request.revision !== snapshot.revision) return;
   const catalog = captured.videos;
@@ -180,5 +196,14 @@ onmessage = async function(event) {
     const source = direct.length ? direct : fallback;
     const candidates = source.slice(0,resultLimit).map(({candidate})=>({videoId:candidate.video.id,score:candidate.score,matchedFields:candidate.matchedFields,supportingText:candidate.supportingText}));
     postMessage({ requestId:request.requestId, revision:currentRevision, candidates });
+  }
+};
+
+onmessage = event => {
+  const result = catalogLoading ? catalogLoading.then(() => handleMessage(event.data)) : handleMessage(event.data);
+  if (result) {
+    const pending = result.catch(() => postMessage({type:"rebuild",revision:event.data && event.data.revision}));
+    catalogLoading = pending;
+    void pending.then(() => { if (catalogLoading === pending) catalogLoading = undefined; });
   }
 };

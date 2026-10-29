@@ -1741,6 +1741,7 @@
   }
   const videoSearch = window.LEARNED_MEDIA_VIDEO_SEARCH;
   const preparedVideoSearchCache = new videoSearch.PreparedVideoSearchCache(4);
+  const fallbackVideoSearchIndex = window.LEARNED_MEDIA_VIDEO_INDEX_STORAGE.createVideoSearchIndexLoader();
   let youtubeSemanticWorker = null, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0, youtubeIndexPolicy = "";
   let youtubeById = new Map(), youtubeVideosByTopic = new Map([["All", []]]), youtubeVideosByChannel = new Map(), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "";
   let youtubeBrowseReturn = null, restoreYoutubeBrowseScroll = false, resetYoutubePlayerScroll = false;
@@ -1809,7 +1810,11 @@
     const scope=String(state.workspaceId)+":"+String(state.account && state.account.id || "local");
     const prepared=preparedVideoSearchCache.get(plan,state.youtube.topic,state.youtube.selectedChannelId,youtubeIndexRevision,scope);
     const excludedIds=excluded && excluded.length ? new Set(excluded) : new Set();
-    return videoSearch.searchPreparedSemanticVideosYielding(state.youtube.videos,prepared,limit,excludedIds,signal);
+    const revision=youtubeIndexRevision;
+    const indexed=await fallbackVideoSearchIndex.load(state.youtube.videos);
+    if(signal.aborted) throw signal.reason || new DOMException("Search canceled","AbortError");
+    if(revision!==youtubeIndexRevision) throw new Error("Video catalog changed during search.");
+    return videoSearch.searchPreparedSemanticVideosYielding(indexed,prepared,limit,excludedIds,signal);
   }
   function changeVideoSearch(value) {
     if(videoSearch.normalizeVideoQuery(value)!==videoSearch.normalizeVideoQuery(state.youtube.searchText)) {

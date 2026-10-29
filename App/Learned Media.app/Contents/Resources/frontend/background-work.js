@@ -13,7 +13,9 @@ function now() {
     return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
 }
 function scheduleWake(item, run) {
-    const browserWindow = typeof window === "undefined" ? undefined : window;
+    // Next.js folds `typeof window` in client bundles, including worker entries.
+    // Read the optional realm property instead so workers never reference window.
+    const browserWindow = globalThis.window;
     if (item.priority === "background" && item.canPause && browserWindow?.requestIdleCallback) {
         const id = browserWindow.requestIdleCallback(() => run(), { timeout: 200 });
         return () => browserWindow.cancelIdleCallback?.(id);

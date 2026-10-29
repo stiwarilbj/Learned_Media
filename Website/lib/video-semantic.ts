@@ -1,6 +1,6 @@
 import { searchTextForms, protectedSearchTerms, contextualSearchText } from "./search";
 import type { SearchableVideoMetadata } from "./video-metadata";
-import { runBackgroundSlice } from "./background-work";
+import { forEachBackground, runBackgroundSlice } from "./background-work";
 /** Shared, dependency-free search policy. The native runtime is generated from this file. */
 export type VideoSearchPlan = {
   terms?: string[]; include?: string[]; alternatives?: string[]; exclude?: string[];
@@ -113,6 +113,86 @@ export type IndexedVideoSearchMetadata = SearchableVideoMetadata & {
 export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
 export const VIDEO_SEMANTIC_VERSION = 9;
+export const VIDEO_SEARCH_INDEX_FORMAT = 1;
+export type StoredVideoSearchIndex = {
+  format: number;
+  policy: number;
+  catalogFingerprint: string;
+  savedAt: number;
+  digest: string;
+  records: Array<{
+    id: string;
+    normalizedChannelName: string;
+    fields: Array<{ name: string; text: string }>;
+  }>;
+};
+
+async function searchIndexDigest(value: string) {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Bound temporary serialization while hashing every source field and its order. */
+export async function videoSearchCatalogFingerprint(videos: readonly SearchableVideoMetadata[], signal?: AbortSignal) {
+  const parts: string[] = [];
+  for (let start = 0; start < videos.length; start += 512) {
+    const material = await runBackgroundSlice(() => JSON.stringify(videos.slice(start, start + 512).map(video => [
+      video.id, video.channelId, video.channelName, video.title, video.description, video.tags, video.topics,
+      video.publishedAt, video.durationSeconds, video.approved, video.special ?? null, video.sourceIds ?? null,
+    ])), { priority: "background", canPause: true, signal });
+    parts.push(await searchIndexDigest(material));
+  }
+  if (signal?.aborted) throw signal.reason;
+  return searchIndexDigest(JSON.stringify([VIDEO_SEARCH_INDEX_FORMAT, VIDEO_SEMANTIC_VERSION, videos.length, parts]));
+}
+
+async function storedSearchIndexDigest(records: StoredVideoSearchIndex["records"], signal?: AbortSignal) {
+  const parts: string[] = [];
+  for (let start = 0; start < records.length; start += 512) {
+    const material = await runBackgroundSlice(() => JSON.stringify(records.slice(start, start + 512)), { priority: "background", canPause: true, signal });
+    parts.push(await searchIndexDigest(material));
+  }
+  if (signal?.aborted) throw signal.reason;
+  return searchIndexDigest(JSON.stringify([VIDEO_SEARCH_INDEX_FORMAT, VIDEO_SEMANTIC_VERSION, records.length, parts]));
+}
+
+/** Store only reproducible search data, never a second copy of video records. */
+export async function serializeVideoSearchIndex(videos: readonly IndexedVideoSearchMetadata[], fingerprint: string, signal?: AbortSignal): Promise<StoredVideoSearchIndex> {
+  const records: StoredVideoSearchIndex["records"] = [];
+  await forEachBackground(videos, video => {
+    records.push({ id: video.id, normalizedChannelName: video.normalizedChannelName,
+      fields: video.searchFields.map(({ name, text }) => ({ name, text })) });
+  }, signal);
+  return { format: VIDEO_SEARCH_INDEX_FORMAT, policy: VIDEO_SEMANTIC_VERSION, catalogFingerprint: fingerprint,
+    savedAt: Date.now(), records, digest: await storedSearchIndexDigest(records, signal) };
+}
+
+/** All-or-nothing reuse: originals own membership, filters, order and provenance. */
+export async function restoreVideoSearchIndex(videos: readonly SearchableVideoMetadata[], value: unknown, fingerprint: string, signal?: AbortSignal): Promise<Map<string, IndexedVideoSearchMetadata> | undefined> {
+  if (!isRecord(value) || value.format !== VIDEO_SEARCH_INDEX_FORMAT || value.policy !== VIDEO_SEMANTIC_VERSION
+    || value.catalogFingerprint !== fingerprint || typeof value.savedAt !== "number" || !Number.isFinite(value.savedAt)
+    || value.savedAt > Date.now() + 60_000 || Date.now() - value.savedAt > 7 * 24 * 60 * 60 * 1000
+    || typeof value.digest !== "string" || !Array.isArray(value.records) || value.records.length !== videos.length) return;
+  const records = value.records as StoredVideoSearchIndex["records"];
+  let valid = true;
+  await forEachBackground(records, (record, index) => {
+    if (!isRecord(record) || record.id !== videos[index].id || typeof record.normalizedChannelName !== "string"
+      || !Array.isArray(record.fields) || record.fields.length !== 4) { valid = false; return false; }
+    const names = ["title", "tags", "description", "topics"];
+    if (record.fields.some((field, index) => !isRecord(field) || field.name !== names[index]
+      || typeof field.text !== "string")) { valid = false; return false; }
+  }, signal);
+  if (!valid || await storedSearchIndexDigest(records, signal) !== value.digest) return;
+  const restored = new Map<string, IndexedVideoSearchMetadata>();
+  await forEachBackground(videos, (video, index) => {
+    const record = records[index];
+    const values = searchFieldValues(video);
+    restored.set(video.id, { ...video, normalizedChannelName: record.normalizedChannelName,
+      specialPlaylistEligible: computeSpecialPlaylistEligibility(video, record.normalizedChannelName),
+      searchFields: record.fields.map((field, index) => ({ ...field, value: values[index][1], words: new Set(field.text.split(" ")) })) });
+  }, signal);
+  return restored;
+}
 
 type PreparedConceptGroup = Readonly<{ label?: string; terms: readonly string[]; connectedTerms: readonly string[]; related?: readonly string[]; required?: boolean }>;
 export type ImmutableVideoSearchPlan = Omit<Readonly<VideoSearchPlan>, "terms" | "include" | "alternatives" | "exclude" | "topics" | "topicHints" | "conceptGroups" | "anyOf"> & {
@@ -422,9 +502,12 @@ function preserveVideoConcepts(local: NonNullable<VideoSearchPlan["conceptGroups
 const index = new WeakMap<Video, Field[]>();
 const BOILERPLATE = /\b(subscribe|patreon|sponsor(?:ed)?|affiliate|merch|use code|follow (?:me|us)|support (?:me|us|the channel)|buy (?:my|our)|(?:our|my|this) (?:other )?channel|check out (?:our|my)|channel advertisement)\b/i;
 function cleanDescription(value: string) { return value.split(/\n+|(?<=[.!?])\s+/).filter((part) => !BOILERPLATE.test(part)).join(" ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0,6000); }
+function searchFieldValues(video: SearchableVideoMetadata) {
+  return [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]];
+}
 function createSearchFields(video: SearchableVideoMetadata, previousFields?: Field[]): Field[] {
   const previousByName = new Map(previousFields?.map((field) => [field.name, field]));
-  return [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]]
+  return searchFieldValues(video)
     .map(([name, value]) => {
       const previous = previousByName.get(name);
       if (previous?.value === value) return previous;

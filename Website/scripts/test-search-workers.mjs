@@ -26,7 +26,7 @@ function importFromWorker(specifier) {
   return require(path.join(root, `${specifier.slice(2)}.ts`));
 }
 
-function loadWorker(filename, { observeMaps = false, searchOverride, indexOverride, performanceNow = () => globalThis.performance.now() } = {}) {
+function loadWorker(filename, { observeMaps = false, searchOverride, indexOverride, persistenceOverride, performanceNow = () => globalThis.performance.now() } = {}) {
   const messages = [];
   let workerYieldCount = 0;
   const workerMaps = [];
@@ -53,6 +53,7 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
   };
   const workerImport = (specifier) => {
     const imported = importFromWorker(specifier);
+    if (specifier === "@/lib/youtube-search-index-storage" && persistenceOverride) return { ...imported, createVideoSearchIndexPersistence: persistenceOverride };
     if (specifier === "@/lib/background-work") return { ...imported,
       runBackgroundSlice: (work, options) => {
         workerYieldCount += 1;
@@ -67,7 +68,7 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
-function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOverride, performanceNow = () => globalThis.performance.now() } = {}) {
+function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOverride, persistenceOverride, performanceNow = () => globalThis.performance.now() } = {}) {
   const messages = [];
   const workerMaps = [];
   class ObservedMap extends Map {
@@ -87,6 +88,7 @@ function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOve
   context.importScripts = (filename) => {
     const runtime = readFileSync(path.join(root, "..", "App", "Resources", "frontend", filename), "utf8");
     vm.runInNewContext(runtime, context);
+    if (filename === "youtube-search-index-storage.js" && persistenceOverride) context.LEARNED_MEDIA_VIDEO_INDEX_STORAGE.createVideoSearchIndexPersistence = persistenceOverride;
   };
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
   vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot; globalThis.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCacheBytes }); globalThis.inspectSearchCaches = () => ({ results: 0, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); globalThis.inspectSearchState = () => ({ latest });", context);
@@ -967,5 +969,47 @@ for (const [platform, api] of [["website", metadata], ["native", nativeMetadataC
     assert.deepEqual(final, target);
     assert.equal(sent[0].revision, 24);
     assert.equal(sent[0].upserts.length, 27, "repeated replacements retain only one record per ID");
+  });
+}
+
+for (const platform of ['website','native']) {
+  test(`${platform} restores a validated persisted index before servicing startup searches`, async () => {
+    const engine = require('../lib/video-semantic.ts');
+    const source = projectVideos(Array.from({length:600},(_,i)=>({id:String(i),channelId:'science',channelName:'Science',title:'Gravitational lensing '+i,description:'Distant starlight bends around a galaxy.',tags:['astronomy'],topics:['Science'],publishedAt:'2024-01-01',durationSeconds:600,approved:true})));
+    const indexed = source.map(v=>engine.indexVideoSearchMetadata(v));
+    const fingerprint = await engine.videoSearchCatalogFingerprint(source);
+    const stored = await engine.serializeVideoSearchIndex(indexed,fingerprint);
+    let derivations=0,saves=0;
+    const options = {indexOverride: original => (...args)=>{derivations++;return original(...args)}, persistenceOverride:()=>({enabled:true,restore:async videos=>engine.restoreVideoSearchIndex(videos,structuredClone(stored),await engine.videoSearchCatalogFingerprint(videos)),save:()=>saves++})};
+    const worker=platform==='website'?loadWorker('workers/youtube-search.worker.ts',options):loadNativeYouTubeWorker(options);
+    const send=data=>platform==='website'?worker.scope.onmessage({data}):worker.send(data);
+    const inspect=()=>platform==='website'?worker.scope.inspectCatalog():worker.context.inspectCatalog();
+    send({type:'initialize',revision:1,videos:source});
+    assert.equal(inspect().revision,-1,'an incomplete index is never published');
+    const plan=engine.makeLocalVideoPlan('gravitational lensing');
+    send({type:'search',requestId:10,revision:1,query:'gravitational lensing',plan,topic:'All',limit:80});
+    const result=await waitForMessage(worker.messages,m=>m.requestId===10);
+    assert.equal(derivations,0,'warm startup reuses all validated normalized fields');assert.equal(saves,0,'a cache hit is not written again');
+    const expected=engine.searchSemanticVideos(indexed,plan,'All',undefined,80).map(({video,score,matchedFields,supportingText})=>({videoId:video.id,score,matchedFields,supportingText}));
+    assert.deepEqual(JSON.parse(JSON.stringify(result.candidates.map(({coverage,...rest})=>rest))),expected);
+    send({type:'update',baseRevision:1,revision:2,upserts:[{...source[0],title:'Changed searchable title'}],removeIds:[]});
+    assert.equal(derivations,1,'only the changed record is derived during an ordinary patch');assert.equal(saves,1);
+  });
+
+  test(`${platform} orders catalog patches and cancellation behind a pending cache read`,async()=>{
+    const engine = require('../lib/video-semantic.ts');
+    const source=projectVideos([{id:'old',channelId:'science',channelName:'Science',title:'Gravitational lensing',description:'Light bending by galaxies.',tags:[],topics:['Science'],publishedAt:'2024-01-01',durationSeconds:600,approved:true}]);
+    let release;const blocked=new Promise(resolve=>{release=resolve});
+    const options={persistenceOverride:()=>({enabled:true,restore:()=>blocked,save:()=>{}})};
+    const worker=platform==='website'?loadWorker('workers/youtube-search.worker.ts',options):loadNativeYouTubeWorker(options);
+    const send=data=>platform==='website'?worker.scope.onmessage({data}):worker.send(data);
+    const search=(requestId,revision)=>({type:'search',requestId,revision,query:'gravitational lensing',plan:engine.makeLocalVideoPlan('gravitational lensing'),topic:'All',limit:80});
+    send({type:'initialize',revision:1,videos:source});
+    send(search(20,1));send({type:'cancel',requestId:20});
+    send({type:'update',baseRevision:1,revision:2,upserts:[{...source[0],id:'new'}],removeIds:['old']});
+    send(search(21,2));release(undefined);
+    const result=await waitForMessage(worker.messages,m=>m.requestId===21);
+    assert.deepEqual(JSON.parse(JSON.stringify(result.candidates.map(v=>v.videoId))),['new']);
+    assert.ok(!worker.messages.some(m=>m.requestId===20 && (m.type==='results'||m.candidates)),'canceled startup searches never publish');
   });
 }

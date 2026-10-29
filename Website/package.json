@@ -42,6 +42,7 @@
     "test:fact-angles": "node scripts/build-native-prompts.mjs --check && node scripts/test-fact-angles.mjs",
     "test:batch-replay": "node scripts/build-native-batch-replay.mjs --check && node scripts/test-batch-replay.mjs",
     "test:responsive-data": "node scripts/test-responsive-data.mjs",
+    "test:video-search-index": "node scripts/build-native-video-index-storage.mjs --check && node scripts/test-video-search-index.mjs",
     "test:video-semantic": "node scripts/test-video-semantic.mjs",
     "test:search-workers": "node scripts/test-search-workers.mjs",
     "validate:political": "node scripts/validate-political-catalog.mjs",

@@ -84,3 +84,13 @@ sharedGate.resolve();
 await Promise.all([firstCopyTask, secondCopyTask]);
 assert.deepEqual(sharedOrder, ["first-start", "first-end", "second"]);
 console.log("Priority, cancellation, slice serialization, and order checks passed for website and Mac.");
+
+// Match Next's client-side constant replacement even when this module is used
+// by a dedicated worker. The worker realm deliberately has no window property.
+const workerExports = {};
+const workerContext = {exports:workerExports,AbortController,DOMException,setTimeout,clearTimeout,performance};
+workerContext.globalThis = workerContext;
+const workerCompiled = ts.transpileModule(readFileSync(new URL('../lib/background-work.ts',import.meta.url),'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText.replace(/typeof window/g,'"object"');
+vm.runInNewContext(workerCompiled,workerContext);
+assert.equal(await workerExports.runBackgroundSlice(()=>42,{priority:'interactive'}),42,'client-optimized worker runs without a window global');
+console.log('Client-optimized worker scheduler check passed.');

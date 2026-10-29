@@ -35,6 +35,7 @@ import { compactTopicPreferences, restoreTopicPreferences } from "@/lib/topic-pr
 import { CLOUD_PUBLIC_KEY, CLOUD_URL, cloudClient, googleSignIn, loadAccountKeys, saveAccountKey, WorkspaceCloudSync, type CloudAccount } from "@/lib/cloud-sync";
 import { mergeRecords, type CloudRecord } from "@/lib/cloud-records";
 import { APPROVED_YOUTUBE_CHANNELS, DEFAULT_YOUTUBE_RECENCY_PREFERENCES, DEFAULT_YOUTUBE_WORKSPACE, YOUTUBE_CATALOG_VERSION, YouTubeClient, createYouTubeChannelPools, createYouTubeTopicPools, importCoordinatedYouTubeCatalog, hasPendingYouTubeImport, watchCommittedYouTubeCatalog, loadYouTubeActivity, loadYouTubeWorkspace, mergeYouTubeRecencyPreferences, saveYouTubeWorkspace, selectRandomVideos, type YouTubeActivityState, type YouTubeChannelRecord, type YouTubeSearchCandidate, type YouTubeTopic, type YouTubeVideo, type YouTubeWorkspaceState } from "@/lib/youtube";
+import { createVideoSearchIndexLoader } from "@/lib/youtube-search-index-storage";
 import { shouldEnrichVideoSearch, videoSearchReason, makeLocalVideoPlan, mergeVideoSearchPlans, eligibleSemanticVideo, PreparedVideoSearchCache, searchPreparedSemanticVideosYielding, VIDEO_SEMANTIC_VERSION } from "@/lib/video-semantic";
 import { createVideoSearchPatchQueue, diffVideoSearchMetadata, reuseUnchangedVideoRecords, reuseUnchangedVideoRecordsYielding, toVideoSearchDocument } from "@/lib/video-metadata";
 import { resolveWikipediaImage, wikipediaEvidenceLink } from "@/lib/wikipedia";
@@ -678,6 +679,7 @@ export default function HomePage() {
   const youtubeSearchActiveKey = useRef("");
   const youtubeSearchPlan = useRef<VideoSearchPlan | null>(null);
   const youtubePreparedSearchCache = useRef(new PreparedVideoSearchCache(4));
+  const youtubeFallbackIndex = useRef<ReturnType<typeof createVideoSearchIndexLoader> | null>(null);
   const youtubeSearchMoreAbort = useRef<AbortController | null>(null);
   const youtubeSearchResultsRef = useRef<YouTubeVideo[]>([]);
   const youtubeBrowsingOrder = useRef<YouTubeWorkspaceState["channelOrder"]>("newest");
@@ -3189,7 +3191,7 @@ export default function HomePage() {
       const request = { query, plan, topic: current.selectedTopic, channelId: current.selectedChannelId, limit: 80, excludedIds: existing.map((video) => video.id), viewKey };
       const work = youtubeSearchWorker.current
         ? requestYouTubeWorkerSearch(request, controller.signal).then((reply) => reply.type === "results" ? reply.candidates.flatMap((candidate) => { const video = youtubeIndexes.videoById.get(candidate.videoId); return video ? [{ ...candidate, video }] : []; }) : [])
-        : searchPreparedSemanticVideosYielding(current.videos, youtubePreparedSearchCache.current.get(plan, current.selectedTopic, current.selectedChannelId, revision, `${account?.id ?? "local"}:${workspaceId}`), 80, new Set(request.excludedIds), controller.signal);
+        : (youtubeFallbackIndex.current ??= createVideoSearchIndexLoader()).load(current.videos).then(indexed => searchPreparedSemanticVideosYielding(indexed, youtubePreparedSearchCache.current.get(plan, current.selectedTopic, current.selectedChannelId, revision, `${account?.id ?? "local"}:${workspaceId}`), 80, new Set(request.excludedIds), controller.signal)).then(matches => matches.flatMap(candidate => { const video = youtubeIndexes.videoById.get(candidate.video.id); return video ? [{ ...candidate, video }] : []; }));
       void work.then((next) => {
         if (controller.signal.aborted || revision !== youtubeSearchWorkerRevision.current || query !== youtubeWorkspaceRef.current.searchText.trim()) return;
         const merged = [...existing, ...next.map((candidate) => candidate.video)];
@@ -3269,7 +3271,10 @@ export default function HomePage() {
         } catch (error) {
           if (controller.signal.aborted) throw error;
           if (revision !== youtubeSearchWorkerRevision.current) { controller.abort(); throw error; }
-          return searchPreparedSemanticVideosYielding(workspace.videos, youtubePreparedSearchCache.current.get(candidatePlan, workspace.selectedTopic, workspace.selectedChannelId, revision, `${account?.id ?? "local"}:${workspaceId}`), limit, new Set(), controller.signal);
+          const indexed = await (youtubeFallbackIndex.current ??= createVideoSearchIndexLoader()).load(workspace.videos);
+          if (revision !== youtubeSearchWorkerRevision.current) { controller.abort(); throw new Error("Video catalog changed during search."); }
+          const matches = await searchPreparedSemanticVideosYielding(indexed, youtubePreparedSearchCache.current.get(candidatePlan, workspace.selectedTopic, workspace.selectedChannelId, revision, `${account?.id ?? "local"}:${workspaceId}`), limit, new Set(), controller.signal);
+          return matches.flatMap(candidate => { const video = youtubeIndexes.videoById.get(candidate.video.id); return video ? [{ ...candidate, video }] : []; });
         }
       };
       const reason = (candidate: YouTubeSearchCandidate): RankedVideoSearchResult => videoSearchReason(candidate.video, plan, candidate.score);

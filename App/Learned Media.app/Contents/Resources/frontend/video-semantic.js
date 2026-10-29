@@ -139,8 +139,11 @@ function rankSearchResults(query, items, getText, limit = items.length) {
 })(search); const require = name => name.includes('background-work') ? scope.LEARNED_MEDIA_BACKGROUND : search; const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SEMANTIC_SEARCH_MAX_CHUNK_SIZE = exports.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE = exports.SEMANTIC_SEARCH_MIN_CHUNK_SIZE = exports.SEMANTIC_SEARCH_SLICE_BUDGET_MS = exports.PreparedVideoSearchCache = exports.VIDEO_SEMANTIC_VERSION = exports.MAX_VIDEO_SEARCH_RESULT_LIMIT = exports.VIDEO_SEARCH_TOPICS = void 0;
+exports.SEMANTIC_SEARCH_MAX_CHUNK_SIZE = exports.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE = exports.SEMANTIC_SEARCH_MIN_CHUNK_SIZE = exports.SEMANTIC_SEARCH_SLICE_BUDGET_MS = exports.PreparedVideoSearchCache = exports.VIDEO_SEARCH_INDEX_FORMAT = exports.VIDEO_SEMANTIC_VERSION = exports.MAX_VIDEO_SEARCH_RESULT_LIMIT = exports.VIDEO_SEARCH_TOPICS = void 0;
 exports.isValidVideoSearchRequest = isValidVideoSearchRequest;
+exports.videoSearchCatalogFingerprint = videoSearchCatalogFingerprint;
+exports.serializeVideoSearchIndex = serializeVideoSearchIndex;
+exports.restoreVideoSearchIndex = restoreVideoSearchIndex;
 exports.validateVideoSearchCatalogUpdate = validateVideoSearchCatalogUpdate;
 exports.indexVideoSearchMetadata = indexVideoSearchMetadata;
 exports.normalizeVideoQuery = normalizeVideoQuery;
@@ -256,6 +259,79 @@ function isValidVideoSearchRequest(value) {
     return true;
 }
 exports.VIDEO_SEMANTIC_VERSION = 9;
+exports.VIDEO_SEARCH_INDEX_FORMAT = 1;
+async function searchIndexDigest(value) {
+    const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+    return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+/** Bound temporary serialization while hashing every source field and its order. */
+async function videoSearchCatalogFingerprint(videos, signal) {
+    const parts = [];
+    for (let start = 0; start < videos.length; start += 512) {
+        const material = await (0, background_work_1.runBackgroundSlice)(() => JSON.stringify(videos.slice(start, start + 512).map(video => [
+            video.id, video.channelId, video.channelName, video.title, video.description, video.tags, video.topics,
+            video.publishedAt, video.durationSeconds, video.approved, video.special ?? null, video.sourceIds ?? null,
+        ])), { priority: "background", canPause: true, signal });
+        parts.push(await searchIndexDigest(material));
+    }
+    if (signal?.aborted)
+        throw signal.reason;
+    return searchIndexDigest(JSON.stringify([exports.VIDEO_SEARCH_INDEX_FORMAT, exports.VIDEO_SEMANTIC_VERSION, videos.length, parts]));
+}
+async function storedSearchIndexDigest(records, signal) {
+    const parts = [];
+    for (let start = 0; start < records.length; start += 512) {
+        const material = await (0, background_work_1.runBackgroundSlice)(() => JSON.stringify(records.slice(start, start + 512)), { priority: "background", canPause: true, signal });
+        parts.push(await searchIndexDigest(material));
+    }
+    if (signal?.aborted)
+        throw signal.reason;
+    return searchIndexDigest(JSON.stringify([exports.VIDEO_SEARCH_INDEX_FORMAT, exports.VIDEO_SEMANTIC_VERSION, records.length, parts]));
+}
+/** Store only reproducible search data, never a second copy of video records. */
+async function serializeVideoSearchIndex(videos, fingerprint, signal) {
+    const records = [];
+    await (0, background_work_1.forEachBackground)(videos, video => {
+        records.push({ id: video.id, normalizedChannelName: video.normalizedChannelName,
+            fields: video.searchFields.map(({ name, text }) => ({ name, text })) });
+    }, signal);
+    return { format: exports.VIDEO_SEARCH_INDEX_FORMAT, policy: exports.VIDEO_SEMANTIC_VERSION, catalogFingerprint: fingerprint,
+        savedAt: Date.now(), records, digest: await storedSearchIndexDigest(records, signal) };
+}
+/** All-or-nothing reuse: originals own membership, filters, order and provenance. */
+async function restoreVideoSearchIndex(videos, value, fingerprint, signal) {
+    if (!isRecord(value) || value.format !== exports.VIDEO_SEARCH_INDEX_FORMAT || value.policy !== exports.VIDEO_SEMANTIC_VERSION
+        || value.catalogFingerprint !== fingerprint || typeof value.savedAt !== "number" || !Number.isFinite(value.savedAt)
+        || value.savedAt > Date.now() + 60_000 || Date.now() - value.savedAt > 7 * 24 * 60 * 60 * 1000
+        || typeof value.digest !== "string" || !Array.isArray(value.records) || value.records.length !== videos.length)
+        return;
+    const records = value.records;
+    let valid = true;
+    await (0, background_work_1.forEachBackground)(records, (record, index) => {
+        if (!isRecord(record) || record.id !== videos[index].id || typeof record.normalizedChannelName !== "string"
+            || !Array.isArray(record.fields) || record.fields.length !== 4) {
+            valid = false;
+            return false;
+        }
+        const names = ["title", "tags", "description", "topics"];
+        if (record.fields.some((field, index) => !isRecord(field) || field.name !== names[index]
+            || typeof field.text !== "string")) {
+            valid = false;
+            return false;
+        }
+    }, signal);
+    if (!valid || await storedSearchIndexDigest(records, signal) !== value.digest)
+        return;
+    const restored = new Map();
+    await (0, background_work_1.forEachBackground)(videos, (video, index) => {
+        const record = records[index];
+        const values = searchFieldValues(video);
+        restored.set(video.id, { ...video, normalizedChannelName: record.normalizedChannelName,
+            specialPlaylistEligible: computeSpecialPlaylistEligibility(video, record.normalizedChannelName),
+            searchFields: record.fields.map((field, index) => ({ ...field, value: values[index][1], words: new Set(field.text.split(" ")) })) });
+    }, signal);
+    return restored;
+}
 const RESTRICTED_PLAYLIST_CHANNEL_ID = "UCYO_jab_esuFRV4b17AJtAw";
 const APPROVED_3BLUE_PLAYLIST_IDS = new Set([
     "PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi",
@@ -544,9 +620,12 @@ function preserveVideoConcepts(local, enriched) {
 const index = new WeakMap();
 const BOILERPLATE = /\b(subscribe|patreon|sponsor(?:ed)?|affiliate|merch|use code|follow (?:me|us)|support (?:me|us|the channel)|buy (?:my|our)|(?:our|my|this) (?:other )?channel|check out (?:our|my)|channel advertisement)\b/i;
 function cleanDescription(value) { return value.split(/\n+|(?<=[.!?])\s+/).filter((part) => !BOILERPLATE.test(part)).join(" ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0, 6000); }
+function searchFieldValues(video) {
+    return [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]];
+}
 function createSearchFields(video, previousFields) {
     const previousByName = new Map(previousFields?.map((field) => [field.name, field]));
-    return [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]]
+    return searchFieldValues(video)
         .map(([name, value]) => {
         const previous = previousByName.get(name);
         if (previous?.value === value)

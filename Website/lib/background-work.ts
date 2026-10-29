@@ -32,7 +32,9 @@ function now() {
 }
 
 function scheduleWake(item: WorkItem, run: () => void): () => void {
-  const browserWindow = typeof window === "undefined" ? undefined : window as IdleWindow;
+  // Next.js folds `typeof window` in client bundles, including worker entries.
+  // Read the optional realm property instead so workers never reference window.
+  const browserWindow = (globalThis as typeof globalThis & { window?: IdleWindow }).window;
   if (item.priority === "background" && item.canPause && browserWindow?.requestIdleCallback) {
     const id = browserWindow.requestIdleCallback(() => run(), { timeout: 200 });
     return () => browserWindow.cancelIdleCallback?.(id);
