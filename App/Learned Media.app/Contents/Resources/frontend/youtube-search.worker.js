@@ -64,10 +64,11 @@ function pageFromSession(session, excludedIds, limit) {
   if (fallback.length >= limit) return fallback.slice(0, limit);
   return session.fallbackComplete ? fallback : undefined;
 }
-const indexVideo = video => LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata(video);
+const indexVideo = (video, previous) => LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata(video, previous);
+const indexedOnlyFields = new Set(["specialPlaylistEligible", "normalizedChannelName", "searchFields"]);
 const sameVideoRecord = (previous, next) => {
   if (!previous) return false;
-  const previousKeys = Object.keys(previous).filter(key => key !== "specialPlaylistEligible");
+  const previousKeys = Object.keys(previous).filter(key => !indexedOnlyFields.has(key));
   const nextKeys = Object.keys(next);
   if (previousKeys.length !== nextKeys.length) return false;
   for (const key of previousKeys) {
@@ -86,10 +87,13 @@ function stageCatalog(request) {
   let staged = initialize ? new Map() : snapshot.byId;
   const writable = () => { if (staged === snapshot.byId) staged = new Map(staged); return staged; };
   if (initialize) {
-    for (const video of request.videos) staged.set(video.id, indexVideo(video));
+    for (const video of request.videos) staged.set(video.id, indexVideo(video, staged.get(video.id)));
   } else {
     for (const id of request.removeIds) if (staged.has(id)) writable().delete(id);
-    for (const video of request.upserts) if (!sameVideoRecord(staged.get(video.id), video)) writable().set(video.id, indexVideo(video));
+    for (const video of request.upserts) {
+      const previous = staged.get(video.id);
+      if (!sameVideoRecord(previous, video)) writable().set(video.id, indexVideo(video, previous));
+    }
     if (request.orderIds) {
       const ordered = new Map();
       for (const id of request.orderIds) { const video = staged.get(id); if (video) ordered.set(id, video); }
@@ -105,7 +109,9 @@ function stageCatalog(request) {
 }
 onmessage = async function(event) {
   const request = event.data;
+  if (!request || typeof request !== "object" || Array.isArray(request)) return;
   if (request.type === "initialize" || request.type === "update") {
+    if (request.type === "update" && (!Number.isSafeInteger(request.baseRevision) || request.baseRevision < 0)) return;
     if (request.type === "update" && (snapshot.revision < 0 || request.baseRevision !== snapshot.revision)) { latest++; postMessage({type:"rebuild",revision:request.revision}); return; }
     let staged;
     try { staged = stageCatalog(request); }
@@ -113,7 +119,15 @@ onmessage = async function(event) {
     snapshot = staged;
     latest++; releaseCatalogSearchCaches(); return;
   }
-  if (request.type === "cancel") { latest++; return; }
+  if (request.type === "cancel") {
+    if (request.requestId !== undefined && (!Number.isSafeInteger(request.requestId) || request.requestId < 0)) return;
+    latest++; return;
+  }
+  if (request.type !== "search") return;
+  if (!LEARNED_MEDIA_VIDEO_SEARCH.isValidVideoSearchRequest(request)) {
+    if (Number.isSafeInteger(request.requestId) && request.requestId >= 0) postMessage({ type:"invalid", requestId:request.requestId, reason:"invalid-request" });
+    return;
+  }
   const token = ++latest, captured = snapshot, currentRevision = captured.revision;
   if (request.revision !== snapshot.revision) return;
   const catalog = captured.videos;

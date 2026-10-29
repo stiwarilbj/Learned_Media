@@ -90,8 +90,18 @@ export function isValidVideoSearchRequest(value: unknown): value is {
   return true;
 }
 
-type Video = SearchableVideoMetadata & { specialPlaylistEligible?: boolean };
-export type IndexedVideoSearchMetadata = SearchableVideoMetadata & { specialPlaylistEligible: boolean };
+type Field = { name: string; value: string; text: string; words: Set<string> };
+type Video = SearchableVideoMetadata & {
+  specialPlaylistEligible?: boolean;
+  normalizedChannelName?: string;
+  searchFields?: Field[];
+};
+export type IndexedVideoSearchMetadata = SearchableVideoMetadata & {
+  specialPlaylistEligible: boolean;
+  /** Worker-only derived fields; never included in catalog or worker messages. */
+  normalizedChannelName: string;
+  searchFields: Field[];
+};
 export type VideoConceptCoverage = { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean };
 export type SemanticCandidate<T extends Video> = { coverage: VideoConceptCoverage; video: T; score: number; matchedFields: string[]; supportingText: string[] };
 export const VIDEO_SEMANTIC_VERSION = 9;
@@ -136,8 +146,8 @@ const APPROVED_3BLUE_PLAYLIST_IDS = new Set([
   "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy",
 ]);
 
-function computeSpecialPlaylistEligibility(video: SearchableVideoMetadata) {
-  const restrictedChannel = video.channelId === RESTRICTED_PLAYLIST_CHANNEL_ID || normalizeVideoQuery(video.channelName) === "3blue1brown";
+function computeSpecialPlaylistEligibility(video: SearchableVideoMetadata, normalizedChannelName = normalizeVideoQuery(video.channelName)) {
+  const restrictedChannel = video.channelId === RESTRICTED_PLAYLIST_CHANNEL_ID || normalizedChannelName === "3blue1brown";
   return !restrictedChannel || Boolean(video.special) || (video.sourceIds || []).some((id) => APPROVED_3BLUE_PLAYLIST_IDS.has(id.replace(/^playlist:/, "")));
 }
 
@@ -156,8 +166,22 @@ export function validateVideoSearchCatalogUpdate(revision: number, documents: Se
 }
 
 /** Add worker-only eligibility metadata without changing or dropping provenance. */
-export function indexVideoSearchMetadata(video: SearchableVideoMetadata): IndexedVideoSearchMetadata {
-  return { ...video, specialPlaylistEligible: computeSpecialPlaylistEligibility(video) };
+function sameStringList(left: string[] | undefined, right: string[] | undefined) {
+  const a = left || [], b = right || [];
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function sameSearchTextFields(previous: IndexedVideoSearchMetadata, next: SearchableVideoMetadata) {
+  return previous.title === next.title && previous.description === next.description
+    && sameStringList(previous.tags, next.tags) && sameStringList(previous.topics, next.topics);
+}
+
+export function indexVideoSearchMetadata(video: SearchableVideoMetadata, previous?: IndexedVideoSearchMetadata): IndexedVideoSearchMetadata {
+  const normalizedChannelName = previous?.channelName === video.channelName
+    ? previous.normalizedChannelName
+    : normalizeVideoQuery(video.channelName);
+  const searchFields = previous && sameSearchTextFields(previous, video) ? previous.searchFields : createSearchFields(video, previous?.searchFields);
+  return { ...video, specialPlaylistEligible: computeSpecialPlaylistEligibility(video, normalizedChannelName), normalizedChannelName, searchFields };
 }
 
 function hasEligibleSpecialPlaylist(video: Video) {
@@ -387,13 +411,23 @@ function preserveVideoConcepts(local: NonNullable<VideoSearchPlan["conceptGroups
     ...protectedGroups.map(group => enrichVideoGroup(group, enriched))
   ];
 }
-type Field = { name: string; value: string; text: string; words: Set<string> };
 const index = new WeakMap<Video, Field[]>();
 const BOILERPLATE = /\b(subscribe|patreon|sponsor(?:ed)?|affiliate|merch|use code|follow (?:me|us)|support (?:me|us|the channel)|buy (?:my|our)|(?:our|my|this) (?:other )?channel|check out (?:our|my)|channel advertisement)\b/i;
 function cleanDescription(value: string) { return value.split(/\n+|(?<=[.!?])\s+/).filter((part) => !BOILERPLATE.test(part)).join(" ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0,6000); }
+function createSearchFields(video: SearchableVideoMetadata, previousFields?: Field[]): Field[] {
+  const previousByName = new Map(previousFields?.map((field) => [field.name, field]));
+  return [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]]
+    .map(([name, value]) => {
+      const previous = previousByName.get(name);
+      if (previous?.value === value) return previous;
+      const text = searchTextForms(contextualSearchText(value)).join(" ");
+      return { name, value, text, words: new Set(text.split(" ")) };
+    });
+}
 function fieldsFor(video: Video) {
+  if (video.searchFields) return video.searchFields;
   const cached = index.get(video); if (cached) return cached;
-  const fields = [ ["title",video.title], ["tags",(video.tags || []).join(", ")], ["description",cleanDescription(video.description || "")], ["topics",(video.topics || []).join(" ")] ].map(([name,value]) => ({name,value,text:searchTextForms(contextualSearchText(value)).join(" "),words:new Set(searchTextForms(contextualSearchText(value)).join(" ").split(" "))}));
+  const fields = createSearchFields(video);
   index.set(video, fields); return fields;
 }
 function hasPrefix(words: Set<string>, word: string) { for (const candidate of words) if (candidate.length >= 5 && Math.abs(candidate.length-word.length) <= 2 && (candidate.startsWith(word) || word.startsWith(candidate))) return true; return false; }

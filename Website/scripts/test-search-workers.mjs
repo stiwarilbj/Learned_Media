@@ -660,16 +660,25 @@ test("YouTube worker refreshes its ordered snapshot only when records or order c
   const initial = await search(0, 70);
   assert.deepEqual(initial.candidates.map(candidate => candidate.videoId), ["A", "B", "C"], "duplicate IDs retain Map insertion position and last value");
   assert.equal(catalogMap.valuesCallCount, 1);
+  const originalA = scope.inspectCatalog().videos.get("A"), originalB = scope.inspectCatalog().videos.get("B");
+  assert.ok(originalA.searchFields.every(field => field.text && field.words instanceof Set), "worker records hold prepared normalized search fields");
+  assert.equal(originalA.normalizedChannelName, "approved channel");
 
   scope.onmessage({ data: { type: "update", baseRevision: 0, revision: 1, upserts: [], removeIds: [] } });
   scope.onmessage({ data: { type: "update", baseRevision: 1, revision: 2, upserts: projectVideos([makeVideo("B")]), removeIds: [] } });
   assert.equal(catalogMap.valuesCallCount, 1, "revision-only updates and equal replacement records retain the array");
+  assert.strictEqual(scope.inspectCatalog().videos.get("A"), originalA, "unchanged records and their prepared fields are reused");
+  assert.strictEqual(scope.inspectCatalog().videos.get("B"), originalB, "equal upserts retain the existing prepared record");
   const unchanged = await search(2, 71);
   assert.deepEqual(unchanged.candidates.map(candidate => candidate.videoId), ["A", "B", "C"]);
   assert.equal(catalogMap.valuesCallCount, 1);
 
   scope.onmessage({ data: { type: "update", baseRevision: 2, revision: 3, upserts: projectVideos([makeVideo("B", { sourceIds: ["approved-upload:B"] })]), removeIds: [] } });
-  assert.notEqual(scope.inspectCatalog().videos, catalogMap, "a replaced record publishes a new map");
+  const provenanceUpdate = scope.inspectCatalog();
+  assert.notEqual(provenanceUpdate.videos, catalogMap, "a replaced record publishes a new map");
+  assert.notStrictEqual(provenanceUpdate.videos.get("B"), originalB, "a changed record gets a new immutable index object");
+  assert.strictEqual(provenanceUpdate.videos.get("B").searchFields, originalB.searchFields, "provenance-only updates reuse all normalized searchable fields");
+  assert.strictEqual(provenanceUpdate.videos.get("A"), originalA, "unrelated records retain their prepared fields");
   const replaced = await search(3, 72);
   assert.deepEqual(replaced.candidates.map(candidate => candidate.videoId), ["A", "B", "C"], "replacement preserves its original tie position");
 
@@ -803,7 +812,7 @@ test("topic semantic worker invalidates catalog caches when custom topics change
 
 for (const platform of ["website", "native"]) {
   test(`${platform} publishes complete catalog snapshots and rolls back validation/indexing failures`, async () => {
-    const indexOverride = index => video => { if (video.id === "explode") throw new Error("Index preparation failed"); return index(video); };
+    const indexOverride = index => (video, previous) => { if (video.id === "explode") throw new Error("Index preparation failed"); return index(video, previous); };
     const worker = platform === "website" ? loadWorker("workers/youtube-search.worker.ts", { indexOverride }) : loadNativeYouTubeWorker({ indexOverride });
     const send = data => platform === "website" ? worker.scope.onmessage({ data }) : worker.send(data);
     const inspect = () => platform === "website" ? worker.scope.inspectCatalog() : worker.context.inspectCatalog();
@@ -813,6 +822,7 @@ for (const platform of ["website", "native"]) {
     const original = Array.from({ length: 1800 }, (_, i) => make(`atomic-${i}`));
     send({ type: "initialize", revision: 0, videos: original });
     const initial = inspect(), oldOrdered = ordered(initial), oldMap = map(initial);
+    const originalPrepared = oldMap.get(original[1].id);
     send({ type: "search", revision: 0, requestId: 800, query: "history", plan: { terms: ["history"] }, topic: "All", limit: 80 });
     send({ type: "update", baseRevision: 0, revision: 1, removeIds: [original[0].id], upserts: [make("new"), { ...make("invalid"), sourceIds: [null] }] });
     assert.equal(inspect(), initial, "invalid trailing metadata cannot publish earlier removals or upserts");
@@ -836,6 +846,11 @@ for (const platform of ["website", "native"]) {
     assert.notEqual(ordered(next), oldOrdered);
     assert.deepEqual(Array.from(ordered(next), video => video.id), ["new", original[1].id, original[2].id]);
     for (const video of ordered(next)) assert.equal(map(next).get(video.id), video, "ordered and search-index records share the staged map entries");
+    const updatedPrepared = map(next).get(original[1].id);
+    assert.notStrictEqual(updatedPrepared.searchFields, originalPrepared.searchFields, `${platform} rebuilds fields when searchable title text changes`);
+    assert.strictEqual(updatedPrepared.searchFields[1], originalPrepared.searchFields[1], `${platform} reuses unchanged tag text during a title update`);
+    assert.strictEqual(updatedPrepared.searchFields[2], originalPrepared.searchFields[2], `${platform} reuses unchanged description text during a title update`);
+    assert.strictEqual(map(next).get(original[2].id).searchFields, oldMap.get(original[2].id).searchFields, `${platform} retains derived fields for untouched records`);
     assert.equal(oldMap.get(original[1].id).title, original[1].title, "published old records remain unchanged");
     assert.equal(oldOrdered.length, original.length);
     send({ type: "update", baseRevision: 1, revision: 2, upserts: [updated], removeIds: [], orderIds: ["new", original[1].id, original[2].id] });

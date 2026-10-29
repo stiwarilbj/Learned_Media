@@ -41,14 +41,57 @@ test('compact records preserve approval, Shorts, and restricted playlist provena
  const plan=engine.makeLocalVideoPlan('gravitational lensing');
  const full=engine.searchSemanticVideos(source,plan,'All');
  const compact=engine.searchSemanticVideos(source.map(metadata.toVideoSearchDocument),plan,'All');
- const indexed=source.map(metadata.toVideoSearchDocument).map(engine.indexVideoSearchMetadata);
+ const indexed=source.map(metadata.toVideoSearchDocument).map(item=>engine.indexVideoSearchMetadata(item));
  assert.deepEqual(indexed.map(item=>item.specialPlaylistEligible),[true,true,true,false,false,true,true,true,true]);
  assert.deepEqual(indexed.map(item=>item.sourceIds),source.map(item=>item.sourceIds),'indexing retains original playlist provenance');
+ assert.ok(indexed.every(item=>Array.isArray(item.searchFields)&&item.searchFields.length===4),'indexing prepares title, tags, description, and topics once');
+ assert.ok(indexed.every(item=>typeof item.normalizedChannelName==='string'),'indexing prepares channel normalization');
+ assert.equal(Object.hasOwn(source[0],'searchFields'),false,'derived fields never mutate the original metadata');
  assert.deepEqual(ids(engine.searchSemanticVideos(indexed,plan,'All')),ids(full),'precomputed flags preserve direct search eligibility');
  assert.deepEqual(ids(compact),ids(full));
  assert.deepEqual(ids(compact),['approved-playlist','approved-second-playlist','special-approved','unrestricted-channel']);
  assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(source.map(metadata.toVideoSearchDocument),plan,'All'))),full);
- assert.deepEqual(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(indexed,plan,'All'))),engine.searchSemanticVideos(indexed,plan,'All'),'generated Mac runtime honors indexed flags identically');
+ const resultShape=results=>results.map(result=>({id:result.video.id,score:result.score,coverage:result.coverage,matchedFields:result.matchedFields,supportingText:result.supportingText}));
+ assert.deepEqual(resultShape(JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(indexed,plan,'All')))),resultShape(engine.searchSemanticVideos(indexed,plan,'All')),'generated Mac runtime honors indexed flags identically');
+});
+test('indexed text is reused when irrelevant metadata changes and rebuilt only for changed searchable text',()=>{
+ const source=metadata.toVideoSearchDocument(video('prepared-text','Tōhoku lensing observations',{description:'Galaxies bend light near Tōhoku.',tags:['Astronomy'],topics:['Science']}));
+ const first=engine.indexVideoSearchMetadata(source);
+ assert.equal(first.normalizedChannelName,'approved science');
+ assert.equal(first.searchFields[0].value,source.title,'original title remains available for explanations');
+ assert.equal(first.searchFields[2].value,'Galaxies bend light near Tōhoku.','cleaned text retains the existing description preparation');
+
+ const provenanceOnly=engine.indexVideoSearchMetadata({...source,sourceIds:['playlist:approved']},first);
+ assert.notStrictEqual(provenanceOnly,first,'the changed catalog record gets its own indexed object');
+ assert.strictEqual(provenanceOnly.searchFields,first.searchFields,'playlist provenance changes do not rebuild searchable text');
+ assert.strictEqual(provenanceOnly.normalizedChannelName,first.normalizedChannelName,'unchanged channel names reuse normalized text');
+
+ const titleChanged=engine.indexVideoSearchMetadata({...source,title:'Tōhoku astronomy lensing notes'},first);
+ assert.notStrictEqual(titleChanged.searchFields,first.searchFields,'searchable title changes rebuild derived fields');
+ assert.equal(titleChanged.searchFields[0].value,'Tōhoku astronomy lensing notes');
+ assert.strictEqual(titleChanged.searchFields[2],first.searchFields[2],'unchanged description fields can be reused independently');
+
+ const channelChanged=engine.indexVideoSearchMetadata({...source,channelName:'Different Science Channel'},first);
+ assert.equal(channelChanged.normalizedChannelName,'different science channel');
+ assert.strictEqual(channelChanged.searchFields,first.searchFields,'channel-only changes do not rebuild title, description, tag, or topic fields');
+ assert.equal(Object.hasOwn(source,'normalizedChannelName'),false,'derived normalization never mutates the original metadata');
+});
+test('prepared text preserves complete ranking output on the website and generated Mac runtime',()=>{
+ const catalog=[
+  ...videos,
+  video('prepared-title','Tōhoku black-hole lensing',{description:'Researchers describe gravitational lensing near Japan.',tags:['Astronomy'],topics:['Science']}),
+  video('prepared-description','Cosmic observations',{description:'Black holes and distant galaxies bend starlight in several documented observations.',tags:['Physics'],topics:['Science']}),
+  video('prepared-tags','Space documentary',{description:'A short explanation of distant galaxies.',tags:['black holes','bending starlight'],topics:['Science']})
+ ];
+ const indexed=catalog.map(video=>engine.indexVideoSearchMetadata(video));
+ const shape=results=>results.map(result=>({id:result.video.id,score:result.score,coverage:result.coverage,matchedFields:result.matchedFields,supportingText:result.supportingText}));
+ for(const query of ['bending starlight','black holes and bending starlight','black holes or bending starlight','bending starlight without galaxies']){
+  const plan=engine.makeLocalVideoPlan(query);
+  const expected=shape(engine.searchSemanticVideos(catalog,plan,'All',undefined,100));
+  assert.deepEqual(shape(engine.searchSemanticVideos(indexed,plan,'All',undefined,100)),expected,query+' keeps scores, order, coverage, matched fields, and explanations');
+  const nativeResults=JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(indexed,plan,'All',undefined,100)));
+  assert.deepEqual(shape(nativeResults),expected,'generated Mac runtime matches website output for '+query);
+ }
 });
 test('compact worker payloads preserve semantic output and reduce catalog transfer size',()=>{
  const catalog=Array.from({length:30_000},(_,index)=>video('payload-'+index,index%2?'Gravitational Lensing '+index:'Other science '+index,{description:'A complete searchable description about galaxies, astronomy, and optical observations. '.repeat(4),tags:['astronomy','science'],topics:['Science','Astronomy'],thumbnailUrl:'https://example.test/'+index+'.jpg',thumbnailWidth:1280,thumbnailHeight:720,durationLabel:'10:00',embedAvailable:true,metadataRefreshedAt:index}));

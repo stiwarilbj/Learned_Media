@@ -252,8 +252,8 @@ const APPROVED_3BLUE_PLAYLIST_IDS = new Set([
     "PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi",
     "PL4cNQ1YkG5WhQGmPnRe4vDUImh_nviriy",
 ]);
-function computeSpecialPlaylistEligibility(video) {
-    const restrictedChannel = video.channelId === RESTRICTED_PLAYLIST_CHANNEL_ID || normalizeVideoQuery(video.channelName) === "3blue1brown";
+function computeSpecialPlaylistEligibility(video, normalizedChannelName = normalizeVideoQuery(video.channelName)) {
+    const restrictedChannel = video.channelId === RESTRICTED_PLAYLIST_CHANNEL_ID || normalizedChannelName === "3blue1brown";
     return !restrictedChannel || Boolean(video.special) || (video.sourceIds || []).some((id) => APPROVED_3BLUE_PLAYLIST_IDS.has(id.replace(/^playlist:/, "")));
 }
 /** Validate a whole worker update before touching its published catalog. */
@@ -272,8 +272,20 @@ function validateVideoSearchCatalogUpdate(revision, documents, removeIds = [], o
     }
 }
 /** Add worker-only eligibility metadata without changing or dropping provenance. */
-function indexVideoSearchMetadata(video) {
-    return { ...video, specialPlaylistEligible: computeSpecialPlaylistEligibility(video) };
+function sameStringList(left, right) {
+    const a = left || [], b = right || [];
+    return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+function sameSearchTextFields(previous, next) {
+    return previous.title === next.title && previous.description === next.description
+        && sameStringList(previous.tags, next.tags) && sameStringList(previous.topics, next.topics);
+}
+function indexVideoSearchMetadata(video, previous) {
+    const normalizedChannelName = previous?.channelName === video.channelName
+        ? previous.normalizedChannelName
+        : normalizeVideoQuery(video.channelName);
+    const searchFields = previous && sameSearchTextFields(previous, video) ? previous.searchFields : createSearchFields(video, previous?.searchFields);
+    return { ...video, specialPlaylistEligible: computeSpecialPlaylistEligibility(video, normalizedChannelName), normalizedChannelName, searchFields };
 }
 function hasEligibleSpecialPlaylist(video) {
     return typeof video.specialPlaylistEligible === "boolean" ? video.specialPlaylistEligible : computeSpecialPlaylistEligibility(video);
@@ -523,11 +535,24 @@ function preserveVideoConcepts(local, enriched) {
 const index = new WeakMap();
 const BOILERPLATE = /\b(subscribe|patreon|sponsor(?:ed)?|affiliate|merch|use code|follow (?:me|us)|support (?:me|us|the channel)|buy (?:my|our)|(?:our|my|this) (?:other )?channel|check out (?:our|my)|channel advertisement)\b/i;
 function cleanDescription(value) { return value.split(/\n+|(?<=[.!?])\s+/).filter((part) => !BOILERPLATE.test(part)).join(" ").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim().slice(0, 6000); }
+function createSearchFields(video, previousFields) {
+    const previousByName = new Map(previousFields?.map((field) => [field.name, field]));
+    return [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]]
+        .map(([name, value]) => {
+        const previous = previousByName.get(name);
+        if (previous?.value === value)
+            return previous;
+        const text = (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" ");
+        return { name, value, text, words: new Set(text.split(" ")) };
+    });
+}
 function fieldsFor(video) {
+    if (video.searchFields)
+        return video.searchFields;
     const cached = index.get(video);
     if (cached)
         return cached;
-    const fields = [["title", video.title], ["tags", (video.tags || []).join(", ")], ["description", cleanDescription(video.description || "")], ["topics", (video.topics || []).join(" ")]].map(([name, value]) => ({ name, value, text: (0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" "), words: new Set((0, search_1.searchTextForms)((0, search_1.contextualSearchText)(value)).join(" ").split(" ")) }));
+    const fields = createSearchFields(video);
     index.set(video, fields);
     return fields;
 }

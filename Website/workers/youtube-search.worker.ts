@@ -47,7 +47,7 @@ function sameVideoRecord(previous: IndexedVideoSearchMetadata | undefined, next:
   if (!previous) return false;
   const previousRecord = previous as unknown as Record<string, unknown>;
   const nextRecord = next as unknown as Record<string, unknown>;
-  const previousKeys = Object.keys(previousRecord).filter((key) => key !== "specialPlaylistEligible");
+  const previousKeys = Object.keys(previousRecord).filter((key) => !["specialPlaylistEligible", "normalizedChannelName", "searchFields"].includes(key));
   const nextKeys = Object.keys(nextRecord);
   if (previousKeys.length !== nextKeys.length) return false;
   for (const key of previousKeys) {
@@ -77,11 +77,12 @@ function stageCatalog(request: Extract<Request, { type: "initialize" | "update" 
   let staged = request.type === "initialize" ? new Map<string, IndexedVideoSearchMetadata>() : snapshot.videos;
   const writable = () => { if (staged === snapshot.videos) staged = new Map(staged); return staged; };
   if (request.type === "initialize") {
-    for (const video of request.videos) staged.set(video.id, indexVideoSearchMetadata(video));
+    for (const video of request.videos) staged.set(video.id, indexVideoSearchMetadata(video, staged.get(video.id)));
   } else {
     for (const id of request.removeIds) if (staged.has(id)) writable().delete(id);
     for (const video of request.upserts) {
-      if (!sameVideoRecord(staged.get(video.id), video)) writable().set(video.id, indexVideoSearchMetadata(video));
+      const previous = staged.get(video.id);
+      if (!sameVideoRecord(previous, video)) writable().set(video.id, indexVideoSearchMetadata(video, previous));
     }
     if (request.orderIds) {
       const ordered = new Map<string, IndexedVideoSearchMetadata>();

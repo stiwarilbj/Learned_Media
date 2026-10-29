@@ -82,9 +82,10 @@ test('native worker sender captures compact initialization, forced rebuild, and 
  assert.match(page,/videos: initialVideos\.map\(toVideoSearchDocument\)/,'website startup projects initial records');
  const webWorker=readFileSync(new URL('../../Website/workers/youtube-search.worker.ts',import.meta.url),'utf8');
  assert.match(webWorker,/Map<string, IndexedVideoSearchMetadata>/);
- assert.match(webWorker,/indexVideoSearchMetadata\(video\)/,'website indexes playlist eligibility on initial and incremental records');
+ assert.match(webWorker,/indexVideoSearchMetadata\(video, staged\.get\(video\.id\)\)/,'website prepares fields during initial indexing and reuses prior fields for duplicate IDs');
+ assert.match(webWorker,/indexVideoSearchMetadata\(video, previous\)/,'website incremental indexing reuses unchanged derived fields');
  const nativeWorker=readFileSync(new URL('../../App/Resources/frontend/youtube-search.worker.js',import.meta.url),'utf8');
- assert.match(nativeWorker,/LEARNED_MEDIA_VIDEO_SEARCH\.indexVideoSearchMetadata\(video\)/,'Mac indexes the same playlist eligibility flag');
+ assert.match(nativeWorker,/LEARNED_MEDIA_VIDEO_SEARCH\.indexVideoSearchMetadata\(video, previous\)/,'Mac indexes the same prepared fields and reuses unchanged values');
 });
 test('website worker sender captures compact initialization, forced rebuild, and changed-only upserts',async()=>{
  const page=readFileSync(new URL('../../Website/app/page.tsx',import.meta.url),'utf8');
