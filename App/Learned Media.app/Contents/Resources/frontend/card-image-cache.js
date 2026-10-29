@@ -1,19 +1,92 @@
 // Generated from Website/lib/card-image-cache.ts. Run node Website/scripts/build-native-card-image-cache.mjs.
-(function(scope){ const exports = {};
+(function(scope){ const require = () => scope.LEARNED_MEDIA_BACKGROUND; const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.decodedCardImageCache = exports.DecodedCardImageCache = exports.CARD_IMAGE_DECODE_SIZE = void 0;
 exports.mountDecodedCardImage = mountDecodedCardImage;
+/**
+ * Session-only cache for decoded fact-card artwork. Cached bitmaps are resized
+ * before retention, so revisiting image-heavy cards cannot grow memory without
+ * bound. A mounted card holds a lease; inactive-workspace bitmaps are released
+ * as soon as their last mounted card lets go.
+ */
+const background_work_1 = require("./background-work");
 const DEFAULT_MAX_ENTRIES = 8;
 const DEFAULT_MAX_BYTES = 24 * 1024 * 1024;
 exports.CARD_IMAGE_DECODE_SIZE = 960;
+function awaitImageBitmap(pending, signal) {
+    if (signal.aborted) {
+        void pending.then(image => image.close(), () => undefined);
+        return Promise.reject(signal.reason ?? new DOMException("Image load canceled.", "AbortError"));
+    }
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => signal.removeEventListener("abort", onAbort);
+        const onAbort = () => {
+            if (settled)
+                return;
+            settled = true;
+            cleanup();
+            // createImageBitmap has no AbortSignal support. The completion handler
+            // below closes a late bitmap instead of retaining a canceled card image.
+            reject(signal.reason ?? new DOMException("Image load canceled.", "AbortError"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        pending.then(image => {
+            if (settled || signal.aborted) {
+                image.close();
+                return;
+            }
+            settled = true;
+            cleanup();
+            resolve(image);
+        }, error => {
+            if (settled)
+                return;
+            settled = true;
+            cleanup();
+            reject(error);
+        });
+    });
+}
+async function decodeImageBitmap(source, signal, options) {
+    let pending;
+    // Schedule only the decode start. Decoding is asynchronous and cannot be
+    // interrupted by createImageBitmap, so it must not hold the shared CPU queue.
+    try {
+        await (0, background_work_1.runBackgroundSlice)(() => {
+            pending = createImageBitmap(source, options);
+            // Cancellation can occur after decoding starts but before this scheduled
+            // turn is acknowledged. Observe failures immediately in that narrow gap.
+            void pending.catch(() => undefined);
+        }, { priority: "visible", canPause: true, signal });
+    }
+    catch (error) {
+        if (pending)
+            void pending.then(image => image.close(), () => undefined);
+        throw error;
+    }
+    if (!pending)
+        throw new Error("Image decoding did not start.");
+    return awaitImageBitmap(pending, signal);
+}
 async function loadDecodedImage(url, maxDimension, signal) {
     if (typeof fetch !== "function" || typeof createImageBitmap !== "function")
         throw new Error("Decoded image caching is unavailable.");
     const response = await fetch(url, { signal, mode: "cors" });
     if (!response.ok)
         throw new Error(`Image request failed (${response.status}).`);
-    const source = await createImageBitmap(await response.blob());
+    const blob = await response.blob();
+    let source;
+    try {
+        source = await decodeImageBitmap(blob, signal);
+    }
+    catch (error) {
+        source?.close();
+        throw error;
+    }
+    if (!source)
+        throw new Error("Image decoding returned no bitmap.");
     if (signal.aborted) {
         source.close();
         throw new DOMException("Image load canceled.", "AbortError");
@@ -23,13 +96,21 @@ async function loadDecodedImage(url, maxDimension, signal) {
         return source;
     const width = Math.max(1, Math.round(source.width * scale));
     const height = Math.max(1, Math.round(source.height * scale));
+    let resized;
     try {
-        const resized = await createImageBitmap(source, { resizeWidth: width, resizeHeight: height, resizeQuality: "high" });
+        resized = await decodeImageBitmap(source, signal, { resizeWidth: width, resizeHeight: height, resizeQuality: "high" });
+        if (!resized)
+            throw new Error("Image resizing returned no bitmap.");
         if (signal.aborted) {
             resized.close();
+            resized = undefined;
             throw new DOMException("Image load canceled.", "AbortError");
         }
         return resized;
+    }
+    catch (error) {
+        resized?.close();
+        throw error;
     }
     finally {
         source.close();

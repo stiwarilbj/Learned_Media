@@ -12,6 +12,7 @@
     "test:structured-response": "node --test scripts/test-structured-response.mjs",
     "test:gemini-schema-cache": "node --test scripts/test-gemini-schema-cache.mjs",
     "test:retry-timing": "node --test scripts/test-retry-timing.mjs",
+    "test:background-work": "node scripts/build-native-background.mjs --check && node scripts/test-background-work.mjs",
     "test:source-spotlight": "node scripts/test-source-spotlight.mjs",
     "test:card-image-cache": "node scripts/build-native-card-image-cache.mjs --check && node scripts/test-card-image-cache.mjs",
     "test:saved-card-fidelity": "node scripts/test-saved-card-fidelity.mjs",

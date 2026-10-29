@@ -10,6 +10,6 @@ const compiled = ts.transpileModule(readFileSync(source, "utf8"), {
 
 writeFileSync(target,
   "// Generated from Website/lib/card-image-cache.ts. Run node Website/scripts/build-native-card-image-cache.mjs.\n" +
-  "(function(scope){ const exports = {};\n" + compiled +
+  "(function(scope){ const require = () => scope.LEARNED_MEDIA_BACKGROUND; const exports = {};\n" + compiled +
   "\nscope.LEARNED_MEDIA_CARD_IMAGE_CACHE = Object.assign(exports, { cache: exports.decodedCardImageCache }); })(globalThis);\n"
 );

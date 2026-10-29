@@ -1,4 +1,5 @@
 import { normalizeSearchText, shouldExpandNaturalSearch, searchTextForms, protectedSearchTerms, contextualSearchText, commonNameAliases } from "./search";
+import { runBackgroundSlice } from "./background-work";
 import type { TopicNode } from "./types";
 export const TOPIC_SEARCH_VERSION = 8;
 export type TopicSuggestionGroup = "keyword" | "related" | "broader" | "explore";
@@ -336,11 +337,23 @@ function planFor(query: string, enrichment: TopicQueryPlan | string[]): TopicQue
 export function searchTopicIndex(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = []): TopicSemanticResult { if (!query.trim())
     return { suggestions: [], matchedIds: [], completeCoverage: false, visibleIds: [], matchingDescendants: [], directScores: [] }; query = contextualSearchText(query); const plan = planFor(query, enrichment); return finalize(index, query, index.entries.map(e => rank(e, query, plan))); }
 export function suggestTopics(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = []) { return searchTopicIndex(index, query, enrichment).suggestions; }
-export async function searchTopicIndexYielding(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = [], isCurrent: () => boolean = () => true) { query = contextualSearchText(query); const plan = planFor(query, enrichment), ranked: Ranked[] = []; for (let start = 0; start < index.entries.length; start += 400) {
-    if (!isCurrent())
-        return null;
-    for (const e of index.entries.slice(start, start + 400))
-        ranked.push(rank(e, query, plan));
-    if (start + 400 < index.entries.length)
-        await new Promise(r => setTimeout(r, 0));
-} return isCurrent() ? finalize(index, query, ranked) : null; }
+export async function searchTopicIndexYielding(index: TopicSuggestionIndex, query: string, enrichment: TopicQueryPlan | string[] = [], isCurrent: () => boolean = () => true) {
+    query = contextualSearchText(query);
+    const plan = planFor(query, enrichment), ranked: Ranked[] = [];
+    for (let start = 0; start < index.entries.length;) {
+        if (!isCurrent()) return null;
+        const next = await runBackgroundSlice(() => {
+            let position = start;
+            const beganAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+            while (position < index.entries.length && position - start < 400 && (typeof performance !== "undefined" ? performance.now() : Date.now()) - beganAt < 4) {
+                if (!isCurrent()) return start;
+                ranked.push(rank(index.entries[position], query, plan));
+                position += 1;
+            }
+            return position;
+        }, { priority: "interactive", canPause: true });
+        if (next === start) return null;
+        start = next;
+    }
+    return isCurrent() ? finalize(index, query, ranked) : null;
+}

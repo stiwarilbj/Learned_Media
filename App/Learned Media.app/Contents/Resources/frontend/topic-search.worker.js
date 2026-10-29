@@ -1,3 +1,4 @@
+importScripts("background-work.js");
 importScripts("topic-semantic.js");
 let index = null, revision = "", latest = 0, epoch = 0, builtinIds = [];
 self.onmessage = function (event) {

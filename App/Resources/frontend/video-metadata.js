@@ -88,13 +88,13 @@ async function reuseUnchangedVideoRecordsYielding(previous, next, cancellation) 
         return next;
     const byId = new Map(), records = [];
     let unchanged = previous.length === next.length;
-    await (0, background_work_1.forEachBackground)(previous, video => { byId.set(video.id, video); }, cancellation);
+    await (0, background_work_1.forEachBackground)(previous, video => { byId.set(video.id, video); }, cancellation, { priority: "background", canPause: true });
     await (0, background_work_1.forEachBackground)(next, (video, index) => {
         const record = reusableVideo(byId.get(video.id), video);
         records.push(record);
         if (record !== previous[index])
             unchanged = false;
-    }, cancellation);
+    }, cancellation, { priority: "background", canPause: true });
     return unchanged ? previous : records;
 }
 /** Keep unchanged worker objects (and their normalized search entries) intact. */

@@ -91,12 +91,12 @@ export async function reuseUnchangedVideoRecordsYielding<T extends SearchableVid
   if (previous === next || !previous.length) return next;
   const byId = new Map<string, T>(), records: T[] = [];
   let unchanged = previous.length === next.length;
-  await forEachBackground(previous, video => { byId.set(video.id, video); }, cancellation);
+  await forEachBackground(previous, video => { byId.set(video.id, video); }, cancellation, { priority: "background", canPause: true });
   await forEachBackground(next, (video, index) => {
     const record = reusableVideo(byId.get(video.id), video);
     records.push(record);
     if (record !== previous[index]) unchanged = false;
-  }, cancellation);
+  }, cancellation, { priority: "background", canPause: true });
   return unchanged ? previous : records;
 }
 

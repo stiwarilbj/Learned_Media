@@ -1,4 +1,5 @@
 /* Native WebKit uses the same generated search engine as the website. */
+importScripts("background-work.js");
 importScripts("video-semantic.js");
 let snapshot = { videos: [], byId: new Map(), revision: -1 }, latest = 0;
 const preparedSearchCache = new LEARNED_MEDIA_VIDEO_SEARCH.PreparedVideoSearchCache(4);
@@ -148,26 +149,27 @@ onmessage = async function(event) {
   let start = 0, chunkSize = LEARNED_MEDIA_VIDEO_SEARCH.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
   while (start < catalog.length) {
     if (token !== latest || snapshot.revision !== currentRevision) return;
-    const beganAt = rankingNow(), end = Math.min(catalog.length, start + chunkSize);
-    const batch = catalog.slice(start,end);
-    const positions = new Map(batch.map((video,index)=>[video.id,start+index]));
-    // Retrieve the complete chunk before separating direct and fallback
-    // matches, so a high-scoring fallback cannot hide a direct result.
-    const matches = LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos(batch, prepared, batch.length, excludedIds);
-    for (const candidate of matches) {
-      const entry = { candidate, index:positions.get(candidate.video.id) };
-      const isFallback = candidate.matchedFields.includes("semantic-fallback");
-      if (isFallback) fallbackMatchCount++;
-      else directMatchCount++;
-      LEARNED_MEDIA_VIDEO_SEARCH.insertBoundedRanked(isFallback ? fallback : direct, entry, buildSession ? sessionLimit : resultLimit, compareEntries);
-    }
-    const elapsed = rankingNow() - beganAt;
-    chunkSize = LEARNED_MEDIA_VIDEO_SEARCH.nextSemanticSearchChunkSize(chunkSize, elapsed);
-    start = end;
-    if (start < catalog.length) {
-      await new Promise(resolve=>setTimeout(resolve,0));
-      if (token !== latest || snapshot.revision !== currentRevision) return;
-    }
+    const sliceStart = start;
+    start = await LEARNED_MEDIA_BACKGROUND.runBackgroundSlice(() => {
+      if (token !== latest || snapshot.revision !== currentRevision) return sliceStart;
+      const beganAt = rankingNow(), end = Math.min(catalog.length, sliceStart + chunkSize);
+      const batch = catalog.slice(sliceStart,end);
+      const positions = new Map(batch.map((video,index)=>[video.id,sliceStart+index]));
+      // Retrieve the complete chunk before separating direct and fallback
+      // matches, so a high-scoring fallback cannot hide a direct result.
+      const matches = LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos(batch, prepared, batch.length, excludedIds);
+      for (const candidate of matches) {
+        const entry = { candidate, index:positions.get(candidate.video.id) };
+        const isFallback = candidate.matchedFields.includes("semantic-fallback");
+        if (isFallback) fallbackMatchCount++;
+        else directMatchCount++;
+        LEARNED_MEDIA_VIDEO_SEARCH.insertBoundedRanked(isFallback ? fallback : direct, entry, buildSession ? sessionLimit : resultLimit, compareEntries);
+      }
+      const elapsed = rankingNow() - beganAt;
+      chunkSize = LEARNED_MEDIA_VIDEO_SEARCH.nextSemanticSearchChunkSize(chunkSize, elapsed);
+      return end;
+    }, { priority:"interactive", canPause:true });
+    if (token !== latest || snapshot.revision !== currentRevision) return;
   }
   if (token === latest && snapshot.revision === currentRevision) {
     if (buildSession) rememberSearchSession(key, {

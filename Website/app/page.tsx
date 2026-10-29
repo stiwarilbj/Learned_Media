@@ -1,6 +1,7 @@
 "use client";
 
 import { cardSearchText } from "@/lib/card-search-text";
+import { runBackgroundSlice } from "@/lib/background-work";
 import { decodedCardImageCache } from "@/lib/card-image-cache";
 
 import dynamic from "next/dynamic";
@@ -800,7 +801,10 @@ export default function HomePage() {
           try {
             const image = await resolveWikipediaImage(job.card.sources[0], controller.signal);
             if (!image || controller.signal.aborted || job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || (job.card.displayModeOverride ?? displayModeRef.current) !== "picture-text") continue;
-            setCards(current => current.some(item => item.id === job.card.id) ? current.map(item => item.id === job.card.id ? { ...item, image } : item) : current);
+            await runBackgroundSlice(() => {
+              if (controller.signal.aborted || job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || (job.card.displayModeOverride ?? displayModeRef.current) !== "picture-text") return;
+              setCards(current => current.some(item => item.id === job.card.id) ? current.map(item => item.id === job.card.id ? { ...item, image } : item) : current);
+            }, { priority: "visible", canPause: true, signal: controller.signal });
           } catch {
             // Images are optional and do not affect verified text cards.
           } finally {

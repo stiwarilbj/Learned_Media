@@ -18,11 +18,11 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		L41MNBkXkUpBYrqx4bnNm7XnXw8=
+		H7TGyZ1RJFbmiDg99e66h92vPqQ=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
-		0EDGsHB/SEa1TbSwRVRaUzpUFA0=
+		oKw+xktAhzRQIk9cx4ELyI7apoE=
 		</data>
 		<key>Resources/frontend/batch-replay.js</key>
 		<data>
@@ -50,7 +50,7 @@
 		</data>
 		<key>Resources/frontend/card-image-cache.js</key>
 		<data>
-		//ReSy5dxHLznLDDjvkcNd5YujI=
+		wAOkz4Synw6jGgn/9GaEWx2q+2g=
 		</data>
 		<key>Resources/frontend/card-locations.js</key>
 		<data>
@@ -62,7 +62,7 @@
 		</data>
 		<key>Resources/frontend/card-search.worker.js</key>
 		<data>
-		I/3WsPV4iaXqSZBgUvzw4jiJ86g=
+		1t5KNRmaIdJ4QOYOfGxGfl9xBxI=
 		</data>
 		<key>Resources/frontend/card-tool-state-retention.js</key>
 		<data>
@@ -118,7 +118,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		72yvOtndoBmVZqjXbdyIVPIKXm8=
+		Jrg/MH6dGd4pb/7XoOLSQx6hvJs=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -146,7 +146,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		nSpSY5JPT39ulearC5QG/oDzOT4=
+		UKGVjQTwXL0odB/Ew4aDVvQX6S0=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -154,7 +154,7 @@
 		</data>
 		<key>Resources/frontend/shared-policy.js</key>
 		<data>
-		NLXs8PjB5kngQecK2Fs/kHvRw5I=
+		HxeK+ZXP6UlrBTK/sPBu/7b0E3E=
 		</data>
 		<key>Resources/frontend/snapshot-validation.js</key>
 		<data>
@@ -182,19 +182,19 @@
 		</data>
 		<key>Resources/frontend/topic-search.worker.js</key>
 		<data>
-		AOEwT3MYqksDFbsWHeNebq9UiUQ=
+		Ufoq5+8ehNICn6M38GUUFS6CU08=
 		</data>
 		<key>Resources/frontend/topic-semantic.js</key>
 		<data>
-		tlIFd2e69AlYAudil9HPPI8XQwE=
+		RlOC/Egj5xHcxccyRB+MukmvqM4=
 		</data>
 		<key>Resources/frontend/video-metadata.js</key>
 		<data>
-		Or3qdvdLz0hwYoMEe0jc89lTUjU=
+		BVC8j8E6EZxjzIUlWchwHtsMVvY=
 		</data>
 		<key>Resources/frontend/video-semantic.js</key>
 		<data>
-		HTguM44TZYypswjR/SHws2v6ldI=
+		df1pFmqBCBb60x9787V1Lo2iV2Y=
 		</data>
 		<key>Resources/frontend/video-source-index.js</key>
 		<data>
@@ -226,7 +226,7 @@
 		</data>
 		<key>Resources/frontend/youtube-search.worker.js</key>
 		<data>
-		1IZwqq9tx5f18UVWKXIN6rqFJkA=
+		0d3CCwL84F+xddlwJSq9UmTdd5s=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -256,14 +256,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			23d9A05edfwxqeoW6N2Yn0n/QD0F3d7Yx842LmPi79c=
+			dsixoQWZqhPFXE2ECnewrlsKsdvtCMqnQdehn73ue4Y=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			ufRHq09utZFQhdVlBy2GHDhN68adXtU9epZaKViyvAI=
+			2ROLF7U9gRLw8xCClYqlSJgsOfyIRuSv2HiMLF6Zuu0=
 			</data>
 		</dict>
 		<key>Resources/frontend/batch-replay.js</key>
@@ -312,7 +312,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			E8w5RjyvE6eLX+etv/gY3OM65n+RTqqz4TdvhOCToNY=
+			xuttwX3KmXYECpjU7u32zTSeNFvQT5cRe2liftmigrI=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-locations.js</key>
@@ -333,7 +333,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			IXy6AyNdT3+bgSOlMHyl6msSRO4h3j87jzlbLFwVpYo=
+			G/NWvDpfZvc41OyIFGBJhWLT871caGLV968oHLw5Ptk=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-tool-state-retention.js</key>
@@ -431,7 +431,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			gdbMEZfRaICrDkRolO9A+yyS8y9uwFWIfhsOGE3MSew=
+			w/TlT2e8bkw3z3UV0HFYgTupL/RozmrCHx/4mGxrIes=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -480,7 +480,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			6+gzSvSTYaf9af98rgpiAeIaCOuL2UO371lUGEBaWSk=
+			HPt2C6iRyJMA6/gBzdztpbivzVhyi2I4ZeMW2rY+aD8=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -494,7 +494,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			tKaIrmhOMZB/HlGWZUzK1JFDxzWOaH3LxWch0OnJFW0=
+			lRzyjeUhUwU68N2Z05QjWcv+4sR1pxI7NbQPq/AfqjM=
 			</data>
 		</dict>
 		<key>Resources/frontend/snapshot-validation.js</key>
@@ -543,28 +543,28 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			j6fOzmhYsMINvJ/Em5iAP5c9rP3jAKpBmnnV/qNZMQI=
+			/jQOeAzv3yw3w+YdHxD5pj6yZo7yZcW8sgJEmRtdsN0=
 			</data>
 		</dict>
 		<key>Resources/frontend/topic-semantic.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			9m3T/ZqjtfWVp0j/DX6yb6GVEI7gC7m/fGU97hel6MA=
+			ClZS7fK8d0Ju8V2WP9m48+pmgExWktWEihqxqdWK00w=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-metadata.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			NhoeDIy9eyPAEPrQphHyW22U6sNKTmD2UrgkVnsbrUg=
+			qRCwB8gFxGv+Gt6aDTJAn8rIugi7i79MshB+BYUjyjg=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-semantic.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			VdYpY7kzAzjWlJ0K1aI1CauQ9qQVwlEVhlFYYQGEORg=
+			QXrhdIzQDmXZcoBjtB6lriZurK39N8yZEBvT6gR97GQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-source-index.js</key>
@@ -620,7 +620,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			LpQYn6CB0LmTR5uTEX7A0+nsj0Fd1NNToyUd7/xysJM=
+			YAhwYs5gRDeUe8+UaTHRdFp+CTZoWgDOg3TiTUlUU48=
 			</data>
 		</dict>
 	</dict>

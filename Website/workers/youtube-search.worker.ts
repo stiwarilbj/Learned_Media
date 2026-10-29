@@ -2,6 +2,7 @@
 import { SessionCache } from "@/lib/session-cache";
 import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
 import type { SearchableVideoMetadata } from "@/lib/video-metadata";
+import { runBackgroundSlice } from "@/lib/background-work";
 import { indexVideoSearchMetadata, isValidVideoSearchRequest, validateVideoSearchCatalogUpdate, insertBoundedRanked, nextSemanticSearchChunkSize, SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
 
 type SearchRequest = {
@@ -132,10 +133,6 @@ function pageFromSession(session: SearchSession, excludedIds: ReadonlySet<string
   return session.fallbackComplete ? fallback : undefined;
 }
 
-function yieldToWorker() {
-  return new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
-
 function rankingNow() {
   return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
 }
@@ -186,28 +183,29 @@ async function search(request: SearchRequest) {
   let chunkSize = SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
   while (start < catalog.length) {
     if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
-    const beganAt = rankingNow();
-    const end = Math.min(catalog.length, start + chunkSize);
-    const batch = catalog.slice(start, end);
-    const positions = new Map(batch.map((video, index) => [video.id, start + index]));
-    // The ranker returns direct and fallback results in one list. Ask for the
-    // whole chunk before splitting those groups; a fixed 2N window could be
-    // filled by fallback candidates and hide a lower-ranked direct match.
-    const matches = searchPreparedSemanticVideos(batch, prepared, batch.length, excludedIds);
-    for (const match of matches) {
-      const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: positions.get(match.video.id)! };
-      const isFallback = match.matchedFields.includes("semantic-fallback");
-      if (isFallback) fallbackMatchCount++;
-      else directMatchCount++;
-      insertBoundedRanked(isFallback ? fallback : direct, entry, buildSession ? sessionLimit : resultLimit, compareEntries);
-    }
-    const elapsed = rankingNow() - beganAt;
-    chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
-    start = end;
-    if (start < catalog.length) {
-      await yieldToWorker();
-      if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
-    }
+    const sliceStart = start;
+    start = await runBackgroundSlice(() => {
+      if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return sliceStart;
+      const beganAt = rankingNow();
+      const end = Math.min(catalog.length, sliceStart + chunkSize);
+      const batch = catalog.slice(sliceStart, end);
+      const positions = new Map(batch.map((video, index) => [video.id, sliceStart + index]));
+      // The ranker returns direct and fallback results in one list. Ask for
+      // the whole chunk before splitting those groups; a fixed 2N window could be
+      // filled by fallback candidates and hide a lower-ranked direct match.
+      const matches = searchPreparedSemanticVideos(batch, prepared, batch.length, excludedIds);
+      for (const match of matches) {
+        const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: positions.get(match.video.id)! };
+        const isFallback = match.matchedFields.includes("semantic-fallback");
+        if (isFallback) fallbackMatchCount++;
+        else directMatchCount++;
+        insertBoundedRanked(isFallback ? fallback : direct, entry, buildSession ? sessionLimit : resultLimit, compareEntries);
+      }
+      const elapsed = rankingNow() - beganAt;
+      chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
+      return end;
+    }, { priority: "interactive", canPause: true });
+    if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
   }
   const session: SearchSession | undefined = buildSession ? {
     direct: direct.map(({ candidate }) => candidate),

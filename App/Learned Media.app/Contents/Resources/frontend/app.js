@@ -3290,7 +3290,7 @@
     if(key!==nativeCardSearchKey){
       nativeCardSearchKey=key;const id=++nativeCardJob;
       if(nativeCardWorker)nativeCardWorker.postMessage({type:"search",requestId:id,revision:nativeCardRevision,query:state.query,eligibilityScope:eligibility.scope,eligibilityRevision:eligibility.revision,viewKey:key});
-      else (async function(){const result=[];for(let index=0;index<cards.length;index++){if(id!==nativeCardJob)return;const card=cards[index],score=shared.search.searchScoreNormalized(query,shared.search.normalizeSearchText(nativeIndexedCards.get(card.id)||""));if(score>0)result.push({id:card.id,index:index,score:score});if(index%100===99)await new Promise(function(resolve){setTimeout(resolve,0);});}if(id===nativeCardJob){result.sort(function(a,b){return b.score-a.score || a.index-b.index;});nativeCardResultIds=result.map(function(item){return item.id;});nativeCardResultKey=key;render();}})();
+      else (async function(){const result=[];let start=0;while(start<cards.length){if(id!==nativeCardJob)return;const sliceStart=start;start=await window.LEARNED_MEDIA_BACKGROUND.runBackgroundSlice(function(){let index=sliceStart;const beganAt=performance.now();while(index<cards.length&&index-sliceStart<100&&performance.now()-beganAt<4){if(id!==nativeCardJob)return index;const card=cards[index],score=shared.search.searchScoreNormalized(query,shared.search.normalizeSearchText(nativeIndexedCards.get(card.id)||""));if(score>0)result.push({id:card.id,index:index,score:score});index++;}return index;},{priority:"interactive",canPause:true});}if(id===nativeCardJob){result.sort(function(a,b){return b.score-a.score || a.index-b.index;});nativeCardResultIds=result.map(function(item){return item.id;});nativeCardResultKey=key;render();}})();
     }
     if(nativeCardResultKey!==key)return [];
     const byId=new Map(cards.map(function(card){return [card.id,card];}));return nativeCardResultIds.map(function(id){return byId.get(id);}).filter(Boolean);
@@ -3885,13 +3885,16 @@
         try {
           const result = await request;
           if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || (job.card.displayModeOverride || state.settings.displayMode) === "text" || !result || !result.image) continue;
-          const current = state.cards.find(function (item) { return item.id === result.cardId; });
-          if (!current) continue;
-          current.image = result.image;
-          saveState();
-          var scrollTop = window.scrollY;
-          render();
-          window.scrollTo(0, scrollTop);
+          await window.LEARNED_MEDIA_BACKGROUND.runBackgroundSlice(function () {
+            if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || (job.card.displayModeOverride || state.settings.displayMode) === "text") return;
+            const current = state.cards.find(function (item) { return item.id === result.cardId; });
+            if (!current) return;
+            current.image = result.image;
+            saveState();
+            var scrollTop = window.scrollY;
+            render();
+            window.scrollTo(0, scrollTop);
+          }, { priority: "visible", canPause: true });
         } catch (_) {
           // Images are optional and do not affect the completed text cards.
         } finally {

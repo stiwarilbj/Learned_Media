@@ -1,5 +1,6 @@
 import { searchTextForms, protectedSearchTerms, contextualSearchText } from "./search";
 import type { SearchableVideoMetadata } from "./video-metadata";
+import { runBackgroundSlice } from "./background-work";
 /** Shared, dependency-free search policy. The native runtime is generated from this file. */
 export type VideoSearchPlan = {
   terms?: string[]; include?: string[]; alternatives?: string[]; exclude?: string[];
@@ -713,16 +714,15 @@ export async function searchPreparedSemanticVideosYielding<T extends Video>(vide
   let chunkSize = SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
   while (start < videos.length) {
     if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
-    const beganAt = semanticSearchNow();
-    const end = Math.min(videos.length, start + chunkSize);
-    matches.push(...searchPreparedSemanticVideos(videos.slice(start,end),prepared,limit,excludedIds));
-    const elapsed = semanticSearchNow() - beganAt;
-    chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
-    start = end;
-    if (start < videos.length) {
-      await new Promise((resolve)=>setTimeout(resolve,0));
-      if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
-    }
+    start = await runBackgroundSlice(() => {
+      const beganAt = semanticSearchNow();
+      const end = Math.min(videos.length, start + chunkSize);
+      matches.push(...searchPreparedSemanticVideos(videos.slice(start,end),prepared,limit,excludedIds));
+      const elapsed = semanticSearchNow() - beganAt;
+      chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
+      return end;
+    }, { priority: "interactive", canPause: true, signal });
+    if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
   }
   if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
   return matches.sort((a,b)=>compareSemanticCandidates(a,b,prepared.sort)).slice(0,limit);

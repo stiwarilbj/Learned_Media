@@ -8,6 +8,7 @@ Module._extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(readFileSync(f,'u
 const engine=require('../lib/topic-suggestions.ts'),{createDefaultTopics}=require('../lib/demo-data.ts'),{flattenTopics,migrateTopicTree}=require('../lib/topic-catalog.ts');
 const topics=flattenTopics(createDefaultTopics()),index=engine.createTopicSuggestionIndex(topics);
 const labels=r=>r.suggestions.map(s=>s.label),matched=r=>r.matchedIds.map(id=>index.byId.get(id).topic.label);
+function loadNativeTopicRuntime(){const scope={performance,setTimeout,clearTimeout,AbortController,DOMException};scope.globalThis=scope;vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/background-work.js',import.meta.url),'utf8'),scope);vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);return scope;}
 test('paraphrases match meaning in dropdown and tree without original words',()=>{const r=engine.searchTopicIndex(index,'why does the ground shake');assert.ok(r.completeCoverage);assert.ok(matched(r).includes('Earthquakes'));assert.equal(r.suggestions.length,100);assert.equal(new Set(r.suggestions.map(s=>s.id)).size,100);assert.ok(r.suggestions.every(s=>s.group!=='keyword'));assert.ok(r.visibleIds.length>r.matchedIds.length);});
 test('geographic context prioritizes Japanese earthquakes and excludes other countries from tree',()=>{const r=engine.searchTopicIndex(index,'earthquakes in Japan');assert.ok(labels(r).slice(0,5).includes('2011 Tōhoku Earthquake'));assert.ok(matched(r).includes('1923 Great Kantō Earthquake'));assert.ok(!matched(r).includes('2023 Turkey–Syria Earthquakes'));assert.ok(!matched(r).includes('Japan'));});
 test('AND coverage, partial recommendations and whole either/or clauses are distinct',()=>{const and=engine.searchTopicIndex(index,'earthquakes and psychology');assert.equal(and.completeCoverage,false);assert.equal(and.matchedIds.length,0);assert.ok(and.suggestions.some(s=>s.group==='broader'));const or=engine.searchTopicIndex(index,'earthquakes in Japan or volcanoes in Italy');assert.ok(matched(or).includes('2011 Tōhoku Earthquake'));assert.ok(!matched(or).includes('Japan'));assert.ok(!matched(or).includes('2023 Turkey–Syria Earthquakes'));});
@@ -15,7 +16,7 @@ test('unrelated input uses Explore more and cannot appear in tree',()=>{const r=
 test('keywords remain first and accents/capitalization/whitespace retain ordering',()=>{const a=engine.searchTopicIndex(index,'earthquake');assert.ok(a.suggestions[0].group==='keyword');const firstRelated=a.suggestions.findIndex(s=>s.group==='related');assert.ok(firstRelated<=10);assert.deepEqual(engine.searchTopicIndex(index,'  EARTHQUAKE  ').suggestions,a.suggestions);assert.deepEqual(engine.searchTopicIndex(index,'Tohoku').suggestions,engine.searchTopicIndex(index,'Tōhoku').suggestions);assert.ok(engine.searchTopicIndex(index,'tectonic').completeCoverage);});
 test('custom topics and parent paths share the same index and contain no fact slots',()=>{const custom={id:'custom',label:'Quantum Gardens',path:['Custom','Quantum Gardens'],aliases:['imaginary horticulture'],custom:true};const r=engine.searchTopicIndex(engine.createTopicSuggestionIndex([...topics,custom]),'imaginary horticulture');assert.equal(r.suggestions[0].id,'custom');assert.ok(r.matchedIds.includes('custom'));assert.equal(r.suggestions.length,100);});
 test('custom topic IDs preserve punctuation-distinct labels and normalized duplicates',()=>{
- const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ const scope=loadNativeTopicRuntime();
  for(const search of [engine,scope.LEARNED_MEDIA_TOPIC_SEARCH]) {
   const ids=[];
   const plus=search.createCustomTopicId('C++',ids);ids.push(plus);
@@ -45,8 +46,9 @@ test('legacy custom-topic migration preserves available IDs and repairs slug col
  assert.equal(custom.filter(topic=>engine.normalizeCustomTopicLabel(topic.label)==='full width').length,1);
 });
 test('structured interpretations preserve each required idea and bound malformed output',()=>{const plan=engine.validateTopicPlan({groups:[{label:'quakes',equivalents:['earthquakes'],related:['volcanoes']},{label:'Japan',equivalents:['Japan'],related:[]}],alternatives:false});const r=engine.searchTopicIndex(index,'unrecognized wording',plan);assert.ok(matched(r).includes('2011 Tōhoku Earthquake'));assert.ok(!matched(r).includes('Japan'));assert.deepEqual(engine.validateTopicPlan({groups:[null,{equivalents:[1,'', 'x'.repeat(121)]}]}).groups,[]);assert.equal(engine.validateTopicPlan({groups:Array(20).fill({equivalents:Array(30).fill('earthquake'),related:[]})}).groups.length,8);});
-test('shared generated Mac engine has identical matching, ordering and visibility',()=>{const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);const native=scope.LEARNED_MEDIA_TOPIC_SEARCH,nativeIndex=native.createTopicSuggestionIndex(topics);for(const q of ['why does the ground shake','earthquakes in Japan','how people think','zzzyxq'])assert.deepEqual(JSON.parse(JSON.stringify(native.searchTopicIndex(nativeIndex,q))),engine.searchTopicIndex(index,q));});
+test('shared generated Mac engine has identical matching, ordering and visibility',()=>{const scope=loadNativeTopicRuntime();const native=scope.LEARNED_MEDIA_TOPIC_SEARCH,nativeIndex=native.createTopicSuggestionIndex(topics);for(const q of ['why does the ground shake','earthquakes in Japan','how people think','zzzyxq'])assert.deepEqual(JSON.parse(JSON.stringify(native.searchTopicIndex(nativeIndex,q))),engine.searchTopicIndex(index,q));});
 test('yielding fallback cancels stale work and agrees with synchronous ranking',async()=>{let current=true;const pending=engine.searchTopicIndexYielding(index,'ground shaking',[],()=>current);current=false;assert.equal(await pending,null);const r=await engine.searchTopicIndexYielding(index,'ground shaking');assert.deepEqual(r,engine.searchTopicIndex(index,'ground shaking'));});
+test('generated Mac topic fallback uses the shared scheduler and preserves the same result',async()=>{const native=loadNativeTopicRuntime().LEARNED_MEDIA_TOPIC_SEARCH,nativeIndex=native.createTopicSuggestionIndex(topics);let current=true;const stale=native.searchTopicIndexYielding(nativeIndex,'earthquakes in Japan',[],()=>current);current=false;assert.equal(await stale,null);const result=await native.searchTopicIndexYielding(nativeIndex,'earthquakes in Japan');assert.deepEqual(JSON.parse(JSON.stringify(result)),engine.searchTopicIndex(index,'earthquakes in Japan'));});
 
 
 test('topic suggestions report coverage and complete matches precede partial recommendations',()=>{
@@ -65,7 +67,7 @@ test('topic enrichment cannot convert AND to OR or drop concepts within an expli
  const query='earthquakes in Japan or volcanoes in Italy';
  const or=engine.searchTopicIndex(index,query,{groups:[{label:'quakes',equivalents:['earthquake'],related:[]},{label:'volcanoes',equivalents:['volcano'],related:[]}],alternatives:true});
  assert.ok(matched(or).includes('2011 Tōhoku Earthquake'));assert.ok(!matched(or).includes('Japan'));assert.ok(!matched(or).includes('2023 Turkey–Syria Earthquakes'));
- const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ const scope=loadNativeTopicRuntime();
  assert.deepEqual(JSON.parse(JSON.stringify(scope.LEARNED_MEDIA_TOPIC_SEARCH.searchTopicIndex(scope.LEARNED_MEDIA_TOPIC_SEARCH.createTopicSuggestionIndex(topics),query,enrichment))),engine.searchTopicIndex(index,query,enrichment));
 });
 
@@ -101,7 +103,7 @@ test('one genuine topic match skips enrichment while a hundred fallback topics d
 
 
 test('hyphenated and spaced compounds retain prefixes and short components on web and Mac',()=>{
- const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ const scope=loadNativeTopicRuntime();
  const custom=['X-ray','X ray','Ray','Post-war','Post war','War','Non-Euclidean','Non Euclidean','Euclidean'].map((label,i)=>({id:'compound-'+i,label,path:['Custom',label]}));
  for(const search of [engine,scope.LEARNED_MEDIA_TOPIC_SEARCH]) {
   const ix=search.createTopicSuggestionIndex([...topics,...custom]);
@@ -123,7 +125,7 @@ test('hyphenated and spaced compounds retain prefixes and short components on we
 
 
 test('short aliases require context in queries and topic metadata on web and Mac',()=>{
- const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ const scope=loadNativeTopicRuntime();
  const samples=[['presidents','American Presidents'],['models','Artificial Intelligence Models'],['security','Information Technology Security'],['pronoun','Tell us about birds'],['bare','AI']].map(([id,label])=>({id,label,path:['Custom',label]}));
  for(const search of [engine,scope.LEARNED_MEDIA_TOPIC_SEARCH]) {
   const ix=search.createTopicSuggestionIndex([...topics,...samples]);
@@ -147,7 +149,7 @@ test('short aliases require context in queries and topic metadata on web and Mac
 
 
 test('common author variants find the same topic IDs without adding or mutating catalog entries',()=>{
- const scope={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/topic-semantic.js',import.meta.url),'utf8'),scope);
+ const scope=loadNativeTopicRuntime();
  const before=JSON.stringify(topics);
  for(const search of [engine,scope.LEARNED_MEDIA_TOPIC_SEARCH]) {
   const ix=search.createTopicSuggestionIndex(topics);

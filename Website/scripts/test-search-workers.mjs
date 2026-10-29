@@ -53,6 +53,11 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
   };
   const workerImport = (specifier) => {
     const imported = importFromWorker(specifier);
+    if (specifier === "@/lib/background-work") return { ...imported,
+      runBackgroundSlice: (work, options) => {
+        workerYieldCount += 1;
+        return imported.runBackgroundSlice(work, options);
+      } };
     if (specifier === "@/lib/video-semantic") return { ...imported,
       searchPreparedSemanticVideos: searchOverride ? searchOverride(imported.searchPreparedSemanticVideos) : imported.searchPreparedSemanticVideos,
       indexVideoSearchMetadata: indexOverride ? indexOverride(imported.indexVideoSearchMetadata) : imported.indexVideoSearchMetadata };
@@ -95,7 +100,11 @@ function loadNativeCardWorker() {
   const context = {
     self: { postMessage: (message) => messages.push(message) },
     setTimeout,
-    Map
+    Map,
+    importScripts(filename) {
+      const runtime = readFileSync(path.join(root, "..", "App", "Resources", "frontend", filename), "utf8");
+      vm.runInNewContext(runtime, context);
+    }
   };
   context.globalThis = context;
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "card-search.worker.js"), "utf8");

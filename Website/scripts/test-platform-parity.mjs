@@ -10,6 +10,7 @@ const require=createRequire(import.meta.url),ts=require('typescript');
 require('node:module')._extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,f);
 const web=require('../lib/topic-tree.ts'),catalog=require('../lib/topic-catalog.ts'),preferences=require('../lib/topic-preferences.ts'),youtube=require('../lib/youtube.ts'),storage=require('../lib/snapshot-validation.ts'),videoMetadata=require('../lib/video-metadata.ts');
 const scope={Map,Set,WeakMap,Date,Math,performance,TextEncoder};
+runInNewContext(readFileSync(new URL('../../App/Resources/frontend/background-work.js',import.meta.url),'utf8'),scope);
 runInNewContext(readFileSync(new URL('../../App/Resources/frontend/shared-policy.js',import.meta.url),'utf8'),scope);
 const mac=scope.LEARNED_MEDIA_SHARED,clean=x=>JSON.parse(JSON.stringify(x));
 const native=readFileSync(new URL('../../App/Resources/frontend/app.js',import.meta.url),'utf8');

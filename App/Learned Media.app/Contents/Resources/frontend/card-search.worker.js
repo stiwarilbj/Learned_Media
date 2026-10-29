@@ -1,4 +1,5 @@
 // Generated card-search worker.
+importScripts("background-work.js");
 const searchHelpers={},cache={},diagnostics={},schemaDiagnostics={};(function(exports){"use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.providerSchemaFields = void 0;
@@ -500,12 +501,13 @@ function reusableStructuredValue(value, schema) {
         default: return true;
     }
 }
-})(cache,()=>diagnostics);const exports={},require=name=>name.includes('session-cache')?cache:searchHelpers;
+})(cache,()=>diagnostics);const exports={},require=name=>name.includes('session-cache')?cache:name.includes('background-work')?globalThis.LEARNED_MEDIA_BACKGROUND:searchHelpers;
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /// <reference lib="webworker" />
 const session_cache_1 = require("@/lib/session-cache");
 const search_1 = require("@/lib/search");
+const background_work_1 = require("@/lib/background-work");
 const workerScope = self;
 const documents = new Map();
 const resultCache = new session_cache_1.SessionCache(100, 30 * 60 * 1000, 4 * 1024 * 1024);
@@ -518,9 +520,6 @@ function addDocuments(items) {
 }
 function cacheResult(key, value) {
     resultCache.set(key, value);
-}
-function yieldToWorker() {
-    return new Promise((resolve) => setTimeout(resolve, 0));
 }
 async function search(request) {
     if (request.revision !== revision)
@@ -539,21 +538,32 @@ async function search(request) {
         return;
     }
     const ranked = [];
-    for (let index = 0; index < eligibility.ids.length; index += 1) {
+    for (let index = 0; index < eligibility.ids.length;) {
         if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
             return;
-        const id = eligibility.ids[index];
-        const text = documents.get(id);
-        if (text === undefined)
-            continue;
-        const score = (0, search_1.searchScoreNormalized)(normalizedQuery, text);
-        if (score > 0)
-            ranked.push({ id, index, score });
-        if (index > 0 && index % 400 === 0) {
-            await yieldToWorker();
-            if (request.requestId !== latestRequestId || request.revision !== revision || activeEligibility !== eligibility)
-                return;
-        }
+        const start = index;
+        const next = await (0, background_work_1.runBackgroundSlice)(() => {
+            let position = start;
+            const beganAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+            while (position < eligibility.ids.length && position - start < 400 && (typeof performance !== "undefined" ? performance.now() : Date.now()) - beganAt < 4) {
+                if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
+                    return position;
+                const id = eligibility.ids[position];
+                const text = documents.get(id);
+                if (text !== undefined) {
+                    const score = (0, search_1.searchScoreNormalized)(normalizedQuery, text);
+                    if (score > 0)
+                        ranked.push({ id, index: position, score });
+                }
+                position += 1;
+            }
+            return position;
+        }, { priority: "interactive", canPause: true });
+        if (request.requestId !== latestRequestId || request.revision !== revision || activeEligibility !== eligibility)
+            return;
+        if (next <= start)
+            return;
+        index = next;
     }
     if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
         return;

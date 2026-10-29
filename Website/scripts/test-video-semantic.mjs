@@ -7,7 +7,7 @@ const require=createRequire(import.meta.url), Module=require('node:module'), ts=
 Module._extensions['.ts']=(module,filename)=>module._compile(ts.transpileModule(readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,filename);
 const engine=require('../lib/video-semantic.ts');
 const metadata=require('../lib/video-metadata.ts');
-const native={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/video-semantic.js',import.meta.url),'utf8'),native);
+const native={performance,setTimeout,clearTimeout,AbortController,DOMException};native.globalThis=native;vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/background-work.js',import.meta.url),'utf8'),native);vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/video-semantic.js',import.meta.url),'utf8'),native);
 const nativeMetadata={};vm.runInNewContext(readFileSync(new URL('../../App/Resources/frontend/video-metadata.js',import.meta.url),'utf8'),nativeMetadata);
 const defaults={channelId:'c1',channelName:'Approved Science',description:'',tags:[],topics:['Science'],publishedAt:'2024-05-01T12:00:00Z',durationSeconds:600,approved:true};
 const video=(id,title,extra={})=>({...defaults,id,title,...extra});
@@ -162,6 +162,8 @@ test('yielding fallback cancels obsolete scans and preserves ordering',async()=>
  const work=engine.searchSemanticVideosYielding(catalog,plan,'All',undefined,80,[],controller.signal);controller.abort();
  await assert.rejects(work,{name:'AbortError'});
  assert.deepEqual(await engine.searchSemanticVideosYielding(catalog,plan),engine.searchSemanticVideos(catalog,plan));
+ const nativeYielded=await native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideosYielding(catalog,plan);
+ assert.deepEqual(JSON.parse(JSON.stringify(nativeYielded)),JSON.parse(JSON.stringify(native.LEARNED_MEDIA_VIDEO_SEARCH.searchSemanticVideos(catalog,plan))),'generated Mac fallback uses the shared scheduler without changing rank order');
 });
 test('adaptive semantic slices react to elapsed time and stay within fixed bounds',()=>{
  assert.equal(engine.nextSemanticSearchChunkSize(64,64),32,'slow slices shrink toward the lower bound');

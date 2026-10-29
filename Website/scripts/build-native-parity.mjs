@@ -6,6 +6,7 @@ import { writeFileSync } from './generated-output.mjs';
 const root = fileURLToPath(new URL('../lib/', import.meta.url));
 const modules = new Map();
 function bundle(name) {
+  if (name === 'background-work') return;
   if (modules.has(name)) return;
   const filename = path.join(root, name + '.ts');
   const source = readFileSync(filename, 'utf8');
@@ -13,7 +14,8 @@ function bundle(name) {
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
   for (const match of code.matchAll(/require\("(.+?)"\)/g)) {
     if (!match[1].startsWith('.')) throw new Error('Unexpected shared runtime dependency: ' + match[1]);
-    bundle(path.posix.normalize(path.posix.join(path.posix.dirname(name), match[1])));
+    const dependency = path.posix.normalize(path.posix.join(path.posix.dirname(name), match[1]));
+    if (dependency !== 'background-work') bundle(dependency);
   }
   modules.set(name, code);
 }
@@ -26,7 +28,7 @@ const statements = source.statements.filter(node => names.has(node.name?.text) |
 const pure = statements.map(node=>node.getText(source)).join('\n') + '\nexport {isYouTubeShortMetadata};';
 modules.set('youtube-policy',ts.transpileModule(pure,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText);
 const definitions = [...modules].map(([name, code])=>JSON.stringify(name)+':function(module,exports,require){\n'+code+'\n}').join(',\n');
-const output = `// Generated from the website's finalized catalogs and pure policies.\n(function(scope){const modules={${definitions}},cache={};function load(name){if(cache[name])return cache[name].exports;const module=cache[name]={exports:{}};modules[name](module,module.exports,function(relative){const parts=name.split('/');parts.pop();for(const part of relative.split('/')){if(part==='..')parts.pop();else if(part!=='.')parts.push(part);}return load(parts.join('/'));});return module.exports;}scope.LEARNED_MEDIA_SHARED=Object.assign({},load('topic-catalog'),load('topic-tree'),load('topic-preferences'),load('demo-data'),{search:load('search'),cards:load('card-search-text'),youtube:load('youtube-policy')});})(globalThis);\n`;
+const output = `// Generated from the website's finalized catalogs and pure policies.\n(function(scope){const modules={${definitions}},cache={};function load(name){if(name==='background-work')return scope.LEARNED_MEDIA_BACKGROUND;if(cache[name])return cache[name].exports;const module=cache[name]={exports:{}};modules[name](module,module.exports,function(relative){const parts=name.split('/');parts.pop();for(const part of relative.split('/')){if(part==='..')parts.pop();else if(part!=='.')parts.push(part);}return load(parts.join('/'));});return module.exports;}scope.LEARNED_MEDIA_SHARED=Object.assign({},load('topic-catalog'),load('topic-tree'),load('topic-preferences'),load('demo-data'),{search:load('search'),cards:load('card-search-text'),youtube:load('youtube-policy')});})(globalThis);\n`;
 writeFileSync(new URL('../../App/Resources/frontend/shared-policy.js',import.meta.url),output);
 // The native card worker uses precisely the website ranking and cache protocol.
 const searchCode = modules.get('search');
@@ -34,4 +36,4 @@ const cacheCode = ts.transpileModule(readFileSync(path.join(root,'session-cache.
 const diagnosticsCode = ts.transpileModule(readFileSync(path.join(root,'performance-diagnostics.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
 const schemaDiagnosticsCode = ts.transpileModule(readFileSync(path.join(root,'provider-schema-diagnostics.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
 const worker = ts.transpileModule(readFileSync(new URL('../workers/card-search.worker.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
-writeFileSync(new URL('../../App/Resources/frontend/card-search.worker.js',import.meta.url),`// Generated card-search worker.\nconst searchHelpers={},cache={},diagnostics={},schemaDiagnostics={};(function(exports){${schemaDiagnosticsCode}})(schemaDiagnostics);(function(exports,require){${diagnosticsCode}})(diagnostics,()=>schemaDiagnostics);(function(exports){${searchCode}})(searchHelpers);(function(exports,require){${cacheCode}})(cache,()=>diagnostics);const exports={},require=name=>name.includes('session-cache')?cache:searchHelpers;\n${worker}`);
+writeFileSync(new URL('../../App/Resources/frontend/card-search.worker.js',import.meta.url),`// Generated card-search worker.\nimportScripts("background-work.js");\nconst searchHelpers={},cache={},diagnostics={},schemaDiagnostics={};(function(exports){${schemaDiagnosticsCode}})(schemaDiagnostics);(function(exports,require){${diagnosticsCode}})(diagnostics,()=>schemaDiagnostics);(function(exports){${searchCode}})(searchHelpers);(function(exports,require){${cacheCode}})(cache,()=>diagnostics);const exports={},require=name=>name.includes('session-cache')?cache:name.includes('background-work')?globalThis.LEARNED_MEDIA_BACKGROUND:searchHelpers;\n${worker}`);

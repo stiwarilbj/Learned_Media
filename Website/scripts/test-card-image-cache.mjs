@@ -13,6 +13,7 @@ Module._extensions[".ts"] = (module, filename) => {
 const sourceApi = require("../lib/card-image-cache.ts");
 const generatedContext = { console, URL, AbortController, DOMException, setTimeout, clearTimeout };
 generatedContext.globalThis = generatedContext;
+vm.runInNewContext(readFileSync(new URL("../../App/Resources/frontend/background-work.js", import.meta.url), "utf8"), generatedContext);
 vm.runInNewContext(readFileSync(new URL("../../App/Resources/frontend/card-image-cache.js", import.meta.url), "utf8"), generatedContext);
 const generatedApi = generatedContext.LEARNED_MEDIA_CARD_IMAGE_CACHE;
 
@@ -127,4 +128,38 @@ async function testCache(api, label) {
 
 await testCache(sourceApi, "website");
 await testCache(generatedApi, "Mac runtime");
+
+async function testScheduledDecode(api, scheduler, scope, label) {
+  const previousFetch = scope.fetch, previousDecode = scope.createImageBitmap;
+  try {
+    scope.fetch = async () => ({ ok: true, blob: async () => ({}) });
+    for (const cancelAtStart of [false, true]) {
+      let resolveDecode, markStarted, lease;
+      const started = new Promise(resolve => { markStarted = resolve; });
+      scope.createImageBitmap = () => {
+        const pending = new Promise(resolve => { resolveDecode = resolve; });
+        if (cancelAtStart) lease.release();
+        markStarted();
+        return pending;
+      };
+      const cache = new api.DecodedCardImageCache();
+      lease = cache.acquire("ws", "https://images.test/scheduled");
+      const canceled = assert.rejects(lease.image, error => error?.name === "AbortError");
+      await started;
+      assert.equal(await scheduler.runBackgroundSlice(() => "search-ready", { priority: "interactive" }), "search-ready", `${label}: pending decoding leaves the CPU queue available`);
+      if (!cancelAtStart) lease.release();
+      await canceled;
+      const lateImage = bitmap();
+      resolveDecode(lateImage);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(lateImage.closed, true, `${label}: cancellation ${cancelAtStart ? "during decode startup" : "during decoding"} closes the late bitmap`);
+    }
+  } finally {
+    scope.fetch = previousFetch;
+    scope.createImageBitmap = previousDecode;
+  }
+}
+
+await testScheduledDecode(sourceApi, require("../lib/background-work.ts"), globalThis, "website");
+await testScheduledDecode(generatedApi, generatedContext.LEARNED_MEDIA_BACKGROUND, generatedContext, "Mac runtime");
 console.log("Decoded card image cache lifecycle passed for website and generated Mac runtime.");

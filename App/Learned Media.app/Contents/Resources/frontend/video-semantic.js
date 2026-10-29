@@ -136,7 +136,7 @@ function rankSearchResults(query, items, getText, limit = items.length) {
         .map((entry) => entry.item);
 }
 
-})(search); const require = () => search; const exports = {};
+})(search); const require = name => name.includes('background-work') ? scope.LEARNED_MEDIA_BACKGROUND : search; const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SEMANTIC_SEARCH_MAX_CHUNK_SIZE = exports.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE = exports.SEMANTIC_SEARCH_MIN_CHUNK_SIZE = exports.SEMANTIC_SEARCH_SLICE_BUDGET_MS = exports.PreparedVideoSearchCache = exports.VIDEO_SEMANTIC_VERSION = exports.MAX_VIDEO_SEARCH_RESULT_LIMIT = exports.VIDEO_SEARCH_TOPICS = void 0;
@@ -160,6 +160,7 @@ exports.searchPreparedSemanticVideosYielding = searchPreparedSemanticVideosYield
 exports.videoSearchReason = videoSearchReason;
 exports.shouldEnrichVideoSearch = shouldEnrichVideoSearch;
 const search_1 = require("./search");
+const background_work_1 = require("./background-work");
 exports.VIDEO_SEARCH_TOPICS = ["History", "Politics", "Geography", "Science", "Nature", "Mathematics", "Literature", "Sports", "Culture", "Technology"];
 exports.MAX_VIDEO_SEARCH_RESULT_LIMIT = 10_000;
 const MAX_VIDEO_SEARCH_QUERY_LENGTH = 4_096;
@@ -890,17 +891,16 @@ async function searchPreparedSemanticVideosYielding(videos, prepared, limit = 80
     while (start < videos.length) {
         if (signal?.aborted)
             throw new DOMException("Search canceled", "AbortError");
-        const beganAt = semanticSearchNow();
-        const end = Math.min(videos.length, start + chunkSize);
-        matches.push(...searchPreparedSemanticVideos(videos.slice(start, end), prepared, limit, excludedIds));
-        const elapsed = semanticSearchNow() - beganAt;
-        chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
-        start = end;
-        if (start < videos.length) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            if (signal?.aborted)
-                throw new DOMException("Search canceled", "AbortError");
-        }
+        start = await (0, background_work_1.runBackgroundSlice)(() => {
+            const beganAt = semanticSearchNow();
+            const end = Math.min(videos.length, start + chunkSize);
+            matches.push(...searchPreparedSemanticVideos(videos.slice(start, end), prepared, limit, excludedIds));
+            const elapsed = semanticSearchNow() - beganAt;
+            chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
+            return end;
+        }, { priority: "interactive", canPause: true, signal });
+        if (signal?.aborted)
+            throw new DOMException("Search canceled", "AbortError");
     }
     if (signal?.aborted)
         throw new DOMException("Search canceled", "AbortError");

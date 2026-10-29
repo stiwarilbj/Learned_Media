@@ -134,7 +134,7 @@ function rankSearchResults(query, items, getText, limit = items.length) {
         .slice(0, limit)
         .map((entry) => entry.item);
 }
-})(search);const exports={};const require=()=>search;"use strict";
+})(search);const exports={};const require=name=>name.includes("background-work")?scope.LEARNED_MEDIA_BACKGROUND:search;"use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TOPIC_SEARCH_VERSION = void 0;
 exports.normalizeCustomTopicLabel = normalizeCustomTopicLabel;
@@ -150,6 +150,7 @@ exports.searchTopicIndex = searchTopicIndex;
 exports.suggestTopics = suggestTopics;
 exports.searchTopicIndexYielding = searchTopicIndexYielding;
 const search_1 = require("./search");
+const background_work_1 = require("./background-work");
 exports.TOPIC_SEARCH_VERSION = 8;
 /** Compare user-created topic labels without turning punctuation into collisions. */
 function normalizeCustomTopicLabel(label) {
@@ -458,13 +459,23 @@ function suggestTopics(index, query, enrichment = []) { return searchTopicIndex(
 async function searchTopicIndexYielding(index, query, enrichment = [], isCurrent = () => true) {
     query = (0, search_1.contextualSearchText)(query);
     const plan = planFor(query, enrichment), ranked = [];
-    for (let start = 0; start < index.entries.length; start += 400) {
+    for (let start = 0; start < index.entries.length;) {
         if (!isCurrent())
             return null;
-        for (const e of index.entries.slice(start, start + 400))
-            ranked.push(rank(e, query, plan));
-        if (start + 400 < index.entries.length)
-            await new Promise(r => setTimeout(r, 0));
+        const next = await (0, background_work_1.runBackgroundSlice)(() => {
+            let position = start;
+            const beganAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+            while (position < index.entries.length && position - start < 400 && (typeof performance !== "undefined" ? performance.now() : Date.now()) - beganAt < 4) {
+                if (!isCurrent())
+                    return start;
+                ranked.push(rank(index.entries[position], query, plan));
+                position += 1;
+            }
+            return position;
+        }, { priority: "interactive", canPause: true });
+        if (next === start)
+            return null;
+        start = next;
     }
     return isCurrent() ? finalize(index, query, ranked) : null;
 }

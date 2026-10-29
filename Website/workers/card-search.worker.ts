@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import { SessionCache } from "@/lib/session-cache";
 import { normalizeSearchText, searchScoreNormalized } from "@/lib/search";
+import { runBackgroundSlice } from "@/lib/background-work";
 
 type SearchDocument = { id: string; text: string };
 type Request =
@@ -26,10 +27,6 @@ function cacheResult(key: string, value: string[]) {
   resultCache.set(key, value);
 }
 
-function yieldToWorker() {
-  return new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
-
 async function search(request: Extract<Request, { type: "search" }>) {
   if (request.revision !== revision) return;
   const eligibility = activeEligibility;
@@ -46,17 +43,27 @@ async function search(request: Extract<Request, { type: "search" }>) {
     return;
   }
   const ranked: Array<{ id: string; index: number; score: number }> = [];
-  for (let index = 0; index < eligibility.ids.length; index += 1) {
+  for (let index = 0; index < eligibility.ids.length;) {
     if (request.requestId !== latestRequestId || activeEligibility !== eligibility) return;
-    const id = eligibility.ids[index];
-    const text = documents.get(id);
-    if (text === undefined) continue;
-    const score = searchScoreNormalized(normalizedQuery, text);
-    if (score > 0) ranked.push({ id, index, score });
-    if (index > 0 && index % 400 === 0) {
-      await yieldToWorker();
-      if (request.requestId !== latestRequestId || request.revision !== revision || activeEligibility !== eligibility) return;
-    }
+    const start = index;
+    const next = await runBackgroundSlice(() => {
+      let position = start;
+      const beganAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+      while (position < eligibility.ids.length && position - start < 400 && (typeof performance !== "undefined" ? performance.now() : Date.now()) - beganAt < 4) {
+        if (request.requestId !== latestRequestId || activeEligibility !== eligibility) return position;
+        const id = eligibility.ids[position];
+        const text = documents.get(id);
+        if (text !== undefined) {
+          const score = searchScoreNormalized(normalizedQuery, text);
+          if (score > 0) ranked.push({ id, index: position, score });
+        }
+        position += 1;
+      }
+      return position;
+    }, { priority: "interactive", canPause: true });
+    if (request.requestId !== latestRequestId || request.revision !== revision || activeEligibility !== eligibility) return;
+    if (next <= start) return;
+    index = next;
   }
   if (request.requestId !== latestRequestId || activeEligibility !== eligibility) return;
   ranked.sort((left, right) => right.score - left.score || left.index - right.index);
