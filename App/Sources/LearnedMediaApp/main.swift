@@ -1695,7 +1695,7 @@ private final class GeminiClient {
         return "unknown"
     }
 
-    private func requestModel(_ model: String, key: String, prompt: String, schema: [String: Any], maxOutputTokens: Int = 4096, timeout: TimeInterval = 45, streaming: Bool = false, onTextChunk: ((String) -> Void)? = nil) async throws -> (text: String, resolvedModel: String?, finishReason: String?) {
+    private func requestModel(_ model: String, key: String, prompt: String, schema: [String: Any], maxOutputTokens: Int = 4096, serializedBody: Data? = nil, timeout: TimeInterval = 45, streaming: Bool = false, onTextChunk: ((String) -> Void)? = nil) async throws -> (text: String, resolvedModel: String?, finishReason: String?) {
         let method = streaming ? "streamGenerateContent?alt=sse" : "generateContent"
         let endpoint = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):\(method)")!
         var request = URLRequest(url: endpoint, timeoutInterval: timeout)
@@ -1703,7 +1703,7 @@ private final class GeminiClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(streaming ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
         request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["contents": [["role": "user", "parts": [["text": prompt]]]], "generationConfig": ["temperature": 0.92, "maxOutputTokens": max(128, min(maxOutputTokens, 65_536)), "responseMimeType": "application/json", "responseSchema": schema]])
+        request.httpBody = try serializedBody ?? GeminiRequestBodyCache.serialize(prompt: prompt, schema: schema, maxOutputTokens: maxOutputTokens, temperature: 0.92)
         PerformanceDiagnostics.shared.record(.gemini, .requestBytes, Double(request.httpBody?.count ?? 0))
         PerformanceDiagnostics.shared.record(.gemini, .requests)
         var receivedBytes = 0
@@ -1816,6 +1816,7 @@ private final class GeminiClient {
     private func performStructured(key: String, prompt: String, schema: [String: Any], stage: String, timeout: TimeInterval, allowedModels: [String]?, maxOutputTokens: Int, recover: Bool, streaming: Bool = false, onStreamAttemptStart: (() -> Void)? = nil, onStreamText: ((String) -> Void)? = nil) async throws -> (text: String, model: String, resolvedModel: String?, outcomes: [[String: Any]]) {
         var outcomes: [[String: Any]] = []
         var lastError: NativeError?
+        var requestBodies = GeminiRequestBodyCache(prompt: prompt, schema: schema, temperature: 0.92)
         if let retryAt = await scheduler.projectQuotaRetryDate() {
             throw NativeError(message: "Gemini's project quota is cooling down. Retry after the displayed time.", retryable: true, status: "rate-limited", statusCode: 429, retryAfter: retryAt.timeIntervalSinceNow)
         }
@@ -1843,7 +1844,8 @@ private final class GeminiClient {
                 do {
                     try Task.checkCancellation()
                     if streaming { onStreamAttemptStart?() }
-                    let result = try await requestModel(model, key: key, prompt: prompt, schema: schema, maxOutputTokens: attemptCapacity, timeout: timeout, streaming: streaming, onTextChunk: streaming ? onStreamText : nil)
+                    let serializedBody = try requestBodies.body(maxOutputTokens: attemptCapacity)
+                    let result = try await requestModel(model, key: key, prompt: prompt, schema: schema, maxOutputTokens: attemptCapacity, serializedBody: serializedBody, timeout: timeout, streaming: streaming, onTextChunk: streaming ? onStreamText : nil)
                     finishReason = result.finishReason ?? "UNKNOWN"
                     outputCapacity = OutputCapacity.next(attemptCapacity, finishReason: finishReason)
                     guard let object = try? StructuredResponse.parse(result.text, schema: schema), object.keys.isEmpty == false,

@@ -401,15 +401,19 @@ async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, ti
   }
 }
 
-async function requestModelText(apiKey: string, model: string, prompt: string, responseSchema: Record<string, unknown>, timeoutMs: number, maxOutputTokens: number, signal?: AbortSignal, onTextChunk?: (text: string) => void) {
+function serializeModelRequestBody(prompt: string, responseSchema: Record<string, unknown>, maxOutputTokens: number) {
+  return JSON.stringify({
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.9, maxOutputTokens, responseMimeType: "application/json", responseSchema }
+  });
+}
+
+async function requestModelText(apiKey: string, model: string, prompt: string, responseSchema: Record<string, unknown>, timeoutMs: number, maxOutputTokens: number, signal?: AbortSignal, onTextChunk?: (text: string) => void, serializedBody?: string) {
   const endpoint = GEMINI_API_ROOT + "/models/" + encodeURIComponent(model) + (onTextChunk ? ":streamGenerateContent?alt=sse" : ":generateContent");
   const { response, raw, resolvedModel: streamedModel, finishReason: streamedFinishReason, streamed } = await fetchResponseText(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", accept: onTextChunk ? "text/event-stream" : "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.9, maxOutputTokens, responseMimeType: "application/json", responseSchema }
-    })
+    body: serializedBody ?? serializeModelRequestBody(prompt, responseSchema, maxOutputTokens)
   }, timeoutMs, signal, onTextChunk);
   if (!response.ok) {
     let payload: unknown = {};
@@ -582,6 +586,17 @@ function subscribeToFlight<T>(flight: StructuredFlight, signal?: AbortSignal): P
 
 async function runStructuredRequest<T>(pool: ModelPool, apiKey: string, prompt: string, responseSchema: Record<string, unknown>, stage: GeminiModelOutcome["stage"], timeoutMs: number, signal: AbortSignal, onProgress: ((event: GeminiProgressEvent) => void) | undefined, options: StructuredRequestOptions): Promise<{ value: T; model: string; resolvedModel?: string; outcomes: GeminiModelOutcome[] }> {
   const outcomes: GeminiModelOutcome[] = [];
+  // This cache lives only for this logical operation. Its fixed prompt and schema
+  // mean output capacity is the only request-body field that can vary on retry.
+  const serializedBodies = new Map<number, string>();
+  const requestBodyFor = (maxOutputTokens: number) => {
+    let body = serializedBodies.get(maxOutputTokens);
+    if (body === undefined) {
+      body = serializeModelRequestBody(prompt, responseSchema, maxOutputTokens);
+      serializedBodies.set(maxOutputTokens, body);
+    }
+    return body;
+  };
   let lastError: GeminiFailure | undefined;
   const modelsAtStart = availableModels(pool, options.models);
   const retryAt = nextRetryAt(pool, options.models);
@@ -616,7 +631,7 @@ async function runStructuredRequest<T>(pool: ModelPool, apiKey: string, prompt: 
       let finishReason: string | undefined;
       try {
         if (options.streaming) options.onStreamAttemptStart?.();
-        const result = await requestModelText(apiKey, model, prompt, responseSchema, timeoutMs, maxOutputTokens, signal, options.streaming ? options.onStreamText : undefined);
+        const result = await requestModelText(apiKey, model, prompt, responseSchema, timeoutMs, maxOutputTokens, signal, options.streaming ? options.onStreamText : undefined, requestBodyFor(maxOutputTokens));
         finishReason = result.finishReason ?? "UNKNOWN";
         outputCapacity = nextOutputCapacity(maxOutputTokens, finishReason);
         let value: T;

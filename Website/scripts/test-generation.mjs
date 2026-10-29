@@ -169,7 +169,7 @@ function installNetworkMock(options = {}) {
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url ?? input.toString());
     const body = init.body ? JSON.parse(String(init.body)) : {};
-    state.requests.push({ url, body });
+    state.requests.push({ url, body, rawBody: typeof init.body === "string" ? init.body : "" });
     if (url.hostname === "generativelanguage.googleapis.com") {
       const model = decodeURIComponent(url.pathname.split("/models/")[1].split(":")[0]);
       const prompt = body.contents?.[0]?.parts?.[0]?.text ?? "";
@@ -401,7 +401,9 @@ test("stable slot IDs survive partial results and point back to their assigned t
 function geminiCalls(state) {
   return state.requests.filter(request => request.url.hostname === "generativelanguage.googleapis.com").map(request => ({
     model: decodeURIComponent(request.url.pathname.split("/models/")[1].split(":")[0]),
-    prompt: request.body.contents?.[0]?.parts?.[0]?.text ?? ""
+    prompt: request.body.contents?.[0]?.parts?.[0]?.text ?? "",
+    body: request.body,
+    rawBody: request.rawBody
   }));
 }
 
@@ -1120,7 +1122,29 @@ await t.test("serialized requests use a healthy primary and fall back only after
   const fallbackSession = await connectMock(fallbackState);
   const fallbackResult = await generateGeminiFacts({ ...generationArgs(fallbackSession), requestedCount: 1 });
   assert.equal(fallbackResult.completedCount, 1);
-  assert.deepEqual(geminiCalls(fallbackState).map(call => call.model), [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[1], ALLOWED_GEMINI_MODELS[1]]);
+  const fallbackCalls = geminiCalls(fallbackState);
+  assert.deepEqual(fallbackCalls.map(call => call.model), [ALLOWED_GEMINI_MODELS[0], ALLOWED_GEMINI_MODELS[1], ALLOWED_GEMINI_MODELS[1]]);
+  for (const call of fallbackCalls) {
+    const expected = JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: call.prompt }] }],
+      generationConfig: {
+        temperature: 0.9,
+        maxOutputTokens: call.body.generationConfig.maxOutputTokens,
+        responseMimeType: "application/json",
+        responseSchema: call.body.generationConfig.responseSchema
+      }
+    });
+    assert.equal(call.rawBody, expected, "the operation reuses the unchanged compact JSON payload bytes");
+  }
+  const byPrompt = new Map();
+  for (const call of fallbackCalls) {
+    const bodies = byPrompt.get(call.prompt) ?? [];
+    bodies.push(call.rawBody);
+    byPrompt.set(call.prompt, bodies);
+  }
+  for (const [prompt, bodies] of byPrompt) {
+    assert.ok(bodies.every(body => body === bodies[0]), `fallback attempts for one unchanged prompt must reuse identical payload bytes: ${prompt.slice(0, 80)}`);
+  }
   assertNoModelRepeatsWithinLogicalRequest(fallbackState);
 });
 
