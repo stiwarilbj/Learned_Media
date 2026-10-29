@@ -1749,7 +1749,7 @@
   const videoSearch = window.LEARNED_MEDIA_VIDEO_SEARCH;
   const preparedVideoSearchCache = new videoSearch.PreparedVideoSearchCache(4);
   const fallbackVideoSearchIndex = window.LEARNED_MEDIA_VIDEO_INDEX_STORAGE.createVideoSearchIndexLoader();
-  let youtubeSemanticWorker = null, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0, youtubeIndexPolicy = "";
+  let youtubeSemanticWorker = null, youtubeWorkerReady = false, youtubeSemanticWorkerFailed = false, youtubeIndexedVideos = null, youtubeIndexRevision = 0, youtubeWorkerRequest = 0, youtubeIndexPolicy = "";
   let youtubeById = new Map(), youtubeVideosByTopic = new Map([["All", []]]), youtubeVideosByChannel = new Map(), youtubeSearchController = null, youtubeSearchInFlightKey = "", youtubeSearchAutoKey = "";
   let youtubeBrowseReturn = null, restoreYoutubeBrowseScroll = false, resetYoutubePlayerScroll = false;
   const youtubeLivePlaybackCheckpoints = new Map();
@@ -1779,14 +1779,43 @@
     let newWorker = false;
     if (!youtubeSemanticWorker && !youtubeSemanticWorkerFailed && typeof Worker !== "undefined") {
       try {
-        youtubeSemanticWorker = new Worker("youtube-search.worker.js");
+        youtubeSemanticWorker = window.LEARNED_MEDIA_WORKER_RECOVERY.createRecoveringSearchWorker(function(){ return new Worker("youtube-search.worker.js"); });
         newWorker = true;
-        youtubeSemanticWorker.onmessage = function(event) { const reply=event.data; if (reply.type === "rebuild") { if (reply.revision === youtubeIndexRevision) videoSearchIndex(true); return; } const pending=youtubeWorkerPending.get(reply.requestId); if (!pending) return; youtubeWorkerPending.delete(reply.requestId); if(reply.type === "invalid") pending.reject(new Error("Invalid video search request.")); else if(reply.revision!==youtubeIndexRevision) pending.reject(new Error("Video catalog changed during search.")); else pending.resolve(reply.candidates.flatMap(function(candidate){ const video=youtubeById.get(candidate.videoId); return video ? [Object.assign({},candidate,{video:video})] : []; })); };
-        youtubeSemanticWorker.onerror = function() { if (youtubeWorkerPatchQueue) youtubeWorkerPatchQueue.clear(); youtubeWorkerPatchQueue=null; youtubeSemanticWorkerFailed=true; youtubeSemanticWorker.terminate(); youtubeSemanticWorker=null; for(const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video search worker unavailable.")); youtubeWorkerPending.clear(); };
+        const worker = youtubeSemanticWorker;
+        worker.onmessage = function(event) {
+          const reply=event.data;
+          if(reply.type === "rebuild") { if(reply.revision === youtubeIndexRevision) videoSearchIndex(true); return; }
+          if(reply.type === "ready") {
+            if(reply.revision !== youtubeIndexRevision) return;
+            youtubeWorkerReady=true;
+            for(const [id,pending] of youtubeWorkerPending) if(pending.replay) {
+              pending.replay=false;
+              if(pending.message.revision !== youtubeIndexRevision || pending.message.viewKey !== String(state.workspaceId)+":"+String(state.account && state.account.id || "local")) {
+                youtubeWorkerPending.delete(id); pending.reject(new Error("Video catalog changed during search."));
+              } else worker.postMessage(pending.message);
+            }
+            return;
+          }
+          const pending=youtubeWorkerPending.get(reply.requestId); if(!pending) return;
+          youtubeWorkerPending.delete(reply.requestId);
+          if(reply.type === "invalid") pending.reject(new Error("Invalid video search request."));
+          else if(reply.type === "stale" || reply.revision !== youtubeIndexRevision) pending.reject(new Error("Video catalog changed during search."));
+          else pending.resolve(reply.candidates.flatMap(function(candidate){ const video=youtubeById.get(candidate.videoId); return video ? [Object.assign({},candidate,{video:video})] : []; }));
+        };
+        worker.onrestart = function() {
+          youtubeWorkerReady=false;
+          if(youtubeWorkerPatchQueue) youtubeWorkerPatchQueue.clear(); youtubeWorkerPatchQueue=null;
+          videoSearchIndex();
+          if(youtubeWorkerPatchQueue) youtubeWorkerPatchQueue.clear(); youtubeWorkerPatchQueue=null;
+          for(const pending of youtubeWorkerPending.values()) pending.replay=true;
+          worker.postMessage({type:"initialize",videos:state.youtube.videos.map(window.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument),revision:youtubeIndexRevision});
+        };
+        worker.onerror = function() { youtubeWorkerReady=false; if(youtubeWorkerPatchQueue) youtubeWorkerPatchQueue.clear(); youtubeWorkerPatchQueue=null; youtubeSemanticWorkerFailed=true; worker.terminate(); youtubeSemanticWorker=null; for(const pending of youtubeWorkerPending.values()) pending.reject(new Error("Video search worker unavailable.")); youtubeWorkerPending.clear(); };
       } catch(_) { youtubeSemanticWorkerFailed=true; }
     }
     if(youtubeSemanticWorker) {
       if(newWorker || force) {
+        youtubeWorkerReady=false;
         if(youtubeWorkerPatchQueue) youtubeWorkerPatchQueue.clear();
         youtubeWorkerPatchQueue=null;
         youtubeSemanticWorker.postMessage({type:"initialize",videos:youtubeIndexedVideos.map(window.LEARNED_MEDIA_VIDEO_METADATA.toVideoSearchDocument),revision:youtubeIndexRevision});
@@ -1808,10 +1837,12 @@
     if(youtubeSemanticWorker) {
       const requestId=++youtubeWorkerRequest;
       try { return await new Promise(function(resolve,reject){
-        const abort=function(){ youtubeWorkerPending.delete(requestId); youtubeSemanticWorker && youtubeSemanticWorker.postMessage({type:"cancel"}); reject(new DOMException("Search canceled","AbortError")); };
+        const abort=function(){ youtubeWorkerPending.delete(requestId); youtubeSemanticWorker && youtubeSemanticWorker.postMessage({type:"cancel",requestId:requestId}); reject(new DOMException("Search canceled","AbortError")); };
         signal.addEventListener("abort",abort,{once:true});
-        youtubeWorkerPending.set(requestId,{resolve:function(value){signal.removeEventListener("abort",abort);resolve(value);},reject:function(error){signal.removeEventListener("abort",abort);reject(error);}});
-        youtubeSemanticWorker.postMessage({type:"search",requestId:requestId,revision:youtubeIndexRevision,query:state.youtube.searchText,plan:plan,topic:state.youtube.topic,channelId:state.youtube.selectedChannelId,limit:limit,excludedIds:excluded || [],viewKey:String(state.workspaceId)+":"+String(state.account && state.account.id || "local")});
+        const message={type:"search",requestId:requestId,revision:youtubeIndexRevision,query:state.youtube.searchText,plan:plan,topic:state.youtube.topic,channelId:state.youtube.selectedChannelId,limit:limit,excludedIds:excluded || [],viewKey:String(state.workspaceId)+":"+String(state.account && state.account.id || "local")};
+        youtubeWorkerPending.set(requestId,{message:message,resolve:function(value){signal.removeEventListener("abort",abort);resolve(value);},reject:function(error){signal.removeEventListener("abort",abort);reject(error);}});
+        if(youtubeWorkerReady) youtubeSemanticWorker.postMessage(message);
+        else youtubeWorkerPending.get(requestId).replay=true;
       }); } catch(error){ if(signal.aborted || /catalog changed/.test(error.message)) throw error; }
     }
     const scope=String(state.workspaceId)+":"+String(state.account && state.account.id || "local");
@@ -2431,7 +2462,7 @@
       let newWorker = false;
       if (!topicWorker) {
           try {
-              const worker = new Worker("topic-search.worker.js");
+              const worker = window.LEARNED_MEDIA_WORKER_RECOVERY.createRecoveringSearchWorker(function(){ return new Worker("topic-search.worker.js"); }, { updatesAcknowledge:true });
               topicWorker = worker;
               newWorker = true;
               worker.onmessage = function (event) {
@@ -2446,6 +2477,11 @@
                       topicResultCache.set(r.key, r);
                       publishTopicSearch(r.query, r);
                   }
+              };
+              worker.onrestart = function () {
+                  topicWorkerReady = false;
+                  topicActiveKey = "";
+                  rebuildTopicWorker();
               };
               worker.onerror = function () {
                   worker.terminate();
@@ -3283,11 +3319,19 @@
     if(upserts.length || removeIds.length)nativeCardRevision++;
     if(nativeCardWorker===null && typeof Worker!=="undefined"){
       try{
-        nativeCardWorker=new Worker("card-search.worker.js");
+        nativeCardWorker=window.LEARNED_MEDIA_WORKER_RECOVERY.createRecoveringSearchWorker(function(){return new Worker("card-search.worker.js");});
         nativeCardWorker.onmessage=function(event){
           const result=event.data;
           if(result.type==="eligibility-stale" && result.requestId===nativeCardJob){nativeCardActiveEligibility=null;nativeCardSearchKey="";render();return;}
           if(result.type==="results" && result.requestId===nativeCardJob && result.revision===nativeCardRevision && result.viewKey===nativeCardSearchKey && result.eligibilityScope===nativeCardActiveEligibility?.scope && result.eligibilityRevision===nativeCardActiveEligibility?.revision){nativeCardResultKey=nativeCardSearchKey;nativeCardResultIds=result.ids;render();}
+        };
+        nativeCardWorker.onrestart=function(){
+          nativeCardSearchKey="";nativeCardActiveEligibility=null;
+          nativeIndexedCards.clear();
+          for(const card of state.cards)nativeIndexedCards.set(card.id,shared.cards.cardSearchText(card));
+          nativeCardRevision++;
+          nativeCardWorker.postMessage({type:"initialize",revision:nativeCardRevision,documents:Array.from(nativeIndexedCards,function(entry){return {id:entry[0],text:entry[1]};})});
+          render();
         };
         nativeCardWorker.onerror=function(){nativeCardWorker.terminate();nativeCardWorker=false;nativeCardSearchKey="";nativeCardActiveEligibility=null;render();};
         nativeCardWorker.postMessage({type:"initialize",revision:nativeCardRevision,documents:Array.from(nativeIndexedCards,function(entry){return {id:entry[0],text:entry[1]};})});

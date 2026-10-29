@@ -25,7 +25,7 @@ type Request =
   | { type: "cancel"; requestId: number }
   | SearchRequest;
 type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
-type Reply = { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "invalid"; requestId: number; reason: "invalid-request" } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
+type Reply = { type: "progress" | "failed"; requestId: number; revision: number } | { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "invalid"; requestId: number; reason: "invalid-request" } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
 type SearchSession = { direct: CandidateReply[]; fallback: CandidateReply[]; directComplete: boolean; fallbackComplete: boolean };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
@@ -141,7 +141,8 @@ function rankingNow() {
 }
 
 async function search(request: SearchRequest) {
-  if (request.revision !== snapshot.revision) return;
+  if (request.revision !== snapshot.revision) { workerScope.postMessage({ type: "stale", requestId: request.requestId, revision: snapshot.revision } satisfies Reply); return; }
+  if (activeRequestId && activeRequestId !== request.requestId) workerScope.postMessage({ type: "stale", requestId: activeRequestId, revision: snapshot.revision } satisfies Reply);
   const captured = snapshot;
   latestRequestId = request.requestId;
   activeRequestId = request.requestId;
@@ -182,7 +183,7 @@ async function search(request: SearchRequest) {
     const dateOrder = prepared.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : prepared.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
     return dateOrder || right.candidate.score - left.candidate.score || left.index - right.index;
   };
-  let start = 0;
+  let start = 0, lastProgress = rankingNow();
   let chunkSize = SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
   while (start < catalog.length) {
     if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
@@ -209,6 +210,10 @@ async function search(request: SearchRequest) {
       return end;
     }, { priority: "interactive", canPause: true });
     if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
+    if (rankingNow() - lastProgress >= 1000) {
+      lastProgress = rankingNow();
+      workerScope.postMessage({ type: "progress", requestId: request.requestId, revision: captured.revision } satisfies Reply);
+    }
   }
   const session: SearchSession | undefined = buildSession ? {
     direct: direct.map(({ candidate }) => candidate),
@@ -268,7 +273,12 @@ function handleMessage(message: unknown): void | Promise<void> {
       }
       return;
     }
-    void search(request);
+    void search(request).catch(() => {
+      if (activeRequestId === request.requestId && snapshot.revision === request.revision) {
+        activeRequestId = 0;
+        workerScope.postMessage({ type: "failed", requestId: request.requestId, revision: request.revision } satisfies Reply);
+      }
+    });
   }
 }
 

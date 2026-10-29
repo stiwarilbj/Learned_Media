@@ -3,7 +3,7 @@ importScripts("background-work.js");
 importScripts("video-semantic.js");
 importScripts("youtube-search-index-storage.js");
 const persistedIndex = LEARNED_MEDIA_VIDEO_INDEX_STORAGE.createVideoSearchIndexPersistence();
-let catalogLoading;
+let catalogLoading, activeRequestId = 0;
 let snapshot = { videos: [], byId: new Map(), revision: -1 }, latest = 0;
 const preparedSearchCache = new LEARNED_MEDIA_VIDEO_SEARCH.PreparedVideoSearchCache(4);
 const searchSessionCache = new Map();
@@ -123,33 +123,44 @@ function handleMessage(request) {
       try { LEARNED_MEDIA_VIDEO_SEARCH.validateVideoSearchCatalogUpdate(request.revision, request.videos); }
       catch { postMessage({type:"rebuild",revision:request.revision}); return; }
       const originals = Array.from(new Map(request.videos.map(video => [video.id,video])).values());
-      return persistedIndex.restore(originals).then(restored => publishCatalog(stageCatalog(request,restored), Boolean(restored)));
+      return persistedIndex.restore(originals).then(restored => publishCatalog(stageCatalog(request,restored), Boolean(restored), true));
     }
     let staged;
     try { staged = stageCatalog(request); }
     catch { postMessage({type:"rebuild",revision:request.revision}); return; }
-    publishCatalog(staged); return;
+    publishCatalog(staged, false, request.type === "initialize"); return;
   }
   if (request.type === "cancel") {
     if (request.requestId !== undefined && (!Number.isSafeInteger(request.requestId) || request.requestId < 0)) return;
-    latest++; return;
+    if (request.requestId === undefined || request.requestId === activeRequestId) { latest++; activeRequestId = 0; }
+    return;
   }
   if (request.type !== "search") return;
   if (!LEARNED_MEDIA_VIDEO_SEARCH.isValidVideoSearchRequest(request)) {
     if (Number.isSafeInteger(request.requestId) && request.requestId >= 0) postMessage({ type:"invalid", requestId:request.requestId, reason:"invalid-request" });
     return;
   }
-  void search(request);
+  void search(request).catch(() => {
+    if (activeRequestId === request.requestId && snapshot.revision === request.revision) {
+      activeRequestId = 0;
+      postMessage({ type:"failed", requestId:request.requestId, revision:request.revision });
+    }
+  });
 }
-function publishCatalog(staged, restored) {
+function publishCatalog(staged, restored, initialize) {
+  if (activeRequestId) postMessage({ type:"stale", requestId:activeRequestId, revision:staged.revision });
+  activeRequestId = 0;
   const previous = snapshot.videos;
   snapshot = staged;
   latest++; releaseCatalogSearchCaches();
   if (!restored && previous !== staged.videos) persistedIndex.save(staged.videos);
+  if (initialize) postMessage({ type:"ready", revision:staged.revision });
 }
 async function search(request) {
+  if (request.revision !== snapshot.revision) { postMessage({ type:"stale", requestId:request.requestId, revision:snapshot.revision }); return; }
+  if (activeRequestId && activeRequestId !== request.requestId) postMessage({ type:"stale", requestId:activeRequestId, revision:snapshot.revision });
+  activeRequestId = request.requestId;
   const token = ++latest, captured = snapshot, currentRevision = captured.revision;
-  if (request.revision !== snapshot.revision) return;
   const catalog = captured.videos;
   const excludedIds = request.excludedIds && request.excludedIds.length ? new Set(request.excludedIds) : new Set();
   const direct = [], fallback = [], resultLimit = Math.max(1, Math.floor(request.limit));
@@ -157,12 +168,12 @@ async function search(request) {
   const planKey = JSON.stringify(request.plan);
   const key = sessionKey(request, currentRevision, planKey);
   const cachedSession = getSearchSession(key), sessionPage = cachedSession && pageFromSession(cachedSession, excludedIds, resultLimit);
-  if (sessionPage) { postMessage({ requestId:request.requestId, revision:currentRevision, candidates:sessionPage }); return; }
+  if (sessionPage) { activeRequestId = 0; postMessage({ requestId:request.requestId, revision:currentRevision, candidates:sessionPage }); return; }
   const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, currentRevision, request.viewKey || "native-worker");
   const buildSession = excludedIds.size === 0 && resultLimit <= 160;
   const sessionLimit = buildSession ? Math.min(320, Math.max(resultLimit, resultLimit * 2)) : resultLimit;
   const compareEntries = (left,right) => LEARNED_MEDIA_VIDEO_SEARCH.compareSemanticCandidates(left.candidate,right.candidate,prepared.sort) || left.index-right.index;
-  let start = 0, chunkSize = LEARNED_MEDIA_VIDEO_SEARCH.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
+  let start = 0, lastProgress = rankingNow(), chunkSize = LEARNED_MEDIA_VIDEO_SEARCH.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
   while (start < catalog.length) {
     if (token !== latest || snapshot.revision !== currentRevision) return;
     const sliceStart = start;
@@ -186,6 +197,10 @@ async function search(request) {
       return end;
     }, { priority:"interactive", canPause:true });
     if (token !== latest || snapshot.revision !== currentRevision) return;
+    if (rankingNow() - lastProgress >= 1000) {
+      lastProgress = rankingNow();
+      postMessage({ type:"progress", requestId:request.requestId, revision:currentRevision });
+    }
   }
   if (token === latest && snapshot.revision === currentRevision) {
     if (buildSession) rememberSearchSession(key, {
@@ -195,6 +210,7 @@ async function search(request) {
     });
     const source = direct.length ? direct : fallback;
     const candidates = source.slice(0,resultLimit).map(({candidate})=>({videoId:candidate.video.id,score:candidate.score,matchedFields:candidate.matchedFields,supportingText:candidate.supportingText}));
+    activeRequestId = 0;
     postMessage({ requestId:request.requestId, revision:currentRevision, candidates });
   }
 };

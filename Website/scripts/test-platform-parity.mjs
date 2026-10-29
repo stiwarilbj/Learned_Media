@@ -9,6 +9,8 @@ import path from 'node:path';
 const require=createRequire(import.meta.url),ts=require('typescript');
 require('node:module')._extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,f);
 const web=require('../lib/topic-tree.ts'),catalog=require('../lib/topic-catalog.ts'),preferences=require('../lib/topic-preferences.ts'),youtube=require('../lib/youtube.ts'),storage=require('../lib/snapshot-validation.ts'),videoMetadata=require('../lib/video-metadata.ts');
+const workerRecovery=require('../lib/worker-recovery.ts');
+const testRecovery={createRecoveringSearchWorker:factory=>workerRecovery.createRecoveringSearchWorker(factory,{clock:{now:()=>0,schedule:()=>0,cancel(){}}})};
 const scope={Map,Set,WeakMap,Date,Math,performance,TextEncoder};
 runInNewContext(readFileSync(new URL('../../App/Resources/frontend/background-work.js',import.meta.url),'utf8'),scope);
 runInNewContext(readFileSync(new URL('../../App/Resources/frontend/shared-policy.js',import.meta.url),'utf8'),scope);
@@ -39,7 +41,7 @@ test('native worker sender captures compact initialization, forced rebuild, and 
  class FakeWorker{postMessage(message){messages.push(message);}terminate(){}}
  const source={id:'compact-source',channelId:'approved-channel',channelName:'Approved Channel',title:'Gravitational lensing',description:'Full searchable description. '.repeat(12),tags:['astronomy','optics'],topics:['Science','Astronomy'],publishedAt:'2025-01-01T00:00:00Z',durationSeconds:642,approved:true,special:false,sourceIds:['playlist:approved'],thumbnailUrl:'https://example.test/full.jpg',thumbnailWidth:1280,thumbnailHeight:720,durationLabel:'10:42',embedAvailable:true,metadataRefreshedAt:1234,unrelatedImportField:'retain'};
  const state={youtube:{catalogVersion:3,videos:[source]}};
- const context={state,videoSearch:{VIDEO_SEMANTIC_VERSION:9},window:{LEARNED_MEDIA_VIDEO_METADATA:videoMetadata},shared:mac,youtubeIndexPolicy:'',youtubeIndexedVideos:null,youtubeIndexRevision:0,youtubeById:new Map(),youtubeVideosByTopic:new Map(),youtubeVideosByChannel:new Map(),youtubeSemanticWorker:null,youtubeWorkerPatchQueue:null,youtubeSemanticWorkerFailed:false,youtubeWorkerPending:new Map(),youtubeSmartSearchCache:{clear(){}},preparedVideoSearchCache:{clear(){}},Worker:FakeWorker};
+ const context={state,videoSearch:{VIDEO_SEMANTIC_VERSION:9},window:{LEARNED_MEDIA_VIDEO_METADATA:videoMetadata,LEARNED_MEDIA_WORKER_RECOVERY:testRecovery},shared:mac,youtubeIndexPolicy:'',youtubeIndexedVideos:null,youtubeIndexRevision:0,youtubeById:new Map(),youtubeVideosByTopic:new Map(),youtubeVideosByChannel:new Map(),youtubeSemanticWorker:null,youtubeWorkerPatchQueue:null,youtubeSemanticWorkerFailed:false,youtubeWorkerPending:new Map(),youtubeSmartSearchCache:{clear(){}},preparedVideoSearchCache:{clear(){}},Worker:FakeWorker};
  const indexStart=native.indexOf('  function videoSearchIndex('),indexEnd=native.indexOf('\n  async function localVideoCandidates(',indexStart);
  runInNewContext(native.slice(indexStart,indexEnd)+';api={videoSearchIndex};',context);
  context.api.videoSearchIndex();
@@ -328,7 +330,7 @@ test('card-search callers register scoped ordered eligibility and reuse its revi
  const messages=[];
  class FakeWorker{postMessage(message){messages.push(message);}terminate(){}}
  const state={account:{id:'account-a'},workspaceId:'workspace-a',view:'feed',query:'first query',cards:[{id:'one',title:'First fact',saved:true},{id:'two',title:'Second fact',saved:false}]};
- const context={state,shared:{search:{normalizeSearchText:value=>String(value).toLowerCase().trim(),searchScoreNormalized:()=>0},cards:{cardSearchText:card=>card.title}},Worker:FakeWorker,render(){}};
+ const context={state,window:{LEARNED_MEDIA_WORKER_RECOVERY:testRecovery},shared:{search:{normalizeSearchText:value=>String(value).toLowerCase().trim(),searchScoreNormalized:()=>0},cards:{cardSearchText:card=>card.title}},Worker:FakeWorker,render(){}};
  runInNewContext(native.slice(start,end)+';api={searchedCards};',context);
  context.api.searchedCards('feed');
  const firstRegistration=messages.find(message=>message.type==='register-eligibility');
@@ -423,4 +425,73 @@ test('native question captures its structure and preserves a newer draft choice'
  assert.equal(card.answerStructure,'ordered-steps');assert.match(card.answer,/1\. Pressure rises\./);assert.equal(card.answerDetailed,true);
  assert.equal(questionStructures.get(key),'side-by-side-comparison');assert.equal(questionStructureRevisions.get(key),3);
  assert.equal(questionInstructionPreferences.get(key),'written');assert.equal(questionInstructionRevisions.get(key),5);
+});
+
+test('native video recovery reinitializes current data, replays only relevant requests and settles fallback',()=>{
+ const workers=[],messages=[],settled=[];
+ class FakeWorker{constructor(){workers.push(this);}postMessage(message){messages.push(message);}terminate(){this.terminated=true;}}
+ const video={id:'video',channelId:'c',channelName:'Science',title:'Biology',description:'Complete description',tags:[],topics:['Science'],approved:true,publishedAt:'2024-01-01',durationSeconds:600};
+ const state={workspaceId:'workspace',account:{id:'account'},youtube:{catalogVersion:3,videos:[video]}};
+ const context={state,videoSearch:{VIDEO_SEMANTIC_VERSION:9},window:{LEARNED_MEDIA_VIDEO_METADATA:videoMetadata,LEARNED_MEDIA_WORKER_RECOVERY:testRecovery},shared:mac,youtubeIndexPolicy:'',youtubeIndexedVideos:null,youtubeIndexRevision:0,youtubeById:new Map(),youtubeVideosByTopic:new Map(),youtubeVideosByChannel:new Map(),youtubeSemanticWorker:null,youtubeWorkerPatchQueue:null,youtubeSemanticWorkerFailed:false,youtubeWorkerPending:new Map(),youtubeSmartSearchCache:{clear(){}},preparedVideoSearchCache:{clear(){}},Worker:FakeWorker};
+ const start=native.indexOf('  function videoSearchIndex('),end=native.indexOf('\n  async function localVideoCandidates(',start);
+ runInNewContext(native.slice(start,end)+';api={videoSearchIndex};',context);context.api.videoSearchIndex();
+ const revision=context.youtubeIndexRevision;
+ for(const [id,viewKey] of [[1,'workspace:account'],[2,'old:account']])context.youtubeWorkerPending.set(id,{message:{type:'search',requestId:id,revision,viewKey},reject:()=>settled.push(id),resolve(){}});
+ workers[0].onmessageerror();assert.equal(workers.length,2);assert.equal(workers[0].terminated,true);
+ assert.equal(messages.at(-1).type,'initialize');assert.equal(messages.at(-1).videos[0].description,video.description);
+ workers[1].onmessage({data:{type:'ready',revision}});
+ assert.deepEqual(settled,[2]);assert.deepEqual(messages.filter(m=>m.type==='search').map(m=>m.requestId),[1]);
+ workers[0].onmessage({data:{requestId:1,revision,candidates:[]}});assert.equal(context.youtubeWorkerPending.size,1,'retired worker cannot settle the replay');
+ workers[1].onerror();assert.equal(context.youtubeSemanticWorkerFailed,true);assert.equal(context.youtubeSemanticWorker,null);assert.deepEqual(settled,[2,1]);assert.equal(context.youtubeWorkerPending.size,0);
+});
+
+test('website video recovery rebuilds latest snapshot and settles pagination plus ready waiters on final failure',()=>{
+ const page=readFileSync(new URL('../app/page.tsx',import.meta.url),'utf8');
+ const start=page.indexOf('  useEffect(() => {\n    if (!hydrated || view !== "videos"'),end=page.indexOf('\n  }, [hydrated, view, youtubeSearchWorkerFailed',start);
+ assert.ok(start>0&&end>start);
+ const callback=page.slice(start+'  useEffect('.length,end)+'\n  }';
+ const compiled=ts.transpileModule('globalThis.start='+callback.replace('new URL("../workers/youtube-search.worker.ts", import.meta.url)','"youtube-search.worker.js"'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const transports=[],messages=[],settled=[];let waiters=0;
+ class FakeWorker{constructor(){transports.push(this);}postMessage(message){messages.push(message);}terminate(){this.terminated=true;}}
+ const ref=value=>({current:value}), initial={id:'video',title:'Original'},latest={id:'video',title:'Latest'};
+ const context={hydrated:true,view:'videos',Worker:FakeWorker,createRecoveringSearchWorker:testRecovery.createRecoveringSearchWorker,youtubeSearchWorkerFailed:false,youtubeSearchWorker:ref(null),youtubeSearchWorkerPatches:ref(null),youtubeSearchWorkerReady:ref(false),youtubeSearchWorkerNeedsRebuild:ref(false),youtubeSearchWorkerPolicy:ref(''),youtubeSearchWorkerIndexedVideos:ref(null),youtubeSearchWorkerRevision:ref(3),youtubeWorkspace:{videos:[initial]},youtubeWorkspaceRef:ref({videos:[latest]}),youtubeSearchWorkerPendingVideos:ref(null),youtubeSearchPending:ref(new Map()),youtubeSearchWorkerReadyWaiters:ref([()=>waiters++]),YOUTUBE_CATALOG_VERSION:3,VIDEO_SEMANTIC_VERSION:9,toVideoSearchDocument:video=>({...video}),syncYouTubeSearchIndex(){},setYoutubeSearchWorkerReadyState(){},setYoutubeSearchWorkerFailed(value){context.failed=value;}};
+ runInNewContext(compiled,context);context.start();
+ const signal=new AbortController().signal;
+ context.youtubeSearchPending.current.set(7,{message:{type:'search',requestId:7,revision:3},signal,onAbort(){},reject:()=>settled.push(7),resolve(){}});
+ context.youtubeSearchPending.current.set(8,{message:{type:'search',requestId:8,revision:2},signal,onAbort(){},reject:()=>settled.push(8),resolve(){}});
+ transports[0].onerror();assert.equal(transports.length,2);assert.equal(messages.at(-1).videos[0].title,'Latest');
+ transports[1].onmessage({data:{type:'ready',revision:3}});assert.equal(waiters,1);assert.deepEqual(settled,[8]);assert.deepEqual(messages.filter(m=>m.type==='search').map(m=>m.requestId),[7]);
+ context.youtubeSearchWorkerReadyWaiters.current.push(()=>waiters++);transports[1].onmessageerror();assert.equal(context.failed,true);assert.equal(waiters,2);assert.deepEqual(settled,[8,7]);assert.equal(context.youtubeSearchPending.current.size,0);assert.equal(context.youtubeSearchWorker.current,null);
+});
+
+test('website pagination completes through local fallback after exhausted worker recovery',async()=>{
+ const page=readFileSync(new URL('../app/page.tsx',import.meta.url),'utf8'),start=page.indexOf('const showMoreYouTube = useCallback('),end=page.indexOf('\n  }, [account?.id',start);
+ assert.ok(start>0&&end>start);
+ const callback=page.slice(start+'const showMoreYouTube = useCallback('.length,end)+'\n  }';
+ const ref=current=>({current}),first={id:'first'},second={id:'second'};let localCalls=0;
+ const context={AbortController,DOMException,account:{id:'a'},workspaceId:'w',youtubeWorkspaceRef:ref({searchText:'biology',videos:[first,second],selectedTopic:'All'}),youtubeSearchMoreAbort:ref(null),youtubeSearchPlan:ref({terms:['biology']}),youtubeSearchWorkerRevision:ref(2),youtubeSearchResultsRef:ref([first]),youtubeSearchWorker:ref({}),youtubeFallbackIndex:ref(null),youtubePreparedSearchCache:ref({get:()=>({})}),youtubeIndexes:{videoById:new Map([[first.id,first],[second.id,second]])},createVideoSearchIndexLoader:()=>({load:async videos=>videos}),requestYouTubeWorkerSearch:async()=>{throw Error('worker failed');},searchPreparedSemanticVideosYielding:async(videos,plan,limit,excluded)=>{localCalls++;assert.equal(excluded.has('first'),true);return [{video:second,score:1}];},setYoutubeSearchResults(cards){context.result=cards;},setYoutubeSearchHasMore(value){context.more=value;},setYoutubeSearchReasons(){},videoSearchReason:()=>({})};
+ runInNewContext(ts.transpileModule('globalThis.start='+callback,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,context);
+ context.start();for(let i=0;i<10&&context.youtubeSearchMoreAbort.current;i++)await new Promise(resolve=>setTimeout(resolve,0));
+ assert.equal(localCalls,1);assert.deepEqual(clean(context.result.map(card=>card.id)),['first','second']);assert.equal(context.youtubeSearchMoreAbort.current,null);assert.equal(context.more,false);
+});
+
+test('native searches arriving during restart wait for the rebuilt catalog and cancel independently',async()=>{
+ const workers=[],messages=[];class FakeWorker{constructor(){workers.push(this);}postMessage(message){messages.push(message);}terminate(){}}
+ const video={id:'video',channelId:'c',channelName:'Science',title:'Biology',description:'Complete description',tags:[],topics:['Science'],approved:true,publishedAt:'2024-01-01',durationSeconds:600};
+ const state={workspaceId:'w',account:null,youtube:{catalogVersion:3,videos:[video],searchText:'biology',topic:'All'}};
+ const context={AbortController,DOMException,state,videoSearch:{VIDEO_SEMANTIC_VERSION:9},window:{LEARNED_MEDIA_VIDEO_METADATA:videoMetadata,LEARNED_MEDIA_WORKER_RECOVERY:testRecovery},shared:mac,youtubeIndexPolicy:'',youtubeIndexedVideos:null,youtubeIndexRevision:0,youtubeWorkerRequest:0,youtubeWorkerReady:false,youtubeById:new Map(),youtubeVideosByTopic:new Map(),youtubeVideosByChannel:new Map(),youtubeSemanticWorker:null,youtubeWorkerPatchQueue:null,youtubeSemanticWorkerFailed:false,youtubeWorkerPending:new Map(),youtubeSmartSearchCache:{clear(){}},preparedVideoSearchCache:{clear(){}},Worker:FakeWorker};
+ const start=native.indexOf('  function videoSearchIndex('),end=native.indexOf('\n  function changeVideoSearch(',start);
+ runInNewContext(native.slice(start,end)+';api={localVideoCandidates};',context);
+ const firstController=new AbortController(),first=context.api.localVideoCandidates({terms:['biology']},80,firstController.signal);
+ const firstRejected=assert.rejects(first,/canceled/);
+ assert.equal(messages.filter(m=>m.type==='search').length,0,'startup queues work until ready');
+ workers[0].onmessage({data:{type:'ready',revision:context.youtubeIndexRevision}});assert.equal(messages.filter(m=>m.type==='search').length,1);
+ workers[0].onerror();const second=context.api.localVideoCandidates({terms:['biology']},80,new AbortController().signal);
+ assert.equal(messages.filter(m=>m.type==='search').length,1,'a newer query cannot overtake restart initialization');
+ firstController.abort();await firstRejected;
+ workers[1].onmessage({data:{type:'ready',revision:context.youtubeIndexRevision}});
+ assert.deepEqual(messages.filter(m=>m.type==='search').map(m=>m.requestId),[1,2],'canceled work is not replayed');
+ workers[1].onmessage({data:{requestId:2,revision:context.youtubeIndexRevision,candidates:[{videoId:'video',score:7}]}});
+ assert.equal((await second)[0].video,video);assert.equal(context.youtubeWorkerPending.size,0);
+ context.youtubeSemanticWorker.terminate();
 });

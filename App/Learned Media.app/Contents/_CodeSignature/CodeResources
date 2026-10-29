@@ -18,7 +18,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		sU1iJZhOjPVpIIk8v8xvTLR/G+4=
+		sVwmfpr8U2RXNpwMDpxGDfRJN3c=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -62,7 +62,7 @@
 		</data>
 		<key>Resources/frontend/card-search.worker.js</key>
 		<data>
-		1t5KNRmaIdJ4QOYOfGxGfl9xBxI=
+		TjU/7ZYlMq7IMeqTXC39sI5Jzsk=
 		</data>
 		<key>Resources/frontend/card-tool-state-retention.js</key>
 		<data>
@@ -118,7 +118,7 @@
 		</data>
 		<key>Resources/frontend/index.html</key>
 		<data>
-		Q0XC1bg9mCv7Fh0dpOXbyqtZnZE=
+		4tb77OzTvfs7DXCt9qI88vI/0zw=
 		</data>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
 		<data>
@@ -146,7 +146,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		P3zpSx/fu3x1G95ccrJF1HpxAYU=
+		GeFxnF+RPaajUFyoVipZ8sIA49s=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -182,7 +182,7 @@
 		</data>
 		<key>Resources/frontend/topic-search.worker.js</key>
 		<data>
-		Ufoq5+8ehNICn6M38GUUFS6CU08=
+		5oDjNcqxRux2vO/1s8RPLOneSJY=
 		</data>
 		<key>Resources/frontend/topic-semantic.js</key>
 		<data>
@@ -208,6 +208,10 @@
 		<data>
 		maVVx8m9TgZ9W80Oke0d7Nvogto=
 		</data>
+		<key>Resources/frontend/worker-recovery.js</key>
+		<data>
+		+oOfOH30loQey78+bYvFFqzudig=
+		</data>
 		<key>Resources/frontend/writers-catalog.js</key>
 		<data>
 		sxblcZT1t8kt5waMcL8vhUUJlNg=
@@ -230,7 +234,7 @@
 		</data>
 		<key>Resources/frontend/youtube-search.worker.js</key>
 		<data>
-		FZ66lsIfgU7IYsUEMbCYQvAUivw=
+		UpZTuOKy/8s0rR1dLFXNeCYbPp8=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -260,7 +264,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			YxQhKbgXr8fMc4sE+2CaVdB5vXrNITkbLcDTk6rSXf4=
+			U1/zvTiTW1UfkWm3/kaNxAhKY+qHkCLx1y9c2NxUR1s=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -337,7 +341,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			G/NWvDpfZvc41OyIFGBJhWLT871caGLV968oHLw5Ptk=
+			mEGKZiiCQ1eR3iJUPBKmECpBD3Bk8WsY6iKdU3x1Sjw=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-tool-state-retention.js</key>
@@ -435,7 +439,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			5F3oAh/wkHCyBgGPDY9i1yJkGz745f+t0Arz8gpNkm4=
+			larsoljK0y0ZSWxTvj6529pBBgqEB0EsB9HZsDPk78k=
 			</data>
 		</dict>
 		<key>Resources/frontend/latest-snapshot-queue.js</key>
@@ -484,7 +488,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			CiKC1fHUdjBqtI2VON43PUx/yWBS53Gcik0YY/JXeLw=
+			j76TlDi6cfBEoPQ/r9QtbBmNXdYWMUYvG4yhUMTXEsQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -547,7 +551,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			/jQOeAzv3yw3w+YdHxD5pj6yZo7yZcW8sgJEmRtdsN0=
+			vjqNrANYlCpXfkm4KRG5jKNtuB1mBvom1RDFJhLpAw0=
 			</data>
 		</dict>
 		<key>Resources/frontend/topic-semantic.js</key>
@@ -592,6 +596,13 @@
 			3YaP1kJH/cc+JrheNoQ6S4EWPLWNUsUtK0674GAUjQY=
 			</data>
 		</dict>
+		<key>Resources/frontend/worker-recovery.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			Q8lEua7WOYxVADHC+8VNzmBBh1erRo76BwvZfaHAUEY=
+			</data>
+		</dict>
 		<key>Resources/frontend/writers-catalog.js</key>
 		<dict>
 			<key>hash2</key>
@@ -631,7 +642,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Ey4jXJN2dxkjKKKLzr8x6POw0+qVXzAyfepK63IhowE=
+			p70PBFFWOBNgUHUjSiiZMQsk7AbLkXiTDKbRd9b4Cgk=
 			</data>
 		</dict>
 	</dict>

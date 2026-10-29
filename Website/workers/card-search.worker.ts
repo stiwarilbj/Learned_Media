@@ -96,6 +96,8 @@ workerScope.onmessage = (event: MessageEvent<Request>) => {
   } else if (request.type === "cancel") {
     latestRequestId = request.requestId;
   } else {
-    void search(request);
+    void search(request).catch(() => {
+      if (request.requestId === latestRequestId && request.revision === revision) workerScope.postMessage({ type: "failed", requestId: request.requestId, revision });
+    });
   }
 };

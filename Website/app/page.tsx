@@ -1,5 +1,6 @@
 "use client";
 
+import { createRecoveringSearchWorker, type SearchWorker } from "@/lib/worker-recovery";
 import { cardSearchText } from "@/lib/card-search-text";
 import { runBackgroundSlice } from "@/lib/background-work";
 import { decodedCardImageCache } from "@/lib/card-image-cache";
@@ -621,6 +622,7 @@ export default function HomePage() {
   }, []);
   const [showGoToTop, setShowGoToTop] = useState(false);
   const [topicWorkerReadyRevision, setTopicWorkerReadyRevision] = useState(-1);
+  const [topicWorkerRecoveryEpoch, setTopicWorkerRecoveryEpoch] = useState(0);
   const [topicSearchReply, setTopicSearchReply] = useState<TopicSearchWorkerReply>({ type: "ready", catalogRevision: -1 });
   const [cardSearchWorkerReadyState, setCardSearchWorkerReadyState] = useState(false);
   const [cardSearchWorkerFailed, setCardSearchWorkerFailed] = useState(false);
@@ -635,13 +637,13 @@ export default function HomePage() {
   const topicCatalogReset = useRef(0);
   const catalogTopicListCache = useRef<{ revision: number; topics: Array<TopicNode & { path: string[] }> } | null>(null);
   const catalogSuggestionIndexCache = useRef<{ revision: number; index: ReturnType<typeof createTopicSuggestionIndex> } | null>(null);
-  const topicSearchWorker = useRef<Worker | null>(null);
+  const topicSearchWorker = useRef<SearchWorker | null>(null);
   const topicWorkerIndexed = useRef<{ revision: number; rebuildKey: string; records: Map<string, TopicSearchRecord> } | null>(null);
   const topicWorkerSnapshot = useRef({ revision: 0, rebuildKey: "", records: [] as TopicSearchRecord[] });
   const topicSearchRequestId = useRef(0);
   const topicSearchSignature = useRef("");
   const topicEnrichmentAttempt = useRef("");
-  const cardSearchWorker = useRef<Worker | null>(null);
+  const cardSearchWorker = useRef<SearchWorker | null>(null);
   const cardSearchWorkerReady = useRef(false);
   const cardSearchIndexedCards = useRef(new Map<string, { card: FactCard; text: string }>());
   const cardSearchRevision = useRef(0);
@@ -650,7 +652,7 @@ export default function HomePage() {
   const cardSearchEligibilityRevision = useRef(0);
   const cardSearchEligibilityScopes = useRef(new Map<string, { revision: number; ids: string[] }>());
   const cardSearchActiveEligibility = useRef<{ scope: string; revision: number } | null>(null);
-  const youtubeSearchWorker = useRef<Worker | null>(null);
+  const youtubeSearchWorker = useRef<SearchWorker | null>(null);
   const youtubeSearchWorkerReady = useRef(false);
   const youtubeSearchWorkerReadyWaiters = useRef<Array<() => void>>([]);
   const youtubeSearchWorkerIndexedVideos = useRef<Map<string, YouTubeVideo> | null>(null);
@@ -661,7 +663,7 @@ export default function HomePage() {
   const youtubeSearchWorkerPolicy = useRef(`${YOUTUBE_CATALOG_VERSION}:${VIDEO_SEMANTIC_VERSION}`);
   const youtubeSearchWorkerRevision = useRef(0);
   const youtubeSearchRequestId = useRef(0);
-  const youtubeSearchPending = useRef(new Map<number, { resolve: (reply: YouTubeSearchWorkerReply) => void; reject: (error: unknown) => void; signal: AbortSignal; onAbort: () => void }>());
+  const youtubeSearchPending = useRef(new Map<number, { resolve: (reply: YouTubeSearchWorkerReply) => void; reject: (error: unknown) => void; signal: AbortSignal; onAbort: () => void; message: Record<string, any>; replay?: boolean }>());
   const currentQueryRef = useRef(query);
   currentQueryRef.current = query;
   const generationAbortController = useRef<AbortController | null>(null);
@@ -1692,16 +1694,17 @@ export default function HomePage() {
         reject(new DOMException("Search canceled", "AbortError"));
       };
       if (signal.aborted) { onAbort(); return; }
-      youtubeSearchPending.current.set(requestId, { resolve, reject, signal, onAbort });
+      const message = { type: "search", ...request, requestId, revision: youtubeSearchWorkerRevision.current };
+      youtubeSearchPending.current.set(requestId, { resolve, reject, signal, onAbort, message });
       signal.addEventListener("abort", onAbort, { once: true });
-      currentWorker.postMessage({ type: "search", ...request, requestId, revision: youtubeSearchWorkerRevision.current });
+      currentWorker.postMessage(message);
     });
   }, []);
 
   useEffect(() => {
-    if (!hydrated || !query.trim() || typeof Worker === "undefined" || cardSearchWorker.current) return;
-    let worker: Worker;
-    try { worker = new Worker(new URL("../workers/card-search.worker.ts", import.meta.url), { type: "module" }); }
+    if (!hydrated || !query.trim() || typeof Worker === "undefined" || cardSearchWorkerFailed || cardSearchWorker.current) return;
+    let worker: SearchWorker;
+    try { worker = createRecoveringSearchWorker(() => new Worker(new URL("../workers/card-search.worker.ts", import.meta.url), { type: "module" })); }
     catch { setCardSearchWorkerFailed(true); return; }
     cardSearchWorker.current = worker;
     cardSearchSignature.current = "";
@@ -1733,17 +1736,27 @@ export default function HomePage() {
       setCardSearchWorkerFailed(true);
       cardSearchSignature.current = "";
     };
+    worker.onrestart = () => {
+      setCardSearchEligibilityEpoch(value => value + 1);
+      cardSearchWorkerReady.current = false;
+      setCardSearchWorkerReadyState(false);
+      cardSearchSignature.current = "";
+      cardSearchActiveEligibility.current = null;
+      const latest = cardsRef.current;
+      cardSearchIndexedCards.current = new Map(latest.map(card => [card.id, { card, text: cardSearchText(card) }]));
+      worker.postMessage({ type: "initialize", revision: cardSearchRevision.current, documents: latest.map(card => ({ id: card.id, text: cardSearchText(card) })) });
+    };
     worker.postMessage({ type: "initialize", revision: cardSearchRevision.current, documents: initialCards.map((card) => ({ id: card.id, text: cardSearchText(card) })) });
-  }, [hydrated, query, syncCardSearchIndex]);
+  }, [hydrated, query, cardSearchWorkerFailed, syncCardSearchIndex]);
 
   useEffect(() => {
     if (cardSearchWorkerReadyState) syncCardSearchIndex(cards);
   }, [cardSearchWorkerReadyState, cards, syncCardSearchIndex]);
 
   useEffect(() => {
-    if (!hydrated || view !== "videos" || typeof Worker === "undefined" || youtubeSearchWorker.current) return;
-    let worker: Worker;
-    try { worker = new Worker(new URL("../workers/youtube-search.worker.ts", import.meta.url), { type: "module" }); }
+    if (!hydrated || view !== "videos" || typeof Worker === "undefined" || youtubeSearchWorkerFailed || youtubeSearchWorker.current) return;
+    let worker: SearchWorker;
+    try { worker = createRecoveringSearchWorker(() => new Worker(new URL("../workers/youtube-search.worker.ts", import.meta.url), { type: "module" })); }
     catch { setYoutubeSearchWorkerFailed(true); return; }
     youtubeSearchWorkerPatches.current?.clear();
     youtubeSearchWorkerPatches.current = null;
@@ -1768,6 +1781,15 @@ export default function HomePage() {
         const pendingVideos = youtubeSearchWorkerPendingVideos.current;
         youtubeSearchWorkerPendingVideos.current = null;
         if (pendingVideos) syncYouTubeSearchIndex(pendingVideos);
+        for (const [requestId, pending] of youtubeSearchPending.current) {
+          if (!pending.replay) continue;
+          pending.replay = false;
+          if (pending.signal.aborted || pending.message.revision !== youtubeSearchWorkerRevision.current) {
+            youtubeSearchPending.current.delete(requestId);
+            pending.signal.removeEventListener("abort", pending.onAbort);
+            pending.reject(new Error("Video catalog changed during search."));
+          } else worker.postMessage(pending.message);
+        }
         for (const waiter of youtubeSearchWorkerReadyWaiters.current.splice(0)) waiter();
         return;
       }
@@ -1795,12 +1817,39 @@ export default function HomePage() {
         pending.reject(new Error("Local video search stopped unexpectedly."));
       }
     };
+    worker.onrestart = () => {
+      youtubeSearchWorkerPatches.current?.clear();
+      youtubeSearchWorkerPatches.current = null;
+      youtubeSearchWorkerReady.current = false;
+      setYoutubeSearchWorkerReadyState(false);
+      const latest = youtubeWorkspaceRef.current.videos;
+      youtubeSearchWorkerIndexedVideos.current = new Map(latest.map(video => [video.id, video]));
+      youtubeSearchWorkerPendingVideos.current = null;
+      youtubeSearchWorkerNeedsRebuild.current = false;
+      for (const pending of youtubeSearchPending.current.values()) pending.replay = true;
+      worker.postMessage({ type: "initialize", revision: youtubeSearchWorkerRevision.current, videos: latest.map(toVideoSearchDocument) });
+    };
     worker.postMessage({ type: "initialize", revision: youtubeSearchWorkerRevision.current, videos: initialVideos.map(toVideoSearchDocument) });
-  }, [hydrated, view, syncYouTubeSearchIndex, youtubeWorkspace.videos]);
+  }, [hydrated, view, youtubeSearchWorkerFailed, syncYouTubeSearchIndex, youtubeWorkspace.videos]);
 
   useEffect(() => {
     if (youtubeSearchWorker.current) syncYouTubeSearchIndex(youtubeWorkspace.videos);
   }, [syncYouTubeSearchIndex, youtubeWorkspace.videos]);
+
+  useEffect(() => () => {
+    cardSearchWorker.current?.terminate();
+    youtubeSearchWorker.current?.terminate();
+    cardSearchWorker.current = null;
+    youtubeSearchWorker.current = null;
+    cardSearchWorkerReady.current = false;
+    youtubeSearchWorkerReady.current = false;
+    for (const pending of youtubeSearchPending.current.values()) {
+      pending.signal.removeEventListener("abort", pending.onAbort);
+      pending.reject(new DOMException("Search canceled", "AbortError"));
+    }
+    youtubeSearchPending.current.clear();
+    for (const waiter of youtubeSearchWorkerReadyWaiters.current.splice(0)) waiter();
+  }, []);
 
   const topicTreeSearchIndex = useMemo<TopicSearchIndex | undefined>(() => {
     if (topicSearchReply.type !== "results" || normalizeSearchText(topicSearchReply.query ?? "") !== normalizeSearchText(query) || topicSearchReply.catalogRevision !== catalogRevision) {
@@ -1832,9 +1881,9 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!hydrated || typeof Worker === "undefined") return;
-    let worker: Worker;
+    let worker: SearchWorker;
     try {
-      worker = new Worker(new URL("../workers/topic-search.worker.ts", import.meta.url), { type: "module" });
+      worker = createRecoveringSearchWorker(() => new Worker(new URL("../workers/topic-search.worker.ts", import.meta.url), { type: "module" }), { updatesAcknowledge: true });
     } catch {
       return;
     }
@@ -1854,6 +1903,13 @@ export default function HomePage() {
       topicWorkerIndexed.current = null;
       // A distinct state value also starts the yielding fallback if initialization failed.
       setTopicWorkerReadyRevision(value => value === -1 ? -2 : -1);
+    };
+    worker.onrestart = () => {
+      setTopicWorkerRecoveryEpoch(value => value + 1);
+      topicWorkerIndexed.current = null;
+      topicSearchSignature.current = "";
+      setTopicWorkerReadyRevision(-1);
+      syncTopicSearchIndex(true);
     };
     syncTopicSearchIndex();
     return () => {
@@ -1883,7 +1939,7 @@ export default function HomePage() {
     topicSearchSignature.current = signature;
     const requestId = ++topicSearchRequestId.current;
     worker.postMessage({ type: "search", requestId, query: text, semanticTerms, plan, catalogRevision });
-  }, [catalogRevision, query, semanticSearch, topicWorkerReadyRevision]);
+  }, [catalogRevision, query, semanticSearch, topicWorkerReadyRevision, topicWorkerRecoveryEpoch]);
 
   const topicEnrichmentKey = JSON.stringify([catalogRevision, normalizeSearchText(query), apiKey.trim()]);
   const topicCoverage = topicSearchReply.catalogRevision === catalogRevision && normalizeSearchText(topicSearchReply.query ?? "") === normalizeSearchText(query) ? topicSearchReply.completeCoverage : undefined;
@@ -3193,9 +3249,16 @@ export default function HomePage() {
       const existing = youtubeSearchResultsRef.current;
       const viewKey = `${workspaceId}:${account?.id ?? "local"}`;
       const request = { query, plan, topic: current.selectedTopic, channelId: current.selectedChannelId, limit: 80, excludedIds: existing.map((video) => video.id), viewKey };
+      const rankLocally = () => (youtubeFallbackIndex.current ??= createVideoSearchIndexLoader()).load(current.videos).then(indexed => {
+        if (controller.signal.aborted || revision !== youtubeSearchWorkerRevision.current) throw new DOMException("Search canceled", "AbortError");
+        return searchPreparedSemanticVideosYielding(indexed, youtubePreparedSearchCache.current.get(plan, current.selectedTopic, current.selectedChannelId, revision, `${account?.id ?? "local"}:${workspaceId}`), 80, new Set(request.excludedIds), controller.signal);
+      }).then(matches => matches.flatMap(candidate => { const video = youtubeIndexes.videoById.get(candidate.video.id); return video ? [{ ...candidate, video }] : []; }));
       const work = youtubeSearchWorker.current
-        ? requestYouTubeWorkerSearch(request, controller.signal).then((reply) => reply.type === "results" ? reply.candidates.flatMap((candidate) => { const video = youtubeIndexes.videoById.get(candidate.videoId); return video ? [{ ...candidate, video }] : []; }) : [])
-        : (youtubeFallbackIndex.current ??= createVideoSearchIndexLoader()).load(current.videos).then(indexed => searchPreparedSemanticVideosYielding(indexed, youtubePreparedSearchCache.current.get(plan, current.selectedTopic, current.selectedChannelId, revision, `${account?.id ?? "local"}:${workspaceId}`), 80, new Set(request.excludedIds), controller.signal)).then(matches => matches.flatMap(candidate => { const video = youtubeIndexes.videoById.get(candidate.video.id); return video ? [{ ...candidate, video }] : []; }));
+        ? requestYouTubeWorkerSearch(request, controller.signal).then((reply) => reply.type === "results" ? reply.candidates.flatMap((candidate) => { const video = youtubeIndexes.videoById.get(candidate.videoId); return video ? [{ ...candidate, video }] : []; }) : []).catch(error => {
+          if (controller.signal.aborted || revision !== youtubeSearchWorkerRevision.current) throw error;
+          return rankLocally();
+        })
+        : rankLocally();
       void work.then((next) => {
         if (controller.signal.aborted || revision !== youtubeSearchWorkerRevision.current || query !== youtubeWorkspaceRef.current.searchText.trim()) return;
         const merged = [...existing, ...next.map((candidate) => candidate.video)];

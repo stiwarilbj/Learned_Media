@@ -18,7 +18,7 @@ Module._extensions[".ts"] = (module, filename) => {
   module._compile(compiled, filename);
 };
 const { toVideoSearchDocument } = require("../lib/video-metadata.ts");
-const { insertBoundedRanked } = require("../lib/video-semantic.ts");
+const { insertBoundedRanked, makeLocalVideoPlan } = require("../lib/video-semantic.ts");
 const projectVideos = (videos) => videos.map(toVideoSearchDocument);
 
 function importFromWorker(specifier) {
@@ -1011,5 +1011,31 @@ for (const platform of ['website','native']) {
     const result=await waitForMessage(worker.messages,m=>m.requestId===21);
     assert.deepEqual(JSON.parse(JSON.stringify(result.candidates.map(v=>v.videoId))),['new']);
     assert.ok(!worker.messages.some(m=>m.requestId===20 && (m.type==='results'||m.candidates)),'canceled startup searches never publish');
+  });
+}
+
+for (const [name, load, send] of [
+  ['website', options => loadWorker('workers/youtube-search.worker.ts', options), (w, data) => w.scope.onmessage({data})],
+  ['Mac', loadNativeYouTubeWorker, (w, data) => w.send(data)]
+]) {
+  const videos = Array.from({length:1500}, (_,index)=>({id:`recovery-${index}`,channelId:'science',channelName:'Science',title:`Ancient biology study ${index}`,description:'A documented biology study.',tags:['biology'],topics:['Science'],publishedAt:'2024-01-01',durationSeconds:600,approved:true}));
+  const request = id => ({type:'search',requestId:id,revision:1,query:'biology',plan:makeLocalVideoPlan('biology'),topic:'All',limit:80});
+  test(`${name} reports async ranking failures without retaining provider content`, async()=>{
+    const worker=load({searchOverride:()=>()=>{throw Error('private content must not escape');}});
+    send(worker,{type:'initialize',revision:1,videos});
+    send(worker,request(501));
+    const failed=await waitForMessage(worker.messages,message=>message.type==='failed');
+    assert.deepEqual(JSON.parse(JSON.stringify(failed)),{type:'failed',requestId:501,revision:1});
+    assert.equal(worker.messages.some(message=>JSON.stringify(message).includes('private content')),false);
+  });
+  test(`${name} settles superseded requests and reports progress for long searches`, async()=>{
+    let now=0;const worker=load({performanceNow:()=>now+=1100});
+    send(worker,{type:'initialize',revision:1,videos});
+    await waitForMessage(worker.messages,message=>message.type==='ready');
+    send(worker,request(601));send(worker,request(602));
+    await waitForMessage(worker.messages,message=>message.type==='stale'&&message.requestId===601);
+    await waitForMessage(worker.messages,message=>message.requestId===602&&Array.isArray(message.candidates));
+    assert.ok(worker.messages.some(message=>message.type==='progress'&&message.requestId===602&&message.revision===1));
+    assert.equal(worker.messages.some(message=>message.requestId===601&&Array.isArray(message.candidates)),false);
   });
 }

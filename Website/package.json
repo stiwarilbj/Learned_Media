@@ -65,7 +65,8 @@
     "check:native-data": "node scripts/build-native-shared.mjs --check",
     "test:difficulty": "node scripts/build-native-difficulty.mjs --check && node scripts/test-difficulty.mjs",
     "test:exports": "node scripts/build-native-fact-downloads.mjs --check && node scripts/test-fact-downloads.mjs",
-    "test:parity": "node scripts/test-platform-parity.mjs"
+    "test:parity": "node scripts/test-platform-parity.mjs",
+    "test:worker-recovery": "node scripts/build-native-worker-recovery.mjs --check && node --test scripts/test-worker-recovery.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "0.5.2",

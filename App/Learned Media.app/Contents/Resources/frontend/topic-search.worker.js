@@ -22,6 +22,8 @@ self.onmessage = function (event) {
         const generation = epoch;
         LEARNED_MEDIA_TOPIC_SEARCH.searchTopicIndexYielding(index, r.query, r.plan || [], () => latest === r.id && revision === r.revision && generation === epoch).then(result => {
             if (result) self.postMessage({ type: "results", id: r.id, key: r.key, query: r.query, revision, ...result });
+        }).catch(() => {
+            if (latest === r.id && revision === r.revision) self.postMessage({ type:"failed", id:r.id, revision });
         });
     }
 };

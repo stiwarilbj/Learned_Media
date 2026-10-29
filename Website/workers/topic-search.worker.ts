@@ -54,7 +54,9 @@ scope.onmessage = (event: MessageEvent<Request>) => {
         cache.clear();
         scope.postMessage({ type: "ready", catalogRevision: revision } satisfies TopicSearchWorkerReply);
     } else if (r.type === "cancel") latest = r.requestId;
-    else void search(r);
+    else void search(r).catch(() => {
+      if (r.requestId === latest && r.catalogRevision === revision) scope.postMessage({ type: "failed", requestId: r.requestId, catalogRevision: revision });
+    });
 };
 
 async function search(r: Extract<Request, { type: "search" }>) {
