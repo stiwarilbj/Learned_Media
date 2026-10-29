@@ -139,7 +139,7 @@ function rankSearchResults(query, items, getText, limit = items.length) {
 })(search); const require = () => search; const exports = {};
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PreparedVideoSearchCache = exports.VIDEO_SEMANTIC_VERSION = exports.MAX_VIDEO_SEARCH_RESULT_LIMIT = exports.VIDEO_SEARCH_TOPICS = void 0;
+exports.SEMANTIC_SEARCH_MAX_CHUNK_SIZE = exports.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE = exports.SEMANTIC_SEARCH_MIN_CHUNK_SIZE = exports.SEMANTIC_SEARCH_SLICE_BUDGET_MS = exports.PreparedVideoSearchCache = exports.VIDEO_SEMANTIC_VERSION = exports.MAX_VIDEO_SEARCH_RESULT_LIMIT = exports.VIDEO_SEARCH_TOPICS = void 0;
 exports.isValidVideoSearchRequest = isValidVideoSearchRequest;
 exports.validateVideoSearchCatalogUpdate = validateVideoSearchCatalogUpdate;
 exports.indexVideoSearchMetadata = indexVideoSearchMetadata;
@@ -152,6 +152,7 @@ exports.videoConceptCoverage = videoConceptCoverage;
 exports.semanticCoverage = semanticCoverage;
 exports.compareSemanticCandidates = compareSemanticCandidates;
 exports.insertBoundedRanked = insertBoundedRanked;
+exports.nextSemanticSearchChunkSize = nextSemanticSearchChunkSize;
 exports.searchPreparedSemanticVideos = searchPreparedSemanticVideos;
 exports.searchSemanticVideos = searchSemanticVideos;
 exports.searchSemanticVideosYielding = searchSemanticVideosYielding;
@@ -810,6 +811,22 @@ function insertBoundedRanked(items, candidate, limit, compare) {
         items.pop();
 }
 const emptyExcludedIds = new Set();
+exports.SEMANTIC_SEARCH_SLICE_BUDGET_MS = 8;
+exports.SEMANTIC_SEARCH_MIN_CHUNK_SIZE = 32;
+exports.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE = 64;
+exports.SEMANTIC_SEARCH_MAX_CHUNK_SIZE = 640;
+/** Adjust the next worker slice toward the time budget without large noisy jumps. */
+function nextSemanticSearchChunkSize(currentSize, elapsedMs) {
+    const current = Number.isFinite(currentSize)
+        ? Math.max(exports.SEMANTIC_SEARCH_MIN_CHUNK_SIZE, Math.min(exports.SEMANTIC_SEARCH_MAX_CHUNK_SIZE, Math.floor(currentSize)))
+        : exports.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
+    const elapsed = Number.isFinite(elapsedMs) ? Math.max(0.5, elapsedMs) : exports.SEMANTIC_SEARCH_SLICE_BUDGET_MS;
+    const scale = Math.max(0.5, Math.min(2, exports.SEMANTIC_SEARCH_SLICE_BUDGET_MS / elapsed));
+    return Math.max(exports.SEMANTIC_SEARCH_MIN_CHUNK_SIZE, Math.min(exports.SEMANTIC_SEARCH_MAX_CHUNK_SIZE, Math.round(current * scale)));
+}
+function semanticSearchNow() {
+    return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+}
 function searchPreparedSemanticVideos(videos, prepared, limit = 80, excludedIds = emptyExcludedIds) {
     const { groups, related } = prepared;
     const results = [];
@@ -861,12 +878,22 @@ async function searchSemanticVideosYielding(videos, plan, topic = "All", channel
 }
 async function searchPreparedSemanticVideosYielding(videos, prepared, limit = 80, excludedIds = emptyExcludedIds, signal) {
     const matches = [];
-    for (let start = 0; start < videos.length; start += 160) {
+    let start = 0;
+    let chunkSize = exports.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
+    while (start < videos.length) {
         if (signal?.aborted)
             throw new DOMException("Search canceled", "AbortError");
-        matches.push(...searchPreparedSemanticVideos(videos.slice(start, start + 160), prepared, limit, excludedIds));
-        if (start + 160 < videos.length)
+        const beganAt = semanticSearchNow();
+        const end = Math.min(videos.length, start + chunkSize);
+        matches.push(...searchPreparedSemanticVideos(videos.slice(start, end), prepared, limit, excludedIds));
+        const elapsed = semanticSearchNow() - beganAt;
+        chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
+        start = end;
+        if (start < videos.length) {
             await new Promise((resolve) => setTimeout(resolve, 0));
+            if (signal?.aborted)
+                throw new DOMException("Search canceled", "AbortError");
+        }
     }
     if (signal?.aborted)
         throw new DOMException("Search canceled", "AbortError");

@@ -5,6 +5,9 @@ const preparedSearchCache = new LEARNED_MEDIA_VIDEO_SEARCH.PreparedVideoSearchCa
 const searchSessionCache = new Map();
 const SEARCH_SESSION_CACHE_LIMIT = 8, SEARCH_SESSION_TTL_MS = 5 * 60 * 1000, SEARCH_SESSION_BYTE_LIMIT = 4 * 1024 * 1024;
 let searchSessionCacheBytes = 0;
+function rankingNow() {
+  return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+}
 function sessionBytes(session, key) {
   let bytes = 128 + key.length * 2;
   for (const list of [session.direct, session.fallback]) for (const candidate of list) {
@@ -142,9 +145,11 @@ onmessage = async function(event) {
   const buildSession = excludedIds.size === 0 && resultLimit <= 160;
   const sessionLimit = buildSession ? Math.min(320, Math.max(resultLimit, resultLimit * 2)) : resultLimit;
   const compareEntries = (left,right) => LEARNED_MEDIA_VIDEO_SEARCH.compareSemanticCandidates(left.candidate,right.candidate,prepared.sort) || left.index-right.index;
-  for (let start=0; start<catalog.length; start+=160) {
+  let start = 0, chunkSize = LEARNED_MEDIA_VIDEO_SEARCH.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
+  while (start < catalog.length) {
     if (token !== latest || snapshot.revision !== currentRevision) return;
-    const batch = catalog.slice(start,start+160);
+    const beganAt = rankingNow(), end = Math.min(catalog.length, start + chunkSize);
+    const batch = catalog.slice(start,end);
     const positions = new Map(batch.map((video,index)=>[video.id,start+index]));
     // Retrieve the complete chunk before separating direct and fallback
     // matches, so a high-scoring fallback cannot hide a direct result.
@@ -156,7 +161,13 @@ onmessage = async function(event) {
       else directMatchCount++;
       LEARNED_MEDIA_VIDEO_SEARCH.insertBoundedRanked(isFallback ? fallback : direct, entry, buildSession ? sessionLimit : resultLimit, compareEntries);
     }
-    if (start+160 < catalog.length) await new Promise(resolve=>setTimeout(resolve,0));
+    const elapsed = rankingNow() - beganAt;
+    chunkSize = LEARNED_MEDIA_VIDEO_SEARCH.nextSemanticSearchChunkSize(chunkSize, elapsed);
+    start = end;
+    if (start < catalog.length) {
+      await new Promise(resolve=>setTimeout(resolve,0));
+      if (token !== latest || snapshot.revision !== currentRevision) return;
+    }
   }
   if (token === latest && snapshot.revision === currentRevision) {
     if (buildSession) rememberSearchSession(key, {

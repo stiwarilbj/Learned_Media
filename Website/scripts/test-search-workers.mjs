@@ -26,7 +26,7 @@ function importFromWorker(specifier) {
   return require(path.join(root, `${specifier.slice(2)}.ts`));
 }
 
-function loadWorker(filename, { observeMaps = false, searchOverride, indexOverride } = {}) {
+function loadWorker(filename, { observeMaps = false, searchOverride, indexOverride, performanceNow = () => globalThis.performance.now() } = {}) {
   const messages = [];
   let workerYieldCount = 0;
   const workerMaps = [];
@@ -58,11 +58,11 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
       indexVideoSearchMetadata: indexOverride ? indexOverride(imported.indexVideoSearchMetadata) : imported.indexVideoSearchMetadata };
     return imported;
   };
-  new Function("require", "module", "exports", "self", "setTimeout", "Map", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); self.inspectSearchState = () => ({ latestRequestId, activeRequestId });" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map);
+  new Function("require", "module", "exports", "self", "setTimeout", "Map", "performance", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); self.inspectSearchState = () => ({ latestRequestId, activeRequestId });" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map, { now: performanceNow });
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
-function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOverride } = {}) {
+function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOverride, performanceNow = () => globalThis.performance.now() } = {}) {
   const messages = [];
   const workerMaps = [];
   class ObservedMap extends Map {
@@ -77,7 +77,7 @@ function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOve
       return super.values();
     }
   }
-  const context = { postMessage: (message) => messages.push(message), setTimeout, Map: observeMaps ? ObservedMap : Map };
+  const context = { postMessage: (message) => messages.push(message), setTimeout, Map: observeMaps ? ObservedMap : Map, performance: { now: performanceNow } };
   context.globalThis = context;
   context.importScripts = (filename) => {
     const runtime = readFileSync(path.join(root, "..", "App", "Resources", "frontend", filename), "utf8");
@@ -125,6 +125,46 @@ test("bounded ranking retains only the requested top results and preserves tie o
   const tied = [];
   for (let index = 0; index < 200; index++) insertBoundedRanked(tied, { score: 1, index }, 7, compare);
   assert.deepEqual(tied.map((item) => item.index), [0, 1, 2, 3, 4, 5, 6]);
+});
+
+test("website and Mac ranking slices adapt to measured device speed without changing results", async () => {
+  const videos = Array.from({ length: 3_000 }, (_, index) => ({
+    id: `adaptive-${index}`, channelId: "science", channelName: "Science Channel",
+    title: `Ancient biology field study ${index}`, description: "A documented ancient biology study.",
+    tags: ["ancient biology"], publishedAt: "2024-01-01T00:00:00.000Z", durationSeconds: 600,
+    topics: ["Science"], approved: true
+  }));
+  const fixtures = [
+    { name: "website", load: options => loadWorker("workers/youtube-search.worker.ts", options), send: (worker, data) => worker.scope.onmessage({ data }), messages: worker => worker.messages },
+    { name: "Mac", load: options => loadNativeYouTubeWorker(options), send: (worker, data) => worker.send(data), messages: worker => worker.messages }
+  ];
+  const outputs = new Map();
+  for (const fixture of fixtures) for (const speed of ["slow", "fast"]) {
+    let time = 0;
+    const chunkSizes = [];
+    const worker = fixture.load({
+      performanceNow: () => time,
+      searchOverride: original => (batch, ...args) => {
+        chunkSizes.push(batch.length);
+        time += speed === "slow" ? batch.length : 1;
+        return original(batch, ...args);
+      }
+    });
+    fixture.send(worker, { type: "initialize", revision: 0, videos: projectVideos(videos) });
+    fixture.send(worker, { type: "search", requestId: 1, revision: 0, query: "ancient biology", plan: { terms: ["ancient biology"] }, topic: "All", limit: 80, viewKey: `${fixture.name}-${speed}` });
+    const reply = await waitForMessage(fixture.messages(worker), message => message.requestId === 1 && Array.isArray(message.candidates));
+    assert.ok(chunkSizes.length > 1, `${fixture.name} yields between ranking slices`);
+    assert.ok(chunkSizes.slice(0, -1).every(size => size >= 32 && size <= 640) && chunkSizes.at(-1) > 0 && chunkSizes.at(-1) <= 640, `${fixture.name} keeps target slices within bounds and processes the final remainder`);
+    if (speed === "slow") {
+      assert.deepEqual(chunkSizes.slice(0, 3), [64, 32, 32], `${fixture.name} reduces later slices when ranking is slow`);
+    } else {
+      assert.deepEqual(chunkSizes.slice(0, 5), [64, 128, 256, 512, 640], `${fixture.name} expands later slices when ranking is fast`);
+    }
+    outputs.set(`${fixture.name}-${speed}`, reply.candidates);
+  }
+  const comparable = candidates => candidates.map(({ videoId, score, matchedFields, supportingText }) => ({ videoId, score, matchedFields, supportingText }));
+  const expected = comparable(JSON.parse(JSON.stringify(outputs.get("website-slow"))));
+  for (const [name, result] of outputs) assert.deepEqual(comparable(JSON.parse(JSON.stringify(result))), expected, `${name} returns the same ranked items, scores, and explanations`);
 });
 
 test("YouTube workers reject malformed search messages before ranking or mutating request state", async () => {

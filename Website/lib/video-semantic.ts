@@ -640,6 +640,25 @@ export function insertBoundedRanked<T>(items: T[], candidate: T, limit: number, 
   if (items.length > maximum) items.pop();
 }
 const emptyExcludedIds: ReadonlySet<string> = new Set<string>();
+export const SEMANTIC_SEARCH_SLICE_BUDGET_MS = 8;
+export const SEMANTIC_SEARCH_MIN_CHUNK_SIZE = 32;
+export const SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE = 64;
+export const SEMANTIC_SEARCH_MAX_CHUNK_SIZE = 640;
+
+/** Adjust the next worker slice toward the time budget without large noisy jumps. */
+export function nextSemanticSearchChunkSize(currentSize: number, elapsedMs: number) {
+  const current = Number.isFinite(currentSize)
+    ? Math.max(SEMANTIC_SEARCH_MIN_CHUNK_SIZE, Math.min(SEMANTIC_SEARCH_MAX_CHUNK_SIZE, Math.floor(currentSize)))
+    : SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
+  const elapsed = Number.isFinite(elapsedMs) ? Math.max(0.5, elapsedMs) : SEMANTIC_SEARCH_SLICE_BUDGET_MS;
+  const scale = Math.max(0.5, Math.min(2, SEMANTIC_SEARCH_SLICE_BUDGET_MS / elapsed));
+  return Math.max(SEMANTIC_SEARCH_MIN_CHUNK_SIZE, Math.min(SEMANTIC_SEARCH_MAX_CHUNK_SIZE, Math.round(current * scale)));
+}
+
+function semanticSearchNow() {
+  return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+}
+
 export function searchPreparedSemanticVideos<T extends Video>(videos: T[], prepared: PreparedVideoSearch, limit = 80, excludedIds: ReadonlySet<string> = emptyExcludedIds): SemanticCandidate<T>[] {
   const { groups, related } = prepared;
   const results: SemanticCandidate<T>[] = [];
@@ -683,10 +702,20 @@ export async function searchSemanticVideosYielding<T extends Video>(videos: T[],
 }
 export async function searchPreparedSemanticVideosYielding<T extends Video>(videos: T[], prepared: PreparedVideoSearch, limit = 80, excludedIds: ReadonlySet<string> = emptyExcludedIds, signal?: AbortSignal) {
   const matches: SemanticCandidate<T>[] = [];
-  for (let start=0;start<videos.length;start+=160) {
+  let start = 0;
+  let chunkSize = SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
+  while (start < videos.length) {
     if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
-    matches.push(...searchPreparedSemanticVideos(videos.slice(start,start+160),prepared,limit,excludedIds));
-    if (start+160<videos.length) await new Promise((resolve)=>setTimeout(resolve,0));
+    const beganAt = semanticSearchNow();
+    const end = Math.min(videos.length, start + chunkSize);
+    matches.push(...searchPreparedSemanticVideos(videos.slice(start,end),prepared,limit,excludedIds));
+    const elapsed = semanticSearchNow() - beganAt;
+    chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
+    start = end;
+    if (start < videos.length) {
+      await new Promise((resolve)=>setTimeout(resolve,0));
+      if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
+    }
   }
   if (signal?.aborted) throw new DOMException("Search canceled","AbortError");
   return matches.sort((a,b)=>compareSemanticCandidates(a,b,prepared.sort)).slice(0,limit);

@@ -163,6 +163,13 @@ test('yielding fallback cancels obsolete scans and preserves ordering',async()=>
  await assert.rejects(work,{name:'AbortError'});
  assert.deepEqual(await engine.searchSemanticVideosYielding(catalog,plan),engine.searchSemanticVideos(catalog,plan));
 });
+test('adaptive semantic slices react to elapsed time and stay within fixed bounds',()=>{
+ assert.equal(engine.nextSemanticSearchChunkSize(64,64),32,'slow slices shrink toward the lower bound');
+ assert.equal(engine.nextSemanticSearchChunkSize(64,1),128,'fast slices grow without skipping a candidate');
+ assert.equal(engine.nextSemanticSearchChunkSize(640,0),640,'fast timing cannot exceed the upper bound');
+ assert.equal(engine.nextSemanticSearchChunkSize(32,1_000),32,'slow timing cannot go below the lower bound');
+ assert.equal(engine.nextSemanticSearchChunkSize(Number.NaN,Number.NaN),engine.SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE,'invalid timing falls back to a safe initial size');
+});
 test('prepared ranking preserves complete candidate output and reuses preparation across pages',()=>{
  const plans=[
   engine.makeLocalVideoPlan('black holes and bending starlight'),

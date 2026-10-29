@@ -2,7 +2,7 @@
 import { SessionCache } from "@/lib/session-cache";
 import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
 import type { SearchableVideoMetadata } from "@/lib/video-metadata";
-import { indexVideoSearchMetadata, isValidVideoSearchRequest, validateVideoSearchCatalogUpdate, insertBoundedRanked, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
+import { indexVideoSearchMetadata, isValidVideoSearchRequest, validateVideoSearchCatalogUpdate, insertBoundedRanked, nextSemanticSearchChunkSize, SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
 
 type SearchRequest = {
   type: "search";
@@ -136,6 +136,10 @@ function yieldToWorker() {
   return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+function rankingNow() {
+  return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+}
+
 async function search(request: SearchRequest) {
   if (request.revision !== snapshot.revision) return;
   const captured = snapshot;
@@ -178,10 +182,13 @@ async function search(request: SearchRequest) {
     const dateOrder = prepared.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : prepared.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
     return dateOrder || right.candidate.score - left.candidate.score || left.index - right.index;
   };
-  const chunkSize = 600;
-  for (let start = 0; start < catalog.length; start += chunkSize) {
+  let start = 0;
+  let chunkSize = SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
+  while (start < catalog.length) {
     if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
-    const batch = catalog.slice(start, start + chunkSize);
+    const beganAt = rankingNow();
+    const end = Math.min(catalog.length, start + chunkSize);
+    const batch = catalog.slice(start, end);
     const positions = new Map(batch.map((video, index) => [video.id, start + index]));
     // The ranker returns direct and fallback results in one list. Ask for the
     // whole chunk before splitting those groups; a fixed 2N window could be
@@ -194,7 +201,10 @@ async function search(request: SearchRequest) {
       else directMatchCount++;
       insertBoundedRanked(isFallback ? fallback : direct, entry, buildSession ? sessionLimit : resultLimit, compareEntries);
     }
-    if (start + chunkSize < catalog.length) {
+    const elapsed = rankingNow() - beganAt;
+    chunkSize = nextSemanticSearchChunkSize(chunkSize, elapsed);
+    start = end;
+    if (start < catalog.length) {
       await yieldToWorker();
       if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
     }
