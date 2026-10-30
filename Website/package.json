@@ -30,6 +30,7 @@
     "test:provider-schema": "node scripts/build-native-diagnostics.mjs --check && node --test scripts/test-provider-schema-diagnostics.mjs",
     "test:workspace-revision": "node --test scripts/test-workspace-revision.mjs",
     "test:cloud-records": "node --test scripts/test-cloud-records-clean.mjs",
+    "test:native-video-catalog": "node scripts/test-native-video-catalog-store.mjs",
     "test:card-reveal": "node scripts/build-native-card-reveal.mjs --check && node scripts/test-card-reveal.mjs",
     "test:card-fingerprints": "node scripts/build-native-card-content-fingerprint.mjs --check && node scripts/test-card-content-fingerprint.mjs",
     "test:card-follow-ups": "node scripts/build-native-follow-ups.mjs --check && node scripts/test-card-follow-ups.mjs",

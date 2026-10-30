@@ -4,13 +4,18 @@ import Foundation
 /// refresh stops before all changed records have been written.
 actor VideoCatalogStore {
     private let files = FileManager.default
+    private let applicationSupportRoot: URL?
     private var cached: [String: Any]?
     private var references: [String: String] = [:]
     private var manifestData: Data?
     private let metadataKeys = ["channels", "sourceStates", "catalogVersion", "incomplete", "libraryIncomplete", "lastSyncAt"]
 
+    init(applicationSupportRoot: URL? = nil) {
+        self.applicationSupportRoot = applicationSupportRoot
+    }
+
     private func root() throws -> URL {
-        let base = try files.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let base = try applicationSupportRoot ?? files.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         return base.appendingPathComponent("Learned Media", isDirectory: true)
     }
 
@@ -106,8 +111,13 @@ actor VideoCatalogStore {
     }
 
     private func sameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
-        let lhs = left.filter { $0.key != "metadataRefreshedAt" }, rhs = right.filter { $0.key != "metadataRefreshedAt" }
-        return NSDictionary(dictionary: lhs).isEqual(to: rhs)
+        let leftCount = left.keys.reduce(into: 0) { if $1 != "metadataRefreshedAt" { $0 += 1 } }
+        let rightCount = right.keys.reduce(into: 0) { if $1 != "metadataRefreshedAt" { $0 += 1 } }
+        guard leftCount == rightCount else { return false }
+        for (key, value) in left where key != "metadataRefreshedAt" {
+            guard let other = right[key], let object = value as? NSObject, object.isEqual(other) else { return false }
+        }
+        return true
     }
 
     private func validBatchName(_ name: String) -> Bool {
