@@ -34,6 +34,7 @@ const countryNames = [
 ];
 const countryByAlias = new Map(countryNames.flatMap(([name, code, aliases]) => aliases.map(alias => [alias.toLocaleLowerCase(), { name, code, alias }])));
 const bundledOutlines = new Map();
+const countryIsoIndexes = new WeakMap();
 let outlinePromise;
 const panelFingerprints = new Map();
 const panelListeners = new Map();
@@ -244,7 +245,7 @@ async function loadCountryOutlines(load) {
     outlinePromise ??= (load ? load() : fetch(new URL(`${appBase}country-outlines.json`, window.location.origin).toString()).then(response => { if (!response.ok)
         throw new Error("The map outline could not be loaded."); return response.json(); }))
         .then(value => { if (!Array.isArray(value.countries))
-        throw new Error("The map outline data is invalid."); bundledOutlines.set("110m-v1", value); return value; })
+        throw new Error("The map outline data is invalid."); countryIsoIndex(value.countries); bundledOutlines.set("110m-v1", value); return value; })
         .catch(error => { outlinePromise = undefined; throw error; });
     return outlinePromise;
 }
@@ -259,6 +260,17 @@ function pointInRing(longitude, latitude, ring) {
     return inside;
 }
 function pointInCountry(longitude, latitude, country) { return country.polygons.some(polygon => polygon.length && pointInRing(longitude, latitude, polygon[0])); }
+function countryIsoIndex(countries) {
+    let index = countryIsoIndexes.get(countries);
+    if (!index) {
+        index = new Map();
+        for (const country of countries)
+            if (!index.has(country.iso))
+                index.set(country.iso, country);
+        countryIsoIndexes.set(countries, index);
+    }
+    return index;
+}
 function layoutPocketMap(countries, places, width = 720, height = 330) {
     const valid = places.filter(place => Number.isFinite(place.latitude) && Number.isFinite(place.longitude)).slice(0, 2);
     const lons = valid.map(place => place.longitude * Math.PI / 180);
@@ -293,8 +305,11 @@ function layoutPocketMap(countries, places, width = 720, height = 330) {
         maxY += extra;
     }
     const project = (lon, lat) => [padding + (projected(lon, lat)[0] - minX) / (maxX - minX) * (width - padding * 2), height - padding - (projected(lon, lat)[1] - minY) / (maxY - minY) * (height - padding * 2)];
+    const countriesByIso = countryIsoIndex(countries);
+    const resolvedCountries = valid.map(place => (place.countryCode ? countriesByIso.get(place.countryCode) : undefined)
+        ?? countries.find(item => pointInCountry(place.longitude, place.latitude, item)));
     const selected = new Set();
-    valid.forEach(place => { const country = countries.find(item => item.iso === place.countryCode) ?? countries.find(item => pointInCountry(place.longitude, place.latitude, item)); if (country)
+    resolvedCountries.forEach(country => { if (country)
         selected.add(country.iso); });
     const outlines = countries.map(country => {
         const chunks = [];
@@ -318,7 +333,7 @@ function layoutPocketMap(countries, places, width = 720, height = 330) {
     const markers = valid.map((place, index) => {
         const [x, y] = project(place.longitude, place.latitude);
         const anchor = x > width * 0.72 ? "end" : "start";
-        return { x, y, labelX: x + (anchor === "start" ? 13 : -13), labelY: y + (index === 0 ? -12 : 20), anchor, number: index + 1, name: place.name, url: place.url, country: countries.find(item => item.iso === place.countryCode)?.name ?? countries.find(item => pointInCountry(place.longitude, place.latitude, item))?.name };
+        return { x, y, labelX: x + (anchor === "start" ? 13 : -13), labelY: y + (index === 0 ? -12 : 20), anchor, number: index + 1, name: place.name, url: place.url, country: resolvedCountries[index]?.name };
     });
     return { width, height, outlines, markers };
 }

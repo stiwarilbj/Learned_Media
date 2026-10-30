@@ -18,6 +18,18 @@ const card = {
   sentences: ["Tokyo's neighborhoods grew along the Sumida River.", "Japan later built flood defenses there."],
   sources: [{ title: "Tokyo" }, { title: "Sumida River" }]
 };
+function previousCountryResolution(countries, place) {
+  return countries.find(country => country.iso === place.countryCode) ?? countries.find(country => country.polygons.some(polygon => {
+    if (!polygon.length) return false;
+    const ring = polygon[0];
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if ((yi > place.latitude) !== (yj > place.latitude) && place.longitude < (xj - xi) * (place.latitude - yi) / ((yj - yi) || 1e-12) + xi) inside = !inside;
+    }
+    return inside;
+  }));
+}
 
 test("optional hints must name text in their declared anchor; invalid hints do not affect other data", () => {
   const saved = locations.createSavedCardLocations([
@@ -98,6 +110,47 @@ test("map fitting handles nearby, distant, antimeridian, and polar pins with rea
   const polar = locations.layoutPocketMap([], [{ name: "Pole", articleTitle: "Pole", anchor: { field: "title" }, latitude: 89.9, longitude: -20, url: "https://en.wikipedia.org/wiki/Pole" }]);
   assert.ok(Number.isFinite(polar.markers[0].x) && Number.isFinite(polar.markers[0].y));
   assert.ok(polar.markers[0].x >= 0 && polar.markers[0].x <= polar.width);
+});
+
+test("country lookup preserves outline search order for islands, borders, overlaps, and the antimeridian", () => {
+  const outline = (name, iso, ring) => ({ name, iso, aliases: [], polygons: [[ring]] });
+  const northIsland = outline("North Island", "NTH", [[9, 9], [11, 9], [11, 11], [9, 11], [9, 9]]);
+  const southernIsland = outline("Southern Island", "STH", [[9, -11], [11, -11], [11, -9], [9, -9], [9, -11]]);
+  const borderLeft = outline("Left", "LFT", [[-1, -1], [0, -1], [0, 1], [-1, 1], [-1, -1]]);
+  const borderRight = outline("Right", "RGT", [[0, -1], [1, -1], [1, 1], [0, 1], [0, -1]]);
+  const overlapFirst = outline("First overlap", "OV1", [[-2, -2], [2, -2], [2, 2], [-2, 2], [-2, -2]]);
+  const overlapSecond = outline("Second overlap", "OV2", [[-2, -2], [2, -2], [2, 2], [-2, 2], [-2, -2]]);
+  const eastDateLine = outline("East of date line", "EAST", [[170, -10], [180, -10], [180, 10], [170, 10], [170, -10]]);
+  const westDateLine = outline("West of date line", "WEST", [[-180, -10], [-170, -10], [-170, 10], [-180, 10], [-180, -10]]);
+  const cases = [
+    { name: "islands", countries: [northIsland, southernIsland], places: [[10, 10], [10, -10]] },
+    { name: "border point", countries: [borderLeft, borderRight], places: [[0, 0]] },
+    { name: "overlapping outlines", countries: [overlapFirst, overlapSecond], places: [[0, 0]] },
+    { name: "antimeridian", countries: [eastDateLine, westDateLine], places: [[0, 179], [0, -179]] }
+  ];
+  assert.equal(previousCountryResolution([borderLeft, borderRight], { latitude: 0, longitude: 0 })?.name, "Right", "the shared border retains the existing point-in-polygon result");
+  assert.equal(previousCountryResolution([overlapFirst, overlapSecond], { latitude: 0, longitude: 0 })?.name, "First overlap", "the first containing outline wins");
+  assert.deepEqual([[0, 179], [0, -179]].map(([latitude, longitude]) => previousCountryResolution([eastDateLine, westDateLine], { latitude, longitude })?.name), ["East of date line", "West of date line"]);
+  for (const scenario of cases) {
+    const places = scenario.places.map(([latitude, longitude], index) => ({
+      name: `${scenario.name} ${index + 1}`, articleTitle: `Place ${index + 1}`, anchor: { field: "title" },
+      latitude, longitude, url: `https://en.wikipedia.org/wiki/Place_${index + 1}`
+    }));
+    const expected = places.map(place => previousCountryResolution(scenario.countries, place));
+    const layout = locations.layoutPocketMap(scenario.countries, places);
+    assert.deepEqual(layout.markers.map(marker => marker.country), expected.map(country => country?.name), `${scenario.name}: labels retain the old first matching country`);
+    assert.deepEqual(layout.outlines.filter(country => country.selected).map(country => country.key), [...new Set(expected.filter(Boolean).map(country => country.iso))], `${scenario.name}: selected outlines retain the old country resolution`);
+  }
+  const explicitCode = locations.layoutPocketMap([northIsland, southernIsland], [{
+    name: "Explicit", articleTitle: "Explicit", anchor: { field: "title" }, latitude: -10, longitude: 10,
+    countryCode: "NTH", url: "https://en.wikipedia.org/wiki/Explicit"
+  }]);
+  assert.equal(explicitCode.markers[0].country, "North Island", "a known country code keeps precedence over polygon containment");
+  const reversedOverlap = locations.layoutPocketMap([overlapSecond, overlapFirst], [{
+    name: "Overlap", articleTitle: "Overlap", anchor: { field: "title" }, latitude: 0, longitude: 0,
+    url: "https://en.wikipedia.org/wiki/Overlap"
+  }]);
+  assert.equal(reversedOverlap.markers[0].country, "Second overlap", "reordering overlapping outlines preserves first-match behavior");
 });
 
 test("country outline data stays compact and contains valid polygon coordinates", () => {
