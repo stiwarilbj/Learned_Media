@@ -34,6 +34,30 @@ async function put(db: IDBDatabase, id: string, value?: unknown) {
     transaction.onabort = () => reject(transaction.error);
   });
 }
+async function getOrCreateDeviceKey(db: IDBDatabase): Promise<CryptoKey> {
+  const existing = await get<CryptoKey>(db, "device-key");
+  if (existing) return existing;
+
+  // Generate outside IndexedDB, then select/install atomically. Another tab may
+  // have created the device key after the readonly lookup above.
+  const candidate = await crypto.subtle.generateKey({name:"AES-GCM", length:256}, false, ["encrypt", "decrypt"]);
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction("keys", "readwrite");
+    const store = transaction.objectStore("keys");
+    let selected: CryptoKey | undefined;
+    const request = store.get("device-key");
+    request.onsuccess = () => {
+      const stored = request.result as CryptoKey | undefined;
+      selected = stored ?? candidate;
+      if (!stored) store.put(candidate, "device-key");
+    };
+    transaction.oncomplete = () => {
+      if (selected) resolve(selected);
+      else reject(new Error("Credential encryption key could not be selected."));
+    };
+    transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error("Credential encryption key could not be stored."));
+  });
+}
 /** Device-local convenience, not protection against scripts running on this origin. */
 export function saveCredential(provider: Provider, owner: string | null, entry?: Credential) {
   const id = keyId(provider, owner);
@@ -41,11 +65,7 @@ export function saveCredential(provider: Provider, owner: string | null, entry?:
   const work = queue.catch(() => undefined).then(async () => {
     const db = await open();
     if (!value.trim()) { await put(db, id); return; }
-    let key = await get<CryptoKey>(db, "device-key");
-    if (!key) {
-      key = await crypto.subtle.generateKey({name:"AES-GCM", length:256}, false, ["encrypt", "decrypt"]);
-      await put(db, "device-key", key);
-    }
+    const key = await getOrCreateDeviceKey(db);
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt({name:"AES-GCM",iv}, key, new TextEncoder().encode(value));
     await put(db, id, {iv, ciphertext});
