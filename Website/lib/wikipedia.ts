@@ -370,27 +370,66 @@ function apiUrl(params: Record<string, string>) {
   return url.toString();
 }
 
-function wikipediaResponseLimit(url: string) {
-  const parsed = new URL(url);
-  if (parsed.pathname === "/w/api.php") {
-    const params = parsed.searchParams;
-    if (params.get("list") === "search") return WIKIPEDIA_RESPONSE_LIMITS.search;
-    const properties = new Set((params.get("prop") ?? "").split("|").filter(Boolean));
-    if (properties.has("extracts")) return WIKIPEDIA_RESPONSE_LIMITS.article;
-    if (properties.has("imageinfo")) return WIKIPEDIA_RESPONSE_LIMITS.images;
+type WikipediaRequestClassification = Readonly<{
+  api: boolean;
+  summary: boolean;
+  search: boolean;
+  hasExtracts: boolean;
+  hasImageInfo: boolean;
+  hasProperties: boolean;
+}>;
+type WikipediaRequestDescriptor = Readonly<{
+  origin: string;
+  responseLimit: number;
+  schema?: ProviderResponseSchema;
+}>;
+
+function wikipediaResponseLimit(request: WikipediaRequestClassification) {
+  if (request.api) {
+    if (request.search) return WIKIPEDIA_RESPONSE_LIMITS.search;
+    if (request.hasExtracts) return WIKIPEDIA_RESPONSE_LIMITS.article;
+    if (request.hasImageInfo) return WIKIPEDIA_RESPONSE_LIMITS.images;
   }
   return WIKIPEDIA_RESPONSE_LIMITS.metadata;
 }
 
-function wikipediaResponseSchema(url: string): ProviderResponseSchema | undefined {
-  const parsed = new URL(url);
-  if (parsed.pathname.startsWith("/api/rest_v1/page/summary/")) return "wikipedia.summary";
-  if (parsed.pathname !== "/w/api.php") return undefined;
-  const params = parsed.searchParams;
-  if (params.get("list") === "search") return "wikipedia.search";
-  if ((params.get("prop") ?? "").split("|").includes("imageinfo")) return "wikipedia.images";
-  if (params.has("prop")) return "wikipedia.pages";
+function wikipediaResponseSchema(request: WikipediaRequestClassification): ProviderResponseSchema | undefined {
+  if (request.summary) return "wikipedia.summary";
+  if (!request.api) return undefined;
+  if (request.search) return "wikipedia.search";
+  if (request.hasImageInfo) return "wikipedia.images";
+  if (request.hasProperties) return "wikipedia.pages";
   return undefined;
+}
+
+/** Parse and classify a provider URL once, before queueing its request. */
+function wikipediaRequestDescriptor(value: string): WikipediaRequestDescriptor {
+  const parsed = new URL(value);
+  const api = parsed.pathname === "/w/api.php";
+  const summary = parsed.pathname.startsWith("/api/rest_v1/page/summary/");
+  let list: string | null = null;
+  let properties: Set<string> | undefined;
+  let hasProperties = false;
+  if (api) {
+    const params = parsed.searchParams;
+    list = params.get("list");
+    const propertyValue = params.get("prop");
+    hasProperties = propertyValue !== null;
+    if (propertyValue !== null) properties = new Set(propertyValue.split("|").filter(Boolean));
+  }
+  const classification: WikipediaRequestClassification = {
+    api,
+    summary,
+    search: api && list === "search",
+    hasExtracts: properties?.has("extracts") ?? false,
+    hasImageInfo: properties?.has("imageinfo") ?? false,
+    hasProperties
+  };
+  return {
+    origin: parsed.origin,
+    responseLimit: wikipediaResponseLimit(classification),
+    schema: wikipediaResponseSchema(classification)
+  };
 }
 
 function hasWikipediaEnvelope(schema: ProviderResponseSchema, payload: unknown) {
@@ -407,8 +446,8 @@ function hasWikipediaEnvelope(schema: ProviderResponseSchema, payload: unknown) 
 
 async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cacheResponse = true): Promise<T | null> {
   const queuedAt = performance.now();
-  const origin = new URL(url).origin;
-  await acquireWikipediaSlot(signal, priority, origin);
+  const request = wikipediaRequestDescriptor(url);
+  await acquireWikipediaSlot(signal, priority, request.origin);
   recordPerformance("wikipedia", "queue_ms", Math.max(0, performance.now() - queuedAt));
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort();
@@ -424,11 +463,12 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cache
     });
     if (!response.ok) {
       if (response.status === 429 || response.status === 503) {
-        noteWikipediaCooldown(response.url ? new URL(response.url).origin : origin, response.headers.get("Retry-After"));
+        const origin = response.redirected && response.url ? new URL(response.url).origin : request.origin;
+        noteWikipediaCooldown(origin, response.headers.get("Retry-After"));
       }
       return null;
     }
-    const limited = await readLimitedResponseText(response, wikipediaResponseLimit(url), "Wikipedia");
+    const limited = await readLimitedResponseText(response, request.responseLimit, "Wikipedia");
     body = limited.text;
     recordPerformance("wikipedia", "response_bytes_read", limited.bytesRead);
   } catch (error) {
@@ -440,7 +480,7 @@ async function getJson<T>(url: string, signal?: AbortSignal, priority = 0, cache
     releaseWikipediaSlot();
   }
 
-  const schema = wikipediaResponseSchema(url);
+  const schema = request.schema;
   try {
     const payload: unknown = JSON.parse(body);
     if (schema && !hasWikipediaEnvelope(schema, payload)) recordProviderSchemaFailure(schema, payload);

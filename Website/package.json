@@ -44,6 +44,7 @@
     "test:responsive-data": "node scripts/test-responsive-data.mjs",
     "test:video-search-index": "node scripts/build-native-video-index-storage.mjs --check && node scripts/test-video-search-index.mjs",
     "test:video-semantic": "node scripts/test-video-semantic.mjs",
+    "test:wikipedia-requests": "node --test scripts/test-wikipedia-request-descriptor.mjs",
     "test:search-workers": "node scripts/test-search-workers.mjs",
     "validate:political": "node scripts/validate-political-catalog.mjs",
     "start": "next start",
