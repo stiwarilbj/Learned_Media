@@ -64,17 +64,40 @@ export function shouldExpandNaturalSearch(query: string, completeCoverage = fals
   return contentWords.length >= 2;
 }
 
-function distance(left: string, right: string) {
+function distance(left: string, right: string, maxDistance: number) {
   if (left === right) return 0;
+  if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1;
+  if (left.length > right.length) [left, right] = [right, left];
   if (!left.length) return right.length;
-  if (!right.length) return left.length;
-  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+
+  const infinity = maxDistance + 1;
+  const width = right.length + 1;
+  let previous = new Uint32Array(width);
+  let current = new Uint32Array(width);
+  previous.fill(infinity);
+  previous[0] = 0;
+  for (let column = 1; column <= Math.min(right.length, maxDistance); column += 1) previous[column] = column;
+
   for (let row = 1; row <= left.length; row += 1) {
-    const current = [row];
-    for (let column = 1; column <= right.length; column += 1) {
-      current[column] = Math.min(current[column - 1] + 1, previous[column] + 1, previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1));
+    const firstColumn = Math.max(1, row - maxDistance);
+    const lastColumn = Math.min(right.length, row + maxDistance);
+    current[0] = row <= maxDistance ? row : infinity;
+    if (firstColumn > 1) current[firstColumn - 1] = infinity;
+
+    let rowMinimum = current[0];
+    for (let column = firstColumn; column <= lastColumn; column += 1) {
+      const value = Math.min(
+        current[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+      current[column] = Math.min(value, infinity);
+      rowMinimum = Math.min(rowMinimum, current[column]);
     }
-    previous = current;
+
+    if (lastColumn < right.length) current[lastColumn + 1] = infinity;
+    if (rowMinimum > maxDistance) return infinity;
+    [previous, current] = [current, previous];
   }
   return previous[right.length];
 }
@@ -83,7 +106,7 @@ function tokenScore(queryToken: string, textToken: string) {
   if (queryToken === textToken) return 20;
   if (textToken.startsWith(queryToken) || queryToken.startsWith(textToken)) return 13;
   const limit = queryToken.length >= 8 ? 2 : 1;
-  return queryToken.length >= 4 && textToken.length >= 4 && distance(queryToken, textToken) <= limit ? 7 : 0;
+  return queryToken.length >= 4 && textToken.length >= 4 && distance(queryToken, textToken, limit) <= limit ? 7 : 0;
 }
 
 export function searchScoreNormalized(normalizedQuery: string, normalizedText: string) {

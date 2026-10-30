@@ -50,6 +50,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
     "test:topic-semantic": "node scripts/test-topic-semantic.mjs",
+    "test:fuzzy-search": "node --test scripts/test-search-fuzzy.mjs",
     "generate:prompts": "node scripts/build-native-prompts.mjs",
     "test:prompts": "node scripts/build-native-prompts.mjs --check && node scripts/test-prompt-evaluation.mjs && node scripts/evaluate-prompts.mjs",
     "evaluate:prompts": "node scripts/evaluate-prompts.mjs",
