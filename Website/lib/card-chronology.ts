@@ -6,6 +6,7 @@ type ChronologyCard = Pick<FactCard, "id" | "title" | "hook" | "body"> & {
   chronology?: SavedCardChronology | unknown;
 };
 type ParsedDate = { year: number; month?: number; day?: number; precision: "year" | "month" | "day" };
+type DateParseLookup = Map<string, ParsedDate | undefined>;
 export type DisplayChronologyEvent = CardChronologyEvent & { description: string; intervalBefore?: string; originalIndex: number };
 
 const monthNumbers: Record<string, number> = {
@@ -92,6 +93,13 @@ export function parseChronologyDate(value: string): ParsedDate | undefined {
   return undefined;
 }
 
+function parseDateCached(value: string, lookup: DateParseLookup) {
+  if (lookup.has(value)) return lookup.get(value);
+  const parsed = parseChronologyDate(value);
+  lookup.set(value, parsed);
+  return parsed;
+}
+
 function cardSentences(card: ChronologyCard) {
   const body = clean(card.body);
   const saved = Array.isArray(card.sentences) ? card.sentences.map(clean).filter(Boolean) : [];
@@ -112,7 +120,7 @@ function cleanEventText(eventText: string, dateText: string) {
 }
 function escapeRegExp(value: string) { return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"); }
 
-function normalizeEvent(raw: unknown, card: ChronologyCard, sentences: string[]): CardChronologyEvent | undefined {
+function normalizeEvent(raw: unknown, card: ChronologyCard, sentences: string[], dateLookup: DateParseLookup): CardChronologyEvent | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const value = raw as Record<string, unknown>;
   const dateText = clean(value.dateText), eventText = clean(value.eventText);
@@ -125,7 +133,7 @@ function normalizeEvent(raw: unknown, card: ChronologyCard, sentences: string[])
     ? { field, sentenceIndex: Number.isInteger(anchorValue.sentenceIndex) ? Number(anchorValue.sentenceIndex) : -1 }
     : { field };
   const source = sourceForAnchor(card, anchor, sentences);
-  if (!source || !parseChronologyDate(dateText) || !includesExact(eventText, dateText)
+  if (!source || !parseDateCached(dateText, dateLookup) || !includesExact(eventText, dateText)
     || metadataDate.test(eventText) || speculative.test(eventText) || approximateDate.test(eventText)
     || !hasSupportedDateOccurrence(source, dateText) || !includesExact(source, eventText)) return undefined;
   const description = cleanEventText(eventText, dateText);
@@ -137,23 +145,28 @@ export function createSavedCardChronology(value: unknown, card: ChronologyCard):
   if (!value || typeof value !== "object") return undefined;
   const eventsValue = (value as { events?: unknown }).events;
   if (!Array.isArray(eventsValue)) return undefined;
+  const dateLookup: DateParseLookup = new Map();
   const sentences = cardSentences(card);
-  const events = deduplicate(eventsValue.slice(0, 12).map(item => normalizeEvent(item, card, sentences)).filter((event): event is CardChronologyEvent => Boolean(event)));
+  const events = deduplicate(eventsValue.slice(0, 12).map(item => normalizeEvent(item, card, sentences, dateLookup)).filter((event): event is CardChronologyEvent => Boolean(event)), dateLookup);
+  return events.length >= 2 ? { events: events.slice(0, 8), fingerprint: cardChronologyFingerprint(card) } : undefined;
+}
+
+function normalizeSavedCardChronologyWithLookup(card: ChronologyCard, dateLookup: DateParseLookup): SavedCardChronology | undefined {
+  const stored = card.chronology as Partial<SavedCardChronology> | undefined;
+  if (!stored || stored.fingerprint !== cardChronologyFingerprint(card) || !Array.isArray(stored.events)) return undefined;
+  const sentences = cardSentences(card);
+  const events = deduplicate(stored.events.slice(0, 12).map(item => normalizeEvent(item, card, sentences, dateLookup)).filter((event): event is CardChronologyEvent => Boolean(event)), dateLookup);
   return events.length >= 2 ? { events: events.slice(0, 8), fingerprint: cardChronologyFingerprint(card) } : undefined;
 }
 
 export function normalizeSavedCardChronology(card: ChronologyCard): SavedCardChronology | undefined {
-  const stored = card.chronology as Partial<SavedCardChronology> | undefined;
-  if (!stored || stored.fingerprint !== cardChronologyFingerprint(card) || !Array.isArray(stored.events)) return undefined;
-  const sentences = cardSentences(card);
-  const events = deduplicate(stored.events.slice(0, 12).map(item => normalizeEvent(item, card, sentences)).filter((event): event is CardChronologyEvent => Boolean(event)));
-  return events.length >= 2 ? { events: events.slice(0, 8), fingerprint: cardChronologyFingerprint(card) } : undefined;
+  return normalizeSavedCardChronologyWithLookup(card, new Map());
 }
 
-function deduplicate(events: CardChronologyEvent[]) {
+function deduplicate(events: CardChronologyEvent[], dateLookup: DateParseLookup) {
   const seen = new Set<string>();
   return events.filter(event => {
-    const parsedDate = parseChronologyDate(event.dateText);
+    const parsedDate = parseDateCached(event.dateText, dateLookup);
     const dateKey = parsedDate ? `${parsedDate.year}-${parsedDate.month ?? "*"}-${parsedDate.day ?? "*"}` : normalized(event.dateText);
     const description = cleanEventText(event.eventText, event.dateText);
     const key = `${dateKey}\u0000${normalized(description).replace(/[^\p{L}\p{N}]+/gu, " ").trim()}`;
@@ -163,14 +176,14 @@ function deduplicate(events: CardChronologyEvent[]) {
   });
 }
 
-function sentenceDateEvents(text: string, anchor: CardChronologyAnchor): CardChronologyEvent[] {
+function sentenceDateEvents(text: string, anchor: CardChronologyAnchor, dateLookup: DateParseLookup): CardChronologyEvent[] {
   const candidates: Array<{ dateText: string; index: number }> = [];
   dateCandidatePattern.lastIndex = 0;
   for (const match of text.matchAll(dateCandidatePattern)) {
     const dateText = clean(match[0]);
     const start = match.index ?? 0, end = start + match[0].length;
     if ([text[start - 1], text[end]].some(character => character === "/" || character === "-" || character === "–" || character === "—")) continue;
-    if (parseChronologyDate(dateText)) candidates.push({ dateText, index: match.index ?? 0 });
+    if (parseDateCached(dateText, dateLookup)) candidates.push({ dateText, index: match.index ?? 0 });
   }
   if (!candidates.length || (candidates.length > 1 && !text.includes(";"))) return [];
   const segments = text.split(/(?<=[;])\s*/u);
@@ -184,14 +197,14 @@ function sentenceDateEvents(text: string, anchor: CardChronologyAnchor): CardChr
   });
 }
 
-function detectLegacyEvents(card: ChronologyCard) {
+function detectLegacyEvents(card: ChronologyCard, dateLookup: DateParseLookup) {
   const sentences = cardSentences(card);
   const events = [
-    ...sentenceDateEvents(clean(card.title), { field: "title" }),
-    ...sentenceDateEvents(clean(card.hook), { field: "hook" }),
-    ...sentences.flatMap((sentence, sentenceIndex) => sentenceDateEvents(sentence, { field: "body", sentenceIndex }))
+    ...sentenceDateEvents(clean(card.title), { field: "title" }, dateLookup),
+    ...sentenceDateEvents(clean(card.hook), { field: "hook" }, dateLookup),
+    ...sentences.flatMap((sentence, sentenceIndex) => sentenceDateEvents(sentence, { field: "body", sentenceIndex }, dateLookup))
   ];
-  return deduplicate(events.filter(event => Boolean(parseChronologyDate(event.dateText))));
+  return deduplicate(events.filter(event => Boolean(parseDateCached(event.dateText, dateLookup))), dateLookup);
 }
 
 function compareDate(a: ParsedDate, b: ParsedDate) {
@@ -241,10 +254,11 @@ function intervalBetween(previous: ParsedDate, next: ParsedDate) {
 }
 
 export function getCardChronologyEvents(card: ChronologyCard, visibleBodySentenceCount = Number.POSITIVE_INFINITY, bodyFullyVisible = visibleBodySentenceCount === Number.POSITIVE_INFINITY): DisplayChronologyEvent[] {
-  const saved = normalizeSavedCardChronology(card);
-  const events = saved?.events ?? detectLegacyEvents(card);
+  const dateLookup: DateParseLookup = new Map();
+  const saved = normalizeSavedCardChronologyWithLookup(card, dateLookup);
+  const events = saved?.events ?? detectLegacyEvents(card, dateLookup);
   const visible = events.filter(event => event.anchor.field !== "body" || bodyFullyVisible || (event.anchor.sentenceIndex ?? -1) < visibleBodySentenceCount);
-  const sorted = visible.map((event, originalIndex) => ({ event, originalIndex, date: parseChronologyDate(event.dateText) }))
+  const sorted = visible.map((event, originalIndex) => ({ event, originalIndex, date: parseDateCached(event.dateText, dateLookup) }))
     .filter((item): item is typeof item & { date: ParsedDate } => Boolean(item.date))
     .sort((a, b) => compareDate(a.date, b.date) || a.originalIndex - b.originalIndex);
   return sorted.map((item, index) => ({

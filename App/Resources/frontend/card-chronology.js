@@ -104,6 +104,13 @@ function parseChronologyDate(value) {
     }
     return undefined;
 }
+function parseDateCached(value, lookup) {
+    if (lookup.has(value))
+        return lookup.get(value);
+    const parsed = parseChronologyDate(value);
+    lookup.set(value, parsed);
+    return parsed;
+}
 function cardSentences(card) {
     const body = clean(card.body);
     const saved = Array.isArray(card.sentences) ? card.sentences.map(clean).filter(Boolean) : [];
@@ -127,7 +134,7 @@ function cleanEventText(eventText, dateText) {
     return clean(eventText.replace(new RegExp(escapeRegExp(dateText), "iu"), "").replace(/\b(?:on|in|at|by|during)\s+(?=[,.!?;:]|$)/giu, " ").replace(/^\s*(?:on|in|at|by|during)\s+/iu, "").replace(/^[,;:—–-]+|[,;:—–-]+$/gu, "").replace(/\s+([,.!?;:])/gu, "$1").replace(/[.!?]+$/gu, "").replace(/\s{2,}/gu, " ")) || clean(eventText);
 }
 function escapeRegExp(value) { return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"); }
-function normalizeEvent(raw, card, sentences) {
+function normalizeEvent(raw, card, sentences, dateLookup) {
     if (!raw || typeof raw !== "object")
         return undefined;
     const value = raw;
@@ -143,7 +150,7 @@ function normalizeEvent(raw, card, sentences) {
         ? { field, sentenceIndex: Number.isInteger(anchorValue.sentenceIndex) ? Number(anchorValue.sentenceIndex) : -1 }
         : { field };
     const source = sourceForAnchor(card, anchor, sentences);
-    if (!source || !parseChronologyDate(dateText) || !includesExact(eventText, dateText)
+    if (!source || !parseDateCached(dateText, dateLookup) || !includesExact(eventText, dateText)
         || metadataDate.test(eventText) || speculative.test(eventText) || approximateDate.test(eventText)
         || !hasSupportedDateOccurrence(source, dateText) || !includesExact(source, eventText))
         return undefined;
@@ -158,22 +165,26 @@ function createSavedCardChronology(value, card) {
     const eventsValue = value.events;
     if (!Array.isArray(eventsValue))
         return undefined;
+    const dateLookup = new Map();
     const sentences = cardSentences(card);
-    const events = deduplicate(eventsValue.slice(0, 12).map(item => normalizeEvent(item, card, sentences)).filter((event) => Boolean(event)));
+    const events = deduplicate(eventsValue.slice(0, 12).map(item => normalizeEvent(item, card, sentences, dateLookup)).filter((event) => Boolean(event)), dateLookup);
     return events.length >= 2 ? { events: events.slice(0, 8), fingerprint: cardChronologyFingerprint(card) } : undefined;
 }
-function normalizeSavedCardChronology(card) {
+function normalizeSavedCardChronologyWithLookup(card, dateLookup) {
     const stored = card.chronology;
     if (!stored || stored.fingerprint !== cardChronologyFingerprint(card) || !Array.isArray(stored.events))
         return undefined;
     const sentences = cardSentences(card);
-    const events = deduplicate(stored.events.slice(0, 12).map(item => normalizeEvent(item, card, sentences)).filter((event) => Boolean(event)));
+    const events = deduplicate(stored.events.slice(0, 12).map(item => normalizeEvent(item, card, sentences, dateLookup)).filter((event) => Boolean(event)), dateLookup);
     return events.length >= 2 ? { events: events.slice(0, 8), fingerprint: cardChronologyFingerprint(card) } : undefined;
 }
-function deduplicate(events) {
+function normalizeSavedCardChronology(card) {
+    return normalizeSavedCardChronologyWithLookup(card, new Map());
+}
+function deduplicate(events, dateLookup) {
     const seen = new Set();
     return events.filter(event => {
-        const parsedDate = parseChronologyDate(event.dateText);
+        const parsedDate = parseDateCached(event.dateText, dateLookup);
         const dateKey = parsedDate ? `${parsedDate.year}-${parsedDate.month ?? "*"}-${parsedDate.day ?? "*"}` : normalized(event.dateText);
         const description = cleanEventText(event.eventText, event.dateText);
         const key = `${dateKey}\u0000${normalized(description).replace(/[^\p{L}\p{N}]+/gu, " ").trim()}`;
@@ -183,7 +194,7 @@ function deduplicate(events) {
         return true;
     });
 }
-function sentenceDateEvents(text, anchor) {
+function sentenceDateEvents(text, anchor, dateLookup) {
     const candidates = [];
     dateCandidatePattern.lastIndex = 0;
     for (const match of text.matchAll(dateCandidatePattern)) {
@@ -191,7 +202,7 @@ function sentenceDateEvents(text, anchor) {
         const start = match.index ?? 0, end = start + match[0].length;
         if ([text[start - 1], text[end]].some(character => character === "/" || character === "-" || character === "–" || character === "—"))
             continue;
-        if (parseChronologyDate(dateText))
+        if (parseDateCached(dateText, dateLookup))
             candidates.push({ dateText, index: match.index ?? 0 });
     }
     if (!candidates.length || (candidates.length > 1 && !text.includes(";")))
@@ -208,14 +219,14 @@ function sentenceDateEvents(text, anchor) {
         return [{ dateText: candidate.dateText, eventText, anchor }];
     });
 }
-function detectLegacyEvents(card) {
+function detectLegacyEvents(card, dateLookup) {
     const sentences = cardSentences(card);
     const events = [
-        ...sentenceDateEvents(clean(card.title), { field: "title" }),
-        ...sentenceDateEvents(clean(card.hook), { field: "hook" }),
-        ...sentences.flatMap((sentence, sentenceIndex) => sentenceDateEvents(sentence, { field: "body", sentenceIndex }))
+        ...sentenceDateEvents(clean(card.title), { field: "title" }, dateLookup),
+        ...sentenceDateEvents(clean(card.hook), { field: "hook" }, dateLookup),
+        ...sentences.flatMap((sentence, sentenceIndex) => sentenceDateEvents(sentence, { field: "body", sentenceIndex }, dateLookup))
     ];
-    return deduplicate(events.filter(event => Boolean(parseChronologyDate(event.dateText))));
+    return deduplicate(events.filter(event => Boolean(parseDateCached(event.dateText, dateLookup))), dateLookup);
 }
 function compareDate(a, b) {
     if (a.year !== b.year)
@@ -273,10 +284,11 @@ function intervalBetween(previous, next) {
     return undefined;
 }
 function getCardChronologyEvents(card, visibleBodySentenceCount = Number.POSITIVE_INFINITY, bodyFullyVisible = visibleBodySentenceCount === Number.POSITIVE_INFINITY) {
-    const saved = normalizeSavedCardChronology(card);
-    const events = saved?.events ?? detectLegacyEvents(card);
+    const dateLookup = new Map();
+    const saved = normalizeSavedCardChronologyWithLookup(card, dateLookup);
+    const events = saved?.events ?? detectLegacyEvents(card, dateLookup);
     const visible = events.filter(event => event.anchor.field !== "body" || bodyFullyVisible || (event.anchor.sentenceIndex ?? -1) < visibleBodySentenceCount);
-    const sorted = visible.map((event, originalIndex) => ({ event, originalIndex, date: parseChronologyDate(event.dateText) }))
+    const sorted = visible.map((event, originalIndex) => ({ event, originalIndex, date: parseDateCached(event.dateText, dateLookup) }))
         .filter((item) => Boolean(item.date))
         .sort((a, b) => compareDate(a.date, b.date) || a.originalIndex - b.originalIndex);
     return sorted.map((item, index) => ({

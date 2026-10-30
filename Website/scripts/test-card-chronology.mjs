@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
 const Module = require("node:module");
@@ -12,12 +13,20 @@ Module._extensions[".ts"] = (module, filename) => {
   module._compile(compiled, filename);
 };
 const chronology = require("../lib/card-chronology.ts");
+const nativeScope = {};
+runInNewContext(readFileSync(new URL("../../App/Resources/frontend/card-content-fingerprint.js", import.meta.url), "utf8"), nativeScope);
+runInNewContext(readFileSync(new URL("../../App/Resources/frontend/card-chronology.js", import.meta.url), "utf8"), nativeScope);
+const nativeChronology = nativeScope.LEARNED_MEDIA_CARD_CHRONOLOGY;
 
 const card = {
   id: "timeline-test", title: "An ancient observatory", hook: "Two moments changed its story",
   body: "The first stone was laid in 1901. The observatory opened in 1942. It closed on February 29, 2020.",
   sentences: ["The first stone was laid in 1901.", "The observatory opened in 1942.", "It closed on February 29, 2020."]
 };
+function chronologySnapshot(implementation, value) {
+  const output = implementation.getCardChronologyEvents(value).map(({ dateText, eventText, anchor, description, intervalBefore, originalIndex }) => ({ dateText, eventText, anchor, description, ...(intervalBefore ? { intervalBefore } : {}), originalIndex }));
+  return JSON.parse(JSON.stringify(output));
+}
 
 test("parses supported precise dates and omits ambiguous, approximate, ranged, and invalid dates", () => {
   assert.deepEqual(chronology.parseChronologyDate("1942"), { year: 1942, precision: "year" });
@@ -36,6 +45,36 @@ test("legacy detection pairs explicit events and dates, sorts them, and computes
   assert.equal(events[1].intervalBefore, "41 years later");
   assert.equal(events[2].intervalBefore, "About 78 years later");
   assert.deepEqual(events.map(event => event.description), ["The first stone was laid", "The observatory opened", "It closed"]);
+});
+
+test("full chronology output matches the pre-cache implementation", () => {
+  const eras = { ...card, title: "A long chronology", hook: "The fortress was established in 100 BCE.", body: "The alliance was formed in 1 BCE. A new republic was established in 1 CE. The treaty was signed on February 29, 2000. The observatory closed on March 1, 2001.", sentences: ["The alliance was formed in 1 BCE.", "A new republic was established in 1 CE.", "The treaty was signed on February 29, 2000.", "The observatory closed on March 1, 2001."] };
+  const mixedPrecision = { ...card, title: "A sequence of dates", hook: "Month and day precision matters", body: "The first work began in May 2000. The second work began in June 2000. A final work began on June 15, 2000. Another event happened on June 15, 2000.", sentences: ["The first work began in May 2000.", "The second work began in June 2000.", "A final work began on June 15, 2000.", "Another event happened on June 15, 2000."] };
+  const repeatedInvalidDate = { ...card, body: "The probe launched on 1900-02-29. The lander arrived on 1900-02-29.", sentences: ["The probe launched on 1900-02-29.", "The lander arrived on 1900-02-29."] };
+  const baseExpected = [
+    { dateText: "1901", eventText: "The first stone was laid in 1901.", anchor: { field: "body", sentenceIndex: 0 }, description: "The first stone was laid", originalIndex: 0 },
+    { dateText: "1942", eventText: "The observatory opened in 1942.", anchor: { field: "body", sentenceIndex: 1 }, description: "The observatory opened", intervalBefore: "41 years later", originalIndex: 1 },
+    { dateText: "February 29, 2020", eventText: "It closed on February 29, 2020.", anchor: { field: "body", sentenceIndex: 2 }, description: "It closed", intervalBefore: "About 78 years later", originalIndex: 2 }
+  ];
+  const eraExpected = [
+    { dateText: "100 BCE", eventText: "The fortress was established in 100 BCE.", anchor: { field: "hook" }, description: "The fortress was established", originalIndex: 0 },
+    { dateText: "1 BCE", eventText: "The alliance was formed in 1 BCE.", anchor: { field: "body", sentenceIndex: 0 }, description: "The alliance was formed", intervalBefore: "99 years later", originalIndex: 1 },
+    { dateText: "1 CE", eventText: "A new republic was established in 1 CE.", anchor: { field: "body", sentenceIndex: 1 }, description: "A new republic was established", intervalBefore: "1 year later", originalIndex: 2 },
+    { dateText: "February 29, 2000", eventText: "The treaty was signed on February 29, 2000.", anchor: { field: "body", sentenceIndex: 2 }, description: "The treaty was signed", intervalBefore: "About 1999 years later", originalIndex: 3 },
+    { dateText: "March 1, 2001", eventText: "The observatory closed on March 1, 2001.", anchor: { field: "body", sentenceIndex: 3 }, description: "The observatory closed", intervalBefore: "About 1 year later", originalIndex: 4 }
+  ];
+  const mixedExpected = [
+    { dateText: "May 2000", eventText: "The first work began in May 2000.", anchor: { field: "body", sentenceIndex: 0 }, description: "The first work began", originalIndex: 0 },
+    { dateText: "June 2000", eventText: "The second work began in June 2000.", anchor: { field: "body", sentenceIndex: 1 }, description: "The second work began", intervalBefore: "Same year", originalIndex: 1 },
+    { dateText: "June 15, 2000", eventText: "A final work began on June 15, 2000.", anchor: { field: "body", sentenceIndex: 2 }, description: "A final work began", intervalBefore: "Same year", originalIndex: 2 }
+  ];
+  const fixtures = [[card, baseExpected], [eras, eraExpected], [mixedPrecision, mixedExpected]];
+  for (const [fixture, expected] of fixtures) {
+    assert.deepEqual(chronologySnapshot(chronology, fixture), expected, "website chronology remains identical to the complete prior output snapshot");
+    assert.deepEqual(chronologySnapshot(nativeChronology, fixture), expected, "generated Mac chronology matches website and prior output");
+  }
+  assert.deepEqual(chronologySnapshot(chronology, repeatedInvalidDate), []);
+  assert.deepEqual(chronologySnapshot(nativeChronology, repeatedInvalidDate), [], "unsuccessful parses remain absent on both platforms");
 });
 
 test("full-date intervals use calendar arithmetic and BCE has no year zero", () => {
