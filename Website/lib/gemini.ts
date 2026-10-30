@@ -322,7 +322,7 @@ async function withRequestQueue<T>(pool: ModelPool, signal: AbortSignal | undefi
   });
 }
 
-async function readEventStream(response: Response, onTextChunk?: (text: string) => void) {
+export async function readEventStream(response: Response, onTextChunk?: (text: string) => void) {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -352,10 +352,14 @@ async function readEventStream(response: Response, onTextChunk?: (text: string) 
     if (clean.startsWith("data:")) eventData.push(clean.slice(5).replace(/^ /, ""));
   };
   let receivedBytes = 0;
+  let reachedEnd = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        reachedEnd = true;
+        break;
+      }
       receivedBytes += value.byteLength;
       buffer += decoder.decode(value, { stream: true });
       let newline = buffer.indexOf("\n");
@@ -369,7 +373,19 @@ async function readEventStream(response: Response, onTextChunk?: (text: string) 
     if (buffer) consumeLine(buffer);
     flush();
     return { text, resolvedModel, finishReason };
-  } finally { recordPerformance("gemini", "response_bytes_read", receivedBytes); }
+  } finally {
+    try {
+      if (!reachedEnd) {
+        // Start cancellation without letting a stalled underlying source pin the reader lock.
+        void reader.cancel().catch(() => {});
+      }
+    } catch {
+      // Cleanup is best-effort. Preserve the stream, parsing, or callback error.
+    } finally {
+      try { reader.releaseLock(); }
+      finally { recordPerformance("gemini", "response_bytes_read", receivedBytes); }
+    }
+  }
 }
 
 async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, timeoutMs: number, externalSignal?: AbortSignal, onTextChunk?: (text: string) => void) {

@@ -7,6 +7,7 @@
     "build": "next build",
     "build:github-pages": "node scripts/build-github-pages.mjs",
     "test:generation": "node scripts/build-native-prompts.mjs --check && node scripts/test-generation.mjs && node scripts/test-generation-context.mjs",
+    "test:gemini-stream-reader": "node --test scripts/test-gemini-stream-reader.mjs",
     "test:stream-json": "node --test scripts/test-stream-json.mjs",
     "test:json-duplicates": "node --test scripts/test-json-duplicates.mjs",
     "test:structured-response": "node --test scripts/test-structured-response.mjs",
