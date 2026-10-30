@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { SessionCache } from "@/lib/session-cache";
-import { normalizeSearchText, searchScoreNormalized } from "@/lib/search";
+import { normalizeSearchText, searchScoreNormalized, tokenizeSearchDocument, tokenizeSearchQuery } from "@/lib/search";
 import { runBackgroundSlice } from "@/lib/background-work";
 
 type SearchDocument = { id: string; text: string };
@@ -13,14 +13,18 @@ type Request =
 type Reply = { type: "ready"; revision: number } | { type: "eligibility-stale"; requestId: number; revision: number; eligibilityScope: string; eligibilityRevision: number } | { type: "results"; requestId: number; revision: number; query: string; eligibilityScope: string; eligibilityRevision: number; viewKey: string; ids: string[] };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
-const documents = new Map<string, string>();
+type IndexedDocument = { normalizedText: string; tokens: string[] };
+const documents = new Map<string, IndexedDocument>();
 const resultCache = new SessionCache<string[]>(100, 30 * 60 * 1000, 4 * 1024 * 1024);
 let activeEligibility: { scope: string; revision: number; ids: string[] } | null = null;
 let revision = -1;
 let latestRequestId = 0;
 
 function addDocuments(items: SearchDocument[]) {
-  for (const item of items) documents.set(item.id, normalizeSearchText(item.text));
+  for (const item of items) {
+    const normalizedText = normalizeSearchText(item.text);
+    documents.set(item.id, { normalizedText, tokens: tokenizeSearchDocument(normalizedText) });
+  }
 }
 
 function cacheResult(key: string, value: string[]) {
@@ -42,6 +46,7 @@ async function search(request: Extract<Request, { type: "search" }>) {
     workerScope.postMessage({ type: "results", requestId: request.requestId, revision, query: request.query, eligibilityScope: eligibility.scope, eligibilityRevision: eligibility.revision, viewKey: request.viewKey, ids: cached } satisfies Reply);
     return;
   }
+  const queryTokens = tokenizeSearchQuery(normalizedQuery);
   const ranked: Array<{ id: string; index: number; score: number }> = [];
   for (let index = 0; index < eligibility.ids.length;) {
     if (request.requestId !== latestRequestId || activeEligibility !== eligibility) return;
@@ -52,9 +57,9 @@ async function search(request: Extract<Request, { type: "search" }>) {
       while (position < eligibility.ids.length && position - start < 400 && (typeof performance !== "undefined" ? performance.now() : Date.now()) - beganAt < 4) {
         if (request.requestId !== latestRequestId || activeEligibility !== eligibility) return position;
         const id = eligibility.ids[position];
-        const text = documents.get(id);
-        if (text !== undefined) {
-          const score = searchScoreNormalized(normalizedQuery, text);
+        const document = documents.get(id);
+        if (document !== undefined) {
+          const score = searchScoreNormalized(normalizedQuery, document.normalizedText, queryTokens, document.tokens);
           if (score > 0) ranked.push({ id, index: position, score });
         }
         position += 1;

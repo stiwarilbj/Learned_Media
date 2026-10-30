@@ -17,7 +17,7 @@ Module._extensions[".ts"] = (module, filename) => {
   module._compile(compiled, filename);
 };
 
-const { searchScoreNormalized } = require("../lib/search.ts");
+const { normalizeSearchText, searchScoreNormalized, tokenizeSearchDocument, tokenizeSearchQuery } = require("../lib/search.ts");
 
 // Reference implementation retained in the test so the bounded version is
 // compared against the prior full-matrix behavior, not against itself.
@@ -78,6 +78,7 @@ test("bounded fuzzy scoring matches the previous full-distance scorer", () => {
   for (const query of generated) {
     for (const text of generated) {
       assert.equal(searchScoreNormalized(query, text), referenceSearchScore(query, text), `${query} vs ${text}`);
+      assert.equal(searchScoreNormalized(query, text, tokenizeSearchQuery(query), tokenizeSearchDocument(text)), referenceSearchScore(query, text), `prepared ${query} vs ${text}`);
     }
   }
 
@@ -95,6 +96,18 @@ test("bounded fuzzy scoring matches the previous full-distance scorer", () => {
   ];
   for (const [query, text] of cases) {
     assert.equal(searchScoreNormalized(query, text), referenceSearchScore(query, text), `${query} vs ${text}`);
+    assert.equal(searchScoreNormalized(query, text, tokenizeSearchQuery(query), tokenizeSearchDocument(text)), referenceSearchScore(query, text), `prepared ${query} vs ${text}`);
+  }
+
+  for (const [rawQuery, rawText] of [
+    ["astronomy galaxies", "Astronomy, distant galaxies — observed."],
+    ["astronomy galaxies", "astronomy astronomy; galaxies galaxies"],
+    ["history history", "history, history, literature"],
+    ["earth science", "Earth-science facts"]
+  ]) {
+    const query = normalizeSearchText(rawQuery), text = normalizeSearchText(rawText);
+    assert.equal(searchScoreNormalized(query, text), referenceSearchScore(query, text), `${rawQuery} vs ${rawText}`);
+    assert.equal(searchScoreNormalized(query, text, tokenizeSearchQuery(query), tokenizeSearchDocument(text)), referenceSearchScore(query, text), `prepared ${rawQuery} vs ${rawText}`);
   }
 
   const longWord = "a".repeat(2048);

@@ -193,6 +193,8 @@ exports.commonNameAliases = commonNameAliases;
 exports.contextualSearchText = contextualSearchText;
 exports.protectedSearchTerms = protectedSearchTerms;
 exports.shouldExpandNaturalSearch = shouldExpandNaturalSearch;
+exports.tokenizeSearchQuery = tokenizeSearchQuery;
+exports.tokenizeSearchDocument = tokenizeSearchDocument;
 exports.searchScoreNormalized = searchScoreNormalized;
 exports.searchScore = searchScore;
 exports.rankSearchResults = rankSearchResults;
@@ -259,20 +261,40 @@ function shouldExpandNaturalSearch(query, completeCoverage = false) {
     const contentWords = normalizeSearchText(query).split(" ").filter(word => word.length > 1 && !NATURAL_SEARCH_STOP_WORDS.has(word));
     return contentWords.length >= 2;
 }
-function distance(left, right) {
+function distance(left, right, maxDistance) {
     if (left === right)
         return 0;
+    if (Math.abs(left.length - right.length) > maxDistance)
+        return maxDistance + 1;
+    if (left.length > right.length)
+        [left, right] = [right, left];
     if (!left.length)
         return right.length;
-    if (!right.length)
-        return left.length;
-    let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+    const infinity = maxDistance + 1;
+    const width = right.length + 1;
+    let previous = new Uint32Array(width);
+    let current = new Uint32Array(width);
+    previous.fill(infinity);
+    previous[0] = 0;
+    for (let column = 1; column <= Math.min(right.length, maxDistance); column += 1)
+        previous[column] = column;
     for (let row = 1; row <= left.length; row += 1) {
-        const current = [row];
-        for (let column = 1; column <= right.length; column += 1) {
-            current[column] = Math.min(current[column - 1] + 1, previous[column] + 1, previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1));
+        const firstColumn = Math.max(1, row - maxDistance);
+        const lastColumn = Math.min(right.length, row + maxDistance);
+        current[0] = row <= maxDistance ? row : infinity;
+        if (firstColumn > 1)
+            current[firstColumn - 1] = infinity;
+        let rowMinimum = current[0];
+        for (let column = firstColumn; column <= lastColumn; column += 1) {
+            const value = Math.min(current[column - 1] + 1, previous[column] + 1, previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1));
+            current[column] = Math.min(value, infinity);
+            rowMinimum = Math.min(rowMinimum, current[column]);
         }
-        previous = current;
+        if (lastColumn < right.length)
+            current[lastColumn + 1] = infinity;
+        if (rowMinimum > maxDistance)
+            return infinity;
+        [previous, current] = [current, previous];
     }
     return previous[right.length];
 }
@@ -282,15 +304,23 @@ function tokenScore(queryToken, textToken) {
     if (textToken.startsWith(queryToken) || queryToken.startsWith(textToken))
         return 13;
     const limit = queryToken.length >= 8 ? 2 : 1;
-    return queryToken.length >= 4 && textToken.length >= 4 && distance(queryToken, textToken) <= limit ? 7 : 0;
+    return queryToken.length >= 4 && textToken.length >= 4 && distance(queryToken, textToken, limit) <= limit ? 7 : 0;
 }
-function searchScoreNormalized(normalizedQuery, normalizedText) {
+/** Tokenize a normalized query once before scoring it against many documents. */
+function tokenizeSearchQuery(normalizedQuery) {
+    return normalizedQuery.split(" ").filter((token) => token.length > 1);
+}
+/** Cache document tokens alongside its normalized string when indexing it. */
+function tokenizeSearchDocument(normalizedText) {
+    return normalizedText.split(" ").filter(Boolean);
+}
+function searchScoreNormalized(normalizedQuery, normalizedText, preparedQueryTokens, preparedTextTokens) {
     if (!normalizedQuery || !normalizedText)
         return 0;
     if (normalizedText.includes(normalizedQuery))
         return 100 + normalizedQuery.length;
-    const queryTokens = normalizedQuery.split(" ").filter((token) => token.length > 1);
-    const textTokens = normalizedText.split(" ").filter(Boolean);
+    const queryTokens = preparedQueryTokens ?? tokenizeSearchQuery(normalizedQuery);
+    const textTokens = preparedTextTokens ?? tokenizeSearchDocument(normalizedText);
     if (!queryTokens.length)
         return 0;
     let score = 0;
@@ -515,8 +545,10 @@ let activeEligibility = null;
 let revision = -1;
 let latestRequestId = 0;
 function addDocuments(items) {
-    for (const item of items)
-        documents.set(item.id, (0, search_1.normalizeSearchText)(item.text));
+    for (const item of items) {
+        const normalizedText = (0, search_1.normalizeSearchText)(item.text);
+        documents.set(item.id, { normalizedText, tokens: (0, search_1.tokenizeSearchDocument)(normalizedText) });
+    }
 }
 function cacheResult(key, value) {
     resultCache.set(key, value);
@@ -537,6 +569,7 @@ async function search(request) {
         workerScope.postMessage({ type: "results", requestId: request.requestId, revision, query: request.query, eligibilityScope: eligibility.scope, eligibilityRevision: eligibility.revision, viewKey: request.viewKey, ids: cached });
         return;
     }
+    const queryTokens = (0, search_1.tokenizeSearchQuery)(normalizedQuery);
     const ranked = [];
     for (let index = 0; index < eligibility.ids.length;) {
         if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
@@ -549,9 +582,9 @@ async function search(request) {
                 if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
                     return position;
                 const id = eligibility.ids[position];
-                const text = documents.get(id);
-                if (text !== undefined) {
-                    const score = (0, search_1.searchScoreNormalized)(normalizedQuery, text);
+                const document = documents.get(id);
+                if (document !== undefined) {
+                    const score = (0, search_1.searchScoreNormalized)(normalizedQuery, document.normalizedText, queryTokens, document.tokens);
                     if (score > 0)
                         ranked.push({ id, index: position, score });
                 }

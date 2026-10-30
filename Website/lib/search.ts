@@ -109,11 +109,26 @@ function tokenScore(queryToken: string, textToken: string) {
   return queryToken.length >= 4 && textToken.length >= 4 && distance(queryToken, textToken, limit) <= limit ? 7 : 0;
 }
 
-export function searchScoreNormalized(normalizedQuery: string, normalizedText: string) {
+/** Tokenize a normalized query once before scoring it against many documents. */
+export function tokenizeSearchQuery(normalizedQuery: string) {
+  return normalizedQuery.split(" ").filter((token) => token.length > 1);
+}
+
+/** Cache document tokens alongside its normalized string when indexing it. */
+export function tokenizeSearchDocument(normalizedText: string) {
+  return normalizedText.split(" ").filter(Boolean);
+}
+
+export function searchScoreNormalized(
+  normalizedQuery: string,
+  normalizedText: string,
+  preparedQueryTokens?: readonly string[],
+  preparedTextTokens?: readonly string[]
+) {
   if (!normalizedQuery || !normalizedText) return 0;
   if (normalizedText.includes(normalizedQuery)) return 100 + normalizedQuery.length;
-  const queryTokens = normalizedQuery.split(" ").filter((token) => token.length > 1);
-  const textTokens = normalizedText.split(" ").filter(Boolean);
+  const queryTokens = preparedQueryTokens ?? tokenizeSearchQuery(normalizedQuery);
+  const textTokens = preparedTextTokens ?? tokenizeSearchDocument(normalizedText);
   if (!queryTokens.length) return 0;
   let score = 0;
   let matched = 0;

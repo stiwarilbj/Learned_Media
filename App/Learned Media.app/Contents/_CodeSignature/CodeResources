@@ -62,7 +62,7 @@
 		</data>
 		<key>Resources/frontend/card-search.worker.js</key>
 		<data>
-		TjU/7ZYlMq7IMeqTXC39sI5Jzsk=
+		iJczwjLcnJhFiUBuTXqBPr5T0ls=
 		</data>
 		<key>Resources/frontend/card-tool-state-retention.js</key>
 		<data>
@@ -146,7 +146,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		GeFxnF+RPaajUFyoVipZ8sIA49s=
+		D6kJEqM/PFHppPiGRomtA/++9wY=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -154,7 +154,7 @@
 		</data>
 		<key>Resources/frontend/shared-policy.js</key>
 		<data>
-		HxeK+ZXP6UlrBTK/sPBu/7b0E3E=
+		ezqzoxAjEHoJNcz/tQySe9OsUZg=
 		</data>
 		<key>Resources/frontend/snapshot-validation.js</key>
 		<data>
@@ -186,7 +186,7 @@
 		</data>
 		<key>Resources/frontend/topic-semantic.js</key>
 		<data>
-		RlOC/Egj5xHcxccyRB+MukmvqM4=
+		yNXuqQgFbpDCYvoWyW56cF4Mx3Y=
 		</data>
 		<key>Resources/frontend/video-metadata.js</key>
 		<data>
@@ -194,7 +194,7 @@
 		</data>
 		<key>Resources/frontend/video-semantic.js</key>
 		<data>
-		EqpNJ5roIFOLKxxURg+efHO00Gw=
+		Zoqm+rnx00JYnPb1Q4KHi5o0ekk=
 		</data>
 		<key>Resources/frontend/video-source-index.js</key>
 		<data>
@@ -341,7 +341,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			mEGKZiiCQ1eR3iJUPBKmECpBD3Bk8WsY6iKdU3x1Sjw=
+			Nbq8hzeNUjESTolJPG3aH9rCXNfN7PjRRPHpd6hZjFI=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-tool-state-retention.js</key>
@@ -488,7 +488,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			j76TlDi6cfBEoPQ/r9QtbBmNXdYWMUYvG4yhUMTXEsQ=
+			ghrBrAAZhrYW5BuV0AkCwB2SwnKRysIwvbfCnSiyOOg=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -502,7 +502,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			lRzyjeUhUwU68N2Z05QjWcv+4sR1pxI7NbQPq/AfqjM=
+			NWctRdXTa9GDHZR3o1OrH1jUTqIaPIgh2EDenQ89wuY=
 			</data>
 		</dict>
 		<key>Resources/frontend/snapshot-validation.js</key>
@@ -558,7 +558,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ClZS7fK8d0Ju8V2WP9m48+pmgExWktWEihqxqdWK00w=
+			9Vk1xkEpaFyph9ISmE075Wgm49k9ok9lsVRs2qW3dM0=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-metadata.js</key>
@@ -572,7 +572,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			kGEei9atvCf96PzUNBRaMgdhsBC1hwArQzcIwwDykmA=
+			3zuqXKbxe4QYx2wef4FoEnHHEnz9MBZUlmvWzpO6dOQ=
 			</data>
 		</dict>
 		<key>Resources/frontend/video-source-index.js</key>

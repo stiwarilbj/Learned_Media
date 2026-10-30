@@ -26,7 +26,7 @@ function importFromWorker(specifier) {
   return require(path.join(root, `${specifier.slice(2)}.ts`));
 }
 
-function loadWorker(filename, { observeMaps = false, searchOverride, indexOverride, persistenceOverride, performanceNow = () => globalThis.performance.now() } = {}) {
+function loadWorker(filename, { observeMaps = false, searchOverride, searchModuleOverride, indexOverride, persistenceOverride, performanceNow = () => globalThis.performance.now() } = {}) {
   const messages = [];
   let workerYieldCount = 0;
   const workerMaps = [];
@@ -54,6 +54,7 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
   const workerImport = (specifier) => {
     const imported = importFromWorker(specifier);
     if (specifier === "@/lib/youtube-search-index-storage" && persistenceOverride) return { ...imported, createVideoSearchIndexPersistence: persistenceOverride };
+    if (specifier === "@/lib/search" && searchModuleOverride) return searchModuleOverride(imported);
     if (specifier === "@/lib/background-work") return { ...imported,
       runBackgroundSlice: (work, options) => {
         workerYieldCount += 1;
@@ -64,7 +65,10 @@ function loadWorker(filename, { observeMaps = false, searchOverride, indexOverri
       indexVideoSearchMetadata: indexOverride ? indexOverride(imported.indexVideoSearchMetadata) : imported.indexVideoSearchMetadata };
     return imported;
   };
-  new Function("require", "module", "exports", "self", "setTimeout", "Map", "performance", source + (filename === "workers/youtube-search.worker.ts" ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); self.inspectSearchState = () => ({ latestRequestId, activeRequestId });" : ""))(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map, { now: performanceNow });
+  const inspection = filename === "workers/youtube-search.worker.ts"
+    ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); self.inspectSearchState = () => ({ latestRequestId, activeRequestId });"
+    : filename === "workers/card-search.worker.ts" ? "\nself.inspectCardDocuments = () => documents;" : "";
+  new Function("require", "module", "exports", "self", "setTimeout", "Map", "performance", source + inspection)(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map, { now: performanceNow });
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
 
@@ -110,8 +114,8 @@ function loadNativeCardWorker() {
   };
   context.globalThis = context;
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "card-search.worker.js"), "utf8");
-  vm.runInNewContext(source, context);
-  return { messages, send: (data) => context.self.onmessage({ data }) };
+  vm.runInNewContext(source + "\nglobalThis.inspectCardDocuments = () => documents;", context);
+  return { messages, context, documents: () => context.inspectCardDocuments(), send: (data) => context.self.onmessage({ data }) };
 }
 
 async function waitForMessage(messages, predicate, timeoutMs = 8000) {
@@ -378,6 +382,78 @@ test("topic worker reuses normalized searches while returning the current query 
   assert.equal(cached.query, "HISTORY");
   assert.deepEqual(cached.visibleIds, first.visibleIds);
   assert.deepEqual(cached.suggestions, first.suggestions);
+});
+
+test("card workers cache normalized document tokens and reuse one query token list per search", async () => {
+  const { rankSearchResults, normalizeSearchText } = require("../lib/search.ts");
+  const sourceDocuments = [
+    { id: "repeated", text: "astronomy astronomy; galaxies galaxies" },
+    { id: "punctuation", text: "Astronomy, distant galaxies — observed." },
+    { id: "reversed", text: "Galaxies and astronomy" },
+    { id: "unrelated", text: "Ancient biology and geology" }
+  ];
+  let queryTokenizations = 0;
+  const scoreCalls = [];
+  const searchModuleOverride = (search) => ({
+    ...search,
+    tokenizeSearchQuery(query) {
+      queryTokenizations += 1;
+      return search.tokenizeSearchQuery(query);
+    },
+    searchScoreNormalized(query, text, queryTokens, textTokens) {
+      scoreCalls.push({ queryTokens, textTokens });
+      return search.searchScoreNormalized(query, text, queryTokens, textTokens);
+    }
+  });
+  const fixtures = [
+    { name: "website", load: () => loadWorker("workers/card-search.worker.ts", { searchModuleOverride }), send: (worker, data) => worker.scope.onmessage({ data }), messages: (worker) => worker.messages, documents: (worker) => worker.scope.inspectCardDocuments() },
+    { name: "Mac", load: loadNativeCardWorker, send: (worker, data) => worker.send(data), messages: (worker) => worker.messages, documents: (worker) => worker.documents() }
+  ];
+
+  for (const fixture of fixtures) {
+    const worker = fixture.load();
+    fixture.send(worker, { type: "initialize", revision: 0, documents: sourceDocuments });
+    const indexed = fixture.documents(worker);
+    const indexedSnapshot = JSON.parse(JSON.stringify(Object.fromEntries(indexed.entries())));
+    for (const item of sourceDocuments) {
+      assert.deepEqual(indexedSnapshot[item.id], {
+        normalizedText: normalizeSearchText(item.text),
+        tokens: normalizeSearchText(item.text).split(" ").filter(Boolean)
+      }, `${fixture.name} stores normalized text and matching document tokens together`);
+    }
+    const unchangedTokens = indexed.get("repeated").tokens;
+    const eligibility = ["repeated", "punctuation", "reversed", "unrelated"];
+    fixture.send(worker, { type: "register-eligibility", revision: 0, eligibilityScope: `${fixture.name}/feed`, eligibilityRevision: 1, ids: eligibility });
+    fixture.send(worker, { type: "search", requestId: 31, revision: 0, query: "astronomy galaxies", eligibilityScope: `${fixture.name}/feed`, eligibilityRevision: 1, viewKey: "initial" });
+    const first = await waitForMessage(fixture.messages(worker), (message) => message.type === "results" && message.requestId === 31);
+    assert.deepEqual(Array.from(first.ids), rankSearchResults("astronomy galaxies", sourceDocuments, (item) => item.text).map((item) => item.id), `${fixture.name} preserves punctuation, repetition, and input-order ties`);
+    assert.equal(indexed.get("repeated").tokens, unchangedTokens, `${fixture.name} retains prepared tokens until a document changes`);
+
+    if (fixture.name === "website") {
+      assert.equal(queryTokenizations, 1, "the website worker tokenizes the query once for the whole search");
+      assert.equal(scoreCalls.length, sourceDocuments.length, "every eligible document is scored with the prepared tokens");
+      assert.ok(scoreCalls.every((call) => call.queryTokens === scoreCalls[0].queryTokens), "all document scores share one query token array");
+      assert.ok(scoreCalls.every((call) => Array.isArray(call.textTokens)), "each score receives the document's indexed token array");
+    }
+
+    fixture.send(worker, { type: "update", revision: 1, upserts: [{ id: "replacement", text: "  MANTLE, geology and minerals! " }], removeIds: ["reversed"] });
+    const updatedIndex = fixture.documents(worker);
+    assert.equal(updatedIndex.has("reversed"), false, `${fixture.name} removes deleted documents and their tokens`);
+    assert.deepEqual(JSON.parse(JSON.stringify(updatedIndex.get("replacement"))), {
+      normalizedText: "mantle geology and minerals",
+      tokens: ["mantle", "geology", "and", "minerals"]
+    }, `${fixture.name} prepares tokens for changed documents when they are upserted`);
+    assert.equal(updatedIndex.get("repeated").tokens, unchangedTokens, `${fixture.name} does not rebuild unchanged token arrays`);
+
+    const nextEligibility = ["replacement", "repeated", "punctuation", "unrelated"];
+    fixture.send(worker, { type: "register-eligibility", revision: 1, eligibilityScope: `${fixture.name}/feed`, eligibilityRevision: 2, ids: nextEligibility });
+    fixture.send(worker, { type: "search", requestId: 32, revision: 1, query: "mantle geology", eligibilityScope: `${fixture.name}/feed`, eligibilityRevision: 2, viewKey: "updated" });
+    const updated = await waitForMessage(fixture.messages(worker), (message) => message.type === "results" && message.requestId === 32);
+    const updatedDocuments = sourceDocuments.filter((item) => item.id !== "reversed").concat({ id: "replacement", text: "  MANTLE, geology and minerals! " });
+    const orderedUpdatedDocuments = nextEligibility.map((id) => updatedDocuments.find((item) => item.id === id)).filter(Boolean);
+    assert.deepEqual(Array.from(updated.ids), rankSearchResults("mantle geology", orderedUpdatedDocuments, (item) => item.text).map((item) => item.id), `${fixture.name} searches updated documents with the same score and tie rules`);
+  }
+  assert.equal(queryTokenizations, 2, "each distinct website search prepares query tokens once");
 });
 
 test("website and native card workers keep rank order, reuse scoped eligibility revisions, and cancel obsolete searches", async () => {
