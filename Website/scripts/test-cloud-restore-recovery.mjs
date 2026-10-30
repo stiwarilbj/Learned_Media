@@ -18,14 +18,14 @@ runInNewContext(code, { exports, crypto: webcrypto, setTimeout, clearTimeout, ID
     throw Error(name);
   }
 });
-const { createCloudRestoreRecovery } = exports;
+const { createCloudRestoreRecovery, validRestoreRows } = exports;
 const signal = () => new AbortController().signal;
 const row = id => ({ id, revision: 'revision-' + id, record: { id, name: id, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', state: { topics: [], cards: [], settings: { obscurity: 5, sentenceLength: 3, displayMode: 'text' } } } });
 
 // Serialized, atomic transactions with asynchronous request callbacks. A failed
 // put rolls back both page records and cursor, as real IndexedDB must do.
 function database() {
-  const db = { data: new Map(), queued: [], busy: false, failKey: undefined, transactions: [] };
+  const db = { data: new Map(), queued: [], busy: false, failKey: undefined, transactions: [], reverseCursor: false, cursorRowsVisited: 0, onCursorRow: undefined };
   class Transaction {
     constructor() { this.jobs = []; this.ended = false; db.transactions.push(this); db.queued.push(this); db.start(); }
     objectStore() {
@@ -38,10 +38,14 @@ function database() {
           const result = {};
           let entries, index = 0;
           const advance = () => {
-            entries ??= [...this.staged].filter(([key]) => key >= range.lower && key < range.upper).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+            if (!entries) {
+              entries = [...this.staged].filter(([key]) => key >= range.lower && key < range.upper).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+              if (db.reverseCursor) entries.reverse();
+            }
             const entry = entries[index++];
-            result.result = entry ? { value: structuredClone(entry[1]), continue: () => this.jobs.push(advance) } : null;
+            result.result = entry ? { key: entry[0], value: structuredClone(entry[1]), continue: () => this.jobs.push(advance) } : null;
             result.onsuccess?.();
+            if (entry) { db.cursorRowsVisited += 1; db.onCursorRow?.(entry[0]); }
           };
           this.jobs.push(advance); return result;
         }
@@ -116,6 +120,59 @@ test('missing, malformed or foreign recovery rows reset the disposable journal',
     assert.equal(await recovery.read('owner', 'source', signal()), undefined, damage);
     assert.equal(db.data.size, 0, damage);
   }
+});
+
+test('a corrupt row at every cursor position invalidates the whole recovery journal', async () => {
+  for (const damagedId of ['a', 'b', 'c']) {
+    const db = database(), recovery = createCloudRestoreRecovery(async () => db);
+    const initial = await recovery.begin('owner', 'source', 'z', signal());
+    await recovery.commit(initial, [row('a'), row('b'), row('c')], 'c', true, signal());
+    db.data.get('row:' + damagedId).record.state.cards = 'corrupt';
+    assert.equal(await recovery.read('owner', 'source', signal()), undefined, `damaged ${damagedId} row is rejected`);
+    assert.equal(db.data.size, 0, `damaged ${damagedId} row clears the complete journal`);
+  }
+});
+
+test('read validates cursor order, key identity, and checkpoint boundaries as rows arrive', async () => {
+  for (const damage of ['descending', 'key-identity', 'after-boundary']) {
+    const db = database(), recovery = createCloudRestoreRecovery(async () => db);
+    const initial = await recovery.begin('owner', 'source', 'z', signal());
+    await recovery.commit(initial, [row('a'), row('b'), row('c')], 'c', true, signal());
+    if (damage === 'descending') db.reverseCursor = true;
+    if (damage === 'key-identity') db.data.set('row:b', row('z'));
+    if (damage === 'after-boundary') db.data.get('checkpoint').after = 'b';
+    assert.equal(await recovery.read('owner', 'source', signal()), undefined, damage);
+    assert.equal(db.data.size, 0, `${damage} invalidates the journal`);
+    if (damage === 'descending') assert.equal(db.cursorRowsVisited, 2, 'descending rows are rejected on the first ordering violation');
+  }
+
+  const checkpoint = { version: 1, ownerId: 'owner', source: 'source', token: 'token', through: 'z', after: 'b', complete: true, count: 2 };
+  assert.equal(validRestoreRows([row('b'), row('a')], checkpoint), false, 'the array validator retains strict cursor ordering');
+  assert.equal(validRestoreRows([row('c')], checkpoint), false, 'rows beyond the saved cursor are invalid');
+});
+
+test('count mismatches invalidate both underfull and overfull journals', async () => {
+  for (const expectedCount of [2, 4]) {
+    const db = database(), recovery = createCloudRestoreRecovery(async () => db);
+    const initial = await recovery.begin('owner', 'source', 'z', signal());
+    await recovery.commit(initial, [row('a'), row('b'), row('c')], 'c', true, signal());
+    db.data.get('checkpoint').count = expectedCount;
+    assert.equal(await recovery.read('owner', 'source', signal()), undefined, `stored count ${expectedCount} does not match three rows`);
+    assert.equal(db.data.size, 0, 'count mismatch clears all recovered state');
+    if (expectedCount === 2) assert.equal(db.cursorRowsVisited, 3, 'overfull journals stop when the first extra row arrives');
+  }
+});
+
+test('cancellation during cursor traversal returns nothing and preserves the committed journal', async () => {
+  const db = database(), recovery = createCloudRestoreRecovery(async () => db);
+  const initial = await recovery.begin('owner', 'source', 'z', signal());
+  await recovery.commit(initial, [row('a'), row('b'), row('c')], 'c', true, signal());
+  const controller = new AbortController();
+  db.onCursorRow = () => controller.abort();
+  await assert.rejects(recovery.read('owner', 'source', controller.signal), /canceled/);
+  assert.equal(db.cursorRowsVisited, 1, 'the cursor stops after cancellation');
+  assert.equal(db.data.get('checkpoint').count, 3, 'the last committed checkpoint remains intact');
+  assert.deepEqual([...db.data.keys()].filter(key => key.startsWith('row:')).sort(), ['row:a', 'row:b', 'row:c']);
 });
 
 test('abort before startup, during open, or during a transaction never acknowledges a cursor', async () => {

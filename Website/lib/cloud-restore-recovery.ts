@@ -25,15 +25,22 @@ export function validRestoreCheckpoint(value: unknown, ownerId: string, source: 
     && (item.after === null || typeof item.after === 'string' && !!item.after && item.after <= item.through)
     && typeof item.complete === 'boolean' && Number.isSafeInteger(item.count) && item.count >= 0;
 }
+function validRestoreRow(value: unknown, checkpoint: RestoreCheckpoint, cursorKey: IDBValidKey, previousKey?: string): value is RestoreRow {
+  const row = value as RestoreRow | undefined;
+  if (!row || typeof row.id !== 'string' || !row.id || typeof cursorKey !== 'string' || cursorKey !== 'row:' + row.id
+    || previousKey !== undefined && cursorKey <= previousKey || checkpoint.after === null || row.id > checkpoint.after
+    || row.id > checkpoint.through || typeof row.revision !== 'string' || !row.revision
+    || row.record !== undefined && (!validateSnapshot(row.record, 'record', 'import') || row.record.id !== row.id)) return false;
+  return true;
+}
 export function validRestoreRows(rows: RestoreRow[], checkpoint: RestoreCheckpoint) {
-  let previous: string | undefined;
-  return rows.every(row => {
-    if (!row || typeof row.id !== 'string' || !row.id || previous !== undefined && row.id <= previous
-      || checkpoint.after === null || row.id > checkpoint.after || typeof row.revision !== 'string' || !row.revision
-      || row.record !== undefined && (!validateSnapshot(row.record, 'record', 'import') || row.record.id !== row.id)) return false;
-    previous = row.id;
-    return true;
-  });
+  let previousKey: string | undefined;
+  for (const row of rows) {
+    const key = row && typeof row.id === 'string' ? 'row:' + row.id : '';
+    if (!validRestoreRow(row, checkpoint, key, previousKey)) return false;
+    previousKey = key;
+  }
+  return true;
 }
 export function createCloudRestoreRecovery(open = openDatabase): CloudRestoreRecovery {
   async function transaction<T>(signal: AbortSignal | undefined, work: (store: IDBObjectStore, result: (value: T) => void, guard: (callback: () => void) => () => void) => void): Promise<T | undefined> {
@@ -93,11 +100,26 @@ export function createCloudRestoreRecovery(open = openDatabase): CloudRestoreRec
           const checkpoint = header.result;
           if (!validRestoreCheckpoint(checkpoint, ownerId, source)) { store.clear(); return; }
           const rows: RestoreRow[] = [];
+          let previousKey: string | undefined;
+          let count = 0;
+          let invalid = false;
           const cursor = store.openCursor(IDBKeyRange.bound('row:', 'row;', false, true));
           cursor.onsuccess = guard(() => {
             const item = cursor.result;
-            if (item) { rows.push(item.value); item.continue(); return; }
-            if (rows.length === checkpoint.count && validRestoreRows(rows, checkpoint)) done({ checkpoint, rows });
+            if (item) {
+              if (invalid || count >= checkpoint.count || !validRestoreRow(item.value, checkpoint, item.key, previousKey)) {
+                invalid = true;
+                rows.length = 0;
+                store.clear();
+                return;
+              }
+              rows.push(item.value);
+              previousKey = item.key as string;
+              count += 1;
+              item.continue();
+              return;
+            }
+            if (!invalid && count === checkpoint.count) done({ checkpoint, rows });
             else store.clear();
           });
         });
