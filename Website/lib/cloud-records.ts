@@ -6,7 +6,14 @@ const secretFields = new Set(['key', 'apiKey', 'youtubeKey', 'geminiKey', 'acces
 function clean(value: any): any {
   if (Array.isArray(value)) return value.map(clean);
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !secretFields.has(key)).map(([key, item]) => [key, clean(item)]));
+  const result: Record<string, any> = {};
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key) || secretFields.has(key)) continue;
+    const item = clean(value[key]);
+    if (key === "__proto__") Object.defineProperty(result, key, { value: item, enumerable: true, configurable: true, writable: true });
+    else result[key] = item;
+  }
+  return result;
 }
 export function canonicalRecord(record: CloudRecord): CloudRecord {
   const state = record.state || {};
