@@ -36,17 +36,26 @@ actor VideoCatalogStore {
               manifest["storageVersion"] as? Int == 1, let entries = manifest["entries"] as? [[String]],
               entries.allSatisfy({ $0.count == 2 && validBatchName($0[1]) }) else { throw invalid() }
         let directory = try batchFolder()
-        var batches: [String: [String: Any]] = [:], refs: [String: String] = [:], videos: [[String: Any]] = []
-        for entry in entries {
+        var entriesByBatch: [String: [(position: Int, id: String)]] = [:]
+        var refs: [String: String] = [:]
+        for (position, entry) in entries.enumerated() {
             let id = entry[0], name = entry[1]
             guard refs[id] == nil else { throw invalid() }
-            if batches[name] == nil {
-                let data = try Data(contentsOf: directory.appendingPathComponent(name))
-                guard let batch = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw invalid() }
-                batches[name] = batch
+            refs[id] = name
+            entriesByBatch[name, default: []].append((position, id))
+        }
+
+        // Keep one decoded batch alive at a time. The manifest may reference a
+        // batch from many non-adjacent positions, so write each validated
+        // record directly into its original slot before releasing that batch.
+        var videos = Array(repeating: [String: Any](), count: entries.count)
+        for (name, batchEntries) in entriesByBatch {
+            let batchData = try Data(contentsOf: directory.appendingPathComponent(name))
+            guard let batch = try JSONSerialization.jsonObject(with: batchData) as? [String: Any] else { throw invalid() }
+            for entry in batchEntries {
+                guard let video = batch[entry.id] as? [String: Any], video["id"] as? String == entry.id else { throw invalid() }
+                videos[entry.position] = video
             }
-            guard let video = batches[name]?[id] as? [String: Any], video["id"] as? String == id else { throw invalid() }
-            refs[id] = name; videos.append(video)
         }
         var catalog = manifest.filter { metadataKeys.contains($0.key) }
         catalog["videos"] = videos

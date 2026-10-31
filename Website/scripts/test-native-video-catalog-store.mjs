@@ -143,7 +143,59 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
         precondition((removalManifest["entries"] as! [[String]]).map { $0[0] } == ["video-2"],
             "A successfully committed removal leaves only the retained ID in the manifest")
 
-        print("Native video catalog comparison: unchanged, timestamp-only, nested values, failed commits, indexed updates/additions/removals, and batch reuse/rewrite behavior passed")
+        let fixtureSupport = support.appendingPathComponent("manifest-fixture", isDirectory: true)
+        let fixtureLibrary = fixtureSupport.appendingPathComponent("Learned Media", isDirectory: true)
+        let fixtureBatchFolder = fixtureLibrary.appendingPathComponent("youtube-records-v1", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureBatchFolder, withIntermediateDirectories: true)
+        var fixtureEntries: [[String]] = []
+        var fixtureBatches: [String: [String: Any]] = [:]
+        for index in 0..<257 {
+            let id = "fixture-video-\\(index)"
+            let name = "reused-\\(index % 4).json"
+            fixtureEntries.append([id, name])
+            fixtureBatches[name, default: [:]][id] = ["id": id, "title": "Fixture \\(index)"]
+        }
+        for (name, batch) in fixtureBatches {
+            let bytes = try JSONSerialization.data(withJSONObject: batch, options: [.sortedKeys])
+            try bytes.write(to: fixtureBatchFolder.appendingPathComponent(name))
+        }
+        let fixtureManifest = fixtureLibrary.appendingPathComponent("youtube-catalog-manifest-v1.json")
+        func writeFixtureManifest(_ entries: [[String]]) throws {
+            let bytes = try JSONSerialization.data(withJSONObject: [
+                "storageVersion": 1,
+                "catalogVersion": 1,
+                "entries": entries
+            ], options: [.sortedKeys])
+            try bytes.write(to: fixtureManifest)
+        }
+        func requireInvalidFixtureManifest() async throws {
+            do {
+                _ = try await VideoCatalogStore(applicationSupportRoot: fixtureSupport).load()
+                preconditionFailure("A malformed fixture manifest must not load")
+            } catch let error as NSError {
+                precondition(error.domain == "LearnedMedia.VideoCatalog" && error.code == 1,
+                    "Malformed manifests retain the existing catalog failure")
+            }
+        }
+        try writeFixtureManifest(fixtureEntries)
+        let fixtureStore = VideoCatalogStore(applicationSupportRoot: fixtureSupport)
+        let fixtureCatalog = try await fixtureStore.load() as! [String: Any]
+        let fixtureVideos = fixtureCatalog["videos"] as! [[String: Any]]
+        precondition(fixtureVideos.map { $0["id"] as! String } == (0..<257).map { "fixture-video-\\($0)" },
+            "Interleaved references to reused batch files preserve manifest ordering")
+        precondition(fixtureEntries[0][1] == fixtureEntries[4][1] && fixtureEntries[0][1] != fixtureEntries[1][1],
+            "The ordering fixture reuses each batch across many non-adjacent entries")
+
+        var duplicateEntries = fixtureEntries
+        duplicateEntries[1][0] = duplicateEntries[0][0]
+        try writeFixtureManifest(duplicateEntries)
+        try await requireInvalidFixtureManifest()
+        var missingRecordEntries = fixtureEntries
+        missingRecordEntries[1][0] = "not-in-referenced-batch"
+        try writeFixtureManifest(missingRecordEntries)
+        try await requireInvalidFixtureManifest()
+
+        print("Native video catalog comparison: record comparisons, failed commits, indexed updates/additions/removals, and one-batch-at-a-time manifest ordering and validation passed")
     }
 }
 `);
