@@ -14,9 +14,9 @@ const { workspaceRevisionId } = baseRequire('./workspace-revision.ts');
 const record = (time = 1, id = 'w') => ({ id, name: `Workspace ${time}`, createdAt: '2026-01-01T00:00:00Z', updatedAt: `2026-10-26T12:00:0${time}.000Z`, state: { topics: [], cards: [], settings: { obscurity: 5, sentenceLength: 3, displayMode: "text" }, youtubeActivity: {} } });
 const signal = () => new AbortController().signal;
 function server() {
-  const db = { heads: new Map(), accepted: new Map(), writes: [], reads: 0, failures: [], onWrite: null, onRead: null, acknowledgments: null };
+  const db = { heads: new Map(), accepted: new Map(), writes: [], memoryWrites: [], memoryFailures: [], reads: 0, failures: [], onWrite: null, onRead: null, acknowledgments: null };
   db.api = {
-    rpc(name) {
+    rpc(name, args = {}) {
       const options = {};
       return {
         select(value) { options.select = value; return this; },
@@ -25,7 +25,11 @@ function server() {
         gt(column, value) { options.after = value; return this; },
         lte(column, value) { options.through = value; return this; },
         async abortSignal(s) {
-          if (s.aborted) throw Error('aborted'); if (name === 'remember_facts') return { error: null };
+          if (s.aborted) throw Error('aborted');
+          if (name === 'remember_facts') {
+            db.memoryWrites.push(structuredClone(args.items));
+            return { data: null, error: db.memoryFailures.length ? db.memoryFailures.shift() : null };
+          }
           db.reads++; (db.requests ??= []).push({ ...options });
           if (db.onRead) await db.onRead(options);
           if (db.readResult) { const result = db.readResult(options); if (result) return result; }
@@ -108,6 +112,9 @@ async function seed(db, value) {
   db.heads.set(r.id, row); db.accepted.set(revision_id, row); return revision_id;
 }
 const save = (c, r, s = signal()) => c.save({ ownerId: 'account', records: Array.isArray(r) ? r : [r] }, s);
+const memory = (id, body = `Body for ${id}`, extra = {}) => ({ id, title: `Fact ${id}`, hook: 'A specific detail.', body,
+  topicPath: ['Science'], sourceUrls: ['https://en.wikipedia.org/wiki/Example'], evidence: [], fingerprint: `fingerprint:${id}`, ...extra });
+const saveMemories = (c, factMemory, s = signal()) => c.save({ ownerId: 'account', records: [], factMemory }, s);
 
 test('unchanged revision: one ordinary write, unchanged snapshot skips it', async () => {
   const db = server(), id = await seed(db, record()), c = client(db); await c.load(signal());
@@ -173,6 +180,45 @@ test('a restore that no longer verifies a workspace head drops its cached snapsh
   assert.equal(restored.records.length, 0);
   assert.equal(c.canonicalWorkspaceSnapshots.has('w'), false);
 });
+
+test('fact-memory upload batches retain the 100-row cap when records are small', async () => {
+  const db = server(), c = client(db), memories = Array.from({ length: 205 }, (_, index) => memory(`small-${index}`));
+  await saveMemories(c, memories);
+  assert.deepEqual(db.memoryWrites.map(batch => batch.length), [100, 100, 5]);
+  for (const batch of db.memoryWrites) assert.ok(new TextEncoder().encode(JSON.stringify({ items: batch })).byteLength <= 512 * 1024);
+});
+
+test('fact-memory uploads split on UTF-8 request bytes while preserving each record intact', async () => {
+  const db = server(), c = client(db), memories = [
+    memory('large-a', 'a'.repeat(420 * 1024)),
+    memory('medium-unicode', 'é漢😀"\\'.repeat(18 * 1024)),
+    memory('large-b', 'b'.repeat(420 * 1024)),
+    memory('small-tail', 'Small record with quotes: "ok".'),
+  ];
+  await saveMemories(c, memories);
+  assert.deepEqual(db.memoryWrites.map(batch => batch.map(item => item.id)), [
+    ['large-a'], ['medium-unicode'], ['large-b', 'small-tail']
+  ], 'a record that would cross the byte budget starts a new request');
+  for (const batch of db.memoryWrites) {
+    const bytes = new TextEncoder().encode(JSON.stringify({ items: batch })).byteLength;
+    assert.ok(bytes <= 512 * 1024, `packed request is under the byte budget (${bytes} bytes)`);
+  }
+  assert.equal(db.memoryWrites.flat().map(item => item.id).join(','), memories.map(item => item.id).join(','), 'packing preserves order and record contents');
+});
+
+test('fact-memory failures leave only unacknowledged IDs pending for retry', async () => {
+  const db = server(), c = client(db), memories = Array.from({ length: 205 }, (_, index) => memory(`pending-${index}`));
+  db.memoryFailures.push(null, new Error('temporary memory upload failure'));
+  await assert.rejects(() => saveMemories(c, memories), /temporary memory upload failure/);
+  assert.deepEqual(db.memoryWrites.map(batch => batch.length), [100, 100], 'the failed second batch follows the confirmed first batch');
+
+  await saveMemories(c, memories);
+  assert.deepEqual(db.memoryWrites.slice(2).map(batch => batch.length), [100, 5], 'retry includes the failed IDs and untouched tail only');
+  assert.equal(db.memoryWrites[2][0].id, 'pending-100');
+  assert.equal(db.memoryWrites[3][0].id, 'pending-200');
+  assert.equal(db.memoryWrites.slice(2).flat().some(item => item.id === 'pending-0'), false, 'previously acknowledged IDs are not uploaded again');
+});
+
 test('delayed older tab fetches and merges newer head before retry', async () => {
   const db = server(); await seed(db, record()); const a = client(db), b = client(db); await a.load(signal()); await b.load(signal());
   await save(a, record(4)); const newest = db.heads.get('w').revision_id; await save(b, record(2));

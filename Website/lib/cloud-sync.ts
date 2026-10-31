@@ -16,6 +16,10 @@ function sameBytes(previous: Uint8Array | undefined, next: Uint8Array) {
   return true;
 }
 const workspaceDecoder = new TextDecoder();
+const factMemoryEncoder = new TextEncoder();
+const FACT_MEMORY_UPLOAD_ROW_LIMIT = 100;
+const FACT_MEMORY_UPLOAD_BYTE_LIMIT = 512 * 1024;
+const FACT_MEMORY_EMPTY_REQUEST_BYTES = factMemoryEncoder.encode('{"items":[]}').byteLength;
 type CachedWorkspaceSnapshot = { revisionId: string; bytes: Uint8Array };
 function invalidWorkspaceCursor() {
   // Keep diagnostics aggregate-only: never retain workspace IDs or page data.
@@ -411,10 +415,21 @@ export class WorkspaceCloudSync {
       const item = safeMemory(value);
       const key = item.fingerprint || item.id, serialized = JSON.stringify(item);
       if (this.memories.get(key) === serialized) { this.changedMemoryIds.delete(id); continue; }
-      changed.push({ id, value, item, key, serialized });
+      changed.push({ id, value, item, key, serialized, serializedBytes: factMemoryEncoder.encode(serialized).byteLength });
     }
-    for (let offset = 0; offset < changed.length; offset += 100) {
-      const batch = changed.slice(offset, offset + 100);
+    for (let offset = 0; offset < changed.length;) {
+      const batch = [];
+      let requestBytes = FACT_MEMORY_EMPTY_REQUEST_BYTES;
+      while (offset < changed.length && batch.length < FACT_MEMORY_UPLOAD_ROW_LIMIT) {
+        const entry = changed[offset];
+        const nextBytes = entry.serializedBytes + (batch.length ? 1 : 0);
+        // Let a single item travel alone when it exceeds the packing target;
+        // its JSON record cannot be split without changing the stored data.
+        if (batch.length && requestBytes + nextBytes > FACT_MEMORY_UPLOAD_BYTE_LIMIT) break;
+        batch.push(entry);
+        requestBytes += nextBytes;
+        offset += 1;
+      }
       const { error } = await api.rpc('remember_facts', { items: batch.map(entry => entry.item) }).abortSignal(signal);
       if (error) throw error;
       batch.forEach(entry => {
