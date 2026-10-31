@@ -2,14 +2,14 @@ import XCTest
 @testable import LearnedMediaCore
 
 final class GeminiRequestBodyCacheTests: XCTestCase {
-    func testBodyMatchesTheExistingJSONSerializationPayloadByteForByte() throws {
+    func testBodyMatchesTheExistingGeminiPayload() throws {
         let prompt = "Write one fact about a café's unusual bell."
         let schema: [String: Any] = [
             "type": "OBJECT",
             "properties": ["answer": ["type": "STRING"]],
             "required": ["answer"]
         ]
-        let expected = try JSONSerialization.data(withJSONObject: [
+        let expected: [String: Any] = [
             "contents": [["role": "user", "parts": [["text": prompt]]]],
             "generationConfig": [
                 "temperature": 0.92,
@@ -17,9 +17,13 @@ final class GeminiRequestBodyCacheTests: XCTestCase {
                 "responseMimeType": "application/json",
                 "responseSchema": schema
             ]
-        ])
+        ]
         let actual = try GeminiRequestBodyCache.serialize(prompt: prompt, schema: schema, maxOutputTokens: 4096, temperature: 0.92)
-        XCTAssertEqual(actual, expected)
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: actual) as? [String: Any])
+        // JSON object member order is unspecified, so compare the payload
+        // structure here. The next test separately verifies byte reuse across
+        // model fallbacks for one serialized operation.
+        XCTAssertTrue((decoded as NSDictionary).isEqual(to: expected))
     }
 
     func testOperationCacheReusesFallbackBodiesAndSeparatesCapacityChanges() throws {
