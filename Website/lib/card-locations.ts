@@ -44,8 +44,7 @@ const MAX_OPEN_PANELS = 500;
 
 function clean(value: unknown) { return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : ""; }
 function normal(value: string) { return clean(value).normalize("NFC").toLocaleLowerCase(); }
-function exactMention(text: string, term: string) {
-  const haystack = normal(text), needle = normal(term);
+function exactMentionInNormalizedText(haystack: string, needle: string) {
   if (!needle) return false;
   let at = haystack.indexOf(needle);
   while (at >= 0) {
@@ -55,9 +54,10 @@ function exactMention(text: string, term: string) {
   }
   return false;
 }
-function cardSentences(card: LocationCard) {
+function exactMention(text: string, term: string) { return exactMentionInNormalizedText(normal(text), normal(term)); }
+function cardSentences(card: LocationCard, normalizedBody = normal(card.body)) {
   const saved = Array.isArray(card.sentences) ? card.sentences.filter((value): value is string => typeof value === "string").map(clean).filter(Boolean) : [];
-  if (saved.length && normal(saved.join(" ")) === normal(card.body)) return saved;
+  if (saved.length && normal(saved.join(" ")) === normalizedBody) return saved;
   const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locale: string, options: { granularity: "sentence" }) => { segment: (text: string) => Iterable<{ segment: string }> } }).Segmenter;
   if (Segmenter) return Array.from(new Segmenter("en", { granularity: "sentence" }).segment(card.body)).map(item => clean(item.segment)).filter(Boolean);
   return card.body.match(/[^.!?]+(?:[.!?]+[”’"')\]]*)?(?:\s+|$)/gu)?.map(clean).filter(Boolean) ?? (card.body ? [card.body] : []);
@@ -119,25 +119,28 @@ export function normalizeSavedCardLocations(card: LocationCard): SavedCardLocati
 }
 
 function legacyLocations(card: LocationCard): SavedCardLocation[] {
-  const fullText = `${card.title} ${card.hook} ${card.body}`;
-  const sentences = cardSentences(card);
+  const titleText = normal(card.title), hookText = normal(card.hook), bodyText = normal(card.body);
+  const sentences = cardSentences(card, bodyText);
+  const normalizedSentences = sentences.map(normal);
+  const fullText = `${titleText} ${hookText} ${bodyText}`;
+  const anchors: Array<{ field: "title" | "hook" | "body"; sentenceIndex?: number; text: string }> = [
+    { field: "title", text: titleText }, { field: "hook", text: hookText }, ...normalizedSentences.map((text, sentenceIndex) => ({ field: "body" as const, sentenceIndex, text }))
+  ];
   const candidates: SavedCardLocation[] = [];
   const add = (name: string, articleTitle: string, code?: string) => {
-    const anchors: Array<{ field: "title" | "hook" | "body"; sentenceIndex?: number; text: string }> = [
-      { field: "title", text: card.title }, { field: "hook", text: card.hook }, ...sentences.map((text, sentenceIndex) => ({ field: "body" as const, sentenceIndex, text }))
-    ];
-    const anchor = anchors.find(item => exactMention(item.text, name));
+    const normalizedName = normal(name);
+    const anchor = anchors.find(item => exactMentionInNormalizedText(item.text, normalizedName));
     if (anchor && !candidates.some(item => normal(item.name) === normal(name))) candidates.push({ name, articleTitle, anchor: { field: anchor.field, ...(anchor.sentenceIndex !== undefined ? { sentenceIndex: anchor.sentenceIndex } : {}) }, ...(code ? { countryCode: code } : {}) });
   };
   for (const source of card.sources ?? []) {
     const title = clean(source.title).replace(/\s*\([^)]*\)\s*$/u, "");
-    if (title && title.length > 2 && exactMention(fullText, title)) {
+    if (title && title.length > 2 && exactMentionInNormalizedText(fullText, normal(title))) {
       const known = countryByAlias.get(title.toLocaleLowerCase());
       add(title, known?.name ?? title, known?.code);
     }
   }
   for (const [alias, place] of countryByAlias) {
-    if (alias.length > 2 && exactMention(fullText, place.alias)) add(place.alias, place.name, place.code);
+    if (alias.length > 2 && exactMentionInNormalizedText(fullText, normal(place.alias))) add(place.alias, place.name, place.code);
   }
   // A country that merely supplies orientation should not compete with an explicitly named city/site.
   const nonCountry = candidates.filter(item => !countryNames.some(([name]) => normal(name) === normal(item.name)));

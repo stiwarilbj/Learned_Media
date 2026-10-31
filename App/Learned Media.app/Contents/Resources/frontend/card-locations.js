@@ -42,8 +42,7 @@ const panelListeners = new Map();
 const MAX_OPEN_PANELS = 500;
 function clean(value) { return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : ""; }
 function normal(value) { return clean(value).normalize("NFC").toLocaleLowerCase(); }
-function exactMention(text, term) {
-    const haystack = normal(text), needle = normal(term);
+function exactMentionInNormalizedText(haystack, needle) {
     if (!needle)
         return false;
     let at = haystack.indexOf(needle);
@@ -55,9 +54,10 @@ function exactMention(text, term) {
     }
     return false;
 }
-function cardSentences(card) {
+function exactMention(text, term) { return exactMentionInNormalizedText(normal(text), normal(term)); }
+function cardSentences(card, normalizedBody = normal(card.body)) {
     const saved = Array.isArray(card.sentences) ? card.sentences.filter((value) => typeof value === "string").map(clean).filter(Boolean) : [];
-    if (saved.length && normal(saved.join(" ")) === normal(card.body))
+    if (saved.length && normal(saved.join(" ")) === normalizedBody)
         return saved;
     const Segmenter = Intl.Segmenter;
     if (Segmenter)
@@ -131,26 +131,29 @@ function normalizeSavedCardLocations(card) {
     return normalized ? { ...normalized, fingerprint: raw.fingerprint } : undefined;
 }
 function legacyLocations(card) {
-    const fullText = `${card.title} ${card.hook} ${card.body}`;
-    const sentences = cardSentences(card);
+    const titleText = normal(card.title), hookText = normal(card.hook), bodyText = normal(card.body);
+    const sentences = cardSentences(card, bodyText);
+    const normalizedSentences = sentences.map(normal);
+    const fullText = `${titleText} ${hookText} ${bodyText}`;
+    const anchors = [
+        { field: "title", text: titleText }, { field: "hook", text: hookText }, ...normalizedSentences.map((text, sentenceIndex) => ({ field: "body", sentenceIndex, text }))
+    ];
     const candidates = [];
     const add = (name, articleTitle, code) => {
-        const anchors = [
-            { field: "title", text: card.title }, { field: "hook", text: card.hook }, ...sentences.map((text, sentenceIndex) => ({ field: "body", sentenceIndex, text }))
-        ];
-        const anchor = anchors.find(item => exactMention(item.text, name));
+        const normalizedName = normal(name);
+        const anchor = anchors.find(item => exactMentionInNormalizedText(item.text, normalizedName));
         if (anchor && !candidates.some(item => normal(item.name) === normal(name)))
             candidates.push({ name, articleTitle, anchor: { field: anchor.field, ...(anchor.sentenceIndex !== undefined ? { sentenceIndex: anchor.sentenceIndex } : {}) }, ...(code ? { countryCode: code } : {}) });
     };
     for (const source of card.sources ?? []) {
         const title = clean(source.title).replace(/\s*\([^)]*\)\s*$/u, "");
-        if (title && title.length > 2 && exactMention(fullText, title)) {
+        if (title && title.length > 2 && exactMentionInNormalizedText(fullText, normal(title))) {
             const known = countryByAlias.get(title.toLocaleLowerCase());
             add(title, known?.name ?? title, known?.code);
         }
     }
     for (const [alias, place] of countryByAlias) {
-        if (alias.length > 2 && exactMention(fullText, place.alias))
+        if (alias.length > 2 && exactMentionInNormalizedText(fullText, normal(place.alias)))
             add(place.alias, place.name, place.code);
     }
     // A country that merely supplies orientation should not compete with an explicitly named city/site.
