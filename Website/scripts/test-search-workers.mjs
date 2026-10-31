@@ -528,6 +528,88 @@ test("YouTube worker preserves catalog ranking and strict filters across chunks"
   assert.ok(reply.candidates.every((candidate) => Number(candidate.videoId.slice(6)) % 5 === 0));
 });
 
+test("channel indexes stay position-correct through incremental changes on website and Mac", async () => {
+  const { searchYouTubeCandidates } = require("../lib/youtube.ts");
+  const makeVideo = (id, channelId, overrides = {}) => ({
+    id, channelId, channelName: channelId, title: "Ancient star formation study",
+    description: "A documented study of ancient star formation.", tags: ["astronomy"],
+    topics: ["Science"], publishedAt: "2024-01-01T00:00:00.000Z", durationSeconds: 600,
+    approved: true, ...overrides
+  });
+  const original = [
+    makeVideo("A", "channel-a"),
+    makeVideo("B", "channel-b"),
+    makeVideo("unapproved", "channel-a", { approved: false }),
+    makeVideo("shorts", "channel-a", { title: "#Shorts ancient star formation" }),
+    makeVideo("other-channel", "channel-c"),
+    makeVideo("F", "channel-a")
+  ];
+  const fixtures = [
+    { name: "website", load: options => loadWorker("workers/youtube-search.worker.ts", options), send: (worker, data) => worker.scope.onmessage({ data }), inspect: worker => worker.scope.inspectCatalog(), messages: worker => worker.messages },
+    { name: "Mac", load: options => loadNativeYouTubeWorker(options), send: (worker, data) => worker.send(data), inspect: worker => worker.context.inspectCatalog(), messages: worker => worker.messages }
+  ];
+  const plan = { terms: ["ancient star formation"] };
+  for (const fixture of fixtures) {
+    const rankedIds = [];
+    const worker = fixture.load({ searchOverride: originalRank => (videos, ...args) => {
+      rankedIds.push(...videos.map(video => video.id));
+      return originalRank(videos, ...args);
+    } });
+    fixture.send(worker, { type: "initialize", revision: 0, videos: projectVideos(original) });
+    const originalSnapshot = fixture.inspect(worker);
+    const originalAEntries = originalSnapshot.channelPositions.get("channel-a");
+    const originalCEntries = originalSnapshot.channelPositions.get("channel-c");
+
+    const search = async (revision, requestId, channelId = "channel-a", excludedIds = [], searchPlan = plan) => {
+      fixture.send(worker, { type: "search", requestId, revision, query: "ancient star formation", plan: searchPlan, topic: "All", channelId, excludedIds, limit: 20, viewKey: `${fixture.name}-channel-${revision}-${requestId}` });
+      return waitForMessage(fixture.messages(worker), message => message.requestId === requestId && Array.isArray(message.candidates));
+    };
+    const expectCurrent = async (videos, revision, requestId, channelId = "channel-a", excludedIds = [], searchPlan = plan) => {
+      const reply = await search(revision, requestId, channelId, excludedIds, searchPlan);
+      const expected = searchYouTubeCandidates(videos, searchPlan, "All", channelId, 20, excludedIds);
+      const summarize = candidate => ({
+        videoId: candidate.videoId ?? candidate.video.id,
+        score: candidate.score,
+        matchedFields: Array.from(candidate.matchedFields),
+        supportingText: Array.from(candidate.supportingText),
+        ...(fixture.name === "website" && candidate.coverage ? { coverage: {
+          matchedConcepts: Array.from(candidate.coverage.matchedConcepts),
+          missingConcepts: Array.from(candidate.coverage.missingConcepts),
+          complete: candidate.coverage.complete
+        } } : {})
+      });
+      assert.deepEqual(Array.from(reply.candidates, summarize), expected.map(summarize), `${fixture.name} preserves scores, explanations, coverage, and channel-filtered ordering`);
+      assert.ok(reply.candidates.every(candidate => videos.find(video => video.id === candidate.videoId)?.approved), `${fixture.name} keeps approval checks strict`);
+      assert.ok(reply.candidates.every(candidate => !/#shorts?\b|\byoutube shorts?\b|\bshorts video\b/i.test(videos.find(video => video.id === candidate.videoId)?.title ?? "")), `${fixture.name} keeps Shorts exclusions strict`);
+      return reply;
+    };
+
+    const initial = await expectCurrent(original, 0, 201);
+    assert.deepEqual(Array.from(initial.candidates, candidate => candidate.videoId), ["A", "F"]);
+    assert.deepEqual(rankedIds, original.filter(video => video.channelId === "channel-a").map(video => video.id), `${fixture.name} ranks only indexed channel candidates`);
+    const nextPage = await expectCurrent(original, 0, 202, "channel-a", ["A"]);
+    assert.deepEqual(Array.from(nextPage.candidates, candidate => candidate.videoId), ["F"], `${fixture.name} channel pagination preserves the next catalog-position tie`);
+
+    const movedB = { ...original[1], channelId: "channel-a" };
+    fixture.send(worker, { type: "update", baseRevision: 0, revision: 1, upserts: projectVideos([movedB]), removeIds: [] });
+    const afterMove = fixture.inspect(worker);
+    assert.notStrictEqual(afterMove.channelPositions, originalSnapshot.channelPositions, `${fixture.name} publishes an independent position map`);
+    assert.deepEqual(originalSnapshot.channelPositions.get("channel-a"), originalAEntries, `${fixture.name} leaves the captured channel list unchanged`);
+    assert.strictEqual(afterMove.channelPositions.get("channel-c"), originalCEntries, `${fixture.name} reuses unaffected channel lists`);
+    let current = original.map(video => video.id === "B" ? movedB : video);
+    assert.deepEqual(Array.from((await expectCurrent(current, 1, 203)).candidates, candidate => candidate.videoId), ["A", "B", "F"], `${fixture.name} preserves the moved record's original tie position`);
+
+    fixture.send(worker, { type: "update", baseRevision: 1, revision: 2, upserts: [], removeIds: ["A"] });
+    current = current.filter(video => video.id !== "A");
+    assert.deepEqual(Array.from((await expectCurrent(current, 2, 204)).candidates, candidate => candidate.videoId), ["B", "F"], `${fixture.name} removes the deleted ID from channel positions`);
+
+    fixture.send(worker, { type: "update", baseRevision: 2, revision: 3, upserts: [], removeIds: [], orderIds: ["F", "B", "shorts", "other-channel"] });
+    current = ["F", "B", "shorts", "other-channel"].map(id => current.find(video => video.id === id));
+    assert.deepEqual(Array.from((await expectCurrent(current, 3, 205)).candidates, candidate => candidate.videoId), ["F", "B"], `${fixture.name} rebuilds channel positions after explicit reorder`);
+    assert.deepEqual(Array.from((await expectCurrent(current, 3, 206, undefined, [], { ...plan, channelId: "channel-a" })).candidates, candidate => candidate.videoId), ["F", "B"], `${fixture.name} also indexes the plan's strict channel ID`);
+  }
+});
+
 test("YouTube workers precompute restricted playlist eligibility and refresh it on provenance changes", async () => {
   const { searchYouTubeCandidates } = require("../lib/youtube.ts");
   const restrictedId = "UCYO_jab_esuFRV4b17AJtAw";

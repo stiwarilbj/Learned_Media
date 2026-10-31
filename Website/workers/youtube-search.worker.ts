@@ -4,7 +4,7 @@ import type { YouTubeSearchPlanLike, YouTubeTopic } from "@/lib/youtube";
 import type { SearchableVideoMetadata } from "@/lib/video-metadata";
 import { runBackgroundSlice } from "@/lib/background-work";
 import { createVideoSearchIndexPersistence } from "@/lib/youtube-search-index-storage";
-import { indexVideoSearchMetadata, isValidVideoSearchRequest, validateVideoSearchCatalogUpdate, insertBoundedRanked, nextSemanticSearchChunkSize, SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata } from "@/lib/video-semantic";
+import { indexVideoSearchMetadata, isValidVideoSearchRequest, validateVideoSearchCatalogUpdate, insertBoundedRanked, nextSemanticSearchChunkSize, SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE, PreparedVideoSearchCache, searchPreparedSemanticVideos, type IndexedVideoSearchMetadata, type SemanticCandidate } from "@/lib/video-semantic";
 
 type SearchRequest = {
   type: "search";
@@ -27,14 +27,19 @@ type Request =
 type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
 type Reply = { type: "progress" | "failed"; requestId: number; revision: number } | { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "invalid"; requestId: number; reason: "invalid-request" } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
 type SearchSession = { direct: CandidateReply[]; fallback: CandidateReply[]; directComplete: boolean; fallbackComplete: boolean };
+// Monotonic positions preserve the ordered-catalog tie break across removals;
+// explicit reorder updates rebuild them to match the new catalog order.
+type ChannelPosition = { position: number; video: IndexedVideoSearchMetadata };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 type CatalogSnapshot = Readonly<{
   videos: Map<string, IndexedVideoSearchMetadata>;
   ordered: IndexedVideoSearchMetadata[];
+  channelPositions: Map<string, ChannelPosition[]>;
+  nextChannelPosition: number;
   revision: number;
 }>;
-let snapshot: CatalogSnapshot = { videos: new Map(), ordered: [], revision: -1 };
+let snapshot: CatalogSnapshot = { videos: new Map(), ordered: [], channelPositions: new Map(), nextChannelPosition: 0, revision: -1 };
 const resultCache = new SessionCache<CandidateReply[]>(80, 30 * 60 * 1000, 4 * 1024 * 1024);
 // Keep a couple of pages per group warm. The shared cache enforces both a TTL
 // and a byte budget, so broad searches with long supporting passages are simply
@@ -74,19 +79,94 @@ function mapMatchesOrderedVideos(map: Map<string, IndexedVideoSearchMetadata>, o
   return true;
 }
 
+function createChannelPositionIndex(ordered: IndexedVideoSearchMetadata[]) {
+  const channelPositions = new Map<string, ChannelPosition[]>();
+  ordered.forEach((video, position) => {
+    const entries = channelPositions.get(video.channelId) ?? [];
+    entries.push({ position, video });
+    channelPositions.set(video.channelId, entries);
+  });
+  return { channelPositions, nextChannelPosition: ordered.length };
+}
+
+function insertChannelPosition(entries: ChannelPosition[], entry: ChannelPosition) {
+  let low = 0, high = entries.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (entries[middle].position < entry.position) low = middle + 1;
+    else high = middle;
+  }
+  entries.splice(low, 0, entry);
+}
+
 /** Stage independently; failures cannot alter a captured or active snapshot. */
 function stageCatalog(request: Extract<Request, { type: "initialize" | "update" }>, restored?: Map<string, IndexedVideoSearchMetadata>): CatalogSnapshot {
   validateVideoSearchCatalogUpdate(request.revision, request.type === "initialize" ? request.videos : request.upserts,
     request.type === "update" ? request.removeIds : [], request.type === "update" ? request.orderIds : undefined);
   let staged = request.type === "initialize" ? restored ?? new Map<string, IndexedVideoSearchMetadata>() : snapshot.videos;
+  let channelPositions = snapshot.channelPositions;
+  let nextChannelPosition = snapshot.nextChannelPosition;
+  let channelMapWritable = false;
+  const writableChannels = new Set<string>();
+  const writableChannelMap = () => {
+    if (!channelMapWritable) {
+      channelPositions = new Map(channelPositions);
+      channelMapWritable = true;
+    }
+    return channelPositions;
+  };
+  const mutableChannel = (channelId: string) => {
+    writableChannelMap();
+    let entries = channelPositions.get(channelId);
+    if (!writableChannels.has(channelId)) {
+      entries = entries ? entries.slice() : [];
+      channelPositions.set(channelId, entries);
+      writableChannels.add(channelId);
+    } else if (!entries) {
+      entries = [];
+      channelPositions.set(channelId, entries);
+    }
+    return entries!;
+  };
+  const removeChannelPosition = (video: IndexedVideoSearchMetadata) => {
+    const entries = mutableChannel(video.channelId);
+    const index = entries.findIndex(entry => entry.video.id === video.id);
+    if (index >= 0) entries.splice(index, 1);
+    if (!entries.length) channelPositions.delete(video.channelId);
+  };
+  const updateChannelPosition = (previous: IndexedVideoSearchMetadata | undefined, video: IndexedVideoSearchMetadata) => {
+    if (!previous) {
+      insertChannelPosition(mutableChannel(video.channelId), { position: nextChannelPosition++, video });
+      return;
+    }
+    const oldEntries = channelPositions.get(previous.channelId) ?? [];
+    const oldIndex = oldEntries.findIndex(entry => entry.video.id === previous.id);
+    const position = oldIndex >= 0 ? oldEntries[oldIndex].position : nextChannelPosition++;
+    if (oldIndex >= 0) {
+      const entries = mutableChannel(previous.channelId);
+      entries.splice(oldIndex, 1);
+      if (!entries.length) channelPositions.delete(previous.channelId);
+    }
+    insertChannelPosition(mutableChannel(video.channelId), { position, video });
+  };
   const writable = () => { if (staged === snapshot.videos) staged = new Map(staged); return staged; };
   if (request.type === "initialize" && !restored) {
     for (const video of request.videos) staged.set(video.id, indexVideoSearchMetadata(video, staged.get(video.id)));
   } else if (request.type === "update") {
-    for (const id of request.removeIds) if (staged.has(id)) writable().delete(id);
+    for (const id of request.removeIds) {
+      const previous = staged.get(id);
+      if (previous) {
+        if (!request.orderIds) removeChannelPosition(previous);
+        writable().delete(id);
+      }
+    }
     for (const video of request.upserts) {
       const previous = staged.get(video.id);
-      if (!sameVideoRecord(previous, video)) writable().set(video.id, indexVideoSearchMetadata(video, previous));
+      if (!sameVideoRecord(previous, video)) {
+        const indexed = indexVideoSearchMetadata(video, previous);
+        if (!request.orderIds) updateChannelPosition(previous, indexed);
+        writable().set(video.id, indexed);
+      }
     }
     if (request.orderIds) {
       const ordered = new Map<string, IndexedVideoSearchMetadata>();
@@ -96,8 +176,10 @@ function stageCatalog(request: Extract<Request, { type: "initialize" | "update" 
   }
   // Equal records/order retain the existing snapshot data, including no-op updates.
   const unchanged = mapMatchesOrderedVideos(staged, snapshot.ordered);
-  return { videos: unchanged ? snapshot.videos : staged,
-    ordered: unchanged ? snapshot.ordered : Array.from(staged.values()), revision: request.revision };
+  if (unchanged) return { ...snapshot, revision: request.revision };
+  const ordered = Array.from(staged.values());
+  if (request.type === "initialize" || request.orderIds) ({ channelPositions, nextChannelPosition } = createChannelPositionIndex(ordered));
+  return { videos: staged, ordered, channelPositions, nextChannelPosition, revision: request.revision };
 }
 
 function remember(key: string, candidates: CandidateReply[]) {
@@ -171,35 +253,45 @@ async function search(request: SearchRequest) {
   // The retained snapshot is replaced on catalog changes, never mutated, so
   // yielded searches keep stable positions even if a newer update arrives.
   const catalog = captured.ordered;
+  const hasSelectedChannel = Boolean(request.channelId);
+  const hasPlannedChannel = Boolean(request.plan.channelId);
+  const hasChannelFilter = hasSelectedChannel || hasPlannedChannel;
+  const channelFilter = hasSelectedChannel && hasPlannedChannel && request.channelId !== request.plan.channelId
+    ? undefined : request.channelId || request.plan.channelId;
+  const channelCatalog = hasChannelFilter ? channelFilter ? captured.channelPositions.get(channelFilter) ?? [] : [] : undefined;
+  const candidateCount = channelCatalog?.length ?? catalog.length;
   const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, captured.revision, request.viewKey ?? "worker");
-  type RankedCandidateEntry = { candidate: CandidateReply; index: number };
+  type RankedCandidateEntry = { candidate: SemanticCandidate<IndexedVideoSearchMetadata>; position: number };
   const direct: RankedCandidateEntry[] = [];
   const fallback: RankedCandidateEntry[] = [];
   let directMatchCount = 0, fallbackMatchCount = 0;
   const buildSession = excludedIds.size === 0 && resultLimit <= 160;
   const sessionLimit = buildSession ? Math.min(320, Math.max(resultLimit, resultLimit * 2)) : resultLimit;
   const compareEntries = (left: RankedCandidateEntry, right: RankedCandidateEntry) => {
-    const a = catalog[left.index], b = catalog[right.index];
+    const a = left.candidate.video, b = right.candidate.video;
     const dateOrder = prepared.sort === "newest" ? b.publishedAt.localeCompare(a.publishedAt) : prepared.sort === "oldest" ? a.publishedAt.localeCompare(b.publishedAt) : 0;
-    return dateOrder || right.candidate.score - left.candidate.score || left.index - right.index;
+    return dateOrder || right.candidate.score - left.candidate.score || left.position - right.position;
   };
   let start = 0, lastProgress = rankingNow();
   let chunkSize = SEMANTIC_SEARCH_INITIAL_CHUNK_SIZE;
-  while (start < catalog.length) {
+  while (start < candidateCount) {
     if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return;
     const sliceStart = start;
     start = await runBackgroundSlice(() => {
       if (request.requestId !== latestRequestId || request.revision !== snapshot.revision || epoch !== indexEpoch) return sliceStart;
       const beganAt = rankingNow();
-      const end = Math.min(catalog.length, sliceStart + chunkSize);
-      const batch = catalog.slice(sliceStart, end);
-      const positions = new Map(batch.map((video, index) => [video.id, sliceStart + index]));
+      const end = Math.min(candidateCount, sliceStart + chunkSize);
+      const channelBatch = channelCatalog?.slice(sliceStart, end);
+      const batch = channelBatch ? channelBatch.map(entry => entry.video) : catalog.slice(sliceStart, end);
+      const positions = channelBatch
+        ? new Map(channelBatch.map(entry => [entry.video.id, entry.position]))
+        : new Map(batch.map((video, index) => [video.id, sliceStart + index]));
       // The ranker returns direct and fallback results in one list. Ask for
       // the whole chunk before splitting those groups; a fixed 2N window could be
       // filled by fallback candidates and hide a lower-ranked direct match.
       const matches = searchPreparedSemanticVideos(batch, prepared, batch.length, excludedIds);
       for (const match of matches) {
-        const entry = { candidate: { coverage: match.coverage, videoId: match.video.id, score: match.score, matchedFields: match.matchedFields, supportingText: match.supportingText }, index: positions.get(match.video.id)! };
+        const entry = { candidate: match, position: positions.get(match.video.id)! };
         const isFallback = match.matchedFields.includes("semantic-fallback");
         if (isFallback) fallbackMatchCount++;
         else directMatchCount++;
@@ -216,14 +308,14 @@ async function search(request: SearchRequest) {
     }
   }
   const session: SearchSession | undefined = buildSession ? {
-    direct: direct.map(({ candidate }) => candidate),
-    fallback: fallback.map(({ candidate }) => candidate),
+    direct: direct.map(({ candidate }) => ({ coverage: candidate.coverage, videoId: candidate.video.id, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText })),
+    fallback: fallback.map(({ candidate }) => ({ coverage: candidate.coverage, videoId: candidate.video.id, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText })),
     directComplete: directMatchCount <= sessionLimit,
     fallbackComplete: fallbackMatchCount <= sessionLimit,
   } : undefined;
   if (session) searchSessionCache.set(sessionKey, session);
   const source = direct.length ? direct : fallback;
-  const candidates = source.slice(0, resultLimit).map(({ candidate }) => candidate);
+  const candidates = source.slice(0, resultLimit).map(({ candidate }) => ({ coverage: candidate.coverage, videoId: candidate.video.id, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText }));
   remember(key, candidates);
   if (request.requestId === latestRequestId && request.revision === snapshot.revision) {
     if (activeRequestId === request.requestId) activeRequestId = 0;
