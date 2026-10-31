@@ -6,6 +6,7 @@ actor VideoCatalogStore {
     private let files = FileManager.default
     private let applicationSupportRoot: URL?
     private var cached: [String: Any]?
+    private var cachedVideosByID: [String: [String: Any]]?
     private var references: [String: String] = [:]
     private var manifestData: Data?
     private let metadataKeys = ["channels", "sourceStates", "catalogVersion", "incomplete", "libraryIncomplete", "lastSyncAt"]
@@ -21,6 +22,14 @@ actor VideoCatalogStore {
 
     private func batchFolder() throws -> URL { try root().appendingPathComponent("youtube-records-v1", isDirectory: true) }
     private func manifestURL() throws -> URL { try root().appendingPathComponent("youtube-catalog-manifest-v1.json") }
+
+    private func indexVideos(_ videos: [[String: Any]]) -> [String: [String: Any]] {
+        var indexed = [String: [String: Any]](minimumCapacity: videos.count)
+        for video in videos {
+            if let id = video["id"] as? String { indexed[id] = video }
+        }
+        return indexed
+    }
 
     private func readManifest(_ data: Data) throws -> ([String: Any], [String: String]) {
         guard let manifest = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -49,7 +58,9 @@ actor VideoCatalogStore {
         let manifest = try manifestURL()
         for url in [manifest, manifest.appendingPathExtension("backup")] where files.fileExists(atPath: url.path) {
             guard let data = try? Data(contentsOf: url), let (catalog, refs) = try? readManifest(data) else { continue }
-            cached = catalog; references = refs; manifestData = data
+            cached = catalog
+            cachedVideosByID = indexVideos(catalog["videos"] as? [[String: Any]] ?? [])
+            references = refs; manifestData = data
             return catalog
         }
         // Legacy files remain recovery copies until the new manifest commits.
@@ -57,6 +68,7 @@ actor VideoCatalogStore {
         for url in [legacy, legacy.appendingPathExtension("backup")] where files.fileExists(atPath: url.path) {
             guard let data = try? Data(contentsOf: url), let catalog = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             cached = catalog
+            cachedVideosByID = indexVideos(catalog["videos"] as? [[String: Any]] ?? [])
             return catalog
         }
         if files.fileExists(atPath: manifest.path) { throw invalid() }
@@ -66,17 +78,18 @@ actor VideoCatalogStore {
     func save(_ catalog: [String: Any]) throws {
         guard let videos = catalog["videos"] as? [[String: Any]], JSONSerialization.isValidJSONObject(catalog) else { throw invalid() }
         _ = try load()
-        var oldVideos: [String: [String: Any]] = [:]
-        for video in cached?["videos"] as? [[String: Any]] ?? [] { if let id = video["id"] as? String { oldVideos[id] = video } }
         let directory = try batchFolder()
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
         var entries: [[String]] = [], nextRefs: [String: String] = [:], changes: [[String: Any]] = []
-        var seen = Set<String>()
+        var seen = Set<String>(), cachedVideoMatches = 0
         for video in videos {
             guard let id = video["id"] as? String, !id.isEmpty, seen.insert(id).inserted else { throw invalid() }
-            if let name = references[id], let previous = oldVideos[id], sameRecord(previous, video) { nextRefs[id] = name }
+            let previous = cachedVideosByID?[id]
+            if previous != nil { cachedVideoMatches += 1 }
+            if let name = references[id], let previous, sameRecord(previous, video) { nextRefs[id] = name }
             else { changes.append(video) }
         }
+        let removedIDs = cachedVideoMatches == cachedVideosByID?.count ? [] : cachedVideosByID?.keys.filter { !seen.contains($0) } ?? []
         let revision = UUID().uuidString
         for start in stride(from: 0, to: changes.count, by: 100) {
             let name = "\(revision)-\(start / 100).json"
@@ -104,6 +117,14 @@ actor VideoCatalogStore {
         // cannot invalidate the already published catalog.
         let retained = Set(references.values).union(nextRefs.values)
         cached = metadata.merging(["videos": videos]) { _, new in new }
+        if cachedVideosByID == nil {
+            cachedVideosByID = indexVideos(videos)
+        } else {
+            for id in removedIDs { cachedVideosByID?.removeValue(forKey: id) }
+            for video in changes {
+                if let id = video["id"] as? String { cachedVideosByID?[id] = video }
+            }
+        }
         references = nextRefs; manifestData = data
         if let stored = try? files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
             for url in stored where validBatchName(url.lastPathComponent) && !retained.contains(url.lastPathComponent) { try? files.removeItem(at: url) }

@@ -47,7 +47,9 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
             precondition(actualCount == expectedCount, "Unexpected batch file count: \\(actualCount)")
         }
         func catalog(_ video: [String: Any]) -> [String: Any] { ["catalogVersion": 1, "videos": [video]] }
+        func catalog(_ videos: [[String: Any]]) -> [String: Any] { ["catalogVersion": 1, "videos": videos] }
         func save(_ video: [String: Any]) async throws { try await store.save(catalog(video)) }
+        func save(_ videos: [[String: Any]]) async throws { try await store.save(catalog(videos)) }
 
         let nestedOriginal = try jsonClone([
             "numbers": [NSNumber(value: 1), NSNumber(value: 1.5)],
@@ -103,8 +105,45 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
         precondition(!oldSameRecord(missingProperty, nestedChange), "A nested metadata change remains significant")
         try await save(nestedChange)
         try requireBatch(differentFrom: missingReference, fileCount: 2)
+        let committedReference = try batchReference()
 
-        print("Native video catalog comparison: unchanged, timestamp-only, Foundation-equal nested values, missing keys, nested changes, and batch reuse/rewrite behavior passed")
+        var uncommitted = nestedChange
+        uncommitted["title"] = "Must not become the cached version before manifest commit"
+        let manifest = library.appendingPathComponent("youtube-catalog-manifest-v1.json")
+        try FileManager.default.removeItem(at: manifest)
+        try FileManager.default.createDirectory(at: manifest, withIntermediateDirectories: false)
+        do {
+            try await save(uncommitted)
+            preconditionFailure("A directory at the manifest path must prevent catalog commit")
+        } catch { }
+        try FileManager.default.removeItem(at: manifest)
+        try await save(nestedChange)
+        try requireBatch(reference: committedReference, fileCount: 1)
+
+        try await save(uncommitted)
+        let updatedReference = try batchReference()
+        precondition(updatedReference != committedReference, "A successful changed record refreshes its indexed old value")
+        try await save(nestedChange)
+        let restoredReference = try batchReference()
+        precondition(restoredReference != updatedReference, "The index tracks the successfully committed replacement")
+        try await save(nestedChange)
+        try requireBatch(reference: restoredReference, fileCount: 1)
+
+        let added: [String: Any] = ["id": "video-2", "title": "Added after load", "description": "A second record"]
+        try await save([nestedChange, added])
+        let expandedManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as! [String: Any]
+        let addedReference = (expandedManifest["entries"] as! [[String]]).first { $0[0] == "video-2" }![1]
+        try await save([nestedChange, added])
+        let repeatedManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as! [String: Any]
+        precondition((repeatedManifest["entries"] as! [[String]]).first { $0[0] == "video-2" }![1] == addedReference,
+            "The committed lookup retains the newly added record for the next save")
+        try await save([added])
+        try await save([added])
+        let removalManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as! [String: Any]
+        precondition((removalManifest["entries"] as! [[String]]).map { $0[0] } == ["video-2"],
+            "A successfully committed removal leaves only the retained ID in the manifest")
+
+        print("Native video catalog comparison: unchanged, timestamp-only, nested values, failed commits, indexed updates/additions/removals, and batch reuse/rewrite behavior passed")
     }
 }
 `);
