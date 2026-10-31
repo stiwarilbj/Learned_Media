@@ -50,17 +50,26 @@ const feed = read("components/learned-media/FeedView.tsx");
 const setup = read("components/learned-media/SetupWorkspace.tsx");
 const control = read("components/learned-media/FactAngleControl.tsx");
 const nativeUI = readFileSync(resolve(root, "../App/Resources/frontend/app.js"), "utf8");
+const namedFunctionSource = (source, name) => {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} must exist`);
+  const next = source.indexOf("\nfunction ", start + 1);
+  return source.slice(start, next < 0 ? undefined : next);
+};
 assert.match(gemini, /normalizeFactAngle\(requestedFactAngle\)/);
-assert.match(gemini, /candidatePrompt\([^\n]+factAngle/);
-assert.match(gemini, /groundingPrompt\([^\n]+factAngle/);
-assert.match(gemini, /cachedEvidenceForSlots\([^\n]+factAngle/);
+assert.match(namedFunctionSource(gemini, "candidatePrompt"), /context\.angle\.instruction/,
+  "candidate generation must use the captured operation angle");
+assert.match(namedFunctionSource(gemini, "groundingPrompt"), /rules: \[context\.angle\.instruction\]/,
+  "grounding must use the captured operation angle");
+assert.match(gemini, /cachedEvidenceForSlots\(context, sessionId, slots/,
+  "cached-evidence generation must receive the same captured operation context");
 assert.match(gemini, /fact\.status === "angle_unavailable"/);
 assert.match(gemini, /Choose a surprising example within the selected fact angle and assigned topic\./);
 assert.match(gemini, /"angle_unavailable"/);
 assert.match(route, /body\.factAngle !== undefined && !isFactAngle\(body\.factAngle\)/);
 assert.match(route, /factAngle: normalizeFactAngle\(body\.factAngle\)/);
 assert.match(page, /factAngle: batchAngle/);
-assert.match(page, /factAngle=\{activeFactBatch\?\.angle \?\? selectedFactAngle\}/);
+assert.match(page, /factAngle=\{activeFactBatch\?\.setup\.factAngle \?\? selectedFactAngle\}/);
 assert.match(feed, /Retry missing facts/);
 assert.match(feed, /End this batch/);
 assert.match(feed, /FactAngleControl value=\{factAngle\} onChange=\{onFactAngleChange\} disabled=\{factAngleLocked\}/);
@@ -92,7 +101,7 @@ assert.match(context, /public let factAngle: FactAngle/);
 assert.match(context, /public var factAngleRule/);
 assert.match(nativeUI, /Fact angle/);
 assert.match(nativeUI, /Applies to your next batch, including retries\./);
-assert.match(nativeUI, /factAngle: batchAngle/);
+assert.match(nativeUI, /factAngle: setup\.factAngle/);
 assert.match(nativeUI, /function endFactBatch\(/);
 assert.match(bridge, /if let rawAngle = payload\["factAngle"\]/);
 assert.match(bridge, /guard let value = rawAngle as\? String, let parsed = FactAngle\(rawValue: value\)/);
