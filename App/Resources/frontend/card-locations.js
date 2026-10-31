@@ -35,6 +35,7 @@ const countryNames = [
 const countryByAlias = new Map(countryNames.flatMap(([name, code, aliases]) => aliases.map(alias => [alias.toLocaleLowerCase(), { name, code, alias }])));
 const bundledOutlines = new Map();
 const countryIsoIndexes = new WeakMap();
+const countryPolygonBounds = new WeakMap();
 let outlinePromise;
 const panelFingerprints = new Map();
 const panelListeners = new Map();
@@ -245,7 +246,7 @@ async function loadCountryOutlines(load) {
     outlinePromise ??= (load ? load() : fetch(new URL(`${appBase}country-outlines.json`, window.location.origin).toString()).then(response => { if (!response.ok)
         throw new Error("The map outline could not be loaded."); return response.json(); }))
         .then(value => { if (!Array.isArray(value.countries))
-        throw new Error("The map outline data is invalid."); countryIsoIndex(value.countries); bundledOutlines.set("110m-v1", value); return value; })
+        throw new Error("The map outline data is invalid."); countryIsoIndex(value.countries); prepareCountryPolygonBounds(value.countries); bundledOutlines.set("110m-v1", value); return value; })
         .catch(error => { outlinePromise = undefined; throw error; });
     return outlinePromise;
 }
@@ -259,7 +260,41 @@ function pointInRing(longitude, latitude, ring) {
     }
     return inside;
 }
-function pointInCountry(longitude, latitude, country) { return country.polygons.some(polygon => polygon.length && pointInRing(longitude, latitude, polygon[0])); }
+function boundsForRing(ring) {
+    if (!ring.length)
+        return undefined;
+    let minLongitude = Infinity, maxLongitude = -Infinity, minLatitude = Infinity, maxLatitude = -Infinity;
+    for (const point of ring) {
+        const [longitude, latitude] = point;
+        if (!Number.isFinite(longitude) || !Number.isFinite(latitude))
+            return undefined;
+        minLongitude = Math.min(minLongitude, longitude);
+        maxLongitude = Math.max(maxLongitude, longitude);
+        minLatitude = Math.min(minLatitude, latitude);
+        maxLatitude = Math.max(maxLatitude, latitude);
+    }
+    // A raw min/max interval is unsafe for rings that cross the antimeridian. Leave
+    // longitude unconstrained for those rings; the exact polygon test remains authoritative.
+    return { minLongitude, maxLongitude, minLatitude, maxLatitude, wrapsAntimeridian: maxLongitude - minLongitude > 180 };
+}
+function prepareCountryPolygonBounds(countries) {
+    for (const country of countries) {
+        if (!countryPolygonBounds.has(country)) {
+            countryPolygonBounds.set(country, country.polygons.map(polygon => polygon.length ? boundsForRing(polygon[0]) : undefined));
+        }
+    }
+}
+function polygonBoundsCanContain(longitude, latitude, bounds) {
+    if (!bounds)
+        return true;
+    if (latitude < bounds.minLatitude || latitude > bounds.maxLatitude)
+        return false;
+    return bounds.wrapsAntimeridian || longitude >= bounds.minLongitude && longitude <= bounds.maxLongitude;
+}
+function pointInCountry(longitude, latitude, country) {
+    const bounds = countryPolygonBounds.get(country);
+    return country.polygons.some((polygon, index) => polygon.length && polygonBoundsCanContain(longitude, latitude, bounds?.[index]) && pointInRing(longitude, latitude, polygon[0]));
+}
 function countryIsoIndex(countries) {
     let index = countryIsoIndexes.get(countries);
     if (!index) {
@@ -272,6 +307,8 @@ function countryIsoIndex(countries) {
     return index;
 }
 function layoutPocketMap(countries, places, width = 720, height = 330) {
+    // Also prepare directly supplied outlines (for example, fixtures or embedded callers).
+    prepareCountryPolygonBounds(countries);
     const valid = places.filter(place => Number.isFinite(place.latitude) && Number.isFinite(place.longitude)).slice(0, 2);
     const lons = valid.map(place => place.longitude * Math.PI / 180);
     const centerLon = lons.length ? Math.atan2(lons.reduce((sum, lon) => sum + Math.sin(lon), 0), lons.reduce((sum, lon) => sum + Math.cos(lon), 0)) * 180 / Math.PI : 0;

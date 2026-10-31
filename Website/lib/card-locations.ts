@@ -16,6 +16,7 @@ export type SavedCardLocations = { locations: SavedCardLocation[]; fingerprint: 
 export type PocketMapPlace = SavedCardLocation & { url: string };
 export type CountryOutline = { name: string; iso: string; aliases: string[]; polygons: number[][][][] };
 export type CountryOutlines = { version: string; source: string; countries: CountryOutline[] };
+type PolygonBounds = { minLongitude: number; maxLongitude: number; minLatitude: number; maxLatitude: number; wrapsAntimeridian: boolean };
 type LocationCard = Pick<FactCard, "title" | "hook" | "body" | "sources"> & { sentences?: string[]; locations?: SavedCardLocations | unknown };
 
 const countryNames: Array<[string, string, string[]]> = [
@@ -35,6 +36,7 @@ const countryNames: Array<[string, string, string[]]> = [
 const countryByAlias = new Map(countryNames.flatMap(([name, code, aliases]) => aliases.map(alias => [alias.toLocaleLowerCase(), { name, code, alias }] as const)));
 const bundledOutlines = new Map<string, CountryOutlines>();
 const countryIsoIndexes = new WeakMap<CountryOutline[], Map<string, CountryOutline>>();
+const countryPolygonBounds = new WeakMap<CountryOutline, Array<PolygonBounds | undefined>>();
 let outlinePromise: Promise<CountryOutlines> | undefined;
 const panelFingerprints = new Map<string, string>();
 const panelListeners = new Map<string, Set<() => void>>();
@@ -207,7 +209,7 @@ export async function loadCountryOutlines(load?: () => Promise<CountryOutlines>)
   const cached = bundledOutlines.get("110m-v1"); if (cached) return cached;
   const appBase = typeof window !== "undefined" && window.location.pathname.startsWith("/Learned_Media/") ? "/Learned_Media/" : "/";
   outlinePromise ??= (load ? load() : fetch(new URL(`${appBase}country-outlines.json`, window.location.origin).toString()).then(response => { if (!response.ok) throw new Error("The map outline could not be loaded."); return response.json() as Promise<CountryOutlines>; }))
-    .then(value => { if (!Array.isArray(value.countries)) throw new Error("The map outline data is invalid."); countryIsoIndex(value.countries); bundledOutlines.set("110m-v1", value); return value; })
+    .then(value => { if (!Array.isArray(value.countries)) throw new Error("The map outline data is invalid."); countryIsoIndex(value.countries); prepareCountryPolygonBounds(value.countries); bundledOutlines.set("110m-v1", value); return value; })
     .catch(error => { outlinePromise = undefined; throw error; });
   return outlinePromise;
 }
@@ -221,7 +223,35 @@ function pointInRing(longitude: number, latitude: number, ring: number[][]) {
   }
   return inside;
 }
-function pointInCountry(longitude: number, latitude: number, country: CountryOutline) { return country.polygons.some(polygon => polygon.length && pointInRing(longitude, latitude, polygon[0])); }
+function boundsForRing(ring: number[][]): PolygonBounds | undefined {
+  if (!ring.length) return undefined;
+  let minLongitude = Infinity, maxLongitude = -Infinity, minLatitude = Infinity, maxLatitude = -Infinity;
+  for (const point of ring) {
+    const [longitude, latitude] = point;
+    if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return undefined;
+    minLongitude = Math.min(minLongitude, longitude); maxLongitude = Math.max(maxLongitude, longitude);
+    minLatitude = Math.min(minLatitude, latitude); maxLatitude = Math.max(maxLatitude, latitude);
+  }
+  // A raw min/max interval is unsafe for rings that cross the antimeridian. Leave
+  // longitude unconstrained for those rings; the exact polygon test remains authoritative.
+  return { minLongitude, maxLongitude, minLatitude, maxLatitude, wrapsAntimeridian: maxLongitude - minLongitude > 180 };
+}
+function prepareCountryPolygonBounds(countries: CountryOutline[]) {
+  for (const country of countries) {
+    if (!countryPolygonBounds.has(country)) {
+      countryPolygonBounds.set(country, country.polygons.map(polygon => polygon.length ? boundsForRing(polygon[0]) : undefined));
+    }
+  }
+}
+function polygonBoundsCanContain(longitude: number, latitude: number, bounds: PolygonBounds | undefined) {
+  if (!bounds) return true;
+  if (latitude < bounds.minLatitude || latitude > bounds.maxLatitude) return false;
+  return bounds.wrapsAntimeridian || longitude >= bounds.minLongitude && longitude <= bounds.maxLongitude;
+}
+function pointInCountry(longitude: number, latitude: number, country: CountryOutline) {
+  const bounds = countryPolygonBounds.get(country);
+  return country.polygons.some((polygon, index) => polygon.length && polygonBoundsCanContain(longitude, latitude, bounds?.[index]) && pointInRing(longitude, latitude, polygon[0]));
+}
 function countryIsoIndex(countries: CountryOutline[]) {
   let index = countryIsoIndexes.get(countries);
   if (!index) {
@@ -234,6 +264,8 @@ function countryIsoIndex(countries: CountryOutline[]) {
 
 export type PocketMapLayout = { width: number; height: number; outlines: Array<{ key: string; d: string; selected: boolean }>; markers: Array<{ x: number; y: number; labelX: number; labelY: number; anchor: "start" | "end"; number: number; name: string; url: string; country?: string }> };
 export function layoutPocketMap(countries: CountryOutline[], places: PocketMapPlace[], width = 720, height = 330): PocketMapLayout {
+  // Also prepare directly supplied outlines (for example, fixtures or embedded callers).
+  prepareCountryPolygonBounds(countries);
   const valid = places.filter(place => Number.isFinite(place.latitude) && Number.isFinite(place.longitude)).slice(0, 2);
   const lons = valid.map(place => place.longitude! * Math.PI / 180);
   const centerLon = lons.length ? Math.atan2(lons.reduce((sum, lon) => sum + Math.sin(lon), 0), lons.reduce((sum, lon) => sum + Math.cos(lon), 0)) * 180 / Math.PI : 0;
