@@ -26,7 +26,16 @@ type Request =
   | SearchRequest;
 type CandidateReply = { coverage?: { matchedConcepts: number[]; missingConcepts: number[]; complete: boolean }; videoId: string; score: number; matchedFields: string[]; supportingText: string[] };
 type Reply = { type: "progress" | "failed"; requestId: number; revision: number } | { type: "ready" | "rebuild"; revision: number } | { type: "stale"; requestId: number; revision: number } | { type: "invalid"; requestId: number; reason: "invalid-request" } | { type: "results"; requestId: number; revision: number; query: string; viewKey?: string; candidates: CandidateReply[] };
-type SearchSession = { direct: CandidateReply[]; fallback: CandidateReply[]; directComplete: boolean; fallbackComplete: boolean };
+type SearchSession = {
+  direct: CandidateReply[];
+  fallback: CandidateReply[];
+  directComplete: boolean;
+  fallbackComplete: boolean;
+  directCursor: number;
+  fallbackCursor: number;
+  expectedExcludedIds?: Set<string>;
+};
+const SEARCH_SESSION_CURSOR_HISTORY_LIMIT = 512;
 // Monotonic positions preserve the ordered-catalog tie break across removals;
 // explicit reorder updates rebuild them to match the new catalog order.
 type ChannelPosition = { position: number; video: IndexedVideoSearchMetadata };
@@ -205,17 +214,80 @@ function cacheKeys(request: SearchRequest) {
   };
 }
 
+function skipExcludedPrefix(candidates: CandidateReply[], start: number, excludedIds: ReadonlySet<string>) {
+  let cursor = start;
+  while (cursor < candidates.length && excludedIds.has(candidates[cursor].videoId)) cursor++;
+  return cursor;
+}
+
+function sameExcludedIds(expected: Set<string> | undefined, actual: ReadonlySet<string>) {
+  if (!expected || expected.size !== actual.size) return false;
+  for (const id of expected) if (!actual.has(id)) return false;
+  return true;
+}
+
+function rememberSessionPage(session: SearchSession, excludedIds: ReadonlySet<string>, page: CandidateReply[], usedCursor: boolean, group?: "direct" | "fallback", nextCursor = 0) {
+  const expected = new Set(excludedIds);
+  for (const candidate of page) expected.add(candidate.videoId);
+  session.expectedExcludedIds = expected.size <= SEARCH_SESSION_CURSOR_HISTORY_LIMIT ? expected : undefined;
+  if (usedCursor && group) {
+    const candidates = session[group];
+    session[`${group}Cursor`] = skipExcludedPrefix(candidates, nextCursor, expected);
+    return;
+  }
+  // A safe scan may have skipped holes in the session results. Rebase each
+  // cursor to its still-excluded prefix so a following sequential page can
+  // resume safely from there.
+  session.directCursor = skipExcludedPrefix(session.direct, 0, expected);
+  session.fallbackCursor = skipExcludedPrefix(session.fallback, 0, expected);
+}
+
 function pageFromSession(session: SearchSession, excludedIds: ReadonlySet<string>, limit: number): CandidateReply[] | undefined {
+  if (sameExcludedIds(session.expectedExcludedIds, excludedIds)) {
+    const directStart = skipExcludedPrefix(session.direct, session.directCursor, excludedIds);
+    const directRemaining = session.direct.length - directStart;
+    if (directRemaining >= limit) {
+      const page = session.direct.slice(directStart, directStart + limit);
+      rememberSessionPage(session, excludedIds, page, true, "direct", directStart + page.length);
+      return page;
+    }
+    if (directRemaining) {
+      if (!session.directComplete) return undefined;
+      const page = session.direct.slice(directStart);
+      rememberSessionPage(session, excludedIds, page, true, "direct", session.direct.length);
+      return page;
+    }
+    if (!session.directComplete) return undefined;
+
+    const fallbackStart = skipExcludedPrefix(session.fallback, session.fallbackCursor, excludedIds);
+    const fallbackRemaining = session.fallback.length - fallbackStart;
+    if (fallbackRemaining >= limit) {
+      const page = session.fallback.slice(fallbackStart, fallbackStart + limit);
+      rememberSessionPage(session, excludedIds, page, true, "fallback", fallbackStart + page.length);
+      return page;
+    }
+    if (!session.fallbackComplete) return undefined;
+    const page = session.fallback.slice(fallbackStart);
+    rememberSessionPage(session, excludedIds, page, true, "fallback", session.fallback.length);
+    return page;
+  }
+
+  // Unexpected exclusions (for example, an out-of-order page request) keep
+  // the original safe scan. Once served, the cursors can rebase to its result.
   const direct = session.direct.filter((candidate) => !excludedIds.has(candidate.videoId));
-  if (direct.length >= limit) return direct.slice(0, limit);
+  let page: CandidateReply[] | undefined;
+  if (direct.length >= limit) page = direct.slice(0, limit);
   // Keep the existing tier rule: fallback suggestions appear only after no
   // direct result remains, never just to fill a short direct page.
-  if (direct.length) return session.directComplete ? direct : undefined;
-  if (!session.directComplete) return undefined;
-
-  const fallback = session.fallback.filter((candidate) => !excludedIds.has(candidate.videoId));
-  if (fallback.length >= limit) return fallback.slice(0, limit);
-  return session.fallbackComplete ? fallback : undefined;
+  else if (direct.length) page = session.directComplete ? direct : undefined;
+  else if (!session.directComplete) page = undefined;
+  else {
+    const fallback = session.fallback.filter((candidate) => !excludedIds.has(candidate.videoId));
+    if (fallback.length >= limit) page = fallback.slice(0, limit);
+    else page = session.fallbackComplete ? fallback : undefined;
+  }
+  if (page) rememberSessionPage(session, excludedIds, page, false);
+  return page;
 }
 
 function rankingNow() {
@@ -244,6 +316,7 @@ async function search(request: SearchRequest) {
   const cachedSession = searchSessionCache.get(sessionKey);
   const sessionPage = cachedSession && pageFromSession(cachedSession, excludedIds, resultLimit);
   if (sessionPage) {
+    searchSessionCache.set(sessionKey, cachedSession);
     remember(key, sessionPage);
     if (activeRequestId === request.requestId) activeRequestId = 0;
     workerScope.postMessage({ type: "results", requestId: request.requestId, revision: captured.revision, query: request.query, viewKey: request.viewKey, candidates: sessionPage } satisfies Reply);
@@ -307,15 +380,18 @@ async function search(request: SearchRequest) {
       workerScope.postMessage({ type: "progress", requestId: request.requestId, revision: captured.revision } satisfies Reply);
     }
   }
+  const source = direct.length ? direct : fallback;
+  const candidates = source.slice(0, resultLimit).map(({ candidate }) => ({ coverage: candidate.coverage, videoId: candidate.video.id, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText }));
   const session: SearchSession | undefined = buildSession ? {
     direct: direct.map(({ candidate }) => ({ coverage: candidate.coverage, videoId: candidate.video.id, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText })),
     fallback: fallback.map(({ candidate }) => ({ coverage: candidate.coverage, videoId: candidate.video.id, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText })),
     directComplete: directMatchCount <= sessionLimit,
     fallbackComplete: fallbackMatchCount <= sessionLimit,
+    directCursor: direct.length ? candidates.length : 0,
+    fallbackCursor: direct.length ? 0 : candidates.length,
+    expectedExcludedIds: new Set(candidates.map(candidate => candidate.videoId)),
   } : undefined;
   if (session) searchSessionCache.set(sessionKey, session);
-  const source = direct.length ? direct : fallback;
-  const candidates = source.slice(0, resultLimit).map(({ candidate }) => ({ coverage: candidate.coverage, videoId: candidate.video.id, score: candidate.score, matchedFields: candidate.matchedFields, supportingText: candidate.supportingText }));
   remember(key, candidates);
   if (request.requestId === latestRequestId && request.revision === snapshot.revision) {
     if (activeRequestId === request.requestId) activeRequestId = 0;

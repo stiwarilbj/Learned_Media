@@ -8,6 +8,7 @@ let snapshot = { videos: [], byId: new Map(), channelPositions: new Map(), nextC
 const preparedSearchCache = new LEARNED_MEDIA_VIDEO_SEARCH.PreparedVideoSearchCache(4);
 const searchSessionCache = new Map();
 const SEARCH_SESSION_CACHE_LIMIT = 8, SEARCH_SESSION_TTL_MS = 5 * 60 * 1000, SEARCH_SESSION_BYTE_LIMIT = 4 * 1024 * 1024;
+const SEARCH_SESSION_CURSOR_HISTORY_LIMIT = 512;
 let searchSessionCacheBytes = 0;
 function rankingNow() {
   return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
@@ -18,6 +19,7 @@ function sessionBytes(session, key) {
     bytes += 96 + candidate.videoId.length * 2 + candidate.matchedFields.reduce((sum, value) => sum + 16 + value.length * 2, 0) + candidate.supportingText.reduce((sum, value) => sum + 16 + value.length * 2, 0);
     if (candidate.coverage) bytes += 48 + 4 * (candidate.coverage.matchedConcepts.length + candidate.coverage.missingConcepts.length);
   }
+  bytes += 24 + (session.expectedExcludedIds ? session.expectedExcludedIds.size * 40 : 0);
   return bytes;
 }
 function clearExpiredSearchSessions(now) {
@@ -62,14 +64,72 @@ function releaseCatalogSearchCaches() {
 function sessionKey(request, revision, planKey) {
   return JSON.stringify([revision, String(request.query || "").trim().toLocaleLowerCase(), planKey, request.topic, request.channelId, Boolean(request.expanded), request.viewKey || ""]);
 }
+function skipExcludedPrefix(candidates, start, excludedIds) {
+  let cursor = start;
+  while (cursor < candidates.length && excludedIds.has(candidates[cursor].videoId)) cursor++;
+  return cursor;
+}
+function sameExcludedIds(expected, actual) {
+  if (!expected || expected.size !== actual.size) return false;
+  for (const id of expected) if (!actual.has(id)) return false;
+  return true;
+}
+function rememberSessionPage(session, excludedIds, page, usedCursor, group, nextCursor) {
+  const expected = new Set(excludedIds);
+  for (const candidate of page) expected.add(candidate.videoId);
+  session.expectedExcludedIds = expected.size <= SEARCH_SESSION_CURSOR_HISTORY_LIMIT ? expected : undefined;
+  if (usedCursor && group) {
+    const candidates = session[group];
+    session[group + "Cursor"] = skipExcludedPrefix(candidates, nextCursor, expected);
+    return;
+  }
+  // A safe scan may skip holes, so rebase only over the prefix known excluded.
+  session.directCursor = skipExcludedPrefix(session.direct, 0, expected);
+  session.fallbackCursor = skipExcludedPrefix(session.fallback, 0, expected);
+}
 function pageFromSession(session, excludedIds, limit) {
+  if (sameExcludedIds(session.expectedExcludedIds, excludedIds)) {
+    const directStart = skipExcludedPrefix(session.direct, session.directCursor, excludedIds);
+    const directRemaining = session.direct.length - directStart;
+    if (directRemaining >= limit) {
+      const page = session.direct.slice(directStart, directStart + limit);
+      rememberSessionPage(session, excludedIds, page, true, "direct", directStart + page.length);
+      return page;
+    }
+    if (directRemaining) {
+      if (!session.directComplete) return undefined;
+      const page = session.direct.slice(directStart);
+      rememberSessionPage(session, excludedIds, page, true, "direct", session.direct.length);
+      return page;
+    }
+    if (!session.directComplete) return undefined;
+
+    const fallbackStart = skipExcludedPrefix(session.fallback, session.fallbackCursor, excludedIds);
+    const fallbackRemaining = session.fallback.length - fallbackStart;
+    if (fallbackRemaining >= limit) {
+      const page = session.fallback.slice(fallbackStart, fallbackStart + limit);
+      rememberSessionPage(session, excludedIds, page, true, "fallback", fallbackStart + page.length);
+      return page;
+    }
+    if (!session.fallbackComplete) return undefined;
+    const page = session.fallback.slice(fallbackStart);
+    rememberSessionPage(session, excludedIds, page, true, "fallback", session.fallback.length);
+    return page;
+  }
+
+  // Out-of-order or otherwise unexpected exclusions retain the original scan.
   const direct = session.direct.filter(candidate => !excludedIds.has(candidate.videoId));
-  if (direct.length >= limit) return direct.slice(0, limit);
-  if (direct.length) return session.directComplete ? direct : undefined;
-  if (!session.directComplete) return undefined;
-  const fallback = session.fallback.filter(candidate => !excludedIds.has(candidate.videoId));
-  if (fallback.length >= limit) return fallback.slice(0, limit);
-  return session.fallbackComplete ? fallback : undefined;
+  let page;
+  if (direct.length >= limit) page = direct.slice(0, limit);
+  else if (direct.length) page = session.directComplete ? direct : undefined;
+  else if (!session.directComplete) page = undefined;
+  else {
+    const fallback = session.fallback.filter(candidate => !excludedIds.has(candidate.videoId));
+    if (fallback.length >= limit) page = fallback.slice(0, limit);
+    else page = session.fallbackComplete ? fallback : undefined;
+  }
+  if (page) rememberSessionPage(session, excludedIds, page, false);
+  return page;
 }
 const indexVideo = (video, previous) => LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata(video, previous);
 const indexedOnlyFields = new Set(["specialPlaylistEligible", "normalizedChannelName", "searchFields"]);
@@ -250,7 +310,7 @@ async function search(request) {
   const planKey = JSON.stringify(request.plan);
   const key = sessionKey(request, currentRevision, planKey);
   const cachedSession = getSearchSession(key), sessionPage = cachedSession && pageFromSession(cachedSession, excludedIds, resultLimit);
-  if (sessionPage) { activeRequestId = 0; postMessage({ requestId:request.requestId, revision:currentRevision, candidates:sessionPage }); return; }
+  if (sessionPage) { rememberSearchSession(key, cachedSession); activeRequestId = 0; postMessage({ requestId:request.requestId, revision:currentRevision, candidates:sessionPage }); return; }
   const prepared = preparedSearchCache.get(request.plan, request.topic, request.channelId, currentRevision, request.viewKey || "native-worker");
   const buildSession = excludedIds.size === 0 && resultLimit <= 160;
   const sessionLimit = buildSession ? Math.min(320, Math.max(resultLimit, resultLimit * 2)) : resultLimit;
@@ -288,13 +348,17 @@ async function search(request) {
     }
   }
   if (token === latest && snapshot.revision === currentRevision) {
+    const source = direct.length ? direct : fallback;
+    const candidates = source.slice(0,resultLimit).map(({candidate})=>({videoId:candidate.video.id,score:candidate.score,matchedFields:candidate.matchedFields,supportingText:candidate.supportingText}));
     if (buildSession) rememberSearchSession(key, {
       direct: direct.map(({ candidate }) => ({ videoId:candidate.video.id, score:candidate.score, matchedFields:candidate.matchedFields, supportingText:candidate.supportingText })),
       fallback: fallback.map(({ candidate }) => ({ videoId:candidate.video.id, score:candidate.score, matchedFields:candidate.matchedFields, supportingText:candidate.supportingText })),
-      directComplete:directMatchCount <= sessionLimit, fallbackComplete:fallbackMatchCount <= sessionLimit
+      directComplete:directMatchCount <= sessionLimit,
+      fallbackComplete:fallbackMatchCount <= sessionLimit,
+      directCursor:direct.length ? candidates.length : 0,
+      fallbackCursor:direct.length ? 0 : candidates.length,
+      expectedExcludedIds:new Set(candidates.map(candidate => candidate.videoId))
     });
-    const source = direct.length ? direct : fallback;
-    const candidates = source.slice(0,resultLimit).map(({candidate})=>({videoId:candidate.video.id,score:candidate.score,matchedFields:candidate.matchedFields,supportingText:candidate.supportingText}));
     activeRequestId = 0;
     postMessage({ requestId:request.requestId, revision:currentRevision, candidates });
   }

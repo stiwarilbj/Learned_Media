@@ -66,7 +66,7 @@ function loadWorker(filename, { observeMaps = false, searchOverride, searchModul
     return imported;
   };
   const inspection = filename === "workers/youtube-search.worker.ts"
-    ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); self.inspectSearchState = () => ({ latestRequestId, activeRequestId });"
+    ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes, items: Array.from(searchSessionCache.entries.values(), entry => entry.value) }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); self.inspectSearchState = () => ({ latestRequestId, activeRequestId });"
     : filename === "workers/card-search.worker.ts" ? "\nself.inspectCardDocuments = () => documents;" : "";
   new Function("require", "module", "exports", "self", "setTimeout", "Map", "performance", source + inspection)(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map, { now: performanceNow });
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
@@ -95,7 +95,7 @@ function loadNativeYouTubeWorker({ observeMaps = false, searchOverride, indexOve
     if (filename === "youtube-search-index-storage.js" && persistenceOverride) context.LEARNED_MEDIA_VIDEO_INDEX_STORAGE.createVideoSearchIndexPersistence = persistenceOverride;
   };
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "youtube-search.worker.js"), "utf8");
-  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot; globalThis.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCacheBytes }); globalThis.inspectSearchCaches = () => ({ results: 0, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); globalThis.inspectSearchState = () => ({ latest });", context);
+  vm.runInNewContext(source + "\nglobalThis.inspectCatalog = () => snapshot; globalThis.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCacheBytes, items: Array.from(searchSessionCache.values(), entry => entry.value) }); globalThis.inspectSearchCaches = () => ({ results: 0, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); globalThis.inspectSearchState = () => ({ latest });", context);
   if (searchOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos = searchOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.searchPreparedSemanticVideos);
   if (indexOverride) context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata = indexOverride(context.LEARNED_MEDIA_VIDEO_SEARCH.indexVideoSearchMetadata);
   return { messages, workerMaps, context, send: (data) => context.onmessage({ data }) };
@@ -327,13 +327,31 @@ test("YouTube workers reuse bounded completed search sessions for later pages", 
     const initialSession = worker.scope?.inspectSearchSessions?.() ?? worker.context.inspectSearchSessions();
     assert.equal(initialSession.size, 1, `${fixture.name} keeps one completed query session`);
     assert.ok(initialSession.bytes > 0 && initialSession.bytes <= 4 * 1024 * 1024, `${fixture.name} bounds cached result metadata by bytes`);
+    const cachedSession = initialSession.items[0];
+    assert.equal(cachedSession.directCursor, 2, `${fixture.name} records the next direct-result cursor after the first page`);
+    assert.equal(cachedSession.fallbackCursor, 0, `${fixture.name} does not advance fallback results before direct results are exhausted`);
+    let safeScanCount = 0;
+    const originalDirectFilter = cachedSession.direct.filter;
+    cachedSession.direct.filter = function (...args) { safeScanCount++; return originalDirectFilter.apply(this, args); };
     const scansAfterFirstPage = counter.calls;
 
     fixture.send(worker, request(2, firstPage.candidates.map(item => item.videoId)));
     const cachedPage = await waitForMessage(messages, message => message.requestId === 2 && message.candidates);
     assert.equal(counter.calls, scansAfterFirstPage, `${fixture.name} serves a complete cached page without ranking chunks again`);
+    assert.equal(safeScanCount, 0, `${fixture.name} advances the cursor without filtering the direct list from its beginning`);
+    assert.equal(cachedSession.directCursor, 4, `${fixture.name} advances its direct cursor with the returned page`);
     assert.deepEqual(Array.from(cachedPage.candidates, item => item.videoId), ["session-610", "session-900"], `${fixture.name} advances within the direct-results group before fallbacks`);
     assert.equal((worker.scope?.inspectSearchSessions?.() ?? worker.context.inspectSearchSessions()).size, 1, `${fixture.name} reuses rather than duplicates the query session`);
+
+    fixture.send(worker, request(9, ["session-4"]));
+    const outOfOrderPage = await waitForMessage(messages, message => message.requestId === 9 && message.candidates);
+    assert.equal(safeScanCount, 1, `${fixture.name} falls back to the safe scan when exclusions do not match pagination history`);
+    assert.deepEqual(Array.from(outOfOrderPage.candidates, item => item.videoId), ["session-500", "session-610"], `${fixture.name} safe scan preserves results for unexpected exclusions`);
+    assert.equal(cachedSession.directCursor, 3, `${fixture.name} rebases the cursor to the sequential prefix after a safe scan`);
+    fixture.send(worker, request(10, ["session-4", "session-500", "session-610"]));
+    const resumedPage = await waitForMessage(messages, message => message.requestId === 10 && message.candidates);
+    assert.equal(safeScanCount, 1, `${fixture.name} resumes cursor pagination after the safe-scan page`);
+    assert.deepEqual(Array.from(resumedPage.candidates, item => item.videoId), ["session-900"], `${fixture.name} resumes from the next unconsumed direct candidate`);
 
     const referenceCounter = createSearchOverride(), reference = fixture.load(referenceCounter), referenceMessages = fixture.messages(reference);
     fixture.send(reference, { type: "initialize", revision: 0, videos });
@@ -345,6 +363,7 @@ test("YouTube workers reuse bounded completed search sessions for later pages", 
     fixture.send(worker, request(7, directIdsForExclusion));
     const cachedFallbackPage = await waitForMessage(messages, message => message.requestId === 7 && message.candidates);
     assert.equal(counter.calls, scansAfterFirstPage, `${fixture.name} advances to the fallback group without rescanning`);
+    assert.equal(cachedSession.fallbackCursor, 2, `${fixture.name} advances the separate fallback cursor after direct results are exhausted`);
     const fallbackReference = fixture.load(createSearchOverride()), fallbackMessages = fixture.messages(fallbackReference);
     fixture.send(fallbackReference, { type: "initialize", revision: 0, videos });
     fixture.send(fallbackReference, request(8, directIdsForExclusion));
