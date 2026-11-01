@@ -580,6 +580,14 @@ private struct ResponseBodyLimitExceeded: Error {
 private enum ExternalResponseLimits {
     private static let mebibyte = 1024 * 1024
 
+    static func gemini(maxOutputTokens: Int) -> Int {
+        let tokens = max(0, maxOutputTokens)
+        let (scaled, overflow) = tokens.multipliedReportingOverflow(by: 64)
+        let tokenMargin = overflow ? 8 * mebibyte : scaled
+        let (withEnvelope, envelopeOverflow) = tokenMargin.addingReportingOverflow(256 * 1024)
+        return min(8 * mebibyte, max(512 * 1024, envelopeOverflow ? 8 * mebibyte : withEnvelope))
+    }
+
     static func wikipedia(_ url: URL) -> Int {
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let items = components?.queryItems ?? []
@@ -735,6 +743,143 @@ private final class BoundedURLSession: @unchecked Sendable {
             try await withCheckedThrowingContinuation { continuation in
                 let task = session.dataTask(with: request)
                 delegate.register(taskID: task.taskIdentifier, maximumBytes: maximumBytes, continuation: continuation)
+                handle.attach(task)
+                task.resume()
+            }
+        } onCancel: {
+            handle.cancel()
+        }
+    }
+}
+
+private final class BoundedStreamResponseDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private struct Pending {
+        let responseContinuation: CheckedContinuation<(AsyncThrowingStream<Data, Error>, URLResponse), Error>
+        let stream: AsyncThrowingStream<Data, Error>
+        let streamContinuation: AsyncThrowingStream<Data, Error>.Continuation
+        let maximumBytes: Int
+        var bytesRead = 0
+        var response: URLResponse?
+        var responseSent = false
+        var exceededLimit = false
+    }
+
+    private let lock = NSLock()
+    private var pending: [Int: Pending] = [:]
+
+    func register(
+        taskID: Int,
+        maximumBytes: Int,
+        stream: AsyncThrowingStream<Data, Error>,
+        streamContinuation: AsyncThrowingStream<Data, Error>.Continuation,
+        responseContinuation: CheckedContinuation<(AsyncThrowingStream<Data, Error>, URLResponse), Error>
+    ) {
+        lock.lock()
+        pending[taskID] = Pending(responseContinuation: responseContinuation, stream: stream, streamContinuation: streamContinuation, maximumBytes: maximumBytes)
+        lock.unlock()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        guard var current = pending[dataTask.taskIdentifier] else {
+            lock.unlock()
+            completionHandler(.cancel)
+            return
+        }
+        current.response = response
+        let rawLength = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Length")
+        let declaredLength = rawLength.flatMap { Int64($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let expectedLength = declaredLength ?? (response.expectedContentLength >= 0 ? response.expectedContentLength : nil)
+        if let expectedLength, expectedLength > Int64(current.maximumBytes) {
+            current.exceededLimit = true
+        } else {
+            current.responseSent = true
+        }
+        pending[dataTask.taskIdentifier] = current
+        let shouldCancel = current.exceededLimit
+        let continuation = current.responseContinuation
+        let stream = current.stream
+        lock.unlock()
+        if shouldCancel {
+            completionHandler(.cancel)
+        } else {
+            continuation.resume(returning: (stream, response))
+            completionHandler(.allow)
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        guard var current = pending[dataTask.taskIdentifier] else {
+            lock.unlock()
+            dataTask.cancel()
+            return
+        }
+        if data.count > current.maximumBytes - current.bytesRead {
+            current.bytesRead = current.maximumBytes == Int.max ? Int.max : current.maximumBytes + 1
+            current.exceededLimit = true
+            pending[dataTask.taskIdentifier] = current
+            lock.unlock()
+            dataTask.cancel()
+            return
+        }
+        current.bytesRead += data.count
+        let continuation = current.streamContinuation
+        pending[dataTask.taskIdentifier] = current
+        lock.unlock()
+        continuation.yield(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let current = pending.removeValue(forKey: task.taskIdentifier)
+        lock.unlock()
+        guard let current else { return }
+        if current.exceededLimit {
+            let failure = ResponseBodyLimitExceeded(maximumBytes: current.maximumBytes, bytesRead: current.bytesRead, response: current.response)
+            if !current.responseSent { current.responseContinuation.resume(throwing: failure) }
+            current.streamContinuation.finish(throwing: failure)
+        } else if let error {
+            if !current.responseSent { current.responseContinuation.resume(throwing: error) }
+            current.streamContinuation.finish(throwing: error)
+        } else if let response = current.response {
+            if !current.responseSent { current.responseContinuation.resume(returning: (current.stream, response)) }
+            current.streamContinuation.finish()
+        } else {
+            let error = URLError(.badServerResponse)
+            if !current.responseSent { current.responseContinuation.resume(throwing: error) }
+            current.streamContinuation.finish(throwing: error)
+        }
+    }
+}
+
+private final class BoundedStreamingURLSession: @unchecked Sendable {
+    private let delegate: BoundedStreamResponseDelegate
+    private let session: URLSession
+
+    init() {
+        let delegate = BoundedStreamResponseDelegate()
+        let delegateQueue = OperationQueue()
+        delegateQueue.maxConcurrentOperationCount = 1
+        self.delegate = delegate
+        self.session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: delegateQueue)
+    }
+
+    func data(for request: URLRequest, maximumBytes: Int) async throws -> (Data, URLResponse) {
+        let (bytes, response) = try await self.bytes(for: request, maximumBytes: maximumBytes)
+        var data = Data(capacity: min(maximumBytes, 256 * 1024))
+        for try await chunk in bytes { data.append(chunk) }
+        return (data, response)
+    }
+
+    func bytes(for request: URLRequest, maximumBytes: Int) async throws -> (AsyncThrowingStream<Data, Error>, URLResponse) {
+        let handle = BoundedRequestHandle()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { responseContinuation in
+                let pair = AsyncThrowingStream<Data, Error>.makeStream()
+                let task = session.dataTask(with: request)
+                pair.continuation.onTermination = { _ in handle.cancel() }
+                delegate.register(taskID: task.taskIdentifier, maximumBytes: maximumBytes, stream: pair.stream, streamContinuation: pair.continuation, responseContinuation: responseContinuation)
                 handle.attach(task)
                 task.resume()
             }
@@ -1648,7 +1793,7 @@ private actor RetryAfterDateParser {
 }
 
 private final class GeminiClient {
-    private let session = URLSession(configuration: .ephemeral)
+    private let session = BoundedStreamingURLSession()
     private let wikipedia = WikipediaClient()
     private let validatedEvidence = ValidatedCardEvidenceCache()
     private let scheduler = ModelScheduler()
@@ -1714,12 +1859,14 @@ private final class GeminiClient {
         PerformanceDiagnostics.shared.record(.gemini, .requests)
         var receivedBytes = 0
         defer { PerformanceDiagnostics.shared.record(.gemini, .responseBytesRead, Double(receivedBytes)) }
+        let maximumResponseBytes = ExternalResponseLimits.gemini(maxOutputTokens: maxOutputTokens)
         let (data, response): (Data, URLResponse)
         do {
             if streaming {
-                let (bytes, streamResponse) = try await session.bytes(for: request)
+                let (bytes, streamResponse) = try await session.bytes(for: request, maximumBytes: maximumResponseBytes)
                 response = streamResponse
                 var raw = Data()
+                var lineBuffer = Data()
                 var eventLines: [String] = []
                 var streamedText = ""
                 var streamedModel: String?
@@ -1743,29 +1890,57 @@ private final class GeminiClient {
                 }
                 guard let http = streamResponse as? HTTPURLResponse else { throw NativeError(message: "Gemini returned no HTTP response.") }
                 if (200..<300).contains(http.statusCode) {
-                    for try await line in bytes.lines {
-                        raw.append(contentsOf: line.utf8)
-                        raw.append(10)
-                        receivedBytes = raw.count
+                    func consumeLine(_ bytes: Data) throws {
+                        var line = String(decoding: bytes, as: UTF8.self)
+                        if line.hasSuffix("\r") { line.removeLast() }
                         if line.isEmpty { try consumeEvent() }
                         else if line.hasPrefix("data:") { eventLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)) }
                     }
+                    func consumeCompleteLines() throws {
+                        while let newline = lineBuffer.firstIndex(of: 10) {
+                            let line = Data(lineBuffer[..<newline])
+                            let afterNewline = lineBuffer.index(after: newline)
+                            lineBuffer.removeSubrange(lineBuffer.startIndex..<afterNewline)
+                            try consumeLine(line)
+                        }
+                    }
+                    for try await chunk in bytes {
+                        guard chunk.count <= maximumResponseBytes - receivedBytes else {
+                            throw ResponseBodyLimitExceeded(maximumBytes: maximumResponseBytes, bytesRead: maximumResponseBytes + 1, response: streamResponse)
+                        }
+                        receivedBytes += chunk.count
+                        lineBuffer.append(chunk)
+                        try consumeCompleteLines()
+                    }
+                    if !lineBuffer.isEmpty { try consumeLine(lineBuffer) }
                     try consumeEvent()
                     let cleaned = StructuredResponse.stripResponseBom(streamedText).replacingOccurrences(of: "^```json\\s*|^```\\s*|\\s*```$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
                     return (cleaned, streamedModel, streamedFinishReason)
                 }
-                for try await line in bytes.lines { raw.append(contentsOf: line.utf8); raw.append(10); receivedBytes = raw.count }
+                for try await chunk in bytes {
+                    guard chunk.count <= maximumResponseBytes - receivedBytes else {
+                        throw ResponseBodyLimitExceeded(maximumBytes: maximumResponseBytes, bytesRead: maximumResponseBytes + 1, response: streamResponse)
+                    }
+                    receivedBytes += chunk.count
+                    raw.append(chunk)
+                }
                 data = raw
             } else {
-                let result = try await session.data(for: request)
+                let result = try await session.data(for: request, maximumBytes: maximumResponseBytes)
                 data = result.0
                 receivedBytes = data.count
                 response = result.1
             }
         } catch is CancellationError {
             throw NativeError(message: "Gemini request canceled.", retryable: false)
+        } catch let oversized as ResponseBodyLimitExceeded {
+            receivedBytes = min(oversized.bytesRead, maximumResponseBytes)
+            let statusCode = (oversized.response as? HTTPURLResponse)?.statusCode
+            throw NativeError(message: "Gemini response exceeded its configured size limit.", retryable: true, statusCode: statusCode)
         } catch let error as NativeError {
             throw error
+        } catch let error as URLError where error.code == .cancelled {
+            throw NativeError(message: "Gemini request canceled.", retryable: false)
         } catch {
             throw NativeError(message: "Gemini request timed out or could not reach Google.", retryable: true)
         }

@@ -1,4 +1,4 @@
-import { performanceFetch, recordPerformance, diagnosticTextBytes } from "./performance-diagnostics";
+import { performanceFetch, recordPerformance } from "./performance-diagnostics";
 import { ValidationDiagnostics, type ValidationDiagnostic } from "./validation-diagnostics";
 import { nextOutputCapacity, truncatedOutputFloor, MAX_OUTPUT_CAPACITY } from "./output-capacity";
 import { buildPrompt, buildLearningPrompt, buildFactCardPrompt, buildSearchInterpretationPrompt } from "./prompts";
@@ -35,6 +35,10 @@ const MAX_CONCURRENT_GEMINI_REQUESTS = 1;
 const MAX_CANDIDATE_RETRIES = 3;
 const MAX_CARDS_PER_GROUP = MAX_FACTS_PER_BATCH;
 const MAX_GROUNDING_CONTEXT_CHARS = 48_000;
+const GEMINI_RESPONSE_MIN_BYTES = 512 * 1024;
+const GEMINI_RESPONSE_FIXED_MARGIN_BYTES = 256 * 1024;
+const GEMINI_RESPONSE_BYTES_PER_TOKEN = 64;
+const GEMINI_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 const responseSchemaCache = new ImmutableSchemaCache(16);
 export const REQUIRED_WORKING_MODELS = 2;
 
@@ -322,7 +326,13 @@ async function withRequestQueue<T>(pool: ModelPool, signal: AbortSignal | undefi
   });
 }
 
-export async function readEventStream(response: Response, onTextChunk?: (text: string) => void) {
+export async function readEventStream(response: Response, onTextChunk?: (text: string) => void, maximumBytes = geminiResponseByteLimit(4096)) {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    try { void response.body?.cancel().catch(() => {}); } catch { /* Response cleanup is best-effort. */ }
+    recordPerformance("gemini", "response_bytes_read", 0);
+    throw oversizedGeminiResponse(maximumBytes, response.status);
+  }
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -360,6 +370,7 @@ export async function readEventStream(response: Response, onTextChunk?: (text: s
         reachedEnd = true;
         break;
       }
+      if (value.byteLength > maximumBytes - receivedBytes) throw oversizedGeminiResponse(maximumBytes, response.status);
       receivedBytes += value.byteLength;
       buffer += decoder.decode(value, { stream: true });
       let newline = buffer.indexOf("\n");
@@ -388,7 +399,59 @@ export async function readEventStream(response: Response, onTextChunk?: (text: s
   }
 }
 
-async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, timeoutMs: number, externalSignal?: AbortSignal, onTextChunk?: (text: string) => void) {
+function geminiResponseByteLimit(maxOutputTokens: number) {
+  const tokens = Number.isFinite(maxOutputTokens) ? Math.max(0, Math.floor(maxOutputTokens)) : 4096;
+  return Math.min(GEMINI_RESPONSE_MAX_BYTES, Math.max(GEMINI_RESPONSE_MIN_BYTES, GEMINI_RESPONSE_FIXED_MARGIN_BYTES + tokens * GEMINI_RESPONSE_BYTES_PER_TOKEN));
+}
+
+function oversizedGeminiResponse(maximumBytes: number, status?: number) {
+  return new GeminiFailure(`Gemini response exceeded the ${Math.ceil(maximumBytes / 1024)} KiB safety limit.`, status, [], undefined, true);
+}
+
+async function readBoundedResponseText(response: Response, maximumBytes: number) {
+  const body = response.body;
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    try { void body?.cancel().catch(() => {}); } catch { /* Response cleanup is best-effort. */ }
+    recordPerformance("gemini", "response_bytes_read", 0);
+    throw oversizedGeminiResponse(maximumBytes, response.status);
+  }
+  if (!body) {
+    recordPerformance("gemini", "response_bytes_read", 0);
+    return "";
+  }
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let receivedBytes = 0;
+  let reachedEnd = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        reachedEnd = true;
+        break;
+      }
+      if (value.byteLength > maximumBytes - receivedBytes) throw oversizedGeminiResponse(maximumBytes, response.status);
+      receivedBytes += value.byteLength;
+      parts.push(decoder.decode(value, { stream: true }));
+    }
+    parts.push(decoder.decode());
+    return parts.join("");
+  } finally {
+    try {
+      if (!reachedEnd) void reader.cancel().catch(() => {});
+    } catch {
+      // Keep the original size, read, or cancellation error.
+    } finally {
+      try { reader.releaseLock(); }
+      finally { recordPerformance("gemini", "response_bytes_read", receivedBytes); }
+    }
+  }
+}
+
+async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, timeoutMs: number, externalSignal?: AbortSignal, onTextChunk?: (text: string) => void, maximumBytes = geminiResponseByteLimit(4096)) {
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -401,11 +464,10 @@ async function fetchResponseText(input: RequestInfo | URL, init: RequestInit, ti
     if (externalSignal?.aborted) throw abortError();
     const response = await performanceFetch("gemini", input, { ...init, signal: controller.signal });
     if (onTextChunk && response.ok && response.body) {
-      const streamed = await readEventStream(response, onTextChunk);
+      const streamed = await readEventStream(response, onTextChunk, maximumBytes);
       return { response, raw: streamed.text, resolvedModel: streamed.resolvedModel, finishReason: streamed.finishReason, streamed: true };
     }
-    const raw = await response.text();
-    recordPerformance("gemini", "response_bytes_read", diagnosticTextBytes(raw));
+    const raw = await readBoundedResponseText(response, maximumBytes);
     return { response, raw, resolvedModel: undefined, finishReason: undefined, streamed: false };
   } catch (error) {
     if (externalSignal?.aborted) throw abortError();
@@ -430,7 +492,7 @@ async function requestModelText(apiKey: string, model: string, prompt: string, r
     method: "POST",
     headers: { "Content-Type": "application/json", accept: onTextChunk ? "text/event-stream" : "application/json", "x-goog-api-key": apiKey },
     body: serializedBody ?? serializeModelRequestBody(prompt, responseSchema, maxOutputTokens)
-  }, timeoutMs, signal, onTextChunk);
+  }, timeoutMs, signal, onTextChunk, geminiResponseByteLimit(maxOutputTokens));
   if (!response.ok) {
     let payload: unknown = {};
     try { payload = JSON.parse(stripResponseBom(raw)); } catch { /* Keep the HTTP status as the primary signal. */ }
