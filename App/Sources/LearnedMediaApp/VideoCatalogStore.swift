@@ -4,6 +4,7 @@ import CryptoKit
 /// Immutable batches plus an atomic manifest preserve the usable library if a
 /// refresh stops before all changed records have been written.
 actor VideoCatalogStore {
+    private static let orphanBatchMinimumAge: TimeInterval = 15 * 60
     private let files = FileManager.default
     private let applicationSupportRoot: URL?
     private var cached: [String: Any]?
@@ -83,12 +84,29 @@ actor VideoCatalogStore {
     func load() throws -> Any {
         if let cached { return cached }
         let manifest = try manifestURL()
-        for url in [manifest, manifest.appendingPathExtension("backup")] where files.fileExists(atPath: url.path) {
-            guard let data = try? Data(contentsOf: url), let (catalog, refs, digests) = try? readManifest(data) else { continue }
-            cached = catalog
-            cachedVideosByID = indexVideos(catalog["videos"] as? [[String: Any]] ?? [])
-            references = refs; batchDigests = digests; manifestData = data
-            return catalog
+        let candidates = [manifest, manifest.appendingPathExtension("backup")]
+        var validManifests: [(data: Data, catalog: [String: Any], refs: [String: String], digests: [String: String])] = []
+        var referencedBatches = Set<String>()
+        var allExistingManifestsValid = true
+        for url in candidates where files.fileExists(atPath: url.path) {
+            guard let data = try? Data(contentsOf: url), let (catalog, refs, digests) = try? readManifest(data) else {
+                allExistingManifestsValid = false
+                continue
+            }
+            referencedBatches.formUnion(refs.values)
+            validManifests.append((data, catalog, refs, digests))
+        }
+        // Never guess at reachability when either recovery manifest is corrupt.
+        // Missing manifests are valid absences; any present one must validate.
+        if allExistingManifestsValid {
+            removeOrphanedBatches(referenced: referencedBatches,
+                modifiedBefore: Date().addingTimeInterval(-Self.orphanBatchMinimumAge))
+        }
+        if let selected = validManifests.first {
+            cached = selected.catalog
+            cachedVideosByID = indexVideos(selected.catalog["videos"] as? [[String: Any]] ?? [])
+            references = selected.refs; batchDigests = selected.digests; manifestData = selected.data
+            return selected.catalog
         }
         // Legacy files remain recovery copies until the new manifest commits.
         let legacy = try root().appendingPathComponent("youtube-catalog.json")
@@ -158,9 +176,10 @@ actor VideoCatalogStore {
             }
         }
         references = nextRefs; batchDigests = nextDigests; manifestData = data
-        if let stored = try? files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-            for url in stored where validBatchName(url.lastPathComponent) && !retained.contains(url.lastPathComponent) { try? files.removeItem(at: url) }
-        }
+        removeOrphanedBatches(referenced: retained,
+            // Both the just-published manifest and its recovery copy are known
+            // here, so retain the existing immediate post-commit cleanup.
+            modifiedBefore: .distantFuture)
     }
 
     private func sameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
@@ -183,6 +202,21 @@ actor VideoCatalogStore {
 
     private func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func removeOrphanedBatches(referenced: Set<String>, modifiedBefore cutoff: Date) {
+        guard let directory = try? batchFolder(),
+              let stored = try? files.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]) else { return }
+        for url in stored {
+            let name = url.lastPathComponent
+            guard validBatchName(name), !referenced.contains(name),
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate, modified < cutoff else { continue }
+            try? files.removeItem(at: url)
+        }
     }
 
     private func invalid() -> NSError {

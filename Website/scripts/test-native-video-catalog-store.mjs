@@ -169,6 +169,9 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
             try bytes.write(to: fixtureBatchFolder.appendingPathComponent(name))
         }
         let fixtureManifest = fixtureLibrary.appendingPathComponent("youtube-catalog-manifest-v1.json")
+        let startupOrphan = fixtureBatchFolder.appendingPathComponent("abandoned-startup.json")
+        try Data("{}".utf8).write(to: startupOrphan)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: startupOrphan.path)
         func writeFixtureManifest(_ entries: [[String]]) throws {
             let bytes = try JSONSerialization.data(withJSONObject: [
                 "storageVersion": 1,
@@ -192,6 +195,8 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
         let fixtureVideos = fixtureCatalog["videos"] as! [[String: Any]]
         precondition(fixtureVideos.map { $0["id"] as! String } == (0..<257).map { "fixture-video-\\($0)" },
             "Interleaved references to reused batch files preserve manifest ordering")
+        precondition(!FileManager.default.fileExists(atPath: startupOrphan.path),
+            "Startup cleanup removes an aged batch file unreferenced by valid manifests")
         precondition(fixtureEntries[0][1] == fixtureEntries[4][1] && fixtureEntries[0][1] != fixtureEntries[1][1],
             "The ordering fixture reuses each batch across many non-adjacent entries")
         try await fixtureStore.save(["catalogVersion": 1, "videos": fixtureVideos])
@@ -204,6 +209,13 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
             precondition(digest == sha256(bytes),
                 "Legacy batches are digested from their exact stored bytes during upgrade")
         }
+        let protectedOrphan = fixtureBatchFolder.appendingPathComponent("abandoned-invalid-backup.json")
+        try Data("{}".utf8).write(to: protectedOrphan)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: protectedOrphan.path)
+        try Data("not a manifest".utf8).write(to: fixtureManifest.appendingPathExtension("backup"))
+        _ = try await VideoCatalogStore(applicationSupportRoot: fixtureSupport).load()
+        precondition(FileManager.default.fileExists(atPath: protectedOrphan.path),
+            "Cleanup is skipped when either present manifest is invalid")
 
         let recoverySupport = support.appendingPathComponent("digest-recovery", isDirectory: true)
         let recoveryLibrary = recoverySupport.appendingPathComponent("Learned Media", isDirectory: true)
@@ -214,7 +226,19 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
         recoveryNew["title"] = "Primary batch is corrupted"
         try await recoveryStore.save(["catalogVersion": 1, "videos": [recoveryNew]])
         let recoveryManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: recoveryLibrary.appendingPathComponent("youtube-catalog-manifest-v1.json"))) as! [String: Any]
+        let recoveryBackupManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: recoveryLibrary.appendingPathComponent("youtube-catalog-manifest-v1.json.backup"))) as! [String: Any]
         let corruptReference = (recoveryManifest["entries"] as! [[String]])[0][1]
+        let backupReference = (recoveryBackupManifest["entries"] as! [[String]])[0][1]
+        precondition(corruptReference != backupReference, "The primary and backup manifests retain distinct immutable batches")
+        let recoveryOrphan = recoveryLibrary.appendingPathComponent("youtube-records-v1", isDirectory: true).appendingPathComponent("abandoned-both-manifests.json")
+        try Data("{}".utf8).write(to: recoveryOrphan)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: recoveryOrphan.path)
+        _ = try await VideoCatalogStore(applicationSupportRoot: recoverySupport).load()
+        precondition(FileManager.default.fileExists(atPath: recoveryLibrary.appendingPathComponent("youtube-records-v1", isDirectory: true).appendingPathComponent(corruptReference).path)
+            && FileManager.default.fileExists(atPath: recoveryLibrary.appendingPathComponent("youtube-records-v1", isDirectory: true).appendingPathComponent(backupReference).path),
+            "Startup cleanup retains batches referenced only by the backup as well as the primary")
+        precondition(!FileManager.default.fileExists(atPath: recoveryOrphan.path),
+            "Startup cleanup removes aged files absent from both valid manifests")
         let corruptURL = recoveryLibrary.appendingPathComponent("youtube-records-v1", isDirectory: true).appendingPathComponent(corruptReference)
         var corruptBytes = try Data(contentsOf: corruptURL)
         corruptBytes.append(0x20) // Still valid JSON; only the stored digest can detect this change.
