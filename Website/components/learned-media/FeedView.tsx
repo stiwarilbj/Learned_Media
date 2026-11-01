@@ -17,6 +17,8 @@ import { FactAngleControl } from "./FactAngleControl";
 import { Icon } from "./icons";
 import { TopicTree } from "./TopicTree";
 import { VirtualizedRows } from "./VirtualizedRows";
+import { useCardImagePriority } from "./useCardImagePriority";
+import type { CardImagePriority } from "@/lib/card-image-cache";
 
 type FeedViewProps = {
   workspaceId: string;
@@ -49,6 +51,7 @@ type FeedViewProps = {
   glossaryLoading: string | null;
   hasGeminiKey: boolean;
   onAction: (id: string, action: FactCardAction) => void;
+  onImagePriorityChange: (workspaceId: string, card: FactCardType, priority: CardImagePriority | null) => void;
   onLearnMore: (id: string) => void;
   onAskQuestion: (id: string, question: string, detailed: boolean, structure: AnswerStructure, structureRevision: number, instructionPreference: QuestionInstructionPreference, instructionRevision: number) => void;
   onQuestionDraft: (id: string, value: string) => void;
@@ -180,10 +183,12 @@ function TopicSidebar({ topics, query = "", catalogRevision, topicSearchIndex, c
   );
 }
 
-export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, factAngle, factAngleLocked, lastCompletedBatchSetup, repeatBatchPreview, repeatDisabledReason, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onQuestionInstructionPreference, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onEndFactBatch, onPrepareRepeat, onCancelRepeat, onConfirmRepeat, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+export function FeedView({ workspaceId, cards, showReset, query = "", catalogRevision, topicSearchIndex, settings, factAngle, factAngleLocked, lastCompletedBatchSetup, repeatBatchPreview, repeatDisabledReason, revealGradually, topics, customTopic, loading, canLoadMore, generationError, rabbitHole, topicDetour, topicDetourStatusNotice, toast, learnLoading, questionLoading, questionDrafts, learningErrors, adaptationLoading, glossaryLoading, hasGeminiKey, onAction, onImagePriorityChange, onLearnMore, onAskQuestion, onQuestionDraft, onQuestionDetailed, onQuestionStructure, onQuestionInstructionPreference, onAdaptExplanation, onExplainTerms, onCancelGlossary, onLocationsResolved, onOpenSettings, onReset, onRetry, onEndFactBatch, onPrepareRepeat, onCancelRepeat, onConfirmRepeat, onLoadMore, onThreeMore, onEndTopicDetour, onTopicDetourProgress, onSettingsChange, onFactAngleChange, onCustomTopicChange, onAddCustomTopic, onToggleTopic, onExpandTopic, onCollapseTopics, onWeightTopic, onRemoveCustomTopic }: FeedViewProps) {
+  const retainImageItems = useCardImagePriority(workspaceId, settings.displayMode, onImagePriorityChange);
   const handleRetainedItemsChange = useCallback((items: readonly FactCardType[]) => {
     retainCardToolWindow(workspaceId, items.map((card) => card.id));
-  }, [workspaceId]);
+    retainImageItems(items);
+  }, [retainImageItems, workspaceId]);
   const handleViewportRangeChange = useCallback((start: number) => {
     const lastDetourCardId = topicDetour?.slotCardIds[2];
     if (!topicDetour || !lastDetourCardId) return;

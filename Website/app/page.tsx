@@ -3,7 +3,7 @@
 import { createRecoveringSearchWorker, type SearchWorker } from "@/lib/worker-recovery";
 import { cardSearchText } from "@/lib/card-search-text";
 import { runBackgroundSlice } from "@/lib/background-work";
-import { decodedCardImageCache } from "@/lib/card-image-cache";
+import { decodedCardImageCache, type CardImagePriority } from "@/lib/card-image-cache";
 
 import dynamic from "next/dynamic";
 import { CardDownloadsProvider } from "@/components/learned-media/CardDownloads";
@@ -102,6 +102,14 @@ type ConfirmationRequest = {
   confirmLabel: string;
   action: () => void | Promise<void>;
 };
+
+const MAX_CONCURRENT_CARD_IMAGE_HYDRATIONS = 2;
+const MAX_CARD_IMAGE_ATTEMPT_KEYS = 512;
+
+function cardImageSourceKey(card: Pick<FactCard, "sources">) {
+  const source = card.sources?.[0];
+  return source ? source.canonicalUrl ?? source.url ?? source.title : "";
+}
 
 const compactStateCache = new WeakMap<PersistedState, PersistedState>();
 const compactRecordCache = new WeakMap<AppWorkspaceRecord, AppWorkspaceRecord>();
@@ -668,9 +676,13 @@ export default function HomePage() {
   currentQueryRef.current = query;
   const generationAbortController = useRef<AbortController | null>(null);
   const imageHydrationControllers = useRef(new Map<string, AbortController>());
-  const imageHydrationQueue = useRef<Array<{ card: FactCard; requestId: number; workspaceId: string; epoch: number }>>([]);
+  const imageHydrationActiveJobs = useRef(new Map<string, { card: FactCard; sourceKey: string; workspaceId: string; epoch: number; priority: CardImagePriority; order: number }>());
+  const imageHydrationAttempted = useRef(new Set<string>());
+  const imageHydrationAttemptOrder = useRef<string[]>([]);
+  const imageHydrationQueue = useRef<Array<{ card: FactCard; sourceKey: string; workspaceId: string; epoch: number; priority: CardImagePriority; order: number }>>([]);
+  const imageHydrationOrder = useRef(0);
   const imageHydrationEpoch = useRef(0);
-  const imageHydrationActive = useRef(false);
+  const imageHydrationDrainScheduled = useRef(false);
   const connectionAbortController = useRef<AbortController | null>(null);
   const learningAbortController = useRef<AbortController | null>(null);
   const questionAbortController = useRef<AbortController | null>(null);
@@ -785,42 +797,80 @@ export default function HomePage() {
     if (Math.abs(delta) > 1) root.scrollTop += delta;
   }, [cards, workspaceId]);
 
-  const enqueueImageHydration = useCallback((incoming: FactCard[], requestId: number, workspaceId: string) => {
-    const imageCards = incoming.filter(card => (card.displayModeOverride ?? displayModeRef.current) === "picture-text");
-    if (!imageCards.length) return;
-    const epoch = imageHydrationEpoch.current;
-    imageCards.forEach(card => {
-      if (!card.sources?.[0] || card.image || imageHydrationControllers.current.has(card.id) || imageHydrationQueue.current.some(job => job.card.id === card.id)) return;
-      imageHydrationQueue.current.push({ card, requestId, workspaceId, epoch });
-    });
-    if (imageHydrationActive.current) return;
-    imageHydrationActive.current = true;
-    void (async () => {
-      try {
-        while (imageHydrationQueue.current.length) {
-          const job = imageHydrationQueue.current.shift()!;
-          if (job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || (job.card.displayModeOverride ?? displayModeRef.current) !== "picture-text") continue;
-          const controller = new AbortController();
-          imageHydrationControllers.current.set(job.card.id, controller);
-          try {
-            const image = await resolveWikipediaImage(job.card.sources[0], controller.signal);
-            if (!image || controller.signal.aborted || job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || (job.card.displayModeOverride ?? displayModeRef.current) !== "picture-text") continue;
-            await runBackgroundSlice(() => {
-              if (controller.signal.aborted || job.epoch !== imageHydrationEpoch.current || job.requestId !== requestGeneration.current || job.workspaceId !== workspaceIdRef.current || (job.card.displayModeOverride ?? displayModeRef.current) !== "picture-text") return;
-              setCards(current => current.some(item => item.id === job.card.id) ? current.map(item => item.id === job.card.id ? { ...item, image } : item) : current);
-            }, { priority: "visible", canPause: true, signal: controller.signal });
-          } catch {
-            // Images are optional and do not affect verified text cards.
-          } finally {
-            if (imageHydrationControllers.current.get(job.card.id) === controller) imageHydrationControllers.current.delete(job.card.id);
-          }
-        }
-      } finally {
-        imageHydrationActive.current = false;
-        if (imageHydrationQueue.current.length) enqueueImageHydration([], requestGeneration.current, workspaceIdRef.current);
+  const drainImageHydrationQueue = useCallback(() => {
+    const isCurrent = (job: { card: FactCard; sourceKey: string; workspaceId: string; epoch: number }, controller: AbortController) => {
+      const current = cardsRef.current.find(item => item.id === job.card.id);
+      return !controller.signal.aborted
+        && job.epoch === imageHydrationEpoch.current
+        && job.workspaceId === workspaceIdRef.current
+        && (current?.displayModeOverride ?? displayModeRef.current) === "picture-text"
+        && !!current && !current.image && cardImageSourceKey(current) === job.sourceKey;
+    };
+    const queue = imageHydrationQueue.current;
+    while (imageHydrationControllers.current.size < MAX_CONCURRENT_CARD_IMAGE_HYDRATIONS && queue.length) {
+      queue.sort((left, right) => (left.priority === "visible" ? 0 : 1) - (right.priority === "visible" ? 0 : 1) || left.order - right.order);
+      const job = queue.shift()!;
+      if (job.epoch !== imageHydrationEpoch.current || job.workspaceId !== workspaceIdRef.current) continue;
+      const current = cardsRef.current.find(item => item.id === job.card.id);
+      if (!current || current.image || cardImageSourceKey(current) !== job.sourceKey || (current.displayModeOverride ?? displayModeRef.current) !== "picture-text") continue;
+      const controller = new AbortController();
+      imageHydrationControllers.current.set(job.card.id, controller);
+      imageHydrationActiveJobs.current.set(job.card.id, job);
+      const attemptKey = `${job.card.id}\u0000${job.sourceKey}`;
+      imageHydrationAttempted.current.add(attemptKey);
+      imageHydrationAttemptOrder.current.push(attemptKey);
+      while (imageHydrationAttemptOrder.current.length > MAX_CARD_IMAGE_ATTEMPT_KEYS) {
+        const expiredKey = imageHydrationAttemptOrder.current.shift()!;
+        imageHydrationAttempted.current.delete(expiredKey);
       }
-    })();
+      void (async () => {
+        try {
+          const liveCard = cardsRef.current.find(item => item.id === job.card.id);
+          const source = liveCard?.sources?.[0];
+          if (!source || !isCurrent(job, controller)) return;
+          const image = await resolveWikipediaImage(source, controller.signal);
+          if (!image || !isCurrent(job, controller)) return;
+          await runBackgroundSlice(() => {
+            if (!isCurrent(job, controller)) return;
+            setCards(cards => cards.some(item => item.id === job.card.id && !item.image && cardImageSourceKey(item) === job.sourceKey)
+              ? cards.map(item => item.id === job.card.id && !item.image && cardImageSourceKey(item) === job.sourceKey ? { ...item, image } : item)
+              : cards);
+          }, { priority: job.priority === "visible" ? "visible" : "background", canPause: true, signal: controller.signal });
+        } catch {
+          // Images are optional and do not affect verified text cards.
+        } finally {
+          if (imageHydrationControllers.current.get(job.card.id) === controller) imageHydrationControllers.current.delete(job.card.id);
+          if (imageHydrationActiveJobs.current.get(job.card.id) === job) imageHydrationActiveJobs.current.delete(job.card.id);
+          void drainImageHydrationQueue();
+        }
+      })();
+    }
   }, []);
+
+  const updateCardImagePriority = useCallback((cardWorkspaceId: string, card: FactCard, priority: CardImagePriority | null) => {
+    const queue = imageHydrationQueue.current;
+    const queuedIndex = queue.findIndex(job => job.workspaceId === cardWorkspaceId && job.card.id === card.id);
+    const sourceKey = cardImageSourceKey(card);
+    if (!priority || (card.displayModeOverride ?? displayModeRef.current) !== "picture-text" || card.image || !card.sources?.[0] || workspaceIdRef.current !== cardWorkspaceId || cardWorkspaceId !== workspaceId) {
+      if (queuedIndex >= 0) queue.splice(queuedIndex, 1);
+      return;
+    }
+    const activeJob = imageHydrationActiveJobs.current.get(card.id);
+    if (activeJob?.sourceKey === sourceKey) { activeJob.priority = priority; return; }
+    if (imageHydrationAttempted.current.has(`${card.id}\u0000${sourceKey}`)) return;
+    if (queuedIndex >= 0) {
+      queue[queuedIndex] = { ...queue[queuedIndex], card, sourceKey, priority, workspaceId, epoch: imageHydrationEpoch.current };
+    } else {
+      queue.push({ card, sourceKey, priority, workspaceId, epoch: imageHydrationEpoch.current, order: imageHydrationOrder.current++ });
+    }
+    if (!imageHydrationDrainScheduled.current) {
+      imageHydrationDrainScheduled.current = true;
+      queueMicrotask(() => {
+        imageHydrationDrainScheduled.current = false;
+        drainImageHydrationQueue();
+      });
+    }
+  }, [drainImageHydrationQueue, workspaceId]);
 
   const cancelGeneration = useCallback(() => {
     generationAbortController.current?.abort();
@@ -857,6 +907,9 @@ export default function HomePage() {
     globalSearchAbortController.current?.abort();
     imageHydrationControllers.current.forEach(controller => controller.abort());
     imageHydrationControllers.current.clear();
+    imageHydrationActiveJobs.current.clear();
+    imageHydrationAttempted.current.clear();
+    imageHydrationAttemptOrder.current = [];
     imageHydrationEpoch.current += 1;
     imageHydrationQueue.current = [];
     requestGeneration.current += 1;
@@ -1209,13 +1262,11 @@ export default function HomePage() {
       imageHydrationQueue.current = [];
       imageHydrationControllers.current.forEach(controller => controller.abort());
       imageHydrationControllers.current.clear();
+      imageHydrationActiveJobs.current.clear();
+      imageHydrationAttempted.current.clear();
+      imageHydrationAttemptOrder.current = [];
     }
   }, [cards, settings.displayMode]);
-
-  useEffect(() => {
-    const imageCards = cardsRef.current.filter(card => (card.displayModeOverride ?? settings.displayMode) === "picture-text");
-    if (imageCards.length) enqueueImageHydration(imageCards, requestGeneration.current, workspaceId);
-  }, [enqueueImageHydration, settings.displayMode, workspaceId]);
 
   useEffect(() => {
     let active = true;
@@ -1981,8 +2032,9 @@ export default function HomePage() {
         imageHydrationQueue.current = [];
         imageHydrationControllers.current.forEach(controller => controller.abort());
         imageHydrationControllers.current.clear();
-      } else if (next.displayMode === "picture-text") {
-        enqueueImageHydration(cardsWithoutOverrides, requestGeneration.current, workspaceIdRef.current);
+        imageHydrationActiveJobs.current.clear();
+        imageHydrationAttempted.current.clear();
+        imageHydrationAttemptOrder.current = [];
       }
     }
     setSettings((current) => ({ ...current, ...next, sentenceLength: nextSentenceLength }));
@@ -1990,7 +2042,7 @@ export default function HomePage() {
       const difficulty = normalizeDifficulty(next.obscurity);
       setLearningProfile((current) => resetTopicLearningProfiles(current, difficulty));
     }
-  }, [cards, enqueueImageHydration, settings.displayMode, settings.sentenceLength]);
+  }, [cards, settings.displayMode, settings.sentenceLength]);
 
   const handleGoogleSignIn = useCallback(() => {
     if (!supabaseConfigured) {
@@ -2360,7 +2412,6 @@ export default function HomePage() {
       setGenerationError(angleError(message));
       setToast(angleError(message));
     } finally {
-      if (!controller.signal.aborted && requestGeneration.current === requestId) enqueueImageHydration(Array.from(receivedCards.values()), requestId, imageWorkspaceId);
       if (generationAbortController.current === controller) {
         generationAbortController.current = null;
         activeGenerationDetourId.current = null;
@@ -2376,7 +2427,7 @@ export default function HomePage() {
         }
       }
     }
-  }, [account?.id, apiKey, enqueueImageHydration, geminiStatus, learningProfile, pendingSlots, rabbitHole, selectedCount, setSelectedFactAngle, settings, topics, updateActiveFactBatch, updateLastCompletedBatchSetup, updateTopicDetour]);
+  }, [account?.id, apiKey, geminiStatus, learningProfile, pendingSlots, rabbitHole, selectedCount, setSelectedFactAngle, settings, topics, updateActiveFactBatch, updateLastCompletedBatchSetup, updateTopicDetour]);
   startFeedRef.current = startFeed;
 
   const prepareRepeatBatch = useCallback(() => {
@@ -3706,10 +3757,10 @@ export default function HomePage() {
         onResumeImport={() => void connectYouTube()}
         onRetryImport={() => void connectYouTube()}
       />;
-    if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onThreeMore={startTopicDetour} />;
+    if (view === "saved" || view === "likes" || view === "history") return <CollectionView kind={view} workspaceId={workspaceId} cards={collectionCards} displayMode={settings.displayMode} revealGradually={revealGradually} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onImagePriorityChange={updateCardImagePriority} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onThreeMore={startTopicDetour} />;
     if (view === "settings") return <SettingsView apiKey={apiKey} onApiKeyChange={handleApiKeyChange} status={geminiStatus} feedback={toast} modelChecks={modelChecks} modelChecking={modelChecking} onTestConnection={testConnection} onRemoveKey={() => { handleApiKeyChange(""); setToast("Remembered key removed."); }} theme={theme} onThemeChange={setTheme} revealGradually={revealGradually} onRevealGraduallyChange={setRevealGraduallyPreference} onResetAll={resetAllPreferences} onDeleteLearningData={deleteLearningData} onGoogleSignIn={handleGoogleSignIn} onGoogleSignOut={handleGoogleSignOut} account={account} syncStatus={syncStatus === "synced" && keySyncStatus === "syncing" ? "syncing" : syncStatus === "synced" && keySyncStatus === "error" ? "error" : syncStatus} syncError={[syncError, keySyncError].filter(Boolean).join(" ")} youtubeKey={youtubeKey} youtubeStatus={youtubeStatus} youtubeLastSyncAt={youtubeWorkspace.lastSyncAt} prioritizeRecentByChannel={youtubeWorkspace.prioritizeRecentByChannel} onYoutubeKeyChange={handleYouTubeKeyChange} onYoutubeRecentBiasChange={setYouTubeRecentBias} onConnectYoutube={() => void connectYouTube()} onRefreshYoutube={() => void connectYouTube(true)} onRemoveYoutubeKey={removeYouTubeKey} onPauseYoutubeImport={pauseYouTubeImport} onResumeYoutubeImport={() => void connectYouTube()} onRetryYoutubeImport={() => void connectYouTube()} workspaceName={workspaceName} cards={cards} />;
     if (!feedStarted) return <SetupWorkspace topics={topics} query={query} catalogRevision={catalogRevision} searchIndex={topicTreeSearchIndex} onQueryChange={setQuery} settings={settings} factAngle={selectedFactAngle} onFactAngleChange={setSelectedFactAngle} customTopic={customTopic} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} onSettingsChange={updateSettings} onResetTopics={resetTopics} onStart={() => void startFeed()} onOpenSettings={() => setView("settings")} canStart={geminiStatus === "connected"} hasGeminiKey={!keysHydrated || Boolean(apiKey.trim())} />;
-    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} factAngle={activeFactBatch?.setup.factAngle ?? selectedFactAngle} factAngleLocked={Boolean(activeFactBatch)} lastCompletedBatchSetup={lastCompletedBatchSetup} repeatBatchPreview={repeatBatchPreview} repeatDisabledReason={loading || activeFactBatch || topicDetour ? "Finish or end the current batch or topic detour before repeating." : undefined} onPrepareRepeat={prepareRepeatBatch} onCancelRepeat={() => setRepeatBatchPreview(null)} onConfirmRepeat={confirmRepeatBatch} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onEndFactBatch={endFactBatch} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onFactAngleChange={setSelectedFactAngle} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
+    return <FeedView workspaceId={workspaceId} cards={filteredCards} showReset={cards.length > 0 || loading} query={query} catalogRevision={catalogRevision} topicSearchIndex={topicTreeSearchIndex} settings={settings} factAngle={activeFactBatch?.setup.factAngle ?? selectedFactAngle} factAngleLocked={Boolean(activeFactBatch)} lastCompletedBatchSetup={lastCompletedBatchSetup} repeatBatchPreview={repeatBatchPreview} repeatDisabledReason={loading || activeFactBatch || topicDetour ? "Finish or end the current batch or topic detour before repeating." : undefined} onPrepareRepeat={prepareRepeatBatch} onCancelRepeat={() => setRepeatBatchPreview(null)} onConfirmRepeat={confirmRepeatBatch} revealGradually={revealGradually} topics={topics} customTopic={customTopic} loading={loading} canLoadMore={feedHasMore && selectedCount > 0} generationError={generationError} rabbitHole={rabbitHole} topicDetour={topicDetour} topicDetourStatusNotice={topicDetourStatusNotice} toast={toast} learnLoading={learnLoading} questionLoading={questionLoading} questionDrafts={questionDrafts} learningErrors={learningErrors} adaptationLoading={adaptationLoading} glossaryLoading={glossaryLoading} hasGeminiKey={Boolean(apiKey.trim())} onAction={handleCardAction} onImagePriorityChange={updateCardImagePriority} onLearnMore={learnMore} onAskQuestion={askQuestion} onQuestionDraft={updateQuestionDraft} onQuestionDetailed={updateQuestionDetailPreference} onQuestionStructure={updateQuestionStructure} onQuestionInstructionPreference={updateQuestionInstructionPreference} onAdaptExplanation={adaptCardExplanation} onExplainTerms={explainCardTerms} onCancelGlossary={cancelCardGlossary} onLocationsResolved={saveCardLocations} onOpenSettings={() => setView("settings")} onReset={resetFeed} onRetry={retryGeneration} onEndFactBatch={endFactBatch} onLoadMore={loadMoreGeneration} onThreeMore={startTopicDetour} onEndTopicDetour={endTopicDetour} onTopicDetourProgress={handleTopicDetourProgress} onSettingsChange={updateSettings} onFactAngleChange={setSelectedFactAngle} onCustomTopicChange={setCustomTopic} onAddCustomTopic={addCustomTopic} onToggleTopic={handleToggleTopic} onExpandTopic={handleExpandTopic} onCollapseTopics={handleCollapseTopics} onWeightTopic={handleWeightTopic} onRemoveCustomTopic={removeCustomTopic} />;
   };
 
   const topicSuggestions = localTopicSuggestions;
