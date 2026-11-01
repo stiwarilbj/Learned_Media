@@ -67,7 +67,7 @@ function loadWorker(filename, { observeMaps = false, searchOverride, searchModul
   };
   const inspection = filename === "workers/youtube-search.worker.ts"
     ? "\nself.inspectCatalog = () => snapshot; self.inspectSearchSessions = () => ({ size: searchSessionCache.size, bytes: searchSessionCache.approximateBytes, items: Array.from(searchSessionCache.entries.values(), entry => entry.value) }); self.inspectSearchCaches = () => ({ results: resultCache.size, sessions: searchSessionCache.size, prepared: preparedSearchCache.size }); self.inspectSearchState = () => ({ latestRequestId, activeRequestId });"
-    : filename === "workers/card-search.worker.ts" ? "\nself.inspectCardDocuments = () => documents;" : "";
+    : filename === "workers/card-search.worker.ts" ? "\nself.inspectCardDocuments = () => documents; self.inspectCardSearchIndex = () => ({ words: wordDocuments, prefixes: prefixWords, fuzzy: fuzzyWords, trigrams: trigramDocuments, documents: documentWords, longTokenLengths: longFuzzyTokenCounts });" : "";
   new Function("require", "module", "exports", "self", "setTimeout", "Map", "performance", source + inspection)(workerImport, module, module.exports, scope, workerSetTimeout, observeMaps ? ObservedMap : Map, { now: performanceNow });
   return { scope, messages, workerMaps, get workerYieldCount() { return workerYieldCount; } };
 }
@@ -114,8 +114,8 @@ function loadNativeCardWorker() {
   };
   context.globalThis = context;
   const source = readFileSync(path.join(root, "..", "App", "Resources", "frontend", "card-search.worker.js"), "utf8");
-  vm.runInNewContext(source + "\nglobalThis.inspectCardDocuments = () => documents;", context);
-  return { messages, context, documents: () => context.inspectCardDocuments(), send: (data) => context.self.onmessage({ data }) };
+  vm.runInNewContext(source + "\nglobalThis.inspectCardDocuments = () => documents; globalThis.inspectCardSearchIndex = () => ({ words: wordDocuments, prefixes: prefixWords, fuzzy: fuzzyWords, trigrams: trigramDocuments, documents: documentWords, longTokenLengths: longFuzzyTokenCounts });", context);
+  return { messages, context, documents: () => context.inspectCardDocuments(), index: () => context.inspectCardSearchIndex(), send: (data) => context.self.onmessage({ data }) };
 }
 
 async function waitForMessage(messages, predicate, timeoutMs = 8000) {
@@ -425,8 +425,8 @@ test("card workers cache normalized document tokens and reuse one query token li
     }
   });
   const fixtures = [
-    { name: "website", load: () => loadWorker("workers/card-search.worker.ts", { searchModuleOverride }), send: (worker, data) => worker.scope.onmessage({ data }), messages: (worker) => worker.messages, documents: (worker) => worker.scope.inspectCardDocuments() },
-    { name: "Mac", load: loadNativeCardWorker, send: (worker, data) => worker.send(data), messages: (worker) => worker.messages, documents: (worker) => worker.documents() }
+    { name: "website", load: () => loadWorker("workers/card-search.worker.ts", { searchModuleOverride }), send: (worker, data) => worker.scope.onmessage({ data }), messages: (worker) => worker.messages, documents: (worker) => worker.scope.inspectCardDocuments(), index: (worker) => worker.scope.inspectCardSearchIndex() },
+    { name: "Mac", load: loadNativeCardWorker, send: (worker, data) => worker.send(data), messages: (worker) => worker.messages, documents: (worker) => worker.documents(), index: (worker) => worker.index() }
   ];
 
   for (const fixture of fixtures) {
@@ -441,6 +441,10 @@ test("card workers cache normalized document tokens and reuse one query token li
       }, `${fixture.name} stores normalized text and matching document tokens together`);
     }
     const unchangedTokens = indexed.get("repeated").tokens;
+    const searchIndex = fixture.index(worker);
+    assert.ok(searchIndex.words.get("astronomy").has("repeated"), `${fixture.name} indexes words to document IDs`);
+    assert.ok(searchIndex.prefixes.get("astro").has("astronomy"), `${fixture.name} indexes searchable prefixes`);
+    assert.ok(searchIndex.fuzzy.size > 0, `${fixture.name} indexes vocabulary deletion signatures for fuzzy matches`);
     const eligibility = ["repeated", "punctuation", "reversed", "unrelated"];
     fixture.send(worker, { type: "register-eligibility", revision: 0, eligibilityScope: `${fixture.name}/feed`, eligibilityRevision: 1, ids: eligibility });
     fixture.send(worker, { type: "search", requestId: 31, revision: 0, query: "astronomy galaxies", eligibilityScope: `${fixture.name}/feed`, eligibilityRevision: 1, viewKey: "initial" });
@@ -450,7 +454,7 @@ test("card workers cache normalized document tokens and reuse one query token li
 
     if (fixture.name === "website") {
       assert.equal(queryTokenizations, 1, "the website worker tokenizes the query once for the whole search");
-      assert.equal(scoreCalls.length, sourceDocuments.length, "every eligible document is scored with the prepared tokens");
+      assert.ok(scoreCalls.length < sourceDocuments.length, "the index avoids scoring unrelated eligible documents");
       assert.ok(scoreCalls.every((call) => call.queryTokens === scoreCalls[0].queryTokens), "all document scores share one query token array");
       assert.ok(scoreCalls.every((call) => Array.isArray(call.textTokens)), "each score receives the document's indexed token array");
     }
@@ -458,6 +462,8 @@ test("card workers cache normalized document tokens and reuse one query token li
     fixture.send(worker, { type: "update", revision: 1, upserts: [{ id: "replacement", text: "  MANTLE, geology and minerals! " }], removeIds: ["reversed"] });
     const updatedIndex = fixture.documents(worker);
     assert.equal(updatedIndex.has("reversed"), false, `${fixture.name} removes deleted documents and their tokens`);
+    assert.equal(fixture.index(worker).words.get("galaxies")?.has("reversed") ?? false, false, `${fixture.name} removes deleted IDs from reverse postings`);
+    assert.ok(fixture.index(worker).words.get("minerals")?.has("replacement"), `${fixture.name} indexes changed documents`);
     assert.deepEqual(JSON.parse(JSON.stringify(updatedIndex.get("replacement"))), {
       normalizedText: "mantle geology and minerals",
       tokens: ["mantle", "geology", "and", "minerals"]
@@ -471,8 +477,71 @@ test("card workers cache normalized document tokens and reuse one query token li
     const updatedDocuments = sourceDocuments.filter((item) => item.id !== "reversed").concat({ id: "replacement", text: "  MANTLE, geology and minerals! " });
     const orderedUpdatedDocuments = nextEligibility.map((id) => updatedDocuments.find((item) => item.id === id)).filter(Boolean);
     assert.deepEqual(Array.from(updated.ids), rankSearchResults("mantle geology", orderedUpdatedDocuments, (item) => item.text).map((item) => item.id), `${fixture.name} searches updated documents with the same score and tie rules`);
+
+    fixture.send(worker, { type: "update", revision: 2, upserts: [{ id: "punctuation", text: "Nebula discoveries from a new telescope." }], removeIds: [] });
+    assert.equal(fixture.index(worker).words.get("astronomy")?.has("punctuation") ?? false, false, `${fixture.name} removes old terms when an existing document changes`);
+    assert.ok(fixture.index(worker).words.get("nebula")?.has("punctuation"), `${fixture.name} adds changed terms under the existing document ID`);
+    const finalEligibility = ["punctuation", "unrelated", "repeated"];
+    fixture.send(worker, { type: "register-eligibility", revision: 2, eligibilityScope: `${fixture.name}/feed`, eligibilityRevision: 3, ids: finalEligibility });
+    fixture.send(worker, { type: "search", requestId: 33, revision: 2, query: "nebula", eligibilityScope: `${fixture.name}/feed`, eligibilityRevision: 3, viewKey: "replaced-document" });
+    const replaced = await waitForMessage(fixture.messages(worker), (message) => message.type === "results" && message.requestId === 33);
+    assert.deepEqual(Array.from(replaced.ids), ["punctuation"], `${fixture.name} can find a replaced document without returning stale postings`);
   }
-  assert.equal(queryTokenizations, 2, "each distinct website search prepares query tokens once");
+  assert.equal(queryTokenizations, 3, "each distinct website search prepares query tokens once");
+});
+
+test("indexed card search preserves full-scan results for phrases, prefixes, fuzzy words, and conservative fallback", async () => {
+  const { rankSearchResults } = require("../lib/search.ts");
+  const documents = [
+    { id: "phrase", text: "An X-ray telescope observed a distant pulsar." },
+    { id: "prefix-longer", text: "Astronomical observations revealed a pulsar." },
+    { id: "prefix-shorter", text: "Astro is a short label for an observatory." },
+    { id: "one-edit", text: "The observatory discovered a distant pulsar." },
+    { id: "two-edits", text: "An observatory documented a rare supernova observation." },
+    { id: "punctuation", text: "A pulsar—observatory; astronomy." },
+    { id: "short-query", text: "An X-ray source found in space." },
+    { id: "long-token", text: `The ${"z".repeat(42)} catalog token is intentionally oversized.` },
+    { id: "unrelated", text: "Medieval poetry and architecture." }
+  ];
+  const fixtures = [
+    { name: "website", load: () => loadWorker("workers/card-search.worker.ts"), send: (worker, data) => worker.scope.onmessage({ data }), messages: (worker) => worker.messages },
+    { name: "Mac", load: loadNativeCardWorker, send: (worker, data) => worker.send(data), messages: (worker) => worker.messages }
+  ];
+  const queries = ["x-ray", "astro", "astronomical observaton", "observatoin", "observatory supernova", "a", "z".repeat(42)];
+
+  for (const fixture of fixtures) {
+    const worker = fixture.load();
+    fixture.send(worker, { type: "initialize", revision: 0, documents });
+    const eligibility = [...documents.map((document) => document.id), "one-edit"];
+    fixture.send(worker, { type: "register-eligibility", revision: 0, eligibilityScope: `${fixture.name}/indexed-fixtures`, eligibilityRevision: 1, ids: eligibility });
+    const expectedDocuments = eligibility.map((id) => documents.find((document) => document.id === id));
+    for (const [index, query] of queries.entries()) {
+      const requestId = 100 + index;
+      fixture.send(worker, { type: "search", requestId, revision: 0, query, eligibilityScope: `${fixture.name}/indexed-fixtures`, eligibilityRevision: 1, viewKey: query });
+      const reply = await waitForMessage(fixture.messages(worker), (message) => message.type === "results" && message.requestId === requestId);
+      const expected = rankSearchResults(query, expectedDocuments, (document) => document.text).map((document) => document.id);
+      assert.deepEqual(Array.from(reply.ids), expected, `${fixture.name} keeps current ranking for ${query}`);
+    }
+  }
+});
+
+test("card-search reverse postings avoid scoring unrelated documents in a large collection", async () => {
+  const { rankSearchResults } = require("../lib/search.ts");
+  const documents = Array.from({ length: 12_000 }, (_, index) => ({
+    id: `large-${index}`,
+    text: index % 997 === 0 ? `Astronomy telescope observation ${index}` : `Document ${index} covers unrelated geology and ecology.`
+  }));
+  let scored = 0;
+  const { searchScoreNormalized } = require("../lib/search.ts");
+  const worker = loadWorker("workers/card-search.worker.ts", {
+    searchModuleOverride: (search) => ({ ...search, searchScoreNormalized(...args) { scored += 1; return searchScoreNormalized(...args); } })
+  });
+  worker.scope.onmessage({ data: { type: "initialize", revision: 0, documents } });
+  worker.scope.onmessage({ data: { type: "register-eligibility", revision: 0, eligibilityScope: "large/feed", eligibilityRevision: 1, ids: documents.map((document) => document.id) } });
+  worker.scope.onmessage({ data: { type: "search", requestId: 501, revision: 0, query: "astronomy telescope", eligibilityScope: "large/feed", eligibilityRevision: 1, viewKey: "large" } });
+  const reply = await waitForMessage(worker.messages, (message) => message.type === "results" && message.requestId === 501);
+  assert.deepEqual(Array.from(reply.ids), rankSearchResults("astronomy telescope", documents, (document) => document.text).map((document) => document.id));
+  assert.ok(scored < documents.length / 100, `expected sparse search to score far fewer than ${documents.length} documents; scored ${scored}`);
 });
 
 test("website and native card workers keep rank order, reuse scoped eligibility revisions, and cancel obsolete searches", async () => {

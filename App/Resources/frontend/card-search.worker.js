@@ -539,16 +539,218 @@ const session_cache_1 = require("@/lib/session-cache");
 const search_1 = require("@/lib/search");
 const background_work_1 = require("@/lib/background-work");
 const workerScope = self;
+const MAX_INDEXED_FUZZY_TOKEN_LENGTH = 32;
 const documents = new Map();
+// Word postings narrow ordinary, prefix, and fuzzy matches without changing
+// the scoring function. Phrase postings preserve the scorer's substring fast
+// path, which can match across word boundaries.
+const wordDocuments = new Map();
+const prefixWords = new Map();
+const fuzzyWords = new Map();
+const trigramDocuments = new Map();
+const documentWords = new Map();
+const documentTrigrams = new Map();
+const wordUseCounts = new Map();
+const wordFuzzyKeys = new Map();
+const longFuzzyTokenCounts = new Map();
 const resultCache = new session_cache_1.SessionCache(100, 30 * 60 * 1000, 4 * 1024 * 1024);
 let activeEligibility = null;
 let revision = -1;
 let latestRequestId = 0;
-function addDocuments(items) {
-    for (const item of items) {
-        const normalizedText = (0, search_1.normalizeSearchText)(item.text);
-        documents.set(item.id, { normalizedText, tokens: (0, search_1.tokenizeSearchDocument)(normalizedText) });
+function addToIndex(index, key, value) {
+    let values = index.get(key);
+    if (!values)
+        index.set(key, values = new Set());
+    values.add(value);
+}
+function removeFromIndex(index, key, value) {
+    const values = index.get(key);
+    if (!values)
+        return;
+    values.delete(value);
+    if (!values.size)
+        index.delete(key);
+}
+function deletionSignatures(value, maxDeletes) {
+    const signatures = new Set([value]);
+    let frontier = [value];
+    for (let depth = 0; depth < maxDeletes && frontier.length; depth += 1) {
+        const next = [];
+        for (const current of frontier) {
+            for (let index = 0; index < current.length; index += 1) {
+                const signature = current.slice(0, index) + current.slice(index + 1);
+                if (!signatures.has(signature)) {
+                    signatures.add(signature);
+                    next.push(signature);
+                }
+            }
+        }
+        frontier = next;
     }
+    return [...signatures];
+}
+function trigrams(value) {
+    const result = new Set();
+    for (let index = 0; index <= value.length - 3; index += 1)
+        result.add(value.slice(index, index + 3));
+    return [...result];
+}
+function clearSearchIndex() {
+    documents.clear();
+    wordDocuments.clear();
+    prefixWords.clear();
+    fuzzyWords.clear();
+    trigramDocuments.clear();
+    documentWords.clear();
+    documentTrigrams.clear();
+    wordUseCounts.clear();
+    wordFuzzyKeys.clear();
+    longFuzzyTokenCounts.clear();
+}
+function removeDocument(id) {
+    if (!documents.has(id))
+        return;
+    documents.delete(id);
+    for (const word of documentWords.get(id) ?? []) {
+        removeFromIndex(wordDocuments, word, id);
+        const nextCount = (wordUseCounts.get(word) ?? 1) - 1;
+        if (nextCount > 0) {
+            wordUseCounts.set(word, nextCount);
+            continue;
+        }
+        wordUseCounts.delete(word);
+        for (let length = 1; length <= word.length; length += 1)
+            removeFromIndex(prefixWords, word.slice(0, length), word);
+        if (word.length > MAX_INDEXED_FUZZY_TOKEN_LENGTH) {
+            const remaining = (longFuzzyTokenCounts.get(word.length) ?? 1) - 1;
+            if (remaining > 0)
+                longFuzzyTokenCounts.set(word.length, remaining);
+            else
+                longFuzzyTokenCounts.delete(word.length);
+        }
+        else if (word.length >= 4) {
+            for (const key of wordFuzzyKeys.get(word) ?? [])
+                removeFromIndex(fuzzyWords, key, word);
+            wordFuzzyKeys.delete(word);
+        }
+    }
+    documentWords.delete(id);
+    for (const gram of documentTrigrams.get(id) ?? [])
+        removeFromIndex(trigramDocuments, gram, id);
+    documentTrigrams.delete(id);
+}
+function addDocument(item) {
+    removeDocument(item.id);
+    const normalizedText = (0, search_1.normalizeSearchText)(item.text);
+    const tokens = (0, search_1.tokenizeSearchDocument)(normalizedText);
+    documents.set(item.id, { normalizedText, tokens });
+    const words = [...new Set(tokens)];
+    documentWords.set(item.id, words);
+    for (const word of words) {
+        addToIndex(wordDocuments, word, item.id);
+        const count = wordUseCounts.get(word) ?? 0;
+        wordUseCounts.set(word, count + 1);
+        if (count > 0)
+            continue;
+        for (let length = 1; length <= word.length; length += 1)
+            addToIndex(prefixWords, word.slice(0, length), word);
+        if (word.length > MAX_INDEXED_FUZZY_TOKEN_LENGTH) {
+            longFuzzyTokenCounts.set(word.length, (longFuzzyTokenCounts.get(word.length) ?? 0) + 1);
+        }
+        else if (word.length >= 4) {
+            const keys = deletionSignatures(word, 2);
+            wordFuzzyKeys.set(word, keys);
+            for (const key of keys)
+                addToIndex(fuzzyWords, key, word);
+        }
+    }
+    const grams = trigrams(normalizedText);
+    documentTrigrams.set(item.id, grams);
+    for (const gram of grams)
+        addToIndex(trigramDocuments, gram, item.id);
+}
+function addDocuments(items) {
+    for (const item of items)
+        addDocument(item);
+}
+function candidatePostings(normalizedQuery, queryTokens) {
+    // Short queries can match arbitrary substrings that have no token index.
+    // Very long fuzzy words are deliberately not expanded into quadratic-sized
+    // deletion indexes; use the original full scan whenever they could matter.
+    if (normalizedQuery.length < 3 || queryTokens.length === 0)
+        return null;
+    const postings = new Set();
+    const addWord = (word) => {
+        const ids = wordDocuments.get(word);
+        if (ids)
+            postings.add(ids);
+    };
+    for (const queryToken of queryTokens) {
+        for (const word of prefixWords.get(queryToken) ?? [])
+            addWord(word);
+        addWord(queryToken);
+        for (let length = 1; length < queryToken.length; length += 1)
+            addWord(queryToken.slice(0, length));
+        if (queryToken.length >= 4) {
+            const threshold = queryToken.length >= 8 ? 2 : 1;
+            if (queryToken.length > MAX_INDEXED_FUZZY_TOKEN_LENGTH || [...longFuzzyTokenCounts.keys()].some(length => Math.abs(length - queryToken.length) <= threshold))
+                return null;
+            for (const signature of deletionSignatures(queryToken, threshold)) {
+                for (const word of fuzzyWords.get(signature) ?? [])
+                    addWord(word);
+            }
+        }
+    }
+    // Every exact phrase match contains each of its trigrams. Starting from the
+    // rarest one gives a lossless, usually much smaller substring candidate set.
+    let rarest;
+    let phrasePossible = true;
+    for (let index = 0; index <= normalizedQuery.length - 3; index += 1) {
+        const matches = trigramDocuments.get(normalizedQuery.slice(index, index + 3));
+        if (!matches) {
+            phrasePossible = false;
+            break;
+        }
+        if (!rarest || matches.size < rarest.size)
+            rarest = matches;
+    }
+    if (phrasePossible && rarest)
+        postings.add(rarest);
+    return [...postings];
+}
+async function collectCandidatePositions(postingSets, eligibility, requestId) {
+    const positions = new Set();
+    let postingIndex = 0;
+    let current = null;
+    while (postingIndex < postingSets.length) {
+        if (requestId !== latestRequestId || activeEligibility !== eligibility)
+            return null;
+        const startIndex = postingIndex;
+        const nextIndex = await (0, background_work_1.runBackgroundSlice)(() => {
+            let processed = 0;
+            const beganAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+            while (postingIndex < postingSets.length && processed < 400 && (typeof performance !== "undefined" ? performance.now() : Date.now()) - beganAt < 4) {
+                if (requestId !== latestRequestId || activeEligibility !== eligibility)
+                    return postingIndex;
+                current ??= postingSets[postingIndex].values();
+                const result = current.next();
+                if (result.done) {
+                    current = null;
+                    postingIndex += 1;
+                    continue;
+                }
+                for (const position of eligibility.positionsById.get(result.value) ?? [])
+                    positions.add(position);
+                processed += 1;
+            }
+            return postingIndex;
+        }, { priority: "interactive", canPause: true });
+        if (requestId !== latestRequestId || activeEligibility !== eligibility)
+            return null;
+        if (nextIndex < startIndex || nextIndex === startIndex && !current)
+            return null;
+    }
+    return [...positions];
 }
 function cacheResult(key, value) {
     resultCache.set(key, value);
@@ -570,23 +772,31 @@ async function search(request) {
         return;
     }
     const queryTokens = (0, search_1.tokenizeSearchQuery)(normalizedQuery);
+    const postingSets = candidatePostings(normalizedQuery, queryTokens);
+    const candidates = postingSets === null ? null : await collectCandidatePositions(postingSets, eligibility, request.requestId);
+    if (request.requestId !== latestRequestId || request.revision !== revision || activeEligibility !== eligibility)
+        return;
+    if (candidates === null && postingSets !== null)
+        return;
     const ranked = [];
-    for (let index = 0; index < eligibility.ids.length;) {
+    const candidateCount = candidates?.length ?? eligibility.ids.length;
+    for (let index = 0; index < candidateCount;) {
         if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
             return;
         const start = index;
         const next = await (0, background_work_1.runBackgroundSlice)(() => {
             let position = start;
             const beganAt = typeof performance !== "undefined" ? performance.now() : Date.now();
-            while (position < eligibility.ids.length && position - start < 400 && (typeof performance !== "undefined" ? performance.now() : Date.now()) - beganAt < 4) {
+            while (position < candidateCount && position - start < 400 && (typeof performance !== "undefined" ? performance.now() : Date.now()) - beganAt < 4) {
                 if (request.requestId !== latestRequestId || activeEligibility !== eligibility)
                     return position;
-                const id = eligibility.ids[position];
+                const originalPosition = candidates?.[position] ?? position;
+                const id = eligibility.ids[originalPosition];
                 const document = documents.get(id);
                 if (document !== undefined) {
                     const score = (0, search_1.searchScoreNormalized)(normalizedQuery, document.normalizedText, queryTokens, document.tokens);
                     if (score > 0)
-                        ranked.push({ id, index: position, score });
+                        ranked.push({ id, index: originalPosition, score });
                 }
                 position += 1;
             }
@@ -608,7 +818,7 @@ async function search(request) {
 workerScope.onmessage = (event) => {
     const request = event.data;
     if (request.type === "initialize") {
-        documents.clear();
+        clearSearchIndex();
         addDocuments(request.documents);
         revision = request.revision;
         latestRequestId = 0;
@@ -619,7 +829,7 @@ workerScope.onmessage = (event) => {
     else if (request.type === "update") {
         latestRequestId += 1;
         for (const id of request.removeIds)
-            documents.delete(id);
+            removeDocument(id);
         addDocuments(request.upserts);
         revision = request.revision;
         resultCache.clear();
@@ -629,7 +839,16 @@ workerScope.onmessage = (event) => {
             return;
         if (activeEligibility?.scope === request.eligibilityScope && activeEligibility.revision === request.eligibilityRevision)
             return;
-        activeEligibility = { scope: request.eligibilityScope, revision: request.eligibilityRevision, ids: request.ids.slice() };
+        const ids = request.ids.slice();
+        const positionsById = new Map();
+        ids.forEach((id, index) => {
+            const positions = positionsById.get(id);
+            if (positions)
+                positions.push(index);
+            else
+                positionsById.set(id, [index]);
+        });
+        activeEligibility = { scope: request.eligibilityScope, revision: request.eligibilityRevision, ids, positionsById };
         latestRequestId += 1;
     }
     else if (request.type === "cancel") {
