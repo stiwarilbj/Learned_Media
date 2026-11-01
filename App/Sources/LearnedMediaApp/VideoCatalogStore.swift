@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Immutable batches plus an atomic manifest preserve the usable library if a
 /// refresh stops before all changed records have been written.
@@ -8,6 +9,7 @@ actor VideoCatalogStore {
     private var cached: [String: Any]?
     private var cachedVideosByID: [String: [String: Any]]?
     private var references: [String: String] = [:]
+    private var batchDigests: [String: String] = [:]
     private var manifestData: Data?
     private let metadataKeys = ["channels", "sourceStates", "catalogVersion", "incomplete", "libraryIncomplete", "lastSyncAt"]
 
@@ -31,10 +33,22 @@ actor VideoCatalogStore {
         return indexed
     }
 
-    private func readManifest(_ data: Data) throws -> ([String: Any], [String: String]) {
+    private func readManifest(_ data: Data) throws -> ([String: Any], [String: String], [String: String]) {
         guard let manifest = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               manifest["storageVersion"] as? Int == 1, let entries = manifest["entries"] as? [[String]],
               entries.allSatisfy({ $0.count == 2 && validBatchName($0[1]) }) else { throw invalid() }
+        let referencedBatches = Set(entries.map { $0[1] })
+        let suppliedDigests: [String: String]?
+        if manifest.keys.contains("batchDigests") {
+            guard let digests = manifest["batchDigests"] as? [String: String],
+                  Set(digests.keys) == referencedBatches,
+                  digests.values.allSatisfy(validDigest) else { throw invalid() }
+            suppliedDigests = digests
+        } else {
+            // Manifests written before batch integrity checks remain readable;
+            // their file bytes are digested now and recorded on the next save.
+            suppliedDigests = nil
+        }
         let directory = try batchFolder()
         var entriesByBatch: [String: [(position: Int, id: String)]] = [:]
         var refs: [String: String] = [:]
@@ -49,8 +63,12 @@ actor VideoCatalogStore {
         // batch from many non-adjacent positions, so write each validated
         // record directly into its original slot before releasing that batch.
         var videos = Array(repeating: [String: Any](), count: entries.count)
+        var verifiedDigests: [String: String] = [:]
         for (name, batchEntries) in entriesByBatch {
             let batchData = try Data(contentsOf: directory.appendingPathComponent(name))
+            let digest = sha256(batchData)
+            if let expected = suppliedDigests?[name], expected != digest { throw invalid() }
+            verifiedDigests[name] = digest
             guard let batch = try JSONSerialization.jsonObject(with: batchData) as? [String: Any] else { throw invalid() }
             for entry in batchEntries {
                 guard let video = batch[entry.id] as? [String: Any], video["id"] as? String == entry.id else { throw invalid() }
@@ -59,17 +77,17 @@ actor VideoCatalogStore {
         }
         var catalog = manifest.filter { metadataKeys.contains($0.key) }
         catalog["videos"] = videos
-        return (catalog, refs)
+        return (catalog, refs, verifiedDigests)
     }
 
     func load() throws -> Any {
         if let cached { return cached }
         let manifest = try manifestURL()
         for url in [manifest, manifest.appendingPathExtension("backup")] where files.fileExists(atPath: url.path) {
-            guard let data = try? Data(contentsOf: url), let (catalog, refs) = try? readManifest(data) else { continue }
+            guard let data = try? Data(contentsOf: url), let (catalog, refs, digests) = try? readManifest(data) else { continue }
             cached = catalog
             cachedVideosByID = indexVideos(catalog["videos"] as? [[String: Any]] ?? [])
-            references = refs; manifestData = data
+            references = refs; batchDigests = digests; manifestData = data
             return catalog
         }
         // Legacy files remain recovery copies until the new manifest commits.
@@ -89,13 +107,17 @@ actor VideoCatalogStore {
         _ = try load()
         let directory = try batchFolder()
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
-        var entries: [[String]] = [], nextRefs: [String: String] = [:], changes: [[String: Any]] = []
+        var entries: [[String]] = [], nextRefs: [String: String] = [:], nextDigests: [String: String] = [:], changes: [[String: Any]] = []
         var seen = Set<String>(), cachedVideoMatches = 0
         for video in videos {
             guard let id = video["id"] as? String, !id.isEmpty, seen.insert(id).inserted else { throw invalid() }
             let previous = cachedVideosByID?[id]
             if previous != nil { cachedVideoMatches += 1 }
-            if let name = references[id], let previous, sameRecord(previous, video) { nextRefs[id] = name }
+            if let name = references[id], let previous, sameRecord(previous, video) {
+                guard let digest = batchDigests[name] else { throw invalid() }
+                nextRefs[id] = name
+                nextDigests[name] = digest
+            }
             else { changes.append(video) }
         }
         let removedIDs = cachedVideoMatches == cachedVideosByID?.count ? [] : cachedVideosByID?.keys.filter { !seen.contains($0) } ?? []
@@ -109,6 +131,7 @@ actor VideoCatalogStore {
             }
             let data = try JSONSerialization.data(withJSONObject: batch, options: [.sortedKeys])
             try data.write(to: directory.appendingPathComponent(name), options: [.atomic])
+            nextDigests[name] = sha256(data)
         }
         for video in videos {
             let id = video["id"] as! String
@@ -117,7 +140,7 @@ actor VideoCatalogStore {
         }
         let metadata = catalog.filter { metadataKeys.contains($0.key) }
         var manifest = metadata
-        manifest["storageVersion"] = 1; manifest["entries"] = entries
+        manifest["storageVersion"] = 1; manifest["entries"] = entries; manifest["batchDigests"] = nextDigests
         let data = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
         let target = try manifestURL()
         if let manifestData { try manifestData.write(to: target.appendingPathExtension("backup"), options: [.atomic]) }
@@ -134,7 +157,7 @@ actor VideoCatalogStore {
                 if let id = video["id"] as? String { cachedVideosByID?[id] = video }
             }
         }
-        references = nextRefs; manifestData = data
+        references = nextRefs; batchDigests = nextDigests; manifestData = data
         if let stored = try? files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
             for url in stored where validBatchName(url.lastPathComponent) && !retained.contains(url.lastPathComponent) { try? files.removeItem(at: url) }
         }
@@ -152,6 +175,14 @@ actor VideoCatalogStore {
 
     private func validBatchName(_ name: String) -> Bool {
         name.hasSuffix(".json") && name.count < 100 && !name.contains("/") && !name.contains("\\") && !name.contains("..")
+    }
+
+    private func validDigest(_ digest: String) -> Bool {
+        digest.utf8.count == 64 && digest.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    private func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private func invalid() -> NSError {

@@ -11,6 +11,11 @@ const binary = path.join(directory, "test-video-catalog-store");
 try {
   writeFileSync(path.join(directory, "Harness.swift"), `
 import Foundation
+import CryptoKit
+
+func sha256(_ bytes: Data) -> String {
+    SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+}
 
 func jsonClone(_ value: [String: Any]) throws -> [String: Any] {
     let bytes = try JSONSerialization.data(withJSONObject: value)
@@ -64,6 +69,10 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
         try await save(original)
         let originalReference = try batchReference()
         try requireBatch(fileCount: 1)
+        let originalManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: library.appendingPathComponent("youtube-catalog-manifest-v1.json"))) as! [String: Any]
+        let originalDigests = originalManifest["batchDigests"] as! [String: String]
+        let originalBatchBytes = try Data(contentsOf: batchFolder.appendingPathComponent(originalReference))
+        precondition(originalDigests[originalReference] == sha256(originalBatchBytes), "The manifest stores the SHA-256 digest of each immutable batch")
 
         let unchanged = try jsonClone(original)
         precondition(oldSameRecord(original, unchanged), "The old Foundation comparison should accept an unchanged nested record")
@@ -185,7 +194,39 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
             "Interleaved references to reused batch files preserve manifest ordering")
         precondition(fixtureEntries[0][1] == fixtureEntries[4][1] && fixtureEntries[0][1] != fixtureEntries[1][1],
             "The ordering fixture reuses each batch across many non-adjacent entries")
+        try await fixtureStore.save(["catalogVersion": 1, "videos": fixtureVideos])
+        let upgradedFixtureManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureManifest)) as! [String: Any]
+        let upgradedDigests = upgradedFixtureManifest["batchDigests"] as! [String: String]
+        precondition(Set(upgradedDigests.keys) == Set(fixtureEntries.map { $0[1] }),
+            "The next successful save upgrades a legacy manifest with a digest for every referenced batch")
+        for (name, digest) in upgradedDigests {
+            let bytes = try Data(contentsOf: fixtureBatchFolder.appendingPathComponent(name))
+            precondition(digest == sha256(bytes),
+                "Legacy batches are digested from their exact stored bytes during upgrade")
+        }
 
+        let recoverySupport = support.appendingPathComponent("digest-recovery", isDirectory: true)
+        let recoveryLibrary = recoverySupport.appendingPathComponent("Learned Media", isDirectory: true)
+        let recoveryStore = VideoCatalogStore(applicationSupportRoot: recoverySupport)
+        let recoveryOld: [String: Any] = ["id": "recovery-video", "title": "Backup remains intact"]
+        try await recoveryStore.save(["catalogVersion": 1, "videos": [recoveryOld]])
+        var recoveryNew = recoveryOld
+        recoveryNew["title"] = "Primary batch is corrupted"
+        try await recoveryStore.save(["catalogVersion": 1, "videos": [recoveryNew]])
+        let recoveryManifest = try JSONSerialization.jsonObject(with: Data(contentsOf: recoveryLibrary.appendingPathComponent("youtube-catalog-manifest-v1.json"))) as! [String: Any]
+        let corruptReference = (recoveryManifest["entries"] as! [[String]])[0][1]
+        let corruptURL = recoveryLibrary.appendingPathComponent("youtube-records-v1", isDirectory: true).appendingPathComponent(corruptReference)
+        var corruptBytes = try Data(contentsOf: corruptURL)
+        corruptBytes.append(0x20) // Still valid JSON; only the stored digest can detect this change.
+        try corruptBytes.write(to: corruptURL, options: [.atomic])
+        let recovered = try await VideoCatalogStore(applicationSupportRoot: recoverySupport).load() as! [String: Any]
+        let recoveredVideos = recovered["videos"] as! [[String: Any]]
+        precondition(recoveredVideos.first?["title"] as? String == "Backup remains intact",
+            "A digest mismatch rejects the primary manifest and recovers through its backup")
+
+        // Remove the valid legacy backup so the malformed-manifest assertions
+        // below test the primary in isolation rather than recovery behavior.
+        try? FileManager.default.removeItem(at: fixtureManifest.appendingPathExtension("backup"))
         var duplicateEntries = fixtureEntries
         duplicateEntries[1][0] = duplicateEntries[0][0]
         try writeFixtureManifest(duplicateEntries)
@@ -195,7 +236,7 @@ func oldSameRecord(_ left: [String: Any], _ right: [String: Any]) -> Bool {
         try writeFixtureManifest(missingRecordEntries)
         try await requireInvalidFixtureManifest()
 
-        print("Native video catalog comparison: record comparisons, failed commits, indexed updates/additions/removals, and one-batch-at-a-time manifest ordering and validation passed")
+        print("Native video catalog comparison: record comparisons, batch digests, legacy upgrades, backup recovery, failed commits, indexed updates/additions/removals, and one-batch-at-a-time manifest ordering and validation passed")
     }
 }
 `);
