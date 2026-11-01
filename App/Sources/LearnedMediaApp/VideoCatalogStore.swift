@@ -66,7 +66,7 @@ actor VideoCatalogStore {
         var videos = Array(repeating: [String: Any](), count: entries.count)
         var verifiedDigests: [String: String] = [:]
         for (name, batchEntries) in entriesByBatch {
-            let batchData = try Data(contentsOf: directory.appendingPathComponent(name))
+            let batchData = try readImmutableBatch(directory.appendingPathComponent(name))
             let digest = sha256(batchData)
             if let expected = suppliedDigests?[name], expected != digest { throw invalid() }
             verifiedDigests[name] = digest
@@ -202,6 +202,11 @@ actor VideoCatalogStore {
 
     private func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func readImmutableBatch(_ url: URL) throws -> Data {
+        do { return try Data(contentsOf: url, options: [.mappedIfSafe]) }
+        catch { return try Data(contentsOf: url) }
     }
 
     private func removeOrphanedBatches(referenced: Set<String>, modifiedBefore cutoff: Date) {
