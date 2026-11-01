@@ -1078,6 +1078,67 @@ private func wikipediaOrigin(_ url: URL) -> String {
     return "\(scheme)://\(host)\(portSuffix)"
 }
 
+private struct YouTubeRequestValue: @unchecked Sendable {
+    let value: Any
+}
+
+private actor YouTubeRequestCoalescer {
+    private struct Entry {
+        let id: UUID
+        let task: Task<YouTubeRequestValue, Error>
+        var subscribers: [UUID: CheckedContinuation<YouTubeRequestValue, Error>]
+    }
+
+    private var entries: [String: Entry] = [:]
+
+    func value(for key: String, operation: @escaping @Sendable () async throws -> YouTubeRequestValue) async throws -> YouTubeRequestValue {
+        let subscriberID = UUID()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                if var entry = entries[key] {
+                    entry.subscribers[subscriberID] = continuation
+                    entries[key] = entry
+                    return
+                }
+
+                let requestID = UUID()
+                let requestTask = Task { try await operation() }
+                entries[key] = Entry(id: requestID, task: requestTask, subscribers: [subscriberID: continuation])
+                Task { [weak self] in
+                    let result: Result<YouTubeRequestValue, Error>
+                    do { result = .success(try await requestTask.value) }
+                    catch { result = .failure(error) }
+                    await self?.finish(key: key, requestID: requestID, result: result)
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(key: key, subscriberID: subscriberID) }
+        }
+    }
+
+    private func cancel(key: String, subscriberID: UUID) {
+        guard var entry = entries[key], let continuation = entry.subscribers.removeValue(forKey: subscriberID) else { return }
+        if entry.subscribers.isEmpty {
+            entries[key] = nil
+            entry.task.cancel()
+        } else {
+            entries[key] = entry
+        }
+        continuation.resume(throwing: CancellationError())
+    }
+
+    private func finish(key: String, requestID: UUID, result: Result<YouTubeRequestValue, Error>) {
+        guard let entry = entries[key], entry.id == requestID else { return }
+        entries[key] = nil
+        for continuation in entry.subscribers.values { continuation.resume(with: result) }
+    }
+}
+
 private actor YouTubeRequestLimiter {
     private var permits = 4
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -2871,6 +2932,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
     private let videoCatalog = VideoCatalogStore()
     private let youtubeImportCheckpoints = YouTubeImportCheckpointStore()
     private let youtubeLimiter = YouTubeRequestLimiter()
+    private let youtubeRequestCoalescer = YouTubeRequestCoalescer()
     private let youtubeDownloads = ConditionalDownloadCache()
     private let youtubeSession = BoundedURLSession()
     private let exportImageCache = SharedImageDataCache(limit: 24, lifetime: 30, maxBytes: 24 * 1024 * 1024)
@@ -3222,7 +3284,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             let task = Task { [weak self] in
                 guard let self else { return }
                 do { respond(id: id, result: try await youtubeRequest(resource: resource, key: key, params: params)) }
-                catch { respond(id: id, error: userMessage(error)) }
+                catch { if !Task.isCancelled { respond(id: id, error: userMessage(error)) } }
                 activeTasks[id] = nil
             }
             activeTasks[id] = task
@@ -3737,6 +3799,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessag
             return URLQueryItem(name: name, value: string)
         }.sorted { $0.name < $1.name }
         guard let url = components.url else { throw NativeError(message: "The YouTube request could not be formed.", retryable: false) }
+        let credentialID = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        let identity = "youtube-request-v1:\(credentialID):\(url.absoluteString)"
+        let result = try await youtubeRequestCoalescer.value(for: identity) { [self] in
+            YouTubeRequestValue(value: try await performYouTubeRequest(resource: resource, key: key, url: url))
+        }
+        try Task.checkCancellation()
+        return result.value
+    }
+
+    private func performYouTubeRequest(resource: String, key: String, url: URL) async throws -> Any {
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(key, forHTTPHeaderField: "x-goog-api-key")

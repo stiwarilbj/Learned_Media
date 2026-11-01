@@ -487,6 +487,83 @@ function withTimeout(signal: AbortSignal | undefined, timeoutMs = 30_000) {
 
 const youtubeDownloads = new ConditionalDownloadCache();
 
+type PendingYouTubeRequest = {
+  controller: AbortController;
+  promise: Promise<unknown>;
+  subscribers: Set<symbol>;
+  settled: boolean;
+};
+
+const pendingYouTubeRequests = new Map<string, PendingYouTubeRequest>();
+
+function youtubeRequestIdentity(apiKey: string, resource: string, params: Record<string, string>) {
+  const url = new URL(`${YOUTUBE_API_ROOT}/${resource}`);
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+  url.searchParams.sort();
+  // Match the conditional-download scope without retaining the API key in the map key.
+  const pageContext = typeof window === "undefined" ? "" : window.location.href;
+  const cacheKey = JSON.stringify([requestCacheScope("youtube-http-v1", apiKey), url.toString(), pageContext]);
+  return { url, pageContext, cacheKey };
+}
+
+function shareYouTubeRequest<T>(key: string, signal: AbortSignal | undefined, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  if (signal?.aborted) return Promise.reject(abortError());
+  let entry = pendingYouTubeRequests.get(key);
+  if (!entry) {
+    const controller = new AbortController();
+    const created: PendingYouTubeRequest = {
+      controller,
+      promise: Promise.resolve().then(() => work(controller.signal)),
+      subscribers: new Set(),
+      settled: false,
+    };
+    entry = created;
+    pendingYouTubeRequests.set(key, created);
+    const finish = () => {
+      created.settled = true;
+      if (pendingYouTubeRequests.get(key) === created) pendingYouTubeRequests.delete(key);
+    };
+    void created.promise.then(finish, finish);
+  }
+
+  const subscriber = Symbol("youtube-request-subscriber");
+  entry.subscribers.add(subscriber);
+  const shared = entry;
+  return new Promise<T>((resolve, reject) => {
+    let complete = false;
+    const release = () => {
+      signal?.removeEventListener("abort", onAbort);
+      shared.subscribers.delete(subscriber);
+      if (!shared.settled && shared.subscribers.size === 0) {
+        if (pendingYouTubeRequests.get(key) === shared) pendingYouTubeRequests.delete(key);
+        shared.controller.abort();
+      }
+    };
+    const onAbort = () => {
+      if (complete) return;
+      complete = true;
+      release();
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    shared.promise.then(value => {
+      if (complete) return;
+      complete = true;
+      release();
+      resolve(value as T);
+    }, error => {
+      if (complete) return;
+      complete = true;
+      release();
+      reject(error);
+    });
+  });
+}
+
 type YouTubeApiErrorDetails = { message?: string; reason?: string };
 
 function youtubeResponseSchema(resource: string): ProviderResponseSchema | undefined {
@@ -550,13 +627,8 @@ async function readYouTubeErrorDetails(response: Response, resource: string, tim
   }
 }
 
-async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Record<string, string>, signal?: AbortSignal): Promise<T> {
-  const url = new URL(`${YOUTUBE_API_ROOT}/${resource}`);
-  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
-  url.searchParams.sort();
-  // The page context also scopes the browser-supplied Origin/Referer headers.
-  const pageContext = typeof window === "undefined" ? "" : window.location.href;
-  const cacheKey = JSON.stringify([requestCacheScope("youtube-http-v1", apiKey), url.toString(), pageContext]);
+async function fetchYouTubeJson<T>(apiKey: string, resource: string, params: Record<string, string>, signal?: AbortSignal, identity = youtubeRequestIdentity(apiKey, resource, params)): Promise<T> {
+  const { url, cacheKey } = identity;
   const baseHeaders = { accept: "application/json", "x-goog-api-key": apiKey };
   const supportsConditional = YOUTUBE_CONDITIONAL_RESOURCES.has(resource);
   const conditional = supportsConditional
@@ -722,26 +794,32 @@ export class YouTubeClient {
 
   constructor(private readonly apiKey: string, private readonly requestOverride?: (resource: string, params: Record<string, string>, signal?: AbortSignal) => Promise<unknown>, private readonly beforeRequest?: () => Promise<void>) {}
 
-  private request<T>(resource: string, params: Record<string, string>, signal?: AbortSignal) {
+  private async request<T>(resource: string, params: Record<string, string>, signal?: AbortSignal): Promise<T> {
     const fields = YOUTUBE_RESPONSE_FIELDS[resource];
     const requestParams = fields ? { ...params, fields } : params;
-    return this.limiter.run(signal, async () => {
+    const identity = this.requestOverride ? undefined : youtubeRequestIdentity(this.apiKey, resource, requestParams);
+    const perform = (requestSignal: AbortSignal | undefined) => this.limiter.run(requestSignal, async () => {
       let attempt = 0;
       while (true) {
         try {
-          if (signal?.aborted) throw abortError();
-          await this.beforeRequest?.();
-          if (signal?.aborted) throw abortError();
+          if (requestSignal?.aborted) throw abortError();
+          if (attempt > 0) await this.beforeRequest?.();
+          if (requestSignal?.aborted) throw abortError();
           if (attempt > 0) recordPerformance("youtube", "retries");
-          if (this.requestOverride) return await this.requestOverride(resource, requestParams, signal) as T;
-          return await fetchYouTubeJson<T>(this.apiKey, resource, requestParams, signal);
+          if (this.requestOverride) return await this.requestOverride(resource, requestParams, requestSignal) as T;
+          return await fetchYouTubeJson<T>(this.apiKey, resource, requestParams, requestSignal, identity!);
         } catch (error) {
           if (!(error instanceof YouTubeApiError) || !error.retryable || attempt >= 2) throw error;
-          await waitForBackgroundRetry(backgroundRetryDelay(500 * (2 ** attempt), error.retryDeadline), signal);
+          await waitForBackgroundRetry(backgroundRetryDelay(500 * (2 ** attempt), error.retryDeadline), requestSignal);
           attempt += 1;
         }
       }
     });
+    if (this.requestOverride) return perform(signal);
+    if (signal?.aborted) throw abortError();
+    // Each import validates its own lease before it is allowed to join another caller's request.
+    await this.beforeRequest?.();
+    return shareYouTubeRequest(identity!.cacheKey, signal, sharedSignal => perform(sharedSignal));
   }
 
   async resolveChannel(seed: ApprovedChannelSeed, signal?: AbortSignal, normalizeChannelName: ChannelNameNormalizer = normalized): Promise<YouTubeChannelRecord> {
