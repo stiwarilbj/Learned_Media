@@ -9,6 +9,7 @@ import type { Database } from './supabase/database.types';
 import { assertSnapshot, validateSnapshot } from './snapshot-validation';
 import { recordPerformance } from './performance-diagnostics';
 import { cloudRestoreRecovery, type CloudRestoreRecovery, type RestoreRow } from './cloud-restore-recovery';
+import { withCloudSyncLease } from './cloud-sync-lease';
 
 function sameBytes(previous: Uint8Array | undefined, next: Uint8Array) {
   if (!previous || previous.byteLength !== next.byteLength) return false;
@@ -60,7 +61,9 @@ export class WorkspaceCloudSync {
     ({ store, signal }) => this.saveSnapshot(store, signal)
   );
   constructor(readonly userId: string, private readonly recovery: CloudRestoreRecovery = cloudRestoreRecovery) {}
-  discardRestoreProgress() { return this.recovery.discard(this.userId); }
+  discardRestoreProgress() {
+    return withCloudSyncLease(this.userId, 'restore', new AbortController().signal, () => this.recovery.discard(this.userId));
+  }
   get hasPendingUploads() { return this.uploads.hasUnacknowledged; }
   get isUploading() { return this.uploads.isWriting; }
   markFactMemoriesChanged(previous: FactMemory[], next: FactMemory[], ids: Set<string>) {
@@ -206,6 +209,9 @@ export class WorkspaceCloudSync {
     return { records, heads, restoreToken };
   }
   async load(signal: AbortSignal) {
+    return withCloudSyncLease(this.userId, 'restore', signal, leaseSignal => this.loadWithLease(leaseSignal));
+  }
+  private async loadWithLease(signal: AbortSignal) {
     const api = cloudClient();
     const loadMemoryPage = (after: string | null) => {
       let query = api.from('fact_memory').select('fact_id,content,known,fingerprint').eq('user_id', this.userId);
@@ -263,7 +269,10 @@ export class WorkspaceCloudSync {
     const snapshot = { ...store, records: store.records.map(record => ({ ...record, state: { ...record.state } })) };
     return this.uploads.enqueue({ store: snapshot, signal });
   }
-  private async saveSnapshot(store: CloudSnapshot, signal: AbortSignal) {
+  private saveSnapshot(store: CloudSnapshot, signal: AbortSignal) {
+    return withCloudSyncLease(this.userId, 'upload', signal, leaseSignal => this.saveSnapshotWithLease(store, leaseSignal));
+  }
+  private async saveSnapshotWithLease(store: CloudSnapshot, signal: AbortSignal) {
     if (signal.aborted) throw new Error('Cloud save was canceled.');
     if (store.ownerId !== this.userId) throw new Error('Account changed. Cloud save was canceled.');
     for (const record of store.records) assertSnapshot(record, 'record', 'save');
