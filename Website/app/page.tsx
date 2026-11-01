@@ -940,7 +940,12 @@ export default function HomePage() {
       if (!controller || controller.signal.aborted || !cloudLoaded.current) return;
       const receipt = cloudStoreRevisions.get(store);
       setSyncStatus("syncing");
-      void sync.save(store, controller.signal).then(() => {
+      void sync.save(store, controller.signal, (workspaceId) => {
+        const current = workspaceStoreRef.current;
+        return current?.ownerId === userId
+          ? current.records.find((record) => record.id === workspaceId)
+          : undefined;
+      }).then(() => {
         if (cloudEpoch.current !== epoch || cloudUserId.current !== userId) return;
         const incoming = sync.takeMergedRecords();
         const current = workspaceStoreRef.current;

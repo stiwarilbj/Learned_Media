@@ -46,6 +46,7 @@ export async function googleSignIn() {
 }
 export type CloudAccount = Pick<User, 'id' | 'email' | 'user_metadata'>;
 type CloudSnapshot = { ownerId?: string; records: CloudRecord[]; factMemory?: FactMemory[] };
+type CurrentWorkspaceReader = (workspaceId: string) => CloudRecord | undefined;
 export class WorkspaceCloudSync {
   private sent = new Map<string, Uint8Array>();
   private observed = new Map<string, string>();
@@ -57,8 +58,8 @@ export class WorkspaceCloudSync {
   private trackedMemory: FactMemory[] | undefined;
   private memoryById = new Map<string, FactMemory>();
   private changedMemoryIds = new Set<string>();
-  private uploads = new LatestSnapshotQueue<{ store: CloudSnapshot; signal: AbortSignal }>(
-    ({ store, signal }) => this.saveSnapshot(store, signal)
+  private uploads = new LatestSnapshotQueue<{ store: CloudSnapshot; signal: AbortSignal; readCurrentWorkspace: CurrentWorkspaceReader }>(
+    ({ store, signal, readCurrentWorkspace }) => this.saveSnapshot(store, signal, readCurrentWorkspace)
   );
   constructor(readonly userId: string, private readonly recovery: CloudRestoreRecovery = cloudRestoreRecovery) {}
   discardRestoreProgress() {
@@ -262,17 +263,21 @@ export class WorkspaceCloudSync {
     if (signal.aborted) throw new Error('Cloud load was canceled.');
     return { records, factMemory };
   }
-  save(store: CloudSnapshot, signal: AbortSignal) {
+  save(store: CloudSnapshot, signal: AbortSignal, readCurrentWorkspace?: CurrentWorkspaceReader) {
     if (store.ownerId !== this.userId || signal.aborted) return Promise.reject(new Error('Account changed. Cloud save was canceled.'));
     // Store records are replaced/updated in place by the app. Capture their current
     // state references now; canonicalization only runs for snapshots actually sent.
     const snapshot = { ...store, records: store.records.map(record => ({ ...record, state: { ...record.state } })) };
-    return this.uploads.enqueue({ store: snapshot, signal });
+    // Callers with a live workspace store can guard acknowledgments against edits
+    // that have not reached the replaceable upload queue yet. The fallback keeps
+    // direct callers scoped to the immutable snapshot they submitted.
+    const readCurrent = readCurrentWorkspace ?? ((workspaceId: string) => snapshot.records.find(record => record.id === workspaceId));
+    return this.uploads.enqueue({ store: snapshot, signal, readCurrentWorkspace: readCurrent });
   }
-  private saveSnapshot(store: CloudSnapshot, signal: AbortSignal) {
-    return withCloudSyncLease(this.userId, 'upload', signal, leaseSignal => this.saveSnapshotWithLease(store, leaseSignal));
+  private saveSnapshot(store: CloudSnapshot, signal: AbortSignal, readCurrentWorkspace: CurrentWorkspaceReader) {
+    return withCloudSyncLease(this.userId, 'upload', signal, leaseSignal => this.saveSnapshotWithLease(store, leaseSignal, readCurrentWorkspace));
   }
-  private async saveSnapshotWithLease(store: CloudSnapshot, signal: AbortSignal) {
+  private async saveSnapshotWithLease(store: CloudSnapshot, signal: AbortSignal, readCurrentWorkspace: CurrentWorkspaceReader) {
     if (signal.aborted) throw new Error('Cloud save was canceled.');
     if (store.ownerId !== this.userId) throw new Error('Account changed. Cloud save was canceled.');
     for (const record of store.records) assertSnapshot(record, 'record', 'save');
@@ -402,7 +407,21 @@ export class WorkspaceCloudSync {
           this.observed.set(workspaceId, row.revision_id);
           // Only confirmed IDs advance acknowledged revision and snapshot state.
           this.canonicalWorkspaceSnapshots.set(workspaceId, { revisionId: row.revision_id, bytes: serialization.bytes });
-          this.sent.set(workspaceId, serialization.bytes);
+          // The request may have completed after a newer local edit. The database
+          // acknowledgment belongs only to the exact canonical revision sent in
+          // this row; leave newer local content dirty for the next save pass.
+          let localRevisionMatches = false;
+          try {
+            const current = readCurrentWorkspace(workspaceId);
+            if (current) {
+              const currentSerialization = serializeWorkspaceRecord(canonicalRecord(current));
+              localRevisionMatches = sameBytes(currentSerialization.bytes, serialization.bytes);
+            }
+          } catch {
+            // If the live row cannot be read or normalized, do not acknowledge it.
+          }
+          if (localRevisionMatches) this.sent.set(workspaceId, serialization.bytes);
+          else this.sent.delete(workspaceId);
         });
         completed = true;
         break;
