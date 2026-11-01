@@ -1,9 +1,19 @@
 import { createDatabaseConnection } from "./indexed-db";
-import type { Credential, KeyProvider } from "./account-credentials";
+import type { Credential, CredentialChange, KeyProvider } from "./account-credentials";
 type Provider = KeyProvider;
 const keyId = (provider: Provider, owner: string | null) => owner ? `account:${owner}:${provider}` : provider;
 const DB = "learned-media-private-keys";
+const CHANGE_REVISION_ID = "credential-change-revision";
+const CHANGE_CHANNEL = "learned-media-credential-change-v1";
+const CHANGE_STORAGE_KEY = "learned-media-credential-change-v1";
+const MAX_TRACKED_ACCOUNTS = 128;
 let queue = Promise.resolve();
+type CredentialChangeListener = (change: CredentialChange) => void;
+const credentialChangeListeners = new Set<CredentialChangeListener>();
+const latestCredentialRevisions = new Map<string, number>();
+const ownCredentialRevisions = new Map<string, number>();
+let credentialChangeChannel: BroadcastChannel | undefined;
+let credentialStorageListener: ((event: StorageEvent) => void) | undefined;
 const open = createDatabaseConnection(DB, 1, database => {
   if (!database.objectStoreNames.contains("keys")) database.createObjectStore("keys");
 });
@@ -24,14 +34,106 @@ function get<T>(db: IDBDatabase, idOrIds: string | readonly string[]): Promise<T
     transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error("Credential storage could not be read."));
   });
 }
-async function put(db: IDBDatabase, id: string, value?: unknown) {
-  await new Promise<void>((resolve, reject) => {
+function credentialScope(change: Pick<CredentialChange, "account" | "provider">) {
+  return JSON.stringify([change.account, change.provider]);
+}
+function rememberRevision(map: Map<string, number>, scope: string, revision: number) {
+  map.delete(scope);
+  map.set(scope, revision);
+  while (map.size > MAX_TRACKED_ACCOUNTS) map.delete(map.keys().next().value!);
+}
+function parseCredentialChange(value: unknown): CredentialChange | undefined {
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return; }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const change = value as Partial<CredentialChange>;
+  if (Object.keys(change).length !== 3
+    || !(change.account === null || typeof change.account === "string" && change.account.length <= 256)
+    || !(change.provider === "gemini" || change.provider === "youtube")
+    || !Number.isSafeInteger(change.revision) || (change.revision ?? 0) < 1) return;
+  return { account: change.account!, provider: change.provider, revision: change.revision! };
+}
+function receiveCredentialChange(value: unknown) {
+  const change = parseCredentialChange(value);
+  if (!change) return;
+  const scope = credentialScope(change);
+  if (change.revision <= (latestCredentialRevisions.get(scope) ?? 0)) return;
+  rememberRevision(latestCredentialRevisions, scope, change.revision);
+  if (change.revision === ownCredentialRevisions.get(scope)) return;
+  for (const listener of credentialChangeListeners) listener(change);
+}
+function startCredentialChangeListeners() {
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      credentialChangeChannel = new BroadcastChannel(CHANGE_CHANNEL);
+      credentialChangeChannel.onmessage = event => receiveCredentialChange(event.data);
+    }
+  } catch { /* Storage events remain the cross-tab fallback. */ }
+  if (typeof window !== "undefined") {
+    credentialStorageListener = event => {
+      if (event.key === CHANGE_STORAGE_KEY && event.newValue) receiveCredentialChange(event.newValue);
+    };
+    window.addEventListener("storage", credentialStorageListener);
+  }
+}
+function stopCredentialChangeListeners() {
+  credentialChangeChannel?.close();
+  credentialChangeChannel = undefined;
+  if (credentialStorageListener && typeof window !== "undefined") window.removeEventListener("storage", credentialStorageListener);
+  credentialStorageListener = undefined;
+}
+/** Listen for metadata-only notices; subscribers reread their own encrypted record. */
+export function subscribeCredentialChanges(listener: CredentialChangeListener) {
+  credentialChangeListeners.add(listener);
+  if (credentialChangeListeners.size === 1) startCredentialChangeListeners();
+  return () => {
+    credentialChangeListeners.delete(listener);
+    if (!credentialChangeListeners.size) stopCredentialChangeListeners();
+  };
+}
+function broadcastCredentialChange(change: CredentialChange) {
+  const scope = credentialScope(change);
+  rememberRevision(latestCredentialRevisions, scope, change.revision);
+  rememberRevision(ownCredentialRevisions, scope, change.revision);
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel(CHANGE_CHANNEL);
+      channel.postMessage(change);
+      channel.close();
+    }
+  } catch { /* Storage events remain the cross-tab fallback. */ }
+  try {
+    if (typeof window !== "undefined") window.localStorage.setItem(CHANGE_STORAGE_KEY, JSON.stringify(change));
+  } catch { /* BroadcastChannel and encrypted storage remain available. */ }
+}
+async function putCredential(db: IDBDatabase, id: string, value: unknown, account: string | null, provider: Provider): Promise<number> {
+  return new Promise((resolve, reject) => {
     const transaction = db.transaction("keys", "readwrite");
-    if (value === undefined) transaction.objectStore("keys").delete(id);
-    else transaction.objectStore("keys").put(value, id);
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error);
+    const store = transaction.objectStore("keys");
+    let revision: number | undefined;
+    let failure: unknown;
+    const request = store.get(CHANGE_REVISION_ID);
+    request.onsuccess = () => {
+      const previous = Number.isSafeInteger(request.result) && request.result >= 0 ? request.result as number : 0;
+      if (previous >= Number.MAX_SAFE_INTEGER) {
+        failure = new Error("Credential change revision is exhausted.");
+        transaction.abort();
+        return;
+      }
+      revision = previous + 1;
+      if (value === undefined) store.delete(id);
+      else store.put(value, id);
+      store.put(revision, CHANGE_REVISION_ID);
+    };
+    request.onerror = () => {
+      failure = request.error;
+      transaction.abort();
+    };
+    transaction.oncomplete = () => revision === undefined
+      ? reject(failure ?? new Error("Credential change revision could not be saved."))
+      : resolve(revision);
+    transaction.onerror = transaction.onabort = () => reject(failure ?? transaction.error ?? new Error("Credential could not be saved."));
   });
 }
 async function getOrCreateDeviceKey(db: IDBDatabase): Promise<CryptoKey> {
@@ -64,11 +166,15 @@ export function saveCredential(provider: Provider, owner: string | null, entry?:
   const value = entry ? JSON.stringify(entry) : "";
   const work = queue.catch(() => undefined).then(async () => {
     const db = await open();
-    if (!value.trim()) { await put(db, id); return; }
-    const key = await getOrCreateDeviceKey(db);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = await crypto.subtle.encrypt({name:"AES-GCM",iv}, key, new TextEncoder().encode(value));
-    await put(db, id, {iv, ciphertext});
+    let saved: { iv: Uint8Array; ciphertext: ArrayBuffer } | undefined;
+    if (value.trim()) {
+      const key = await getOrCreateDeviceKey(db);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt({name:"AES-GCM",iv}, key, new TextEncoder().encode(value));
+      saved = { iv, ciphertext };
+    }
+    const revision = await putCredential(db, id, saved, owner, provider);
+    broadcastCredentialChange({ account: owner, provider, revision });
   });
   queue = work;
   return work;

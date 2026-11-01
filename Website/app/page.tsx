@@ -10,7 +10,7 @@ import { CardDownloadsProvider } from "@/components/learned-media/CardDownloads"
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Navigation } from "@/components/learned-media/Navigation";
 import { Icon } from "@/components/learned-media/icons";
-import { readCredential, saveCredential } from "@/lib/remembered-keys";
+import { readCredential, saveCredential, subscribeCredentialChanges } from "@/lib/remembered-keys";
 import { AccountCredentials } from "@/lib/account-credentials";
 import { LatestSnapshotQueue } from "@/lib/latest-snapshot-queue";
 import { rememberFact, mergeFactMemory, hasExactSentenceCount, normalizeSentenceLength, type FactMemory } from "@/lib/fact-quality";
@@ -1405,13 +1405,14 @@ export default function HomePage() {
     });
     credentialManager.current = manager;
     credentialOwner.current = null;
+    const unsubscribeCredentialChanges = subscribeCredentialChanges(change => { void manager.credentialStorageChanged(change); });
     void manager.switchAccount(null).then(() => { if (active) setKeysHydrated(true); });
     const refresh = () => { if (document.visibilityState !== "hidden") void manager.refresh({ automatic: true }); };
     window.addEventListener("online", refresh);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
-      active = false; manager.dispose(); credentialManager.current = null;
+      active = false; unsubscribeCredentialChanges(); manager.dispose(); credentialManager.current = null;
       window.removeEventListener("online", refresh); window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
