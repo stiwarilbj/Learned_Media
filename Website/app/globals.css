@@ -1832,3 +1832,7 @@ html[data-input-modality="pointer"] :is(input, select, textarea):focus {
 .fact-action-icon > svg, .fact-action-icon > .icon { width:16px; height:16px; display:block; }
 .fact-action-icon > .icon { display:grid; place-items:center; }
 .fact-action-icon > .icon > svg { width:16px; height:16px; display:block; }
+
+/* Keep topic weights steady and give enabled controls a quiet hover cue. */
+.topic-weight > .topic-weight-value { box-sizing:border-box; font-variant-numeric:tabular-nums; box-shadow:inset 1px 0 rgba(153,183,213,.42), inset -1px 0 rgba(153,183,213,.42); }
+.topic-weight button:hover:not(:disabled) { background:rgba(219,237,255,.78) !important; color:var(--primary); }
