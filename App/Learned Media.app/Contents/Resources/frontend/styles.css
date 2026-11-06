@@ -327,8 +327,10 @@ a { color: inherit; }
 .card-location-trigger { border: 0; padding: 3px 0; background: transparent; color: var(--primary); font: inherit; font-size: 11px; font-weight: 750; text-align: left; cursor: pointer; }
 .card-location-trigger:hover { text-decoration: underline; }
 .card-location-trigger:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; border-radius: 3px; }
-.fact-breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--primary); font-size: 13px; line-height: 1.35; font-weight: 850; letter-spacing: .01em; }
-.fact-breadcrumbs span + span::before { content: "·"; color: var(--muted-soft); margin-right: 6px; }
+.fact-breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 13px; line-height: 1.35; font-weight: 650; letter-spacing: .01em; }
+.fact-breadcrumbs span { color: var(--muted); font-weight: 650; }
+.fact-breadcrumbs span:last-child { color: var(--primary); font-weight: 800; }
+.fact-breadcrumbs span + span::before { content: "›"; color: var(--muted-soft); font-size: 11px; font-weight: 600; }
 .obscurity-mark { color: var(--primary); letter-spacing: 2px; font-size: 9px; white-space: nowrap; }
 .fact-content h3 { color: var(--ink-strong); font-size: 23px; line-height: 1.18; letter-spacing: -.045em; margin: 11px 0 9px; }
 .fact-content p { color: var(--muted); font-size: 13px; line-height: 1.65; margin: 0; }
