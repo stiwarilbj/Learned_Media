@@ -411,6 +411,9 @@
   function svg(name, size) {
     return node("span", { className: "icon", html: icon(name, size) });
   }
+  function factActionIcon(name, size) {
+    return node("span", { className: "fact-action-icon" }, svg(name, size));
+  }
   const PERIOD_FREE_UI_COPY = new Set([
     "The metadata supports this search.",
     "Try another phrase, topic, or channel. Search stays inside the approved collection.",
@@ -3080,7 +3083,7 @@
     const actions = node("div", { className: "fact-actions" });
     const learnMenu = node("div", { className: "learn-more-menu", dataset: { learnCard: card.id } });
     const learnMenuID = "learn-more-menu-" + safeCardElementId(card.id);
-    learnMenu.appendChild(node("button", { type: "button", className: "learn-more-button", disabled: Boolean(card.learnMore || learningTasks.has(state.workspaceId+":"+card.id+":learn")), onClick: function () { learnMore(card.id); } }, svg("sparkles", 16), node("span", { text: learningTasks.has(state.workspaceId+":"+card.id+":learn") ? "Reading" : card.learnMore ? "Learned" : "Learn more" })));
+    learnMenu.appendChild(node("button", { type: "button", className: "learn-more-button", disabled: Boolean(card.learnMore || learningTasks.has(state.workspaceId+":"+card.id+":learn")), onClick: function () { learnMore(card.id); } }, factActionIcon("sparkles", 16), node("span", { text: learningTasks.has(state.workspaceId+":"+card.id+":learn") ? "Reading" : card.learnMore ? "Learned" : "Learn more" })));
     if(state.errorByCard[card.id+":learn"])content.appendChild(node("p",{className:"learning-error",role:"alert",text:state.errorByCard[card.id+":learn"]}));
     learnMenu.appendChild(node("button", { type: "button", className: "learn-more-menu-trigger", ariaLabel: "More learning tools", ariaHaspopup: "menu", ariaExpanded: state.learnMenuCardId === card.id, ariaControls: learnMenuID, dataset: { learnTriggerCard: card.id }, onClick: function () {
       const open = state.learnMenuCardId !== card.id;
@@ -3088,7 +3091,7 @@
       focusedLearnCardId = card.id;
       focusLearnMenuAfterRender = open;
       render();
-    } }, svg("chevronDown", 14)));
+    } }, factActionIcon("chevronDown", 14)));
     if (state.learnMenuCardId === card.id) {
       const menu = node("div", { id: learnMenuID, className: "learn-more-popover", role: "menu", ariaLabel: "Learning tools", onKeydown: handleLearnMenuKeydown });
       if (nativeChronologyEvents(card).length >= 2) menu.appendChild(node("button", { type: "button", role: "menuitem", dataset: { learnMenuCard: card.id }, onClick: function () { openNativeChronology(card); } }, svg("sparkles", 14), " ", "View dates"));
@@ -3096,10 +3099,10 @@
       learnMenu.appendChild(menu);
     }
     actions.appendChild(learnMenu);
-    actions.appendChild(node("button", { className: "feedback-button heard" + (card.feedback === "heard" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "heard"); } }, svg("check", 15), node("span", { text: "Heard" })));
-    actions.appendChild(node("button", { className: "feedback-button unknown" + (card.feedback === "unknown" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "unknown"); } }, svg("help", 15), node("span", { text: "Unknown" })));
-    actions.appendChild(node("button", { className: card.liked ? "active-like" : "", onClick: function () { toggleCard(card.id, "liked"); } }, svg("heart", 16), node("span", { text: "Like" })));
-    actions.appendChild(node("button", { className: card.saved ? "active-save" : "", onClick: function () { toggleCard(card.id, "saved"); } }, svg("bookmark", 16), node("span", { text: "Save" })));
+    actions.appendChild(node("button", { className: "feedback-button heard" + (card.feedback === "heard" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "heard"); } }, factActionIcon("check", 15), node("span", { text: "Heard" })));
+    actions.appendChild(node("button", { className: "feedback-button unknown" + (card.feedback === "unknown" ? " selected" : ""), onClick: function () { recordFeedback(card.id, "unknown"); } }, factActionIcon("help", 15), node("span", { text: "Unknown" })));
+    actions.appendChild(node("button", { className: card.liked ? "active-like" : "", onClick: function () { toggleCard(card.id, "liked"); } }, factActionIcon("heart", 16), node("span", { text: "Like" })));
+    actions.appendChild(node("button", { className: card.saved ? "active-save" : "", onClick: function () { toggleCard(card.id, "saved"); } }, factActionIcon("bookmark", 16), node("span", { text: "Save" })));
     const moreMenu = node("div", { className: "fact-more-menu", dataset: { moreCard: card.id } });
     const moreMenuID = "fact-more-" + safeCardElementId(card.id);
     moreMenu.appendChild(node("button", { type: "button", className: "fact-more-trigger overflow-action", ariaLabel: "More actions", "aria-haspopup": "menu", ariaExpanded: state.moreMenuCardId === card.id, ariaControls: moreMenuID, dataset: { moreTriggerCard: card.id }, onClick: function () {
@@ -3108,7 +3111,7 @@
       focusedMoreCardId = card.id;
       focusMoreMenuAfterRender = open;
       render();
-    } }, svg("more", 17)));
+    } }, factActionIcon("more", 17)));
     if (state.moreMenuCardId === card.id) {
       const menu = node("div", { id: moreMenuID, className: "fact-more-popover", role: "menu", ariaLabel: "More fact actions", onKeydown: handleMoreMenuKeydown });
       [["reveal", "Reveal gradually", "sparkles"], ["topic-detour", "Three more from this topic", "sparkles"], ["rabbit", "Start rabbit hole", "arrow"], ["less", "Show fewer like this", "minus"], ["download", "Download card (" + factDownloads.downloadFormat(downloadMode).toUpperCase() + ")", "bookmark"]].forEach(function (option) {

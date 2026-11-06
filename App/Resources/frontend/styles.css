@@ -1690,3 +1690,8 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
 
 /* Native icons use a span wrapper; compact labels must not hide the icons. */
 .top-nav-link > .icon { display: inline-flex; flex: 0 0 auto; }
+.fact-actions > button:not(.fact-more-trigger), .fact-actions > .learn-more-menu > .learn-more-button { gap:6px; }
+.fact-actions button > .fact-action-icon { width:16px; height:16px; flex:0 0 16px; display:inline-grid; place-items:center; line-height:0; }
+.fact-action-icon > svg, .fact-action-icon > .icon { width:16px; height:16px; display:block; }
+.fact-action-icon > .icon { display:grid; place-items:center; }
+.fact-action-icon > .icon > svg { width:16px; height:16px; display:block; }

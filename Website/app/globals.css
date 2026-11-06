@@ -1825,3 +1825,10 @@ html[data-input-modality="pointer"] :is(input, select, textarea):focus {
 .export-controls select { width:100%; min-width:0; }
 .export-controls > button { justify-self:start; }
 @media (max-width:820px) { .session-download { margin-left:0; } }
+
+/* Normalize fact-action icon alignment without changing button padding. */
+.fact-actions > button:not(.fact-more-trigger), .fact-actions > .learn-more-menu > .learn-more-button { gap:6px; }
+.fact-actions button > .fact-action-icon { width:16px; height:16px; flex:0 0 16px; display:inline-grid; place-items:center; line-height:0; }
+.fact-action-icon > svg, .fact-action-icon > .icon { width:16px; height:16px; display:block; }
+.fact-action-icon > .icon { display:grid; place-items:center; }
+.fact-action-icon > .icon > svg { width:16px; height:16px; display:block; }
