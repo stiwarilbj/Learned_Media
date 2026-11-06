@@ -742,8 +742,10 @@ a { color: inherit; }
 .fact-sources { display: flex; align-items: flex-start; gap: 10px; margin-top: 18px; color: var(--muted-soft); font-size: 10px; }
 .fact-sources > span { flex: 0 0 auto; padding-top: 2px; }
 .fact-sources > div { display: flex; flex-wrap: wrap; gap: 6px 10px; }
-.fact-sources a, .answer-sources a { display: inline-flex; align-items: center; gap: 4px; color: var(--primary); font-weight: 800; text-decoration: none; }
-.fact-sources a:hover, .answer-sources a:hover { text-decoration: underline; }
+.fact-sources a, .answer-sources a { display: inline-flex; align-items: center; gap: 4px; color: var(--primary); font-weight: 650; text-decoration: none; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.fact-sources a > svg, .answer-sources a > svg { opacity: .58; transition: opacity .15s ease; }
+.fact-sources a:hover, .fact-sources a:focus-visible, .answer-sources a:hover, .answer-sources a:focus-visible { text-decoration: underline; }
+.fact-sources a:hover > svg, .fact-sources a:focus-visible > svg, .answer-sources a:hover > svg, .answer-sources a:focus-visible > svg { opacity: 1; }
 .fact-actions { align-items: center; }
 .fact-actions .learn-more-button { color: var(--primary); background: var(--surface-blue); }
 .fact-actions .learn-more-button:disabled { opacity: .65; }
@@ -1633,8 +1635,10 @@ body { background: var(--page-gradient); }
 .source-spotlight-context-actions button:disabled { opacity: .65; cursor: progress; }
 .source-spotlight-note { flex-basis: 100%; color: var(--muted); }
 .source-link-controls { display: inline-flex; align-items: center; gap: 4px; }
-.source-spotlight-link { padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; font-weight: 800; cursor: pointer; }
-.source-spotlight-link:hover { text-decoration: underline; }
+.source-spotlight-link { padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; font-weight: 650; text-decoration: none; text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: pointer; }
+.source-spotlight-link:hover, .source-spotlight-link:focus-visible { text-decoration: underline; }
+.source-external-link > svg { opacity: .58; transition: opacity .15s ease; }
+.source-external-link:hover > svg, .source-external-link:focus-visible > svg, .source-spotlight-link:hover + .source-external-link > svg, .source-spotlight-link:focus-visible + .source-external-link > svg { opacity: 1; }
 .source-external-link { min-width: 16px; min-height: 20px; justify-content: center; }
 .fact-content h3 { margin-top: 16px; }
 .key-input-row input { min-height: 50px; }
