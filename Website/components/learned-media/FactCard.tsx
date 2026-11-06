@@ -640,7 +640,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
               aria-expanded={difficultyMenuOpen}
               aria-controls={`difficulty-menu-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`}
               onClick={() => setDifficultyMenuOpen((open) => !open)}
-            >Difficulty {card.difficulty} · {DIFFICULTY_LABELS[card.difficulty]}</button>
+            >Difficulty {card.difficulty} · {DIFFICULTY_LABELS[card.difficulty]}<Icon name="chevronDown" size={11} /></button>
             {difficultyMenuOpen && <div id={`difficulty-menu-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} ref={difficultyMenuRef} className="difficulty-menu" role="menu" aria-label="Explanation difficulty" onKeyDown={handleDifficultyMenuKeyDown}>
               {([
                 ["simpler", "Simpler"],

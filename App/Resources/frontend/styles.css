@@ -718,8 +718,9 @@ a { color: inherit; }
 .card-location-note { margin: 8px 0 0; }
 .card-location-note .text-button { margin-left: 4px; }
 .card-pocket-map .text-button:focus-visible,.card-pocket-map h4:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 3px; }
-.difficulty-mark { display: inline-flex; align-items: center; white-space: nowrap; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px; font-size: 9px; font-weight: 850; letter-spacing: 0; }
+.difficulty-mark { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px; font-size: 9px; font-weight: 850; letter-spacing: 0; }
 .difficulty-mark { cursor: pointer; font-family: inherit; }
+.difficulty-mark[aria-expanded="true"] { border-color: var(--border-strong); background: var(--surface-blue); color: var(--primary); }
 .difficulty-mark:focus-visible, .difficulty-menu button:focus-visible, .card-explanation button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .difficulty-picker { position: relative; flex: 0 0 auto; }
 .difficulty-menu { position: absolute; z-index: 30; top: calc(100% + 7px); right: 0; display: grid; min-width: 154px; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }

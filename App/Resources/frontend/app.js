@@ -3020,7 +3020,7 @@
       focusedDifficultyCardId = card.id;
       focusDifficultyMenuAfterRender = open;
       render();
-    } }, "Difficulty " + (card.difficulty || 5) + " · " + difficultyLabel(card.difficulty || 5)));
+    } }, "Difficulty " + (card.difficulty || 5) + " · " + difficultyLabel(card.difficulty || 5), svg("chevronDown", 11)));
     if (state.difficultyMenuCardId === card.id) {
       const menu = node("div", { id: menuID, className: "difficulty-menu", role: "menu", ariaLabel: "Explanation difficulty", onKeydown: function (event) { handleDifficultyMenuKeydown(event, card); } });
       [["simpler", "Simpler"], [undefined, "Original"], ["deeper", "Deeper"]].forEach(function (option) {
