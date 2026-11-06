@@ -1699,3 +1699,8 @@ input:focus-visible { outline: 2px solid rgba(76, 143, 247, .38); outline-offset
 /* Keep topic weights steady and give enabled controls a quiet hover cue. */
 .topic-weight > .topic-weight-value { box-sizing:border-box; font-variant-numeric:tabular-nums; box-shadow:inset 1px 0 rgba(153,183,213,.42), inset -1px 0 rgba(153,183,213,.42); }
 .topic-weight button:hover:not(:disabled) { background:rgba(219,237,255,.78) !important; color:var(--primary); }
+
+/* Show the same open state on each card menu trigger. */
+.answer-options-trigger[aria-expanded="true"], .fact-actions .learn-more-menu-trigger[aria-expanded="true"], .fact-actions .fact-more-trigger[aria-expanded="true"] { outline:1px solid var(--primary); outline-offset:-1px; background:var(--surface-blue); color:var(--primary); }
+.answer-options-trigger[aria-expanded="true"] { border-color:var(--primary); }
+.fact-actions .learn-more-menu-trigger[aria-expanded="true"] { border-left-color:var(--primary); }
