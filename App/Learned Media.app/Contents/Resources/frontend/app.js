@@ -279,10 +279,20 @@
   let searchInterpretRequest = null;
   let youtubeSearchRequests = [];
   let imageHydrationEpoch = 0;
-  let imageHydrationActive = false;
   const imageHydrationQueue = [];
   const imageHydrationQueued = new Set();
   const imageHydrationRequests = new Map();
+  const imageHydrationActiveJobs = new Map();
+  const imageHydrationAttempted = new Set();
+  const imageHydrationAttemptOrder = [];
+  const MAX_CONCURRENT_CARD_IMAGE_HYDRATIONS = 2;
+  const MAX_CARD_IMAGE_ATTEMPT_KEYS = 512;
+  let imageHydrationSequence = 0;
+  let imageHydrationFrame = 0;
+  let imageHydrationDrainScheduled = false;
+  let retainedImageCards = new Map();
+  document.addEventListener("scroll", scheduleNativeImagePriorityRefresh, { capture: true, passive: true });
+  window.addEventListener("resize", scheduleNativeImagePriorityRefresh, { passive: true });
   const activeCardImageReleases = [];
   const semanticSearchCache = createSessionCache(100, 30 * 60 * 1000);
   const youtubeSmartSearchCache = createSessionCache(100, 30 * 60 * 1000);
@@ -2758,7 +2768,6 @@
       return copy;
     });
     cancelImageHydrations();
-    if (mode === "picture-text") hydrateCardImages(state.cards, generationToken);
     saveState();
     render();
   }
@@ -2880,7 +2889,18 @@
     if(questionInstructionPreference(key)===next)return;
     questionInstructionPreferences.set(key,next);questionInstructionRevisions.set(key,(questionInstructionRevisions.get(key)||0)+1);
   }
-  document.addEventListener("pointerdown",function(event){if(answerOptionsOpenKey && !(event.target && event.target.closest && event.target.closest(".answer-options-control"))){answerOptionsOpenKey="";document.querySelectorAll(".answer-options-menu").forEach(function(menu){menu.remove();});document.querySelectorAll(".answer-options-trigger").forEach(function(trigger){trigger.setAttribute("aria-expanded","false");});}});
+  document.addEventListener("pointerdown", function (event) {
+    if (!answerOptionsOpenKey) return;
+    const trigger = document.querySelector('.answer-options-trigger[aria-expanded="true"]');
+    const control = trigger && trigger.closest(".answer-options-control");
+    if (control && control.contains(event.target)) return;
+    answerOptionsOpenKey = "";
+    if (trigger) {
+      trigger.setAttribute("aria-expanded", "false");
+      const menu = document.getElementById(trigger.getAttribute("aria-controls"));
+      if (menu) menu.remove();
+    }
+  });
   function questionArea(card) {
     const box = node("div", { className: "question-box" });
     const row = node("div", { className: "question-row" });
@@ -2943,7 +2963,11 @@
     row.appendChild(input);
     const optionWrap=node("div",{className:"answer-options-control"});
     const optionID="answer-options-"+safeCardElementId(card.id),isOpen=answerOptionsOpenKey===draftKey;
-    const optionTrigger=node("button",{type:"button",className:"answer-options-trigger"+(isOpen?" selected":""),"aria-haspopup":"menu",ariaExpanded:isOpen,ariaControls:optionID,id:optionID+"-trigger",onClick:function(){answerOptionsOpenKey=isOpen?"":draftKey;render();}},"Answer options ",svg("chevronDown",12));
+    const optionTrigger=node("button",{type:"button",className:"answer-options-trigger","aria-haspopup":"menu",ariaExpanded:isOpen,ariaControls:optionID,id:optionID+"-trigger",onClick:function(event){
+      if (!isOpen) event.currentTarget.focus({ preventScroll: true });
+      answerOptionsOpenKey=isOpen?"":draftKey;
+      render();
+    }},"Answer options ",svg("chevronDown",12));
     optionWrap.appendChild(optionTrigger);
     if(isOpen){
       const restoreTrigger=function(){requestAnimationFrame(function(){const trigger=document.getElementById(optionID+"-trigger");if(trigger)trigger.focus();});};
@@ -3008,13 +3032,14 @@
     const explanation = explanationMode && card.explanations && card.explanations[explanationMode];
     const picker = node("div", { className: "difficulty-picker", dataset: { difficultyCard: card.id } });
     const menuID = "difficulty-menu-" + safeCardElementId(card.id);
-    picker.appendChild(node("button", { type: "button", className: "difficulty-mark", ariaLabel: "Difficulty " + (card.difficulty || 5) + " of 10 · " + difficultyLabel(card.difficulty || 5) + ". Change this card’s explanation.", "aria-haspopup": "menu", ariaExpanded: state.difficultyMenuCardId === card.id, ariaControls: menuID, dataset: { difficultyTriggerCard: card.id }, onClick: function () {
+    picker.appendChild(node("button", { type: "button", className: "difficulty-mark", ariaLabel: "Difficulty " + (card.difficulty || 5) + " of 10 · " + difficultyLabel(card.difficulty || 5) + ". Change this card’s explanation.", "aria-haspopup": "menu", ariaExpanded: state.difficultyMenuCardId === card.id, ariaControls: menuID, dataset: { difficultyTriggerCard: card.id }, onClick: function (event) {
       const open = state.difficultyMenuCardId !== card.id;
+      if (open) event.currentTarget.focus({ preventScroll: true });
       state.difficultyMenuCardId = open ? card.id : null;
       focusedDifficultyCardId = card.id;
       focusDifficultyMenuAfterRender = open;
       render();
-    } }, "Difficulty " + (card.difficulty || 5) + " · " + difficultyLabel(card.difficulty || 5)));
+    } }, "Difficulty " + (card.difficulty || 5) + " · " + difficultyLabel(card.difficulty || 5), svg("chevronDown", 11)));
     if (state.difficultyMenuCardId === card.id) {
       const menu = node("div", { id: menuID, className: "difficulty-menu", role: "menu", ariaLabel: "Explanation difficulty", onKeydown: function (event) { handleDifficultyMenuKeydown(event, card); } });
       [["simpler", "Simpler"], [undefined, "Original"], ["deeper", "Deeper"]].forEach(function (option) {
@@ -3076,8 +3101,9 @@
     const learnMenuID = "learn-more-menu-" + safeCardElementId(card.id);
     learnMenu.appendChild(node("button", { type: "button", className: "learn-more-button", disabled: Boolean(card.learnMore || learningTasks.has(state.workspaceId+":"+card.id+":learn")), onClick: function () { learnMore(card.id); } }, factActionIcon("sparkles", 16), node("span", { text: learningTasks.has(state.workspaceId+":"+card.id+":learn") ? "Reading" : card.learnMore ? "Learned" : "Learn more" })));
     if(state.errorByCard[card.id+":learn"])content.appendChild(node("p",{className:"learning-error",role:"alert",text:state.errorByCard[card.id+":learn"]}));
-    learnMenu.appendChild(node("button", { type: "button", className: "learn-more-menu-trigger", ariaLabel: "More learning tools", ariaHaspopup: "menu", ariaExpanded: state.learnMenuCardId === card.id, ariaControls: learnMenuID, dataset: { learnTriggerCard: card.id }, onClick: function () {
+    learnMenu.appendChild(node("button", { type: "button", className: "learn-more-menu-trigger", ariaLabel: "More learning tools", "aria-haspopup": "menu", ariaExpanded: state.learnMenuCardId === card.id, ariaControls: learnMenuID, dataset: { learnTriggerCard: card.id }, onClick: function (event) {
       const open = state.learnMenuCardId !== card.id;
+      if (open) event.currentTarget.focus({ preventScroll: true });
       state.learnMenuCardId = open ? card.id : null;
       focusedLearnCardId = card.id;
       focusLearnMenuAfterRender = open;
@@ -3096,8 +3122,9 @@
     actions.appendChild(node("button", { className: card.saved ? "active-save" : "", onClick: function () { toggleCard(card.id, "saved"); } }, factActionIcon("bookmark", 16), node("span", { text: "Save" })));
     const moreMenu = node("div", { className: "fact-more-menu", dataset: { moreCard: card.id } });
     const moreMenuID = "fact-more-" + safeCardElementId(card.id);
-    moreMenu.appendChild(node("button", { type: "button", className: "fact-more-trigger overflow-action", ariaLabel: "More actions", "aria-haspopup": "menu", ariaExpanded: state.moreMenuCardId === card.id, ariaControls: moreMenuID, dataset: { moreTriggerCard: card.id }, onClick: function () {
+    moreMenu.appendChild(node("button", { type: "button", className: "fact-more-trigger overflow-action", ariaLabel: "More actions", "aria-haspopup": "menu", ariaExpanded: state.moreMenuCardId === card.id, ariaControls: moreMenuID, dataset: { moreTriggerCard: card.id }, onClick: function (event) {
       const open = state.moreMenuCardId !== card.id;
+      if (open) event.currentTarget.focus({ preventScroll: true });
       state.moreMenuCardId = open ? card.id : null;
       focusedMoreCardId = card.id;
       focusMoreMenuAfterRender = open;
@@ -3133,8 +3160,8 @@
     const list = node("div", { className: "fact-feed" });
     let visibleCards=searchedCards("feed");
     if(state.topicDetour && state.query){const pinned=new Set([state.topicDetour.sourceCardId].concat(state.topicDetour.slotCardIds));const matches=new Set(visibleCards.map(function(card){return card.id;}));visibleCards=feedCards.filter(function(card){return pinned.has(card.id)||matches.has(card.id);});}
-    if(visibleCards.length>20)list.appendChild(window.LEARNED_MEDIA_WINDOWED.create(visibleCards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement,onRetainedItemsChange:retainNativeCardToolWindow}));
-    else { retainNativeCardToolWindow(visibleCards); visibleCards.forEach(function(card){list.appendChild(cardElement(card));}); }
+    if(visibleCards.length>20)list.appendChild(window.LEARNED_MEDIA_WINDOWED.create(visibleCards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement,onRetainedItemsChange:setNativeImageRetainedCards}));
+    else { setNativeImageRetainedCards(visibleCards); visibleCards.forEach(function(card){list.appendChild(cardElement(card));}); }
     if (state.loading) list.appendChild(node("div", { className: "feed-progress", role: "status" }, node("span", { className: "loading-dot" }), state.topicDetour && activeGenerationDetourId === state.topicDetour.id ? " Gemini is building your topic detour" : " Gemini is building the next facts"));
     if (!state.topicDetour && !state.loading && !state.generationError && state.started) list.appendChild(node("div", { className: "feed-bottom-actions" }, node("button", { type: "button", className: "small-load-button", disabled: state.loading, onClick: function (event) { event.preventDefault(); generateBatch(generationToken, 7); } }, "Generate 7 more")));
     column.appendChild(list);
@@ -3362,10 +3389,11 @@
     section.appendChild(nativeDownloadFeedback());
     if (cards.length) {
       const feed = node("div", { className: "collection-feed" });
-      if(cards.length>20)feed.appendChild(window.LEARNED_MEDIA_WINDOWED.create(cards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement,onRetainedItemsChange:retainNativeCardToolWindow}));else { retainNativeCardToolWindow(cards); cards.forEach(function (card) { feed.appendChild(cardElement(card)); }); }
+      if(cards.length>20)feed.appendChild(window.LEARNED_MEDIA_WINDOWED.create(cards,{className:"native-card-window",cacheKey:state.workspaceId+":cards",estimatedHeight:650,gap:16,pinnedKey:focusedQuestionCardId || focusedMoreCardId || focusedLearnCardId,key:function(card){return card.id;},render:cardElement,onRetainedItemsChange:setNativeImageRetainedCards}));else { setNativeImageRetainedCards(cards); cards.forEach(function (card) { feed.appendChild(cardElement(card)); }); }
       section.appendChild(feed);
     } else {
       retainNativeCardToolWindow([]);
+      setNativeImageRetainedCards([]);
       section.appendChild(node("div", { className: "empty-collection" }, node("div", { className: "empty-orbit" }, svg(kind === "saved" ? "bookmark" : kind === "likes" ? "heart" : "history", 25)), node("h2", { text: "Nothing here yet." }), node("p", { text: "As you explore, your " + label.toLowerCase() + " facts will appear here." })));
     }
     return section;
@@ -3404,6 +3432,7 @@
     );
   }
   function render() {
+    if (!(state.view === "feed" && state.started) && !["saved", "likes", "history"].includes(state.view)) clearNativeImageRetainedCards();
     if(state.view !== "videos" && youtubeSearchController) cancelYoutubeSearch();
     if(state.view === "videos") videoSearchIndex();
     const keepPlayer = state.view === "videos" && state.youtube.selectedVideoId && playerIdentity === youtubePlayerIdentity(youtubeOwnerID(), state.workspaceId, state.youtube.selectedVideoId) && playerShell && playerShell.isConnected;
@@ -3467,10 +3496,12 @@
     const main = node("main", { className: "main-column" });
     const scroll = node("div", { className: "main-scroll" });
     scroll.addEventListener("scroll", handleNativeTopicDetourScroll, { passive: true });
+    scroll.addEventListener("scroll", scheduleNativeImagePriorityRefresh, { passive: true });
     scroll.appendChild(state.view === "settings" ? settingsView() : state.view === "videos" ? videosView() : state.view === "explore" ? exploreView() : state.view === "feed" && !state.started ? setupView() : state.view === "feed" ? feedView() : collectionView(state.view));
     scroll.appendChild(node("button", { type: "button", className: "go-to-top", onClick: function () { window.scrollTo({ top: 0, behavior: "smooth" }); const target = document.querySelector(".main-scroll"); if (target) target.scrollTo({ top: 0, behavior: "smooth" }); } }, "Go to top"));
     main.appendChild(scroll);
     app.appendChild(main);
+    scheduleNativeImagePriorityRefresh();
     const confirmation = confirmationOverlay();
     if (confirmation) app.appendChild(confirmation);
     const restoreSpotlightTrigger = focusedSpotlightTrigger;
@@ -3917,52 +3948,122 @@
     imageHydrationEpoch += 1;
     imageHydrationQueue.length = 0;
     imageHydrationQueued.clear();
+    retainedImageCards.clear();
+    if (imageHydrationFrame) cancelAnimationFrame(imageHydrationFrame);
+    imageHydrationFrame = 0;
     imageHydrationRequests.forEach(function (request) { if (request && typeof request.cancel === "function") request.cancel(); });
     imageHydrationRequests.clear();
+    imageHydrationActiveJobs.clear();
+    imageHydrationAttempted.clear();
+    imageHydrationAttemptOrder.length = 0;
   }
-  function hydrateCardImages(cards, token) {
-    const epoch = imageHydrationEpoch;
-    (cards || []).filter(function (card) { return (card.displayModeOverride || state.settings.displayMode) === "picture-text"; }).forEach(function (card) {
-      if (!card || !card.id || card.image || !(card.sources || []).length || imageHydrationQueued.has(card.id) || imageHydrationRequests.has(card.id)) return;
-      imageHydrationQueued.add(card.id);
-      imageHydrationQueue.push({ card: card, token: token, epoch: epoch, workspaceId: state.workspaceId });
+  function nativeCardImageSourceKey(card) {
+    const source = card && card.sources && card.sources[0];
+    return source ? source.canonicalUrl || source.url || source.title || "" : "";
+  }
+  function scheduleNativeImageHydrationDrain() {
+    if (imageHydrationDrainScheduled) return;
+    imageHydrationDrainScheduled = true;
+    queueMicrotask(function () {
+      imageHydrationDrainScheduled = false;
+      drainImageHydrationQueue();
     });
-    void drainImageHydrationQueue();
   }
-  async function drainImageHydrationQueue() {
-    if (imageHydrationActive) return;
-    imageHydrationActive = true;
-    try {
-      while (imageHydrationQueue.length) {
-        const job = imageHydrationQueue.shift();
-        imageHydrationQueued.delete(job.card.id);
-        if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || (job.card.displayModeOverride || state.settings.displayMode) === "text") continue;
-        const card = state.cards.find(function (item) { return item.id === job.card.id; });
-        if (!card || card.image || !(card.sources || []).length) continue;
-        const request = bridge("resolveFactImage", { cardId: card.id, source: card.sources[0] });
-        imageHydrationRequests.set(card.id, request);
-        try {
-          const result = await request;
-          if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || (job.card.displayModeOverride || state.settings.displayMode) === "text" || !result || !result.image) continue;
-          await window.LEARNED_MEDIA_BACKGROUND.runBackgroundSlice(function () {
-            if (job.epoch !== imageHydrationEpoch || job.token !== generationToken || job.workspaceId !== state.workspaceId || (job.card.displayModeOverride || state.settings.displayMode) === "text") return;
-            const current = state.cards.find(function (item) { return item.id === result.cardId; });
-            if (!current) return;
-            current.image = result.image;
-            saveState();
-            var scrollTop = window.scrollY;
-            render();
-            window.scrollTo(0, scrollTop);
-          }, { priority: "visible", canPause: true });
-        } catch (_) {
-          // Images are optional and do not affect the completed text cards.
-        } finally {
-          if (imageHydrationRequests.get(card.id) === request) imageHydrationRequests.delete(card.id);
-        }
+  function updateNativeImageHydrationPriority(card, priority) {
+    if (!card || !card.id) return;
+    const queueIndex = imageHydrationQueue.findIndex(function (job) { return job.workspaceId === state.workspaceId && job.card.id === card.id; });
+    if (!priority || card.image || !(card.sources || []).length || (card.displayModeOverride || state.settings.displayMode) !== "picture-text") {
+      if (queueIndex >= 0) { imageHydrationQueue.splice(queueIndex, 1); imageHydrationQueued.delete(card.id); }
+      return;
+    }
+    const sourceKey = nativeCardImageSourceKey(card);
+    const activeJob = imageHydrationActiveJobs.get(card.id);
+    if (activeJob && activeJob.sourceKey === sourceKey) { activeJob.priority = priority; return; }
+    if (imageHydrationAttempted.has(card.id + "\u0000" + sourceKey)) return;
+    if (queueIndex >= 0) {
+      imageHydrationQueue[queueIndex].card = card;
+      imageHydrationQueue[queueIndex].sourceKey = sourceKey;
+      imageHydrationQueue[queueIndex].priority = priority;
+      imageHydrationQueue[queueIndex].epoch = imageHydrationEpoch;
+      imageHydrationQueue[queueIndex].workspaceId = state.workspaceId;
+    } else {
+      imageHydrationQueued.add(card.id);
+      imageHydrationQueue.push({ card: card, sourceKey: sourceKey, epoch: imageHydrationEpoch, workspaceId: state.workspaceId, priority: priority, order: imageHydrationSequence++ });
+    }
+    scheduleNativeImageHydrationDrain();
+  }
+  function scheduleNativeImagePriorityRefresh() {
+    if (imageHydrationFrame) return;
+    imageHydrationFrame = requestAnimationFrame(function () {
+      imageHydrationFrame = 0;
+      refreshNativeImagePriorities();
+    });
+  }
+  function setNativeImageRetainedCards(cards) {
+    const next = new Map((cards || []).map(function (card) { return [card.id, card]; }));
+    imageHydrationQueue.splice(0).forEach(function (job) {
+      if (!next.has(job.card.id)) { imageHydrationQueued.delete(job.card.id); return; }
+      imageHydrationQueue.push(job);
+    });
+    retainedImageCards = next;
+    retainNativeCardToolWindow(cards || []);
+    scheduleNativeImagePriorityRefresh();
+  }
+  function clearNativeImageRetainedCards() {
+    retainedImageCards.clear();
+    imageHydrationQueue.splice(0).forEach(function (job) { imageHydrationQueued.delete(job.card.id); });
+  }
+  function refreshNativeImagePriorities() {
+    const host = document.querySelector(".main-scroll");
+    const hostBounds = host && /auto|scroll/.test(getComputedStyle(host).overflowY) ? host.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+    const elements = new Map();
+    document.querySelectorAll("article[data-card-id]").forEach(function (element) { if (element.dataset.cardId) elements.set(element.dataset.cardId, element); });
+    retainedImageCards.forEach(function (card) {
+      if ((card.displayModeOverride || state.settings.displayMode) !== "picture-text" || card.image || !(card.sources || []).length) {
+        updateNativeImageHydrationPriority(card, null);
+        return;
       }
-    } finally {
-      imageHydrationActive = false;
-      if (imageHydrationQueue.length) void drainImageHydrationQueue();
+      const element = elements.get(card.id);
+      const priority = element && window.LEARNED_MEDIA_CARD_IMAGE_CACHE && window.LEARNED_MEDIA_CARD_IMAGE_CACHE.cardImagePriorityForBounds
+        ? window.LEARNED_MEDIA_CARD_IMAGE_CACHE.cardImagePriorityForBounds(element.getBoundingClientRect(), hostBounds, element.contains(document.activeElement))
+        : undefined;
+      updateNativeImageHydrationPriority(card, priority || null);
+    });
+  }
+  function drainImageHydrationQueue() {
+    while (imageHydrationRequests.size < MAX_CONCURRENT_CARD_IMAGE_HYDRATIONS && imageHydrationQueue.length) {
+      imageHydrationQueue.sort(function (left, right) { return (left.priority === "visible" ? 0 : 1) - (right.priority === "visible" ? 0 : 1) || left.order - right.order; });
+      const job = imageHydrationQueue.shift();
+      imageHydrationQueued.delete(job.card.id);
+      const card = state.cards.find(function (item) { return item.id === job.card.id; });
+      if (job.epoch !== imageHydrationEpoch || job.workspaceId !== state.workspaceId || !card || card.image || nativeCardImageSourceKey(card) !== job.sourceKey || (card.displayModeOverride || state.settings.displayMode) === "text") continue;
+      const source = card.sources[0];
+      const request = bridge("resolveFactImage", { cardId: card.id, source: source });
+      imageHydrationRequests.set(card.id, request);
+      imageHydrationActiveJobs.set(card.id, job);
+      const attemptKey = job.card.id + "\u0000" + job.sourceKey;
+      imageHydrationAttempted.add(attemptKey);
+      imageHydrationAttemptOrder.push(attemptKey);
+      while (imageHydrationAttemptOrder.length > MAX_CARD_IMAGE_ATTEMPT_KEYS) imageHydrationAttempted.delete(imageHydrationAttemptOrder.shift());
+      Promise.resolve(request).then(function (result) {
+        if (job.epoch !== imageHydrationEpoch || job.workspaceId !== state.workspaceId || !result || !result.image) return;
+        return window.LEARNED_MEDIA_BACKGROUND.runBackgroundSlice(function () {
+          if (job.epoch !== imageHydrationEpoch || job.workspaceId !== state.workspaceId) return;
+          const current = state.cards.find(function (item) { return item.id === result.cardId; });
+          if (!current || current.image || nativeCardImageSourceKey(current) !== job.sourceKey || (current.displayModeOverride || state.settings.displayMode) === "text") return;
+          current.image = result.image;
+          saveState();
+          var scrollTop = window.scrollY;
+          render();
+          window.scrollTo(0, scrollTop);
+        }, { priority: job.priority === "visible" ? "visible" : "background", canPause: true });
+      }).catch(function () {
+        // Images are optional and do not affect the completed text cards.
+      }).finally(function () {
+        if (imageHydrationRequests.get(card.id) === request) imageHydrationRequests.delete(card.id);
+        if (imageHydrationActiveJobs.get(card.id) === job) imageHydrationActiveJobs.delete(card.id);
+        drainImageHydrationQueue();
+      });
     }
   }
   function completeActiveFactBatch() {
@@ -4066,7 +4167,6 @@
       showToast(state.generationError);
     } finally {
       if (activeToken === generationToken && state.workspaceId === batch.workspaceId && (state.account && state.account.id || null) === batch.accountId) {
-        hydrateCardImages(state.cards.filter(function (card) { return !existingCardIds.has(card.id); }), activeToken);
         activeGenerationTask = null;
         activeGenerationDetourId = null;
         state.activeGenerationSlotIds = [];

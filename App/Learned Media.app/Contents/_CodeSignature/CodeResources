@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/frontend/account-credentials.js</key>
 		<data>
-		7qisCDRjNC2IxHU4V+I/RC89BJI=
+		cdsdCFgE5wojer3MEnP+LCbvi5c=
 		</data>
 		<key>Resources/frontend/answer-structure.js</key>
 		<data>
@@ -18,7 +18,7 @@
 		</data>
 		<key>Resources/frontend/app.js</key>
 		<data>
-		sVwmfpr8U2RXNpwMDpxGDfRJN3c=
+		2O/2Hg1KUcKEmoXDWcXO1sihCcE=
 		</data>
 		<key>Resources/frontend/background-work.js</key>
 		<data>
@@ -50,7 +50,7 @@
 		</data>
 		<key>Resources/frontend/card-image-cache.js</key>
 		<data>
-		wAOkz4Synw6jGgn/9GaEWx2q+2g=
+		FWmPQmwnOSX/GcZPVzJwrtY/KGw=
 		</data>
 		<key>Resources/frontend/card-locations.js</key>
 		<data>
@@ -62,7 +62,7 @@
 		</data>
 		<key>Resources/frontend/card-search.worker.js</key>
 		<data>
-		iJczwjLcnJhFiUBuTXqBPr5T0ls=
+		vuls2zl6YYFb9RejRz/tLtES/GI=
 		</data>
 		<key>Resources/frontend/card-tool-state-retention.js</key>
 		<data>
@@ -146,7 +146,7 @@
 		</data>
 		<key>Resources/frontend/release.json</key>
 		<data>
-		9Bje6B60dtVwZYQV10GST0h2jqA=
+		9To8pM7EomSdgIiJVtBWB/HnXz8=
 		</data>
 		<key>Resources/frontend/session-cache.js</key>
 		<data>
@@ -166,7 +166,7 @@
 		</data>
 		<key>Resources/frontend/styles.css</key>
 		<data>
-		blu8wjWNg7L6WQg1MHR9RuILfxc=
+		69p0cIIEQk778V9jA0xafVRqm68=
 		</data>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>
 		<data>
@@ -250,7 +250,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			TQxeILpLw4QXFAVzi4PD0c2gqYpLDKsWdo0HGYYALdo=
+			R6Xp8KeGHsc2DLbqfSDcGHclRBxNTHbqpIUd/zn+g8c=
 			</data>
 		</dict>
 		<key>Resources/frontend/answer-structure.js</key>
@@ -264,7 +264,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			U1/zvTiTW1UfkWm3/kaNxAhKY+qHkCLx1y9c2NxUR1s=
+			ylD07nteyL0xJ9sEmaE92W1v41QeJ5MkUoeRTod1dlM=
 			</data>
 		</dict>
 		<key>Resources/frontend/background-work.js</key>
@@ -320,7 +320,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			xuttwX3KmXYECpjU7u32zTSeNFvQT5cRe2liftmigrI=
+			3hs5+TcYvf/31PgfEwQEZmEoeFDSwWKKOMbt9o/Xikk=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-locations.js</key>
@@ -341,7 +341,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			Nbq8hzeNUjESTolJPG3aH9rCXNfN7PjRRPHpd6hZjFI=
+			Dxwymw/wNrF/7LI0o3jmK4gl1kOzTpFseOCzRNpWNEM=
 			</data>
 		</dict>
 		<key>Resources/frontend/card-tool-state-retention.js</key>
@@ -488,7 +488,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			J/K+yhgqunLAJzTVPI9QJjF2457hCp3jSqncupj/XUY=
+			Xf8HXtZFm2RQxFnklvqBl2C8oFWY3RqiZYkQ6hqPSxo=
 			</data>
 		</dict>
 		<key>Resources/frontend/session-cache.js</key>
@@ -523,7 +523,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			APZ/vOR0BGODDh7caLYZl8s7RbeCYlUnkUQQqAVvYfY=
+			FErCc3YI7IEjnncwva6pSQznELrRtdXksTHQaH6BLjo=
 			</data>
 		</dict>
 		<key>Resources/frontend/television-music-sports-catalog.js</key>

@@ -3,6 +3,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.decodedCardImageCache = exports.DecodedCardImageCache = exports.CARD_IMAGE_DECODE_SIZE = void 0;
+exports.cardImagePriorityForBounds = cardImagePriorityForBounds;
 exports.mountDecodedCardImage = mountDecodedCardImage;
 /**
  * Session-only cache for decoded fact-card artwork. Cached bitmaps are resized
@@ -11,8 +12,16 @@ exports.mountDecodedCardImage = mountDecodedCardImage;
  * as soon as their last mounted card lets go.
  */
 const background_work_1 = require("./background-work");
+function cardImagePriorityForBounds(card, viewport, focused = false) {
+    if (focused || card.bottom > viewport.top && card.top < viewport.bottom)
+        return "visible";
+    const height = Math.max(1, viewport.bottom - viewport.top);
+    return card.bottom > viewport.top - height && card.top < viewport.bottom + height ? "nearby" : undefined;
+}
 const DEFAULT_MAX_ENTRIES = 8;
 const DEFAULT_MAX_BYTES = 24 * 1024 * 1024;
+const MAX_CONCURRENT_CARD_IMAGE_LOADS = 3;
+const CARD_IMAGE_RELEASE_GRACE_MS = 100;
 exports.CARD_IMAGE_DECODE_SIZE = 960;
 function awaitImageBitmap(pending, signal) {
     if (signal.aborted) {
@@ -49,7 +58,7 @@ function awaitImageBitmap(pending, signal) {
         });
     });
 }
-async function decodeImageBitmap(source, signal, options) {
+async function decodeImageBitmap(source, signal, priority, options) {
     let pending;
     // Schedule only the decode start. Decoding is asynchronous and cannot be
     // interrupted by createImageBitmap, so it must not hold the shared CPU queue.
@@ -59,7 +68,7 @@ async function decodeImageBitmap(source, signal, options) {
             // Cancellation can occur after decoding starts but before this scheduled
             // turn is acknowledged. Observe failures immediately in that narrow gap.
             void pending.catch(() => undefined);
-        }, { priority: "visible", canPause: true, signal });
+        }, { priority: priority() === "visible" ? "visible" : "background", canPause: true, signal });
     }
     catch (error) {
         if (pending)
@@ -70,7 +79,7 @@ async function decodeImageBitmap(source, signal, options) {
         throw new Error("Image decoding did not start.");
     return awaitImageBitmap(pending, signal);
 }
-async function loadDecodedImage(url, maxDimension, signal) {
+async function loadDecodedImage(url, maxDimension, signal, priority) {
     if (typeof fetch !== "function" || typeof createImageBitmap !== "function")
         throw new Error("Decoded image caching is unavailable.");
     const response = await fetch(url, { signal, mode: "cors" });
@@ -79,7 +88,7 @@ async function loadDecodedImage(url, maxDimension, signal) {
     const blob = await response.blob();
     let source;
     try {
-        source = await decodeImageBitmap(blob, signal);
+        source = await decodeImageBitmap(blob, signal, priority);
     }
     catch (error) {
         source?.close();
@@ -98,7 +107,7 @@ async function loadDecodedImage(url, maxDimension, signal) {
     const height = Math.max(1, Math.round(source.height * scale));
     let resized;
     try {
-        resized = await decodeImageBitmap(source, signal, { resizeWidth: width, resizeHeight: height, resizeQuality: "high" });
+        resized = await decodeImageBitmap(source, signal, priority, { resizeWidth: width, resizeHeight: height, resizeQuality: "high" });
         if (!resized)
             throw new Error("Image resizing returned no bitmap.");
         if (signal.aborted) {
@@ -125,6 +134,9 @@ function normalizedImageUrl(raw) {
 }
 class DecodedCardImageCache {
     entries = new Map();
+    pendingLoads = new Set();
+    activeLoads = 0;
+    nextLoadOrder = 0;
     maxEntries;
     maxBytes;
     loader;
@@ -151,51 +163,62 @@ class DecodedCardImageCache {
         }
         this.trim();
     }
-    acquire(workspaceId, rawUrl, requestedSize = exports.CARD_IMAGE_DECODE_SIZE) {
+    acquire(workspaceId, rawUrl, requestedSize = exports.CARD_IMAGE_DECODE_SIZE, priority = "nearby") {
         const url = normalizedImageUrl(rawUrl);
         const maxDimension = Math.max(64, Math.min(2_048, Math.floor(requestedSize) || exports.CARD_IMAGE_DECODE_SIZE));
         const key = JSON.stringify([url, maxDimension]);
         let entry = this.entries.get(key);
         if (!entry) {
             const controller = new AbortController();
+            let resolveImage;
+            let rejectImage;
+            const image = new Promise((resolve, reject) => { resolveImage = resolve; rejectImage = reject; });
             const created = {
-                key, url, maxDimension, controller, image: Promise.resolve(undefined),
-                bytes: 0, references: 0, workspaceReferences: new Map(), workspaces: new Set(), evictWhenUnused: false
+                key, url, maxDimension, controller, image, resolveImage, rejectImage, state: "queued", order: this.nextLoadOrder++,
+                bytes: 0, references: 0, workspaceReferences: new Map(), workspaces: new Set(), visibleReferences: 0, evictWhenUnused: false
             };
-            created.image = this.loader(url, maxDimension, controller.signal).then(bitmap => {
-                if (this.entries.get(key) !== created || controller.signal.aborted) {
-                    bitmap.close();
-                    throw new DOMException("Image load canceled.", "AbortError");
-                }
-                created.bitmap = bitmap;
-                created.bytes = bitmap.width * bitmap.height * 4;
-                this.cachedBytes += created.bytes;
-                this.trim();
-                return bitmap;
-            }).catch(error => {
-                if (this.entries.get(key) === created)
-                    this.evict(created);
-                throw error;
-            });
             entry = created;
             this.entries.set(key, entry);
+            this.pendingLoads.add(created);
         }
         else {
             this.entries.delete(key);
             this.entries.set(key, entry);
         }
         entry.references += 1;
+        if (entry.releaseTimer !== undefined) {
+            clearTimeout(entry.releaseTimer);
+            entry.releaseTimer = undefined;
+        }
+        if (entry.state === "queued" && !this.pendingLoads.has(entry))
+            this.pendingLoads.add(entry);
+        let leasePriority = priority;
+        if (leasePriority === "visible")
+            entry.visibleReferences += 1;
         entry.workspaceReferences.set(workspaceId, (entry.workspaceReferences.get(workspaceId) ?? 0) + 1);
         entry.workspaces.add(workspaceId);
         if (workspaceId === this.activeWorkspaceId)
             entry.evictWhenUnused = false;
+        this.pumpLoads();
         let released = false;
         return {
             image: entry.image,
+            setPriority: nextPriority => {
+                if (released || nextPriority === leasePriority)
+                    return;
+                if (leasePriority === "visible")
+                    entry.visibleReferences = Math.max(0, entry.visibleReferences - 1);
+                leasePriority = nextPriority;
+                if (leasePriority === "visible")
+                    entry.visibleReferences += 1;
+                this.pumpLoads();
+            },
             release: () => {
                 if (released)
                     return;
                 released = true;
+                if (leasePriority === "visible")
+                    entry.visibleReferences = Math.max(0, entry.visibleReferences - 1);
                 entry.references = Math.max(0, entry.references - 1);
                 const workspaceCount = entry.workspaceReferences.get(workspaceId) ?? 0;
                 if (workspaceCount <= 1)
@@ -204,8 +227,19 @@ class DecodedCardImageCache {
                     entry.workspaceReferences.set(workspaceId, workspaceCount - 1);
                 if (entry.references === 0) {
                     if (!entry.bitmap) {
-                        entry.controller.abort();
-                        this.evict(entry);
+                        this.pendingLoads.delete(entry);
+                        if (entry.releaseTimer === undefined) {
+                            // Native rerenders replace card DOM synchronously and remount its
+                            // canvas on the next observer turn. Briefly retain the lease so
+                            // that redraws do not restart the same queued thumbnail request.
+                            entry.releaseTimer = setTimeout(() => {
+                                entry.releaseTimer = undefined;
+                                if (entry.references !== 0 || this.entries.get(entry.key) !== entry || entry.bitmap)
+                                    return;
+                                entry.controller.abort();
+                                this.evict(entry);
+                            }, CARD_IMAGE_RELEASE_GRACE_MS);
+                        }
                     }
                     else if (entry.evictWhenUnused)
                         this.evict(entry);
@@ -224,14 +258,59 @@ class DecodedCardImageCache {
     evict(entry) {
         if (this.entries.get(entry.key) !== entry)
             return;
+        if (entry.releaseTimer !== undefined)
+            clearTimeout(entry.releaseTimer);
+        entry.releaseTimer = undefined;
         this.entries.delete(entry.key);
+        this.pendingLoads.delete(entry);
         if (entry.bitmap) {
             this.cachedBytes = Math.max(0, this.cachedBytes - entry.bytes);
             entry.bitmap.close();
             entry.bitmap = undefined;
         }
-        else
+        else {
             entry.controller.abort();
+            if (entry.state === "queued")
+                entry.rejectImage(new DOMException("Image load canceled.", "AbortError"));
+        }
+        this.pumpLoads();
+    }
+    pumpLoads() {
+        while (this.activeLoads < MAX_CONCURRENT_CARD_IMAGE_LOADS && this.pendingLoads.size) {
+            let selected;
+            for (const candidate of this.pendingLoads) {
+                if (!selected || candidate.visibleReferences > selected.visibleReferences
+                    || candidate.visibleReferences === selected.visibleReferences && candidate.order < selected.order)
+                    selected = candidate;
+            }
+            if (!selected)
+                return;
+            this.pendingLoads.delete(selected);
+            if (this.entries.get(selected.key) !== selected || selected.controller.signal.aborted || selected.references === 0)
+                continue;
+            selected.state = "loading";
+            this.activeLoads += 1;
+            const entry = selected;
+            void Promise.resolve().then(() => this.loader(entry.url, entry.maxDimension, entry.controller.signal, () => entry.visibleReferences > 0 ? "visible" : "nearby")).then(bitmap => {
+                if (this.entries.get(entry.key) !== entry || entry.controller.signal.aborted) {
+                    bitmap.close();
+                    throw new DOMException("Image load canceled.", "AbortError");
+                }
+                entry.bitmap = bitmap;
+                entry.state = "ready";
+                entry.bytes = bitmap.width * bitmap.height * 4;
+                this.cachedBytes += entry.bytes;
+                this.trim();
+                entry.resolveImage(bitmap);
+            }).catch(error => {
+                if (this.entries.get(entry.key) === entry)
+                    this.evict(entry);
+                entry.rejectImage(error);
+            }).finally(() => {
+                this.activeLoads = Math.max(0, this.activeLoads - 1);
+                this.pumpLoads();
+            });
+        }
     }
     trim() {
         while (this.entries.size > this.maxEntries || this.cachedBytes > this.maxBytes) {
@@ -279,8 +358,11 @@ function mountDecodedCardImage(canvas, workspaceId, url, onFailure) {
     let lease;
     let resizeObserver;
     let intersectionObserver;
+    let visibilityObserver;
+    let fallbackRoot = null;
     let loadedImage;
     let loadGeneration = 0;
+    let priority = "nearby";
     const draw = () => { if (!disposed && loadedImage)
         drawCover(canvas, loadedImage); };
     const releaseCurrentImage = () => {
@@ -301,8 +383,11 @@ function mountDecodedCardImage(canvas, workspaceId, url, onFailure) {
             return;
         disposed = true;
         intersectionObserver?.disconnect();
+        visibilityObserver?.disconnect();
         resizeObserver?.disconnect();
         window.removeEventListener("resize", draw);
+        window.removeEventListener("scroll", refreshFallbackPriority, true);
+        window.removeEventListener("resize", refreshFallbackPriority);
         releaseCurrentImage();
         onFailure();
     };
@@ -312,7 +397,7 @@ function mountDecodedCardImage(canvas, workspaceId, url, onFailure) {
         started = true;
         let currentLease;
         try {
-            currentLease = exports.decodedCardImageCache.acquire(workspaceId, url, exports.CARD_IMAGE_DECODE_SIZE);
+            currentLease = exports.decodedCardImageCache.acquire(workspaceId, url, exports.CARD_IMAGE_DECODE_SIZE, priority);
         }
         catch {
             fail();
@@ -341,24 +426,59 @@ function mountDecodedCardImage(canvas, workspaceId, url, onFailure) {
             fail();
         });
     };
+    const refreshFallbackPriority = () => {
+        if (disposed || typeof IntersectionObserver === "function")
+            return;
+        const host = document.querySelector(".main-scroll");
+        const overflowY = host ? getComputedStyle(host).overflowY : "";
+        fallbackRoot = host && (overflowY === "auto" || overflowY === "scroll") ? host : null;
+        const viewport = fallbackRoot ? fallbackRoot.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+        const nextPriority = cardImagePriorityForBounds(canvas.getBoundingClientRect(), viewport, canvas.parentElement?.contains(document.activeElement) ?? false) ?? null;
+        if (nextPriority) {
+            priority = nextPriority;
+            lease?.setPriority(nextPriority);
+            start();
+        }
+        else if (started)
+            releaseCurrentImage();
+    };
     if (typeof IntersectionObserver === "function") {
+        const scrollHost = document.querySelector(".main-scroll");
+        const overflowY = scrollHost ? getComputedStyle(scrollHost).overflowY : "";
+        const root = scrollHost && (overflowY === "auto" || overflowY === "scroll") ? scrollHost : null;
+        const viewport = root ? root.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+        priority = cardImagePriorityForBounds(canvas.getBoundingClientRect(), viewport, canvas.parentElement?.contains(document.activeElement) ?? false) ?? "nearby";
         intersectionObserver = new IntersectionObserver(entries => {
             if (entries.some(entry => entry.isIntersecting))
                 start();
             else if (started)
                 releaseCurrentImage();
-        }, { rootMargin: "200px" });
+        }, { root, rootMargin: "100% 0px" });
+        visibilityObserver = new IntersectionObserver(entries => {
+            const entry = entries.find(item => item.target === canvas);
+            if (!entry)
+                return;
+            priority = entry.isIntersecting ? "visible" : "nearby";
+            lease?.setPriority(priority);
+        }, { root });
         intersectionObserver.observe(canvas);
+        visibilityObserver.observe(canvas);
     }
-    else
-        start();
+    else {
+        window.addEventListener("scroll", refreshFallbackPriority, { passive: true, capture: true });
+        window.addEventListener("resize", refreshFallbackPriority, { passive: true });
+        refreshFallbackPriority();
+    }
     return () => {
         if (disposed)
             return;
         disposed = true;
         intersectionObserver?.disconnect();
+        visibilityObserver?.disconnect();
         resizeObserver?.disconnect();
         window.removeEventListener("resize", draw);
+        window.removeEventListener("scroll", refreshFallbackPriority, true);
+        window.removeEventListener("resize", refreshFallbackPriority);
         releaseCurrentImage();
     };
 }

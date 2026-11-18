@@ -785,7 +785,7 @@ export const FactCard = memo(function FactCard({ card, workspaceId, displayMode,
               aria-label={`Ask a question about ${card.title}`}
             />
             <div className="answer-options-control" ref={answerOptionsRef}>
-              <button type="button" ref={answerOptionsTriggerRef} className={`answer-options-trigger ${answerOptionsOpen ? "selected" : ""}`} onClick={() => setAnswerOptionsOpen(open => !open)} aria-haspopup="menu" aria-expanded={answerOptionsOpen} aria-controls={`answer-options-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`}>
+              <button type="button" ref={answerOptionsTriggerRef} className="answer-options-trigger" onClick={() => setAnswerOptionsOpen(open => !open)} aria-haspopup="menu" aria-expanded={answerOptionsOpen} aria-controls={`answer-options-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`}>
                 Answer options <Icon name="chevronDown" size={12} />
               </button>
               {answerOptionsOpen && <div className="answer-options-menu" id={`answer-options-${card.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`} ref={answerOptionsMenuRef} role="menu" aria-label="Answer options" onKeyDown={handleAnswerOptionsKeyDown}>

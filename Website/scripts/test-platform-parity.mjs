@@ -302,7 +302,10 @@ test('native selected-video lookup and playback checkpoints avoid full workspace
  assert.doesNotMatch(native,/state\.youtube\.videos\.find\(function \(video\) \{ return video\.id === state\.youtube\.selectedVideoId/);
  const saveStart=native.indexOf('saveIntervalMs: 15000');const saveEnd=native.indexOf('\n        }',saveStart);const callback=native.slice(saveStart,saveEnd);
  assert.match(callback,/saveYouTubePlaybackCheckpoint/);assert.doesNotMatch(callback,/saveState\(/);
- assert.match(native,/function render\(\) \{\s*if\(state\.view !== "videos" && youtubeSearchController\) cancelYoutubeSearch\(\);\s*if\(state\.view === "videos"\) videoSearchIndex\(\)/);
+ const renderStart = native.indexOf('  function render() {');
+ const renderGuards = native.slice(renderStart, native.indexOf('    const keepPlayer', renderStart));
+ assert.match(renderGuards, /if\s*\(state\.view !== "videos" && youtubeSearchController\) cancelYoutubeSearch\(\);/);
+ assert.match(renderGuards, /if\s*\(state\.view === "videos"\) videoSearchIndex\(\);/);
  const swift=readFileSync(new URL('../../App/Sources/LearnedMediaApp/main.swift',import.meta.url),'utf8');
  assert.match(swift,/case "saveYouTubePlaybackCheckpoint"/);
  assert.match(swift,/youtubePlaybackCheckpoints\.mergingIntoSnapshot\(workspace\.load\(\)\)/);

@@ -2889,7 +2889,18 @@
     if(questionInstructionPreference(key)===next)return;
     questionInstructionPreferences.set(key,next);questionInstructionRevisions.set(key,(questionInstructionRevisions.get(key)||0)+1);
   }
-  document.addEventListener("pointerdown",function(event){if(answerOptionsOpenKey && !(event.target && event.target.closest && event.target.closest(".answer-options-control"))){answerOptionsOpenKey="";document.querySelectorAll(".answer-options-menu").forEach(function(menu){menu.remove();});document.querySelectorAll(".answer-options-trigger").forEach(function(trigger){trigger.setAttribute("aria-expanded","false");});}});
+  document.addEventListener("pointerdown", function (event) {
+    if (!answerOptionsOpenKey) return;
+    const trigger = document.querySelector('.answer-options-trigger[aria-expanded="true"]');
+    const control = trigger && trigger.closest(".answer-options-control");
+    if (control && control.contains(event.target)) return;
+    answerOptionsOpenKey = "";
+    if (trigger) {
+      trigger.setAttribute("aria-expanded", "false");
+      const menu = document.getElementById(trigger.getAttribute("aria-controls"));
+      if (menu) menu.remove();
+    }
+  });
   function questionArea(card) {
     const box = node("div", { className: "question-box" });
     const row = node("div", { className: "question-row" });
@@ -2952,7 +2963,11 @@
     row.appendChild(input);
     const optionWrap=node("div",{className:"answer-options-control"});
     const optionID="answer-options-"+safeCardElementId(card.id),isOpen=answerOptionsOpenKey===draftKey;
-    const optionTrigger=node("button",{type:"button",className:"answer-options-trigger"+(isOpen?" selected":""),"aria-haspopup":"menu",ariaExpanded:isOpen,ariaControls:optionID,id:optionID+"-trigger",onClick:function(){answerOptionsOpenKey=isOpen?"":draftKey;render();}},"Answer options ",svg("chevronDown",12));
+    const optionTrigger=node("button",{type:"button",className:"answer-options-trigger","aria-haspopup":"menu",ariaExpanded:isOpen,ariaControls:optionID,id:optionID+"-trigger",onClick:function(event){
+      if (!isOpen) event.currentTarget.focus({ preventScroll: true });
+      answerOptionsOpenKey=isOpen?"":draftKey;
+      render();
+    }},"Answer options ",svg("chevronDown",12));
     optionWrap.appendChild(optionTrigger);
     if(isOpen){
       const restoreTrigger=function(){requestAnimationFrame(function(){const trigger=document.getElementById(optionID+"-trigger");if(trigger)trigger.focus();});};
@@ -3017,8 +3032,9 @@
     const explanation = explanationMode && card.explanations && card.explanations[explanationMode];
     const picker = node("div", { className: "difficulty-picker", dataset: { difficultyCard: card.id } });
     const menuID = "difficulty-menu-" + safeCardElementId(card.id);
-    picker.appendChild(node("button", { type: "button", className: "difficulty-mark", ariaLabel: "Difficulty " + (card.difficulty || 5) + " of 10 · " + difficultyLabel(card.difficulty || 5) + ". Change this card’s explanation.", "aria-haspopup": "menu", ariaExpanded: state.difficultyMenuCardId === card.id, ariaControls: menuID, dataset: { difficultyTriggerCard: card.id }, onClick: function () {
+    picker.appendChild(node("button", { type: "button", className: "difficulty-mark", ariaLabel: "Difficulty " + (card.difficulty || 5) + " of 10 · " + difficultyLabel(card.difficulty || 5) + ". Change this card’s explanation.", "aria-haspopup": "menu", ariaExpanded: state.difficultyMenuCardId === card.id, ariaControls: menuID, dataset: { difficultyTriggerCard: card.id }, onClick: function (event) {
       const open = state.difficultyMenuCardId !== card.id;
+      if (open) event.currentTarget.focus({ preventScroll: true });
       state.difficultyMenuCardId = open ? card.id : null;
       focusedDifficultyCardId = card.id;
       focusDifficultyMenuAfterRender = open;
@@ -3085,8 +3101,9 @@
     const learnMenuID = "learn-more-menu-" + safeCardElementId(card.id);
     learnMenu.appendChild(node("button", { type: "button", className: "learn-more-button", disabled: Boolean(card.learnMore || learningTasks.has(state.workspaceId+":"+card.id+":learn")), onClick: function () { learnMore(card.id); } }, factActionIcon("sparkles", 16), node("span", { text: learningTasks.has(state.workspaceId+":"+card.id+":learn") ? "Reading" : card.learnMore ? "Learned" : "Learn more" })));
     if(state.errorByCard[card.id+":learn"])content.appendChild(node("p",{className:"learning-error",role:"alert",text:state.errorByCard[card.id+":learn"]}));
-    learnMenu.appendChild(node("button", { type: "button", className: "learn-more-menu-trigger", ariaLabel: "More learning tools", ariaHaspopup: "menu", ariaExpanded: state.learnMenuCardId === card.id, ariaControls: learnMenuID, dataset: { learnTriggerCard: card.id }, onClick: function () {
+    learnMenu.appendChild(node("button", { type: "button", className: "learn-more-menu-trigger", ariaLabel: "More learning tools", "aria-haspopup": "menu", ariaExpanded: state.learnMenuCardId === card.id, ariaControls: learnMenuID, dataset: { learnTriggerCard: card.id }, onClick: function (event) {
       const open = state.learnMenuCardId !== card.id;
+      if (open) event.currentTarget.focus({ preventScroll: true });
       state.learnMenuCardId = open ? card.id : null;
       focusedLearnCardId = card.id;
       focusLearnMenuAfterRender = open;
@@ -3105,8 +3122,9 @@
     actions.appendChild(node("button", { className: card.saved ? "active-save" : "", onClick: function () { toggleCard(card.id, "saved"); } }, factActionIcon("bookmark", 16), node("span", { text: "Save" })));
     const moreMenu = node("div", { className: "fact-more-menu", dataset: { moreCard: card.id } });
     const moreMenuID = "fact-more-" + safeCardElementId(card.id);
-    moreMenu.appendChild(node("button", { type: "button", className: "fact-more-trigger overflow-action", ariaLabel: "More actions", "aria-haspopup": "menu", ariaExpanded: state.moreMenuCardId === card.id, ariaControls: moreMenuID, dataset: { moreTriggerCard: card.id }, onClick: function () {
+    moreMenu.appendChild(node("button", { type: "button", className: "fact-more-trigger overflow-action", ariaLabel: "More actions", "aria-haspopup": "menu", ariaExpanded: state.moreMenuCardId === card.id, ariaControls: moreMenuID, dataset: { moreTriggerCard: card.id }, onClick: function (event) {
       const open = state.moreMenuCardId !== card.id;
+      if (open) event.currentTarget.focus({ preventScroll: true });
       state.moreMenuCardId = open ? card.id : null;
       focusedMoreCardId = card.id;
       focusMoreMenuAfterRender = open;

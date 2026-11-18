@@ -12,6 +12,7 @@ class AccountCredentials {
         this.epoch = 0;
         this.entries = {};
         this.revisions = { gemini: 0, youtube: 0 };
+        this.storageRevisions = { gemini: 0, youtube: 0 };
         this.writes = Promise.resolve();
         this.controller = new AbortController();
         this.lastRefreshAt = -Infinity;
@@ -30,6 +31,7 @@ class AccountCredentials {
         clearTimeout(this.timer);
         const epoch = ++this.epoch;
         this.lastRefreshAt = -Infinity;
+        this.storageRevisions = { gemini: 0, youtube: 0 };
         this.controller = new AbortController();
         this.owner = owner;
         this.entries = {};
@@ -91,6 +93,45 @@ class AccountCredentials {
         clearTimeout(this.timer);
         if (owner)
             this.timer = setTimeout(() => void this.refresh(), 500);
+    }
+    async credentialStorageChanged(change) {
+        const { account, provider, revision } = change;
+        if ((provider !== "gemini" && provider !== "youtube") || account !== this.owner
+            || !Number.isSafeInteger(revision) || revision < 1 || revision <= this.storageRevisions[provider])
+            return;
+        this.storageRevisions[provider] = revision;
+        const epoch = this.epoch;
+        const localRevision = this.revisions[provider];
+        try {
+            const entry = await this.io.read(account, provider);
+            if (!this.current(epoch) || this.storageRevisions[provider] !== revision || this.revisions[provider] !== localRevision)
+                return;
+            this.revisions[provider]++;
+            if (this.entries[provider]?.pending) {
+                // Preserve an in-progress edit in this tab. Its normal refresh path will
+                // persist that intent after the other tab's committed notice is read.
+                this.publish();
+                if (account)
+                    void this.refresh();
+                return;
+            }
+            if (entry)
+                this.entries[provider] = entry;
+            else
+                delete this.entries[provider];
+            this.publish();
+            if (account) {
+                this.io.status("synced");
+                void this.refresh({ automatic: true });
+            }
+            else
+                this.io.status("local");
+        }
+        catch {
+            if (this.current(epoch) && this.storageRevisions[provider] === revision) {
+                this.io.status("error", "Saved API keys could not be refreshed from this device. Reconnect to retry.");
+            }
+        }
     }
     refresh(options = {}) {
         const epoch = this.epoch, owner = this.owner, signal = this.controller.signal;
