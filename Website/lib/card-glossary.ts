@@ -1,5 +1,5 @@
 import type { FactCard, SavedCardGlossary, WikipediaSource } from "./types";
-import { cardExplanationFingerprint } from "./card-explanations";
+import { cardExplanationFingerprint, matchingCardExplanationFingerprint } from "./card-explanations";
 
 type GlossaryCard = Pick<FactCard, "id" | "title" | "hook" | "body" | "topicPath" | "sources"> & {
   claim?: string;
@@ -42,8 +42,9 @@ function validSource(source: unknown): source is WikipediaSource {
 /** Keep only bounded, source-linked definitions that still describe this card. */
 export function normalizeCardGlossary(card: GlossaryCard & { glossary?: SavedCardGlossary | unknown }): SavedCardGlossary | undefined {
   const saved = card.glossary as Partial<SavedCardGlossary> | undefined;
-  const fingerprint = cardGlossaryFingerprint(card);
-  if (!saved || saved.fingerprint !== fingerprint || !Array.isArray(saved.entries) || !Array.isArray(saved.sources)) return undefined;
+  if (!Array.isArray(saved?.entries) || !Array.isArray(saved.sources)) return undefined;
+  const fingerprint = matchingCardExplanationFingerprint(card, saved.fingerprint);
+  if (!fingerprint) return undefined;
   const sourceIndexes = new Map<number, number>();
   const sources: WikipediaSource[] = [];
   saved.sources.forEach((source, index) => {

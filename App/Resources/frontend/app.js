@@ -2904,7 +2904,9 @@
   function questionArea(card) {
     const box = node("div", { className: "question-box" });
     const row = node("div", { className: "question-row" });
-    const draftKey=questionDraftKey(card),selectedStructure=window.LEARNED_MEDIA_ANSWER_STRUCTURE.normalizeAnswerStructure(questionStructures.get(draftKey)),instructionPreference=questionInstructionPreference(draftKey),instructionRevision=questionInstructionRevisions.get(draftKey)||0;
+    const draftKey = questionDraftKey(card);
+    const answerOptions = window.LEARNED_MEDIA_ANSWER_STRUCTURE;
+    const selectedStructure = answerOptions.normalizeAnswerStructure(questionStructures.get(draftKey));
     const followUpQuestions = cardFollowUps.getCardFollowUpQuestions(card);
     const followUpKey = state.workspaceId + "\u0000" + card.id + "\u0000" + cardFollowUps.followUpQuestionFingerprint(card);
     let suggestions = null;
@@ -2922,6 +2924,7 @@
           questionDrafts.set(draftKey,question);
           setQuestionInstructionPreference(draftKey,"written");
           input.value = question;
+          updateInstructionNotice();
           dismissedFollowUpQuestionKey = followUpKey;
           suggestions.hidden = true;
           focusedQuestionCardId = card.id;
@@ -2946,6 +2949,7 @@
       const priorQuestion=questionDrafts.has(draftKey)?questionDrafts.get(draftKey):(card.question||"");
       questionDrafts.set(draftKey,event.target.value);
       if(priorQuestion!==event.target.value)setQuestionInstructionPreference(draftKey,"written");
+      updateInstructionNotice();
       if (suggestions) {
         if (!event.target.value.trim()) dismissedFollowUpQuestionKey = "";
         suggestions.hidden = Boolean(event.target.value.trim()) || focusedQuestionCardId !== card.id || dismissedFollowUpQuestionKey === followUpKey;
@@ -2972,18 +2976,37 @@
     if(isOpen){
       const restoreTrigger=function(){requestAnimationFrame(function(){const trigger=document.getElementById(optionID+"-trigger");if(trigger)trigger.focus();});};
       const menu=node("div",{className:"answer-options-menu",id:optionID,role:"menu",ariaLabel:"Answer options",onKeydown:function(event){const items=Array.from(menu.querySelectorAll("[role='menuitemcheckbox'],[role='menuitemradio']")),index=items.indexOf(document.activeElement);let next;if(event.key==="ArrowDown")next=(index+1)%items.length;else if(event.key==="ArrowUp")next=(index-1+items.length)%items.length;else if(event.key==="Home")next=0;else if(event.key==="End")next=items.length-1;else if(event.key==="Escape"){event.preventDefault();answerOptionsOpenKey="";render();restoreTrigger();return;}if(next!==undefined){event.preventDefault();items[next].focus();}}});
-      menu.appendChild(node("button",{type:"button",role:"menuitemcheckbox",ariaChecked:Boolean(card.questionDetailed),onClick:function(){card.questionDetailed=!card.questionDetailed;answerOptionsOpenKey="";saveState();render();restoreTrigger();}},node("span",{text:"More Details"}),node("span",{className:"answer-option-check",text:card.questionDetailed?"✓":""})));
+      menu.appendChild(node("button",{type:"button",role:"menuitemcheckbox","aria-checked":String(Boolean(card.questionDetailed)),onClick:function(){card.questionDetailed=!card.questionDetailed;answerOptionsOpenKey="";saveState();render();restoreTrigger();}},node("span",{text:"More Details"}),node("span",{className:"answer-option-check","aria-hidden":"true",text:card.questionDetailed?"✓":""})));
       menu.appendChild(node("span",{className:"answer-options-divider",role:"separator"}));
-      window.LEARNED_MEDIA_ANSWER_STRUCTURE.ANSWER_STRUCTURES.forEach(function(option){menu.appendChild(node("button",{type:"button",role:"menuitemradio",ariaChecked:selectedStructure===option.value,onClick:function(){setQuestionStructure(draftKey,option.value);answerOptionsOpenKey="";render();restoreTrigger();}},node("span",{text:option.label}),node("span",{className:"answer-option-check",text:selectedStructure===option.value?"✓":""})));});
+      answerOptions.ANSWER_STRUCTURES.forEach(function(option){menu.appendChild(node("button",{type:"button",role:"menuitemradio","aria-checked":String(selectedStructure===option.value),onClick:function(){setQuestionStructure(draftKey,option.value);answerOptionsOpenKey="";render();restoreTrigger();}},node("span",{text:option.label}),node("span",{className:"answer-option-check","aria-hidden":"true",text:selectedStructure===option.value?"✓":""})));});
       optionWrap.appendChild(menu);
       requestAnimationFrame(function(){const selected=menu.querySelector("[role='menuitemradio'][aria-checked='true']")||menu.querySelector("button");if(selected)selected.focus();});
     }
     row.appendChild(optionWrap);
     row.appendChild(node("button", { className: "question-send", ariaLabel: "Send question", onClick: function () { askQuestion(card.id, input.value); } }, svg("arrow", 16)));
     box.appendChild(row);
-    if(selectedStructure!=="automatic")box.appendChild(node("div",{className:"answer-structure-chip",ariaLive:"polite"},node("span",{text:window.LEARNED_MEDIA_ANSWER_STRUCTURE.answerStructureLabel(selectedStructure)}),node("button",{type:"button",ariaLabel:"Remove "+window.LEARNED_MEDIA_ANSWER_STRUCTURE.answerStructureLabel(selectedStructure)+" answer structure",onClick:function(){setQuestionStructure(draftKey,"automatic");render();requestAnimationFrame(function(){const field=document.querySelector(".question-row input[data-card-id='"+CSS.escape(card.id)+"']");if(field)field.focus();});}},"×")));
-    const instructionResolution=window.LEARNED_MEDIA_ANSWER_STRUCTURE.resolveQuestionInstructions(questionDrafts.has(draftKey)?questionDrafts.get(draftKey):(card.question||""),Boolean(card.questionDetailed),selectedStructure,instructionPreference);
-    if(instructionResolution.conflict)box.appendChild(node("div",{className:"question-instruction-notice",ariaLive:"polite"},node("span",{text:instructionPreference==="settings"?"For this answer: normal settings":"For this answer: "+instructionResolution.conflictLabel}),node("button",{type:"button",onClick:function(){setQuestionInstructionPreference(draftKey,instructionPreference==="settings"?"written":"settings");render();requestAnimationFrame(function(){const field=document.querySelector(".question-row input[data-card-id='"+CSS.escape(card.id)+"']");if(field)field.focus();});}},instructionPreference==="settings"?"Use written instruction":"Use normal settings")));
+    if(selectedStructure!=="automatic")box.appendChild(node("div",{className:"answer-structure-chip","aria-live":"polite"},node("span",{text:window.LEARNED_MEDIA_ANSWER_STRUCTURE.answerStructureLabel(selectedStructure)}),node("button",{type:"button",ariaLabel:"Remove "+window.LEARNED_MEDIA_ANSWER_STRUCTURE.answerStructureLabel(selectedStructure)+" answer structure",onClick:function(){setQuestionStructure(draftKey,"automatic");render();requestAnimationFrame(function(){const field=document.querySelector(".question-row input[data-card-id='"+CSS.escape(card.id)+"']");if(field)field.focus();});}},"×")));
+    const instructionLabel = node("span");
+    const instructionToggle = node("button", { type: "button", onClick: function () {
+      const preference = questionInstructionPreference(draftKey);
+      const selection = [input.selectionStart, input.selectionEnd, input.selectionDirection];
+      setQuestionInstructionPreference(draftKey, preference === "settings" ? "written" : "settings");
+      updateInstructionNotice();
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(selection[0], selection[1], selection[2]);
+    } });
+    const instructionNotice = node("div", { className: "question-instruction-notice" }, instructionLabel, instructionToggle);
+    box.appendChild(node("div", { "aria-live": "polite" }, instructionNotice));
+    function updateInstructionNotice() {
+      const preference = questionInstructionPreference(draftKey);
+      const resolution = answerOptions.resolveQuestionInstructions(input.value, Boolean(card.questionDetailed), selectedStructure, preference);
+      instructionNotice.hidden = !resolution.conflict;
+      const label = !resolution.conflict ? "" : "For this answer: " + (preference === "settings" ? "normal settings" : resolution.conflictLabel);
+      const action = preference === "settings" ? "Use written instruction" : "Use normal settings";
+      if (instructionLabel.textContent !== label) instructionLabel.textContent = label;
+      if (instructionToggle.textContent !== action) instructionToggle.textContent = action;
+    }
+    updateInstructionNotice();
     if (suggestions) {
       suggestions.hidden = Boolean(input.value.trim()) || focusedQuestionCardId !== card.id || dismissedFollowUpQuestionKey === followUpKey;
       box.appendChild(suggestions);

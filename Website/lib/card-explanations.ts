@@ -7,8 +7,11 @@ export type CardExplanationSelection = CardExplanationMode | undefined;
 
 type ExplanationCardIdentity = Pick<FactCard, "title" | "hook" | "body" | "topicPath" | "sources"> & { claim?: string; evidence?: FactCard["evidence"] };
 
-export function cardExplanationFingerprint(card: ExplanationCardIdentity): string {
-  return memoizedCardFingerprint(card, "card-explanation-v1", [card.claim ?? "", card.topicPath, card.sources, card.evidence], () => {
+function explanationFingerprint(card: ExplanationCardIdentity, legacy: boolean): string {
+  const dependencies = [card.claim ?? "", card.topicPath, card.sources, card.evidence];
+  return memoizedCardFingerprint(card, legacy ? "card-explanation-v1" : "card-explanation-v2", dependencies, () => {
+    const evidence = card.evidence ?? [];
+    // Keep the original web writer's field order while ignoring the order used by the native bridge.
     const sourceText = JSON.stringify([
       card.title,
       card.hook,
@@ -16,7 +19,7 @@ export function cardExplanationFingerprint(card: ExplanationCardIdentity): strin
       card.claim ?? "",
       card.topicPath,
       card.sources.map(source => [source.canonicalUrl ?? source.url, source.extract ?? ""]),
-      card.evidence ?? []
+      legacy ? evidence : evidence.map(({ sentence, sourceIndex, quote, section }) => ({ sentence, sourceIndex, quote, section }))
     ]);
     let first = 2166136261;
     let second = 0x9e3779b9;
@@ -27,6 +30,17 @@ export function cardExplanationFingerprint(card: ExplanationCardIdentity): strin
     }
     return (first >>> 0).toString(16).padStart(8, "0") + (second >>> 0).toString(16).padStart(8, "0");
   });
+}
+
+export function cardExplanationFingerprint(card: ExplanationCardIdentity): string {
+  return explanationFingerprint(card, false);
+}
+
+/** Verify a saved result and return the stable fingerprint to write back. */
+export function matchingCardExplanationFingerprint(card: ExplanationCardIdentity, saved: unknown): string | undefined {
+  if (typeof saved !== "string" || !/^[a-f0-9]{16}$/.test(saved)) return undefined;
+  const fingerprint = cardExplanationFingerprint(card);
+  if (saved === fingerprint || (card.evidence?.length && saved === explanationFingerprint(card, true))) return fingerprint;
 }
 
 const selections = new Map<string, CardExplanationSelection>();
@@ -63,14 +77,14 @@ export function setCardExplanationSelection(workspaceId: string, cardId: string,
 }
 
 export function normalizeCardExplanations(card: ExplanationCardIdentity & { explanations?: Partial<Record<CardExplanationMode, CardExplanation>> }) {
-  const fingerprint = cardExplanationFingerprint(card);
   const result: Partial<Record<CardExplanationMode, CardExplanation>> = {};
   for (const mode of ["simpler", "deeper"] as const) {
     const explanation = card.explanations?.[mode];
-    if (explanation?.text?.trim() && explanation.fingerprint === fingerprint && Array.isArray(explanation.sources)) {
-      const sources = explanation.sources.filter(source => typeof source?.title === "string" && source.title.trim() && typeof source?.url === "string" && source.url.trim());
-      if (sources.length) result[mode] = { text: explanation.text.trim(), sources, fingerprint };
-    }
+    if (typeof explanation?.text !== "string" || !explanation.text.trim() || !Array.isArray(explanation.sources)) continue;
+    const fingerprint = matchingCardExplanationFingerprint(card, explanation.fingerprint);
+    if (!fingerprint) continue;
+    const sources = explanation.sources.filter(source => typeof source?.title === "string" && source.title.trim() && typeof source?.url === "string" && source.url.trim());
+    if (sources.length) result[mode] = { text: explanation.text.trim(), sources, fingerprint };
   }
   return Object.keys(result).length ? result : undefined;
 }

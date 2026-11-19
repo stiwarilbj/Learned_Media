@@ -39,8 +39,10 @@ function validSource(source) {
 /** Keep only bounded, source-linked definitions that still describe this card. */
 function normalizeCardGlossary(card) {
     const saved = card.glossary;
-    const fingerprint = cardGlossaryFingerprint(card);
-    if (!saved || saved.fingerprint !== fingerprint || !Array.isArray(saved.entries) || !Array.isArray(saved.sources))
+    if (!Array.isArray(saved?.entries) || !Array.isArray(saved.sources))
+        return undefined;
+    const fingerprint = (0, card_explanations_1.matchingCardExplanationFingerprint)(card, saved.fingerprint);
+    if (!fingerprint)
         return undefined;
     const sourceIndexes = new Map();
     const sources = [];

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
 const Module = require("node:module");
@@ -15,6 +16,8 @@ Module._extensions[".ts"] = (module, filename) => {
 };
 
 const explanations = require("../lib/card-explanations.ts");
+const glossary = require("../lib/card-glossary.ts");
+const { validateSnapshot } = require("../lib/snapshot-validation.ts");
 const card = {
   id: "test-card",
   title: "A narrow fact",
@@ -43,6 +46,51 @@ test("saved explanations are retained only when their original content fingerpri
   assert.deepEqual(explanations.normalizeCardExplanations(restored), { simpler: saved });
   restored.title = "An edited title";
   assert.equal(explanations.normalizeCardExplanations(restored), undefined, "title edits invalidate restored explanation metadata");
+});
+
+test("explanations and glossaries survive reordered citation keys in both runtimes", () => {
+  const runtime = {};
+  for (const name of ["card-content-fingerprint", "card-explanations", "card-glossary"]) {
+    runInNewContext(readFileSync(new URL(`../../App/Resources/frontend/${name}.js`, import.meta.url), "utf8"), runtime);
+  }
+  const evidence = [
+    { sentence: 0, sourceIndex: 0, quote: card.body, section: "Observations" },
+    { sentence: 1, sourceIndex: 0, quote: "A second team confirmed its readings." }
+  ];
+  const reordered = [
+    { section: evidence[0].section, quote: card.body, sourceIndex: 0, sentence: 0 },
+    { quote: evidence[1].quote, sentence: 1, sourceIndex: 0 }
+  ];
+  const stable = "9108ce66103d1963"; // Fingerprint on the previous release, using the web writer's key order.
+  const legacy = "e44d1ae861cb326b"; // Fingerprint on the previous release, using the reordered key sequence.
+  for (const [tools, definitions] of [[explanations, glossary], [runtime.LEARNED_MEDIA_CARD_EXPLANATIONS, runtime.LEARNED_MEDIA_CARD_GLOSSARY]]) {
+    assert.equal(tools.cardExplanationFingerprint({ ...card, evidence }), stable);
+    assert.equal(tools.cardExplanationFingerprint({ ...card, evidence: reordered }), stable);
+    for (const fingerprint of [stable, legacy]) {
+      const original = {
+        ...card, evidence: reordered,
+        explanations: { simpler: { text: "The team saw a rare signal.", sources: card.sources, fingerprint } },
+        glossary: { entries: [{ term: "observatory", definition: "A place for observing the sky.", sourceIndexes: [0] }], sources: card.sources, fingerprint }
+      };
+      const workspace = { persistenceVersion: 3, topics: [], cards: [original], settings: { obscurity: 4, displayMode: "text", sentenceLength: 2 } };
+      const restored = JSON.parse(JSON.stringify(workspace));
+      assert.equal(validateSnapshot(restored, "state", "read"), true);
+      const loaded = restored.cards[0];
+      assert.equal(tools.normalizeCardExplanations(loaded)?.simpler?.fingerprint, stable);
+      const loadedGlossary = definitions.normalizeCardGlossary(loaded);
+      assert.equal(loadedGlossary?.entries[0]?.term, "observatory");
+      assert.equal(loadedGlossary?.fingerprint, stable);
+      for (const changed of [
+        { quote: "The observatory saw a different signal." }, { sourceIndex: 1 }, { sentence: 1 }, { section: "Results" }
+      ]) {
+        const edited = { ...loaded, evidence: [{ ...reordered[0], ...changed }, reordered[1]] };
+        assert.equal(tools.normalizeCardExplanations(edited), undefined);
+        assert.equal(definitions.normalizeCardGlossary(edited), undefined);
+      }
+      assert.equal(tools.normalizeCardExplanations({ ...loaded, evidence: [...reordered].reverse() }), undefined);
+      assert.equal(definitions.normalizeCardGlossary({ ...loaded, sources: [{ ...card.sources[0], extract: "Changed source." }] }), undefined);
+    }
+  }
 });
 
 test("transient explanation choice is isolated by workspace and card and notifies subscribers", () => {
